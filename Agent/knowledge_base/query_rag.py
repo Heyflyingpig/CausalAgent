@@ -53,7 +53,7 @@ def _get_llm() -> ChatOpenAI:
     return ChatOpenAI(
         api_key=settings.API_KEY,
         base_url=settings.BASE_URL,
-        model_name=settings.MODEL,
+        model=settings.MODEL,
     )
 
 

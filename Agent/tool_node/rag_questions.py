@@ -44,11 +44,16 @@ def _format_messages(messages: List[BaseMessage], max_messages: int = 6) -> str:
 
 
 @task
-def get_rag_questions(
+async def get_rag_questions(
     state: CausalChatState,
     llm: ChatOpenAI,
     num_questions: int,
 ) -> List[Dict]:
+    """
+    生成结构化 RAG 查询问题。
+
+    结构化输出失败时返回兜底问题，避免问题生成失败直接终止整条 Agent 链路。
+    """
     logging.info("正在启动 RAG 问题生成任务...")
     try:
         rag_prompt = ChatPromptTemplate.from_messages(
@@ -89,7 +94,7 @@ system role: {system_role}
         question_generator_runnable = rag_prompt | llm | JsonOutputParser()
         logging.info("正在调用LLM生成结构化RAG查询问题...")
 
-        llm_output = question_generator_runnable.invoke(
+        llm_output = await question_generator_runnable.ainvoke(
             {
                 "messages": _format_messages(state["messages"]),
                 "data_summary": json.dumps(state.get("analysis_parameters", {}), indent=2, ensure_ascii=False),

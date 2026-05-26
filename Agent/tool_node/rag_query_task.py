@@ -2,6 +2,7 @@
 @task封装的RAG查询任务
 """
 import logging
+import asyncio
 from typing import Dict, List, Union
 
 from langgraph.func import task
@@ -10,7 +11,7 @@ from Agent.knowledge_base.query_rag import get_rag_response
 
 
 @task
-def rag_query_task(questions: List[Union[str, Dict]]) -> Dict:
+async def rag_query_task(questions: List[Union[str, Dict]]) -> Dict:
     """
     Task: 查询知识库（RAG）
 
@@ -22,7 +23,7 @@ def rag_query_task(questions: List[Union[str, Dict]]) -> Dict:
     """
     logging.info("正在启动RAG查询任务...")
     try:
-        rag_response = get_rag_response(questions)
+        rag_response = await asyncio.to_thread(get_rag_response, questions)
         logging.info("Task: 知识库查询完成")
         return rag_response
     

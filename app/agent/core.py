@@ -18,7 +18,7 @@ from typing import Any, Type, List
 from pydantic import BaseModel, create_model
 from langgraph.types import Command 
 from Agent.causal_agent.state import CausalChatState
-from Agent.Report.Metadata_sum import replace_placeholders
+from app.chat.response_storage import render_summary_for_display
 
 ## die manager
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -422,11 +422,12 @@ def process_final_result(final_state_data):
                     visualization_mapping = final_state_data["visualization_mapping"]
                     if visualization_mapping:  # 确保不是空字典
                         # 保存映射数据（用于数据库存储）
+                        result["raw_summary"] = result["summary"]
                         result["visualization_mapping"] = visualization_mapping
                         logging.info(f"包含 {len(visualization_mapping)} 个可视化图表")
 
                         # 替换 summary 中的占位符为真实图表
-                        result["summary"] = replace_placeholders(
+                        result["summary"] = render_summary_for_display(
                             result["summary"],
                             visualization_mapping
                         )

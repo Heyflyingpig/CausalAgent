@@ -1,4 +1,5 @@
 from .state import CausalChatState
+import asyncio
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -41,7 +42,7 @@ class RouteQuery(BaseModel):
     )
 
 # agentnode节点用于做初步的decision
-def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
     """
     Agent节点，是图的起点，用于判断是否需要进入causal循环，
@@ -92,7 +93,7 @@ def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     
     logging.info("正在调用LLM进行路由决策...")
     try:
-        decision_dict = runnable.invoke(
+        decision_dict = await runnable.ainvoke(
             {
                 "messages": state["messages"][-1],
                 "has_tool_results": has_tool_results,
@@ -144,7 +145,7 @@ from Agent.Processing.fold_verify import validate_analysis
 from Agent.Processing.data_visualize import generate_visualizations
 
 
-def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
     文件加载、解析与验证节点。
     1.  使用LLM从对话中一次性提取文件名、目标和处理变量。
@@ -199,7 +200,7 @@ def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         ])
     try:
         runnable = prompt | llm | JsonOutputParser()
-        response = runnable.invoke({"messages": state["messages"]})
+        response = await runnable.ainvoke({"messages": state["messages"]})
 
         structured_response = foldQuery.model_validate(response)
 
@@ -226,25 +227,25 @@ def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     logging.info(f"filename: {filename}, state.get('fold_name'): {state.get('fold_name')}")
     try:
         if filename :
-            file_content_bytes = get_file_content(user_id, filename)
+            file_content_bytes = await asyncio.to_thread(get_file_content, user_id, filename)
             state['fold_name'] = filename
             
             # 注意这里的文件名后续并没有用到
             loaded_filename = filename
         elif state.get('fold_name'):
             loaded_filename = state.get('fold_name')
-            file_content_bytes = get_file_content(user_id, loaded_filename)
+            file_content_bytes = await asyncio.to_thread(get_file_content, user_id, loaded_filename)
 
         else:
-            file_content_bytes , loaded_filename = get_recent_file(user_id)
+            file_content_bytes , loaded_filename = await asyncio.to_thread(get_recent_file, user_id)
 
         if not file_content_bytes or not loaded_filename:
             raise FileNotFoundError("找不到任何可供分析的文件。请先上传一个CSV文件。")
         
         state['fold_name'] = loaded_filename
         file_content_str = file_content_bytes.decode('utf-8')
-        df = pd.read_csv(io.StringIO(file_content_str))
-        data_summary = get_data_summary(df)
+        df = await asyncio.to_thread(pd.read_csv, io.StringIO(file_content_str))
+        data_summary = await asyncio.to_thread(get_data_summary, df)
     
     except Exception as e:
         error_msg = f"在文件加载或解析阶段发生错误: {e}"
@@ -263,10 +264,11 @@ def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     state['analysis_parameters'] = data_summary
     
     # 运行确定性验证
-    is_ready, issues, recommends = validate_analysis(
+    is_ready, issues, recommends = await asyncio.to_thread(
+        validate_analysis,
         data_summary, 
-        target=target, 
-        treatment=treatment
+        target=target,
+        treatment=treatment,
     )
 
     # 根据验证结果决策
@@ -331,7 +333,7 @@ def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         }
 
 
-def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
     项目预处理模块:
     1.  从状态(state)中加载 DataFrame 和数据摘要。
@@ -356,13 +358,13 @@ def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         return {"messages": [new_message]}
 
     # 动态生成 DataFrame（从 file_content）
-    df = pd.read_csv(io.StringIO(file_content))
+    df = await asyncio.to_thread(pd.read_csv, io.StringIO(file_content))
     logging.info(f"从 file_content 重新生成 DataFrame，shape: {df.shape}")
 
     # 生成可视化图表 
     visualizations = {}
     try:
-        visualizations = generate_visualizations(df, analysis_parameters)
+        visualizations = await asyncio.to_thread(generate_visualizations, df, analysis_parameters)
         state["visualizations"] = visualizations
         logging.info("数据可视化图表已成功生成。")
     
@@ -401,7 +403,7 @@ def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     logging.info("正在调用LLM生成数据分析总结...")
     
     
-    preprocess_summary = runnable.invoke({
+    preprocess_summary = await runnable.ainvoke({
         "data_summary": json.dumps(analysis_parameters, indent=2, ensure_ascii=False),
         "system_role": data_prompt()
     })
@@ -429,7 +431,7 @@ from Agent.tool_node.rag_query_task import rag_query_task
 from Agent.tool_node.rag_questions import get_rag_questions
 
 
-def execute_tools_node(state: CausalChatState, mcp_session: ClientSession, llm: ChatOpenAI) -> dict:
+async def execute_tools_node(state: CausalChatState, mcp_session: ClientSession, llm: ChatOpenAI) -> dict:
     """
     执行工具模块。
     输入：mcp模块
@@ -444,17 +446,13 @@ def execute_tools_node(state: CausalChatState, mcp_session: ClientSession, llm: 
     # 并行执行任务并等待结果 
     logging.info(" 开始并行执行因果分析和RAG查询 ")
 
-    rag_question_task = get_rag_questions(state, llm, num_questions=2)
+    rag_question_future = get_rag_questions(state, llm, num_questions=2)
+    causal_future = causal_analysis_task(file_content, mcp_session, llm, state)
 
-    causal_task = causal_analysis_task(file_content, mcp_session, llm, state)
+    rag_questions = await rag_question_future
+    rag_future = rag_query_task(rag_questions)
 
-    rag_questions = rag_question_task.result()
-
-    rag_task = rag_query_task(rag_questions)    
-    
-    causal_task_result = causal_task.result()
-
-    rag_task_result = rag_task.result()
+    causal_task_result, rag_task_result = await asyncio.gather(causal_future, rag_future)
     
     logging.info(" 因果分析和RAG查询均已完成 ")
     
@@ -500,7 +498,7 @@ from Agent.Postprocessing.cycles_check.fix_cycles import fix_cycles_with_llm
 # 边评估模块
 from Agent.Postprocessing.evaluate_edge.evaluate_edge_llm import evaluate_edges_with_llm
 
-def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
     后处理模块：
     1. 提取并验证因果图结构
@@ -539,7 +537,8 @@ def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         has_cycle, cycles = detect_cycles(working_matrix, node_names)
         if has_cycle:
             logging.info(f"检测到 {len(cycles)} 个环路，开始LLM辅助修正...")
-            working_matrix = fix_cycles_with_llm(
+            working_matrix = await asyncio.to_thread(
+                fix_cycles_with_llm,
                 working_matrix, 
                 cycles, 
                 node_names,
@@ -565,7 +564,7 @@ def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         edge_evaluations = {}
         if critical_edges:
             logging.info(f"识别到 {len(critical_edges)} 条关键边，开始LLM评估...")
-            edge_evaluations = evaluate_edges_with_llm(critical_edges, state, llm)
+            edge_evaluations = await asyncio.to_thread(evaluate_edges_with_llm, critical_edges, state, llm)
         else:
             logging.info("未识别到需要评估的关键边")
         
@@ -619,7 +618,7 @@ def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
 ## 调用元数据
 from Agent.Report.Metadata_sum import metadata_summary, metadata_mapping
-def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
     报告模块：
     主要是对所有的参数生成一份报告
@@ -674,8 +673,16 @@ def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     # 格式化字符串输出
     runnable = prompt | llm | StrOutputParser()
     
-    meta_data = metadata_summary(state.get("analysis_parameters", {}), state.get("visualizations", {}))
-    mapping_data = metadata_mapping(meta_data, state.get("visualizations", {}))
+    meta_data = await asyncio.to_thread(
+        metadata_summary,
+        state.get("analysis_parameters", {}),
+        state.get("visualizations", {}),
+    )
+    mapping_data = await asyncio.to_thread(
+        metadata_mapping,
+        meta_data,
+        state.get("visualizations", {}),
+    )
     
     # 在invoke时，将模板变量和消息历史分开传入
     knowledge_summary = format_rag_summary_for_prompt(
@@ -684,7 +691,7 @@ def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         include_evidence=True
     )
 
-    response = runnable.invoke({
+    response = await runnable.ainvoke({
         "messages": state["messages"],
         "preprocess_meta_data": meta_data,
         "preprocess_summary": state.get("preprocess_summary", {}),
@@ -722,7 +729,7 @@ def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         "messages": [report_complete_message]
     }
 
-def normal_chat_node(state: CausalChatState,llm: ChatOpenAI) -> dict:
+async def normal_chat_node(state: CausalChatState,llm: ChatOpenAI) -> dict:
     """
     Represents "正常问答".
     This is for when the agent determines it's a simple chat conversation.
@@ -743,13 +750,13 @@ def normal_chat_node(state: CausalChatState,llm: ChatOpenAI) -> dict:
         ]
     )
     runnable = prompt | llm | StrOutputParser()
-    response = runnable.invoke({
+    response = await runnable.ainvoke({
         "messages": state["messages"],
     })
     # 只返回新消息
     return {"messages": [AIMessage(content=response, name="normal_chat")]}
 
-def inquiry_answer_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def inquiry_answer_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
     根据报告追问用户的问题
     """
@@ -781,7 +788,7 @@ def inquiry_answer_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         include_evidence=True
     )
 
-    response = runnable.invoke({
+    response = await runnable.ainvoke({
         "messages": state["messages"],
         "causal_analysis_result": state.get("causal_analysis_result", {}),
         "knowledge_base_result": knowledge_summary,
