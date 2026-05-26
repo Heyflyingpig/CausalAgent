@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify, session
 from app.auth.session_guard import get_current_session_user
 import logging
 import json
-from Agent.Report.Metadata_sum import replace_placeholders
+from app.chat.response_storage import render_summary_for_display
 
 chat_bp = Blueprint('chat', __name__, url_prefix='/api')
 import uuid
@@ -154,14 +154,17 @@ def load_session_content():
                         message_content = causal_graph_data
 
                         if visualization_mapping and "summary" in message_content:
-                            message_content["summary"] = replace_placeholders(message_content["summary"], visualization_mapping)
+                            message_content["summary"] = render_summary_for_display(
+                                message_content["summary"],
+                                visualization_mapping,
+                            )
 
                         messages.append({"sender": "ai", "text": message_content})
                     else:
                         message_text = row["content"]
 
                         if visualization_mapping:
-                            message_text = replace_placeholders(message_text, visualization_mapping)
+                            message_text = render_summary_for_display(message_text, visualization_mapping)
 
                         messages.append({"sender": "ai", "text": message_text})
 
