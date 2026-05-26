@@ -10,6 +10,7 @@ from langgraph.checkpoint.base import (
     Checkpoint,
     CheckpointMetadata,
     CheckpointTuple,
+    WRITES_IDX_MAP,
 )
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 import mysql.connector
@@ -21,6 +22,8 @@ from app.db import get_read_connection, get_write_connection
 
 # 配置日志
 logger = logging.getLogger(__name__)
+
+_SERDE_PREFIX = b"LGST1"
 
 class MySQLSaver(BaseCheckpointSaver):
     """
@@ -70,6 +73,49 @@ class MySQLSaver(BaseCheckpointSaver):
         self.connection_config = connection_config
         
         logger.info("MySQLSaver 初始化完成")
+
+    def _serialize_blob(self, value: Any) -> bytes:
+        """
+        使用新版 LangGraph typed serializer 序列化值。
+
+        langgraph-checkpoint 4.x 的 JsonPlusSerializer 不再暴露 dumps/loads，
+        而是使用 dumps_typed/loads_typed 返回 `(type, bytes)`。当前数据库
+        schema 只有一个 LONGBLOB 字段，因此这里把 type 头和 payload 合并
+        存储，避免为序列化类型新增 schema 字段。
+        """
+        value_type, payload = self.serde.dumps_typed(value)
+        type_bytes = value_type.encode("utf-8")
+        if len(type_bytes) > 65535:
+            raise ValueError(f"序列化类型名过长: {value_type}")
+        return _SERDE_PREFIX + len(type_bytes).to_bytes(2, "big") + type_bytes + payload
+
+    def _deserialize_blob(self, blob: Any) -> Any:
+        """
+        反序列化 checkpoint / pending write blob。
+
+        新写入的数据带有 `_SERDE_PREFIX` 头；旧数据没有头时，按新版
+        JsonPlusSerializer 支持的 msgpack / pickle / json 顺序做兼容读取。
+        """
+        if blob is None:
+            return None
+
+        data = bytes(blob)
+        if data.startswith(_SERDE_PREFIX):
+            type_len_start = len(_SERDE_PREFIX)
+            type_len_end = type_len_start + 2
+            type_len = int.from_bytes(data[type_len_start:type_len_end], "big")
+            value_type = data[type_len_end:type_len_end + type_len].decode("utf-8")
+            payload = data[type_len_end + type_len:]
+            return self.serde.loads_typed((value_type, payload))
+
+        last_error: Exception | None = None
+        for value_type in ("msgpack", "pickle", "json", "bytes"):
+            try:
+                return self.serde.loads_typed((value_type, data))
+            except Exception as exc:
+                last_error = exc
+
+        raise ValueError(f"无法反序列化 checkpoint blob: {last_error}") from last_error
     
     @contextmanager
     def _get_connection(self):
@@ -157,10 +203,10 @@ class MySQLSaver(BaseCheckpointSaver):
         )
         
         # 序列化 checkpoint 和 metadata
-        # 使用 serde.dumps() 将 Python 对象转为 bytes
+        # 使用 LangGraph typed serializer 将 Python 对象转为 bytes
         # 这样可以安全存储到 LONGBLOB 字段中
         try:
-            checkpoint_blob = self.serde.dumps(checkpoint)
+            checkpoint_blob = self._serialize_blob(checkpoint)
             metadata_json = json.dumps(metadata, ensure_ascii=False)
         except Exception as e:
             logger.error(f"序列化 checkpoint 失败: {e}")
@@ -295,7 +341,7 @@ class MySQLSaver(BaseCheckpointSaver):
             #  反序列化 checkpoint 数据 
             try:
                 # 从 LONGBLOB 读取 bytes，反序列化为 Python 对象
-                checkpoint_data = self.serde.loads(bytes(row["checkpoint"]))
+                checkpoint_data = self._deserialize_blob(row["checkpoint"])
                 
                 # 解析 JSON 元数据
                 metadata = json.loads(row["metadata_data"]) if row["metadata_data"] else {}
@@ -320,7 +366,7 @@ class MySQLSaver(BaseCheckpointSaver):
             pending_writes = []
             for write_row in write_rows:
                 try:
-                    value = self.serde.loads(bytes(write_row["value"])) if write_row["value"] else None
+                    value = self._deserialize_blob(write_row["value"]) if write_row["value"] else None
                     pending_writes.append((
                         write_row["task_id"],
                         write_row["channel"],
@@ -359,7 +405,7 @@ class MySQLSaver(BaseCheckpointSaver):
     
     def list(
         self,
-        config: Dict[str, Any],
+        config: Optional[Dict[str, Any]],
         *,
         filter: Optional[Dict[str, Any]] = None,
         before: Optional[Dict[str, Any]] = None,
@@ -371,7 +417,7 @@ class MySQLSaver(BaseCheckpointSaver):
         这个方法用于 graph.get_state_history(config) API
         
         Args:
-            config: {"configurable": {"thread_id": "..."}}
+            config: {"configurable": {"thread_id": "..."}}；若为 None，则列出所有 thread。
             filter: 过滤条件（暂未使用）
             before: 获取某个 checkpoint 之前的历史（暂未使用）
             limit: 限制返回数量
@@ -386,10 +432,11 @@ class MySQLSaver(BaseCheckpointSaver):
             # history[1] 是第2新的
             # ...
         """
-        thread_id = config["configurable"]["thread_id"]
-        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        configurable = (config or {}).get("configurable", {})
+        thread_id = configurable.get("thread_id")
+        checkpoint_ns = configurable.get("checkpoint_ns", "")
         
-        logger.info(f"列出 thread {thread_id} 的 checkpoint 历史")
+        logger.info(f"列出 checkpoint 历史: thread_id={thread_id or '*'}")
         
         with get_read_connection(consistency="strong") as conn:
             cursor = conn.cursor(dictionary=True)
@@ -405,10 +452,14 @@ class MySQLSaver(BaseCheckpointSaver):
                     metadata_data,
                     created_at
                 FROM checkpoints
-                WHERE thread_id = %s AND checkpoint_ns = %s
-                ORDER BY created_at DESC
             """
-            params = [thread_id, checkpoint_ns]
+            params = []
+
+            if thread_id:
+                query += " WHERE thread_id = %s AND checkpoint_ns = %s"
+                params.extend([thread_id, checkpoint_ns])
+
+            query += " ORDER BY created_at DESC"
             
             # 如果指定了 limit，添加到查询
             if limit:
@@ -421,7 +472,7 @@ class MySQLSaver(BaseCheckpointSaver):
             for row in cursor:
                 try:
                     # 反序列化
-                    checkpoint_data = self.serde.loads(bytes(row["checkpoint"]))
+                    checkpoint_data = self._deserialize_blob(row["checkpoint"])
                     metadata = json.loads(row["metadata_data"]) if row["metadata_data"] else {}
                     
                     # 构建 parent_config
@@ -429,8 +480,8 @@ class MySQLSaver(BaseCheckpointSaver):
                     if row["parent_checkpoint_id"]:
                         parent_config = {
                             "configurable": {
-                                "thread_id": thread_id,
-                                "checkpoint_ns": checkpoint_ns,
+                                "thread_id": row["thread_id"],
+                                "checkpoint_ns": row["checkpoint_ns"],
                                 "checkpoint_id": row["parent_checkpoint_id"],
                             }
                         }
@@ -439,8 +490,8 @@ class MySQLSaver(BaseCheckpointSaver):
                     yield CheckpointTuple(
                         config={
                             "configurable": {
-                                "thread_id": thread_id,
-                                "checkpoint_ns": checkpoint_ns,
+                                "thread_id": row["thread_id"],
+                                "checkpoint_ns": row["checkpoint_ns"],
                                 "checkpoint_id": row["checkpoint_id"],
                             }
                         },
@@ -499,38 +550,37 @@ class MySQLSaver(BaseCheckpointSaver):
             cursor = conn.cursor()
             
             # 遍历所有写操作
+            saved_count = 0
             for idx, (channel, value) in enumerate(writes):
-                try:
-                    # 序列化值
-                    value_blob = self.serde.dumps(value)
-                    
-                    # 插入到 checkpoint_writes 表
-                    cursor.execute("""
-                        INSERT INTO checkpoint_writes (
-                            thread_id,
-                            checkpoint_ns,
-                            checkpoint_id,
-                            task_id,
-                            idx,
-                            channel,
-                            value
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (
+                # 特殊写入（error/scheduled/interrupt/resume）使用 LangGraph 官方
+                # 固定负数 idx，普通 channel 保留原顺序 idx。
+                write_idx = WRITES_IDX_MAP.get(channel, idx)
+                value_blob = self._serialize_blob(value)
+
+                # 插入到 checkpoint_writes 表
+                cursor.execute("""
+                    INSERT INTO checkpoint_writes (
                         thread_id,
                         checkpoint_ns,
                         checkpoint_id,
                         task_id,
-                        idx,           # 写操作的索引（保持顺序）
-                        channel,       # State 中的字段名
-                        value_blob     # 序列化后的值
-                    ))
-                
-                except Exception as e:
-                    logger.error(f"保存 pending write 失败 (channel={channel}): {e}")
-                    # 继续处理其他写操作
+                        idx,
+                        channel,
+                        value
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    thread_id,
+                    checkpoint_ns,
+                    checkpoint_id,
+                    task_id,
+                    write_idx,      # 写操作的索引（保持顺序）
+                    channel,        # State 中的字段名
+                    value_blob      # 序列化后的值
+                ))
+                saved_count += 1
             
             conn.commit()
-            logger.info(f"{len(writes)} 个 pending writes 保存成功")
+            logger.info(f"{saved_count} 个 pending writes 保存成功")
 
     # ===== 异步方法实现（用于 ainvoke/astream） =====
     
@@ -575,7 +625,7 @@ class MySQLSaver(BaseCheckpointSaver):
     
     async def alist(
         self,
-        config: Dict[str, Any],
+        config: Optional[Dict[str, Any]],
         *,
         filter: Optional[Dict[str, Any]] = None,
         before: Optional[Dict[str, Any]] = None,
@@ -585,7 +635,7 @@ class MySQLSaver(BaseCheckpointSaver):
         异步列出 checkpoint 历史
         
         Args:
-            config: 配置字典
+            config: 配置字典；若为 None，则列出所有 thread。
             filter: 过滤条件
             before: 获取某个 checkpoint 之前的历史
             limit: 限制返回数量
