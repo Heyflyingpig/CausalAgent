@@ -13,9 +13,7 @@ RUN apt-get update && apt-get install -y \
 
 # 先安装基础依赖（很少变化）
 COPY requirements-base.txt .
-RUN pip install --no-cache-dir -r requirements-base.txt \
-    --trusted-host pypi.tuna.tsinghua.edu.cn \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --no-cache-dir -r requirements-base.txt
 
 # 再安装所有依赖（包括新增的）
 COPY requirements.txt .
