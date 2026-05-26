@@ -737,3 +737,12 @@ python Run_causal.py
   - 后台 worker 以 slot 为单位持有独立 MCP session 和 Agent graph，避免 Web 进程阻塞。
   - 同一 `user_id + session_id` 的并发任务通过唯一约束兜底，防止重复执行。
   - 旧接口 `POST /api/send_stream` 已转为迁移提示，前端改走 `POST /api/agent/jobs` 与 SSE 订阅。
+
+---
+2026.5.26
+- 【内容新增】
+  本次改造是在不改变现有架构的前提下，引入 LangGraph 1.2 的节点级容错能力。已完成依赖升级门禁、LangChain v1 兼容迁移、节点 async 化、MCP/RAG task 异步化，以及基于 `retry_policy / timeout / error_handler` 的集中容错策略。
+  
+- 【bug修复】
+  - 升级到 langgraph-checkpoint==4.1.1 后，JsonPlusSerializer 不再有 dumps/loads，新版接口是 dumps_typed/loads_typed。
+  - 修复前端报告占位符问题

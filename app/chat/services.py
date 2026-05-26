@@ -5,9 +5,9 @@ app.chat.services - 聊天服务
 - 获取聊天记录
 '''
 from app.db import get_read_connection, get_write_connection
+from app.chat.response_storage import prepare_ai_response_for_storage
 import mysql.connector
 import logging
-import json
 from datetime import datetime
 def get_chat_history(session_id: str, user_id: int, limit: int) -> list:
     """从数据库获取指定会话的最近聊天记录。"""
@@ -86,40 +86,7 @@ def save_chat(user_id, session_id, user_msg, ai_response):
             cursor.execute(sql_user, (session_id, user_id, user_msg, timestamp_dt))
             
             # 保存AI消息
-            ai_content = ""
-            attachment_content = None
-            attachment_type = 'other'
-            attachment_to_save = []
-
-            if isinstance(ai_response, dict):
-                # 确保 summary 键存在且不为 None
-                ai_content = ai_response.get('summary')
-                
-                if ai_content is None:
-                    # 如果 summary 为空，将整个响应序列化为字符串作为备用
-                    ai_content = json.dumps(ai_response, ensure_ascii=False)
-                    logging.warning(f"AI响应中 summary 为空，已将整个响应序列化为字符串作为备用。")
-                
-                if ai_response.get('type') == 'causal_graph' and 'data' in ai_response:
-                    attachment_type = 'causal_graph'
-                    attachment_content = json.dumps(ai_response, ensure_ascii=False) # 保存完整响应
-                    attachment_to_save.append({
-                        "type": attachment_type,
-                        "content": attachment_content
-                    })
-                
-                if ai_response.get('visualization_mapping'):
-                    attachment_type = 'visualization'
-                    attachment_content = json.dumps(ai_response.get('visualization_mapping'), ensure_ascii=False)
-                    attachment_to_save.append({
-                        "type": attachment_type,
-                        "content": attachment_content
-                    })
-
-            elif isinstance(ai_response, str):
-                ai_content = ai_response
-            else:
-                ai_content = json.dumps(ai_response, ensure_ascii=False)
+            ai_content, attachment_to_save = prepare_ai_response_for_storage(ai_response)
             
             # 处理数据库保存格式
             sql_ai = """

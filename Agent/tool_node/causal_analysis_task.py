@@ -3,6 +3,7 @@
 实现 LLM 动态选择 MCP 工具的机制
 """
 from langgraph.func import task
+import asyncio
 import logging
 from mcp import ClientSession
 from typing import List, Dict, Optional
@@ -12,6 +13,9 @@ from langchain_openai import ChatOpenAI
 from Agent.causal_agent.state import CausalChatState
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+
+MCP_LIST_TOOLS_TIMEOUT_SECONDS = 30
+MCP_CALL_TOOL_TIMEOUT_SECONDS = 240
 
 class ToolSelection(BaseModel):
     """LLM 工具选择的结果模型"""
@@ -56,7 +60,10 @@ async def select_causal_tool(
         选中的工具名称，如果选择失败返回 None
     """
     logging.info("正在获取 MCP 可用工具列表...")
-    tools_response = await mcp_session.list_tools()
+    tools_response = await asyncio.wait_for(
+        mcp_session.list_tools(),
+        timeout=MCP_LIST_TOOLS_TIMEOUT_SECONDS,
+    )
     causal_tools = tools_response.tools
 
     if not causal_tools:
@@ -92,7 +99,7 @@ async def select_causal_tool(
 
     try:
         runnable = prompt | llm | JsonOutputParser()
-        response = runnable.invoke({
+        response = await runnable.ainvoke({
             "tools_description": tools_description,
             "messages": state["messages"],
             "data_summary": json.dumps(state.get("analysis_parameters", {}), indent=2, ensure_ascii=False),
@@ -152,9 +159,12 @@ async def causal_analysis_task(
 
         logging.info(f"使用工具: {selected_tool}")
 
-        tool_response = await mcp_session.call_tool(
-            selected_tool,
-            {"csv_data": file_content}
+        tool_response = await asyncio.wait_for(
+            mcp_session.call_tool(
+                selected_tool,
+                {"csv_data": file_content},
+            ),
+            timeout=MCP_CALL_TOOL_TIMEOUT_SECONDS,
         )
 
         result = json.loads(tool_response.content[0].text)
@@ -163,6 +173,9 @@ async def causal_analysis_task(
         logging.info(f"Task: MCP 因果分析完成，使用工具: {selected_tool}")
         return result
 
+    except json.JSONDecodeError as e:
+        logging.error(f"Task: MCP 返回结果不是有效 JSON: {e}")
+        return {"success": False, "message": f"MCP 返回结果不是有效 JSON: {e}"}
     except Exception as e:
-        logging.error(f"Task: MCP 调用失败: {e}")
-        return {"success": False, "message": str(e)}
+        logging.error(f"Task: MCP 调用失败，将交给节点 retry/error_handler 处理: {e}")
+        raise
