@@ -2,18 +2,12 @@ import csv
 import hashlib
 import json
 import os
+import ctypes
 from typing import Any, Dict, List, Optional
 
-from langchain_chroma import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
-<<<<<<<< HEAD:Agent/knowledge_base/export_metadata.py
-base_dir = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(base_dir, "models", "bge-small-zh-v1.5")
-PERSIST_DIRECTORY = os.path.join(base_dir, "db")
-DEFAULT_JSON_OUTPUT = os.path.join(base_dir, "exported_chunk_metadata.json")
-DEFAULT_CSV_OUTPUT = os.path.join(base_dir, "exported_chunk_metadata.csv")
-========
 operation_dir = os.path.dirname(os.path.abspath(__file__))
 rag_dir = os.path.dirname(operation_dir)
 knowledge_base_dir = os.path.dirname(rag_dir)
@@ -47,7 +41,6 @@ def _resolve_faiss_index_directory() -> str:
 
 
 FAISS_INDEX_DIRECTORY = _resolve_faiss_index_directory()
->>>>>>>> 2e0c5dc (feat(rag): 重构 RAG 测评模块并移除产物输出):Agent/knowledge_base/rag/operation_datasets/export_metadata.py
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -100,20 +93,23 @@ def _normalize_metadata(metadata: Optional[Dict[str, Any]], page_content: str, f
     }
 
 
-<<<<<<<< HEAD:Agent/knowledge_base/export_metadata.py
-def _load_vector_store() -> Chroma:
-========
 def _load_vector_store() -> FAISS:
     """加载本地 FAISS 向量库，用于导出当前 chunk metadata。"""
->>>>>>>> 2e0c5dc (feat(rag): 重构 RAG 测评模块并移除产物输出):Agent/knowledge_base/rag/operation_datasets/export_metadata.py
     embedding_function = HuggingFaceEmbeddings(
         model_name=MODEL_PATH,
         model_kwargs={"device": "cpu"},
         encode_kwargs={"normalize_embeddings": True},
     )
-    return Chroma(
-        persist_directory=PERSIST_DIRECTORY,
-        embedding_function=embedding_function,
+
+    # 旧版 Chroma 读取实现保留作参考，当前 Windows 环境下已切换为 FAISS。
+    # return Chroma(
+    #     persist_directory=PERSIST_DIRECTORY,
+    #     embedding_function=embedding_function,
+    # )
+    return FAISS.load_local(
+        FAISS_INDEX_DIRECTORY,
+        embedding_function,
+        allow_dangerous_deserialization=True,
     )
 
 
@@ -132,20 +128,20 @@ def export_chunk_metadata(
     - content_preview
     """
     db = _load_vector_store()
-    raw = db.get(include=["documents", "metadatas"])
-    documents = raw.get("documents", [])
-    metadatas = raw.get("metadatas", [])
-
     rows: List[Dict[str, Any]] = []
-    for index, page_content in enumerate(documents):
+    for index, docstore_id in db.index_to_docstore_id.items():
+        document = db.docstore.search(docstore_id)
+        if document is None or not hasattr(document, "page_content"):
+            continue
+        page_content = document.page_content
         metadata = _normalize_metadata(
-            metadatas[index] if index < len(metadatas) else {},
+            getattr(document, "metadata", {}) or {},
             page_content,
-            fallback_index=index,
+            fallback_index=int(index),
         )
         rows.append(
             {
-                "row_index": index,
+                "row_index": int(index),
                 "chunk_id": metadata["chunk_id"],
                 "doc_id": metadata["doc_id"],
                 "title": metadata["title"],
@@ -159,6 +155,9 @@ def export_chunk_metadata(
                 "content_preview": _truncate_text(page_content),
             }
         )
+
+    os.makedirs(os.path.dirname(json_output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(csv_output_path), exist_ok=True)
 
     with open(json_output_path, "w", encoding="utf-8") as json_file:
         json.dump(rows, json_file, ensure_ascii=False, indent=2)
@@ -178,7 +177,12 @@ def export_chunk_metadata(
         "content_preview",
     ]
     with open(csv_output_path, "w", encoding="utf-8-sig", newline="") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=fieldnames,
+            quoting=csv.QUOTE_ALL,
+            escapechar="\\",
+        )
         writer.writeheader()
         writer.writerows(rows)
 

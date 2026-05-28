@@ -7,51 +7,14 @@ from typing import Any, Dict, List, Optional
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
-<<<<<<<< HEAD:Agent/knowledge_base/export_metadata.py
 base_dir = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(base_dir, "models", "bge-small-zh-v1.5")
 PERSIST_DIRECTORY = os.path.join(base_dir, "db")
 DEFAULT_JSON_OUTPUT = os.path.join(base_dir, "exported_chunk_metadata.json")
 DEFAULT_CSV_OUTPUT = os.path.join(base_dir, "exported_chunk_metadata.csv")
-========
-operation_dir = os.path.dirname(os.path.abspath(__file__))
-rag_dir = os.path.dirname(operation_dir)
-knowledge_base_dir = os.path.dirname(rag_dir)
-MODEL_PATH = os.path.join(knowledge_base_dir, "models", "bge-small-zh-v1.5")
-PERSIST_DIRECTORY = os.path.join(knowledge_base_dir, "db")
-OUTPUT_DIRECTORY = os.path.join(rag_dir, "output")
-MACHINE_OUTPUT_DIRECTORY = os.path.join(OUTPUT_DIRECTORY, "machine")
-DEFAULT_JSON_OUTPUT = os.path.join(MACHINE_OUTPUT_DIRECTORY, "exported_chunk_metadata.json")
-DEFAULT_CSV_OUTPUT = os.path.join(MACHINE_OUTPUT_DIRECTORY, "exported_chunk_metadata.csv")
-
-
-def _to_windows_short_path(path: str) -> str:
-    """在 Windows 上把长路径转换为短路径，降低部分 FAISS 读取场景的路径兼容风险。"""
-    if os.name != "nt":
-        return path
-    buffer_size = 4096
-    output_buffer = ctypes.create_unicode_buffer(buffer_size)
-    result = ctypes.windll.kernel32.GetShortPathNameW(path, output_buffer, buffer_size)
-    if result == 0:
-        return path
-    return output_buffer.value
-
-
-def _resolve_faiss_index_directory() -> str:
-    """解析当前应读取的 FAISS 索引目录，优先使用环境变量覆盖。"""
-    env_path = os.environ.get("CAUSALAGENT_FAISS_INDEX_DIR")
-    if env_path:
-        return env_path
-    persist_path = _to_windows_short_path(PERSIST_DIRECTORY)
-    return os.path.join(persist_path, "faiss_index")
-
-
-FAISS_INDEX_DIRECTORY = _resolve_faiss_index_directory()
->>>>>>>> 2e0c5dc (feat(rag): 重构 RAG 测评模块并移除产物输出):Agent/knowledge_base/rag/operation_datasets/export_metadata.py
 
 
 def _safe_int(value: Any) -> Optional[int]:
-    """把 metadata 字段安全转换成整数，无法转换时返回 None。"""
     if value is None or value == "":
         return None
     try:
@@ -61,7 +24,6 @@ def _safe_int(value: Any) -> Optional[int]:
 
 
 def _truncate_text(text: str, max_chars: int = 240) -> str:
-    """生成单行内容预览，避免导出的 metadata 文件过长。"""
     text = text.replace("\n", " ").strip()
     if len(text) <= max_chars:
         return text
@@ -69,7 +31,6 @@ def _truncate_text(text: str, max_chars: int = 240) -> str:
 
 
 def _normalize_metadata(metadata: Optional[Dict[str, Any]], page_content: str, fallback_index: int) -> Dict[str, Any]:
-    """标准化向量库文档 metadata，并补齐 doc_id、chunk_id 等人工标注所需字段。"""
     normalized = dict(metadata or {})
     source = normalized.get("source") or normalized.get("file_path") or "unknown_source"
     source_name = os.path.basename(source) if os.path.isabs(source) else source
@@ -100,12 +61,7 @@ def _normalize_metadata(metadata: Optional[Dict[str, Any]], page_content: str, f
     }
 
 
-<<<<<<<< HEAD:Agent/knowledge_base/export_metadata.py
 def _load_vector_store() -> Chroma:
-========
-def _load_vector_store() -> FAISS:
-    """加载本地 FAISS 向量库，用于导出当前 chunk metadata。"""
->>>>>>>> 2e0c5dc (feat(rag): 重构 RAG 测评模块并移除产物输出):Agent/knowledge_base/rag/operation_datasets/export_metadata.py
     embedding_function = HuggingFaceEmbeddings(
         model_name=MODEL_PATH,
         model_kwargs={"device": "cpu"},
