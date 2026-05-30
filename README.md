@@ -468,7 +468,7 @@ python Run_causal.py
 |   |   ├── query_rag.py
 │   │   ├── db/             # 向量知识库存储
 │   │   └── models/         # 嵌入模型
-│   └── tool_node/          # MCP 工具节点封装（task、rag 调用等）
+│   └── tool_node/          # MCP/RAG LangChain tool registry 与兼容任务封装
 ├── Database/               # 数据库初始化与迁移逻辑
 │   ├── database_init.py    # 数据库初始化引导脚本
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
@@ -746,3 +746,16 @@ python Run_causal.py
 - 【bug修复】
   - 升级到 langgraph-checkpoint==4.1.1 后，JsonPlusSerializer 不再有 dumps/loads，新版接口是 dumps_typed/loads_typed。
   - 修复前端报告占位符问题
+  
+---
+2026.5.29
+- 【内容新增】
+  - 把原先集中在 `execute_tools_node` 的 MCP 因果分析与 RAG 查询拆成父图中的两个业务阶段节点：`mcp` 和 `rag`。父图只表达业务流程顺序，工具调用细节放入各自 compiled subgraph 内部。
+  - 支持原生langchain的Toolnode调用
+
+---
+2026.5.30
+- 【bug修复】
+  - Cannot add or update a child row: a foreign key constraint fails
+  - LangGraph checkpointer 写 MySQL 时失败，增加延迟写入
+  - 修复RAG格式化问题
