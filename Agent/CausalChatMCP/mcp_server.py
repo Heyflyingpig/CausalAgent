@@ -13,7 +13,7 @@ for p in (PROJECT_ROOT, AGENT_DIR):
 
 import json
 from mcp.server.fastmcp import FastMCP
-from Agent.causal.causalachieve import run_pc_analysis
+from Agent.causal.causalachieve import run_olc_analysis, run_pc_analysis
 
 
 log_file_path = os.path.join(CURRENT_DIR, 'mcp_server.log')

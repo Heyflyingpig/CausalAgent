@@ -1,6 +1,8 @@
 from langgraph.graph import StateGraph, END
 from .state import CausalChatState
 from . import nodes, edges
+from .graph_utils import bind_node
+from .tool_subgraphs import build_mcp_subgraph, build_rag_subgraph
 from .fault_tolerance import (
     recover_postprocess_to_report,
     recover_report,
@@ -14,42 +16,60 @@ from .fault_tolerance import (
 )
 import logging
 
-# === 导入 Checkpoint 相关 ===
+
 from Database.mysql_checkpointer import MySQLSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 
-def _bind_node(func, **bound_kwargs):
+def _build_default_checkpointer():
+    """Create the default MySQL checkpointer when configuration allows it."""
+    try:
+        # 从配置文件加载数据库连接信息
+        from config.settings import settings
+
+        connection_config = {
+            'host': settings.MYSQL_WRITE_HOST,
+            'port': settings.MYSQL_PORT,
+            'user': settings.MYSQL_WRITE_USER,
+            'password': settings.MYSQL_WRITE_PASSWORD,
+            'database': settings.MYSQL_DATABASE
+        }
+
+        # 创建 MySQLSaver 实例
+        # serde 使用 JsonPlusSerializer(pickle_fallback=True) 处理 DataFrame 等复杂对象
+        checkpointer = MySQLSaver(
+            connection_config=connection_config,
+            serde=JsonPlusSerializer(pickle_fallback=True)
+        )
+
+        logging.info("MySQL Checkpointer 已启用")
+        return checkpointer
+
+    except Exception as e:
+        logging.warning(f" Checkpointer 初始化失败，将不启用持久化: {e}")
+        return None
+
+
+
+
+def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointer=None):
     """
-    将共享资源绑定到 async LangGraph 节点。
+    构建父图。
 
-    使用显式 async wrapper，避免 functools.partial 包装 async function 后被运行时误判为同步节点。
-    """
-    async def _node(state: CausalChatState):
-        return await func(state, **bound_kwargs)
-
-    _node.__name__ = getattr(func, "__name__", "bound_node")
-    return _node
-
-
-def create_graph(llm: "ChatOpenAI", mcp_session: "ClientSession"):
-    """
-    组件node和edge成为边
+    父图只表达业务阶段顺序，MCP/RAG 的 tool-calling 细节封装在各自子图内。
     """
     workflow = StateGraph(CausalChatState)
 
-    # 使用 functools.partial 将 llm 实例绑定到节点函数上
-    # 这使得节点在被 LangGraph 调用时，除了 state 之外，还能接收到 llm 对象
-    agent_node_with_llm = _bind_node(nodes.agent_node, llm=llm)
-    fold_node_with_llm = _bind_node(nodes.fold_node, llm=llm)
-    preprocess_node_with_llm = _bind_node(nodes.preprocess_node, llm=llm)
-    execute_tools_node_with_session = _bind_node(nodes.execute_tools_node, mcp_session=mcp_session, llm=llm)
-    postprocess_node_with_llm = _bind_node(nodes.postprocess_node, llm=llm)
-    inquiry_answer_node_with_llm = _bind_node(nodes.inquiry_answer_node, llm=llm)
-    report_node_with_llm = _bind_node(nodes.report_node, llm=llm)
-    normal_chat_node_with_llm = _bind_node(nodes.normal_chat_node, llm=llm)
+    agent_node_with_llm = bind_node(nodes.agent_node, llm=llm)
+    fold_node_with_llm = bind_node(nodes.fold_node, llm=llm)
+    preprocess_node_with_llm = bind_node(nodes.preprocess_node, llm=llm)
+    mcp_subgraph = build_mcp_subgraph(llm=llm, mcp_tools=mcp_tools)
+    rag_subgraph = build_rag_subgraph(llm=llm, rag_tools=rag_tools)
+    postprocess_node_with_llm = bind_node(nodes.postprocess_node, llm=llm)
+    inquiry_answer_node_with_llm = bind_node(nodes.inquiry_answer_node, llm=llm)
+    report_node_with_llm = bind_node(nodes.report_node, llm=llm)
+    normal_chat_node_with_llm = bind_node(nodes.normal_chat_node, llm=llm)
 
-    # Add all the nodes to the graph
     workflow.add_node(
         "agent",
         agent_node_with_llm,
@@ -71,13 +91,8 @@ def create_graph(llm: "ChatOpenAI", mcp_session: "ClientSession"):
         timeout=timeout(run_timeout=180, idle_timeout=60),
         error_handler=recover_to_agent,
     )
-    workflow.add_node(
-        "execute_tools",
-        execute_tools_node_with_session,
-        retry_policy=tool_retry(),
-        timeout=timeout(run_timeout=360, idle_timeout=120),
-        error_handler=recover_tools_to_agent,
-    )
+    workflow.add_node("mcp", mcp_subgraph)
+    workflow.add_node("rag", rag_subgraph)
     workflow.add_node(
         "postprocess",
         postprocess_node_with_llm,
@@ -106,11 +121,7 @@ def create_graph(llm: "ChatOpenAI", mcp_session: "ClientSession"):
         error_handler=recover_terminal_message,
     )
 
-    
-    # Set the entry point of the graph
     workflow.set_entry_point("agent")
-
-    # Add conditional edges that determine the flow based on router functions
     workflow.add_conditional_edges(
         "agent",
         edges.decision_router,
@@ -126,74 +137,53 @@ def create_graph(llm: "ChatOpenAI", mcp_session: "ClientSession"):
         edges.fold_router,
         {
             "preprocess": "preprocess",
-            "agent": "agent"  
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "preprocess",
-        edges.preprocess_router,
-        {
-            "execute_tools": "execute_tools",
-        }
-    )
-    workflow.add_conditional_edges(
-        "execute_tools",
-        edges.execute_tool_router,
-        {
             "agent": "agent"
         }
     )
-
+    workflow.add_edge("preprocess", "mcp")
     workflow.add_conditional_edges(
-        "postprocess",
-        edges.postprocess_router,
+        "mcp", 
+        edges.mcp_router, 
+        {
+            "rag": "rag", 
+            "agent": "agent"
+        }
+    )
+    workflow.add_edge(
+        "rag", 
+        "agent"
+    )
+    workflow.add_conditional_edges(
+        "postprocess", 
+        edges.postprocess_router, 
         {
             "report": "report"
         }
     )
 
- 
-    # Define the end points of the graph. A graph can have multiple finishing points.
     workflow.add_edge("report", END)
     workflow.add_edge("normal_chat", END)
     workflow.add_edge("inquiry_answer", END)
-    
 
-    checkpointer = None
-    try:
-        # 从配置文件加载数据库连接信息
-        from config.settings import settings
-        
-        connection_config = {
-            'host': settings.MYSQL_WRITE_HOST,
-            'port': settings.MYSQL_PORT,
-            'user': settings.MYSQL_WRITE_USER,
-            'password': settings.MYSQL_WRITE_PASSWORD,
-            'database': settings.MYSQL_DATABASE
-        }
-        
-        # 创建 MySQLSaver 实例
-        # serde 使用 JsonPlusSerializer(pickle_fallback=True) 处理 DataFrame 等复杂对象
-        # 虽然现在没有
-        checkpointer = MySQLSaver(
-            connection_config=connection_config,
-            serde=JsonPlusSerializer(pickle_fallback=True)
-        )
-        
-        
-        logging.info("MySQL Checkpointer 已启用")
-        
-    except Exception as e:
-        logging.warning(f" Checkpointer 初始化失败，将不启用持久化: {e}")
-        checkpointer = None
+    if checkpointer is False:
+        compile_checkpointer = None
+    elif checkpointer is None:
+        compile_checkpointer = _build_default_checkpointer()
+    else:
+        compile_checkpointer = checkpointer
+
+    return workflow.compile(checkpointer=compile_checkpointer)
 
 
-    app = workflow.compile(
-        checkpointer=checkpointer  
-    )
-    
-    return app
+
+async def create_graph_from_session(llm: "ChatOpenAI", mcp_session: "ClientSession"):
+    """异步创图逻辑，支持mcp和rag工具"""
+    from Agent.tool_node.mcp_tool_registry import build_mcp_algorithm_tools
+    from Agent.tool_node.rag_tool_registry import build_rag_tools
+
+    mcp_tools = await build_mcp_algorithm_tools(mcp_session)
+    rag_tools = build_rag_tools()
+    return build_graph(llm=llm, mcp_tools=mcp_tools, rag_tools=rag_tools)
 
 
 agent_graph = None
