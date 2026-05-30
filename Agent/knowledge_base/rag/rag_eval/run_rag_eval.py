@@ -15,6 +15,12 @@ if __package__ in {None, ""}:
 from Agent.knowledge_base.rag.rag_eval.claim_eval import CLAIM_EVAL_CONFIG, run_claim_eval_from_code_config
 from Agent.knowledge_base.rag.rag_eval.rag_eval import EVAL_RUN_CONFIG, run_from_code_config as run_retrieval_eval
 from Agent.knowledge_base.rag.rag_eval.ragas_eval import RAGAS_RUN_CONFIG, run_ragas_eval_from_code_config
+from Agent.knowledge_base.rag.rag_config import (
+    MACHINE_OUTPUT_DIR,
+    REPORT_OUTPUT_DIR,
+    RUNS_DIR,
+    RUN_PIPELINE_CONFIG,
+)
 from Agent.knowledge_base.rag.operation_datasets.dataset_utils import (
     DATASET_FILES,
     validate_all_datasets,
@@ -24,30 +30,7 @@ from Agent.knowledge_base.rag.tools.report_utils import build_pipeline_summary_m
 from Agent.knowledge_base.rag.rag_eval.trace_export import run_trace_export_from_code_config
 
 
-RAG_DIR = Path(__file__).resolve().parents[1]
-OUTPUT_DIR = RAG_DIR / "output"
-MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
-REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
-RUNS_DIR = OUTPUT_DIR / "runs"
-
-# 本地手动运行时优先改这里。
-# 默认只跑轻量步骤：校验数据集、基于已有结果导出 trace、生成 summary。
-# 如果要完整复评，把 steps 改成：
-# ["validate_datasets", "retrieval_eval", "ragas_eval", "claim_eval", "trace_export", "summary"]
-RUN_PIPELINE_CONFIG = {
-    "run_name": "local_pipeline",
-    "steps": ["validate_datasets", "trace_export", "summary"],
-    "copy_latest_outputs_to_run_dir": True,
-    "thresholds": {
-        "retrieval_hit_rate_min": 1.0,
-        "retrieval_recall_at_k_min": 0.6,
-        "ragas_faithfulness_min": 0.5,
-        "claim_coverage_min": 0.75,
-        "evidence_support_rate_min": 0.65,
-        "judge_failed_count_max": 0,
-    },
-    "print_full_output": False,
-}
+# 本地手动运行时优先改 rag_config.py 里的 RUN_PIPELINE_CONFIG。
 
 
 def _now_compact() -> str:

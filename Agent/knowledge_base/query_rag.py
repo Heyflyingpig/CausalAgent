@@ -4,12 +4,15 @@ import math
 import os
 import re
 from collections import Counter
+from dataclasses import asdict, dataclass
 from functools import lru_cache
+import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -19,6 +22,7 @@ from config.settings import settings
 base_dir = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(base_dir, "models", "bge-small-zh-v1.5")
 PERSIST_DIRECTORY = os.path.join(base_dir, "db")
+COLLECTION_NAME = "causal_agent_default"
 
 DENSE_FETCH_K = 10
 DENSE_MMR_K = 6
@@ -28,6 +32,30 @@ DENSE_SCORE_THRESHOLD = 0.45
 FINAL_RERANK_THRESHOLD = 0.18
 MMR_LAMBDA = 0.7
 MAX_EVIDENCE_CHARS = 420
+
+
+@dataclass(frozen=True)
+class RagRetrievalConfig:
+    """
+    RAG 检索链路调参配置。
+
+    评测脚本只应该通过这个对象覆盖检索参数，避免直接改 query_rag.py
+    里的全局默认值。默认值保持线上/业务链路当前行为。
+    """
+
+    dense_fetch_k: int = DENSE_FETCH_K
+    dense_mmr_k: int = DENSE_MMR_K
+    sparse_fetch_k: int = SPARSE_FETCH_K
+    final_top_k: int = FINAL_TOP_K
+    dense_score_threshold: float = DENSE_SCORE_THRESHOLD
+    final_rerank_threshold: float = FINAL_RERANK_THRESHOLD
+    mmr_lambda: float = MMR_LAMBDA
+    official_only_when_available: bool = True
+    max_evidence_chars: int = MAX_EVIDENCE_CHARS
+
+    def to_dict(self) -> Dict[str, Any]:
+        """返回可写入评测报告的普通 dict。"""
+        return asdict(self)
 
 
 class RagAnswer(BaseModel):
@@ -58,7 +86,13 @@ def _get_llm() -> ChatOpenAI:
 
 
 @lru_cache(maxsize=1)
-def _get_embedding_function() -> HuggingFaceEmbeddings:
+def _get_embedding_function() -> Any:
+    if os.environ.get("KNOWLEDGE_BUILD_PROFILE") == "medical" or os.environ.get("MEDICAL_EMBEDDING_API_KEY"):
+        return OpenAIEmbeddings(
+            api_key=os.environ["MEDICAL_EMBEDDING_API_KEY"],
+            base_url=os.environ["MEDICAL_EMBEDDING_BASE_URL"],
+            model=os.environ.get("MEDICAL_EMBEDDING_MODEL", "text-embedding-3-small"),
+        )
     return HuggingFaceEmbeddings(
         model_name=MODEL_PATH,
         model_kwargs={"device": "cpu"},
@@ -76,6 +110,7 @@ def _get_vector_db() -> Chroma:
     return Chroma(
         persist_directory=PERSIST_DIRECTORY,
         embedding_function=_get_embedding_function(),
+        collection_name=COLLECTION_NAME,
     )
 
 
@@ -254,12 +289,16 @@ def _normalize_scores(candidates: List[Dict[str, Any]], score_key: str, normaliz
         candidate[normalized_key] = (float(candidate.get(score_key, 0.0)) - min_score) / (max_score - min_score)
 
 
-def _dense_retrieve(question: str, fetch_k: int = DENSE_FETCH_K) -> List[Dict[str, Any]]:
+def _dense_retrieve(
+    question: str,
+    fetch_k: int = DENSE_FETCH_K,
+    score_threshold: float = DENSE_SCORE_THRESHOLD,
+) -> List[Dict[str, Any]]:
     dense_results = _get_vector_db().similarity_search_with_relevance_scores(question, k=fetch_k)
     candidates: List[Dict[str, Any]] = []
 
     for index, (doc, score) in enumerate(dense_results):
-        if float(score) < DENSE_SCORE_THRESHOLD:
+        if float(score) < score_threshold:
             continue
         metadata = _normalize_chunk_metadata(doc.metadata, doc.page_content, fallback_index=index)
         candidates.append(
@@ -280,6 +319,7 @@ def _select_mmr_candidates(
     question: str,
     candidates: List[Dict[str, Any]],
     top_k: int = DENSE_MMR_K,
+    mmr_lambda: float = MMR_LAMBDA,
     ) -> List[Dict[str, Any]]:
     
     if len(candidates) <= top_k:
@@ -305,7 +345,7 @@ def _select_mmr_candidates(
                 float(np.dot(doc_embeddings[candidate_index], doc_embeddings[selected_index]))
                 for selected_index in selected_indices
             )
-            mmr_score = MMR_LAMBDA * similarity_to_query - (1 - MMR_LAMBDA) * similarity_to_selected
+            mmr_score = mmr_lambda * similarity_to_query - (1 - mmr_lambda) * similarity_to_selected
             if mmr_score > best_score:
                 best_score = mmr_score
                 best_index = candidate_index
@@ -354,6 +394,10 @@ def _sparse_retrieve(question: str, fetch_k: int = SPARSE_FETCH_K) -> List[Dict[
 def _merge_candidates(
     dense_candidates: List[Dict[str, Any]],
     sparse_candidates: List[Dict[str, Any]],
+    final_top_k: int = FINAL_TOP_K,
+    final_rerank_threshold: float = FINAL_RERANK_THRESHOLD,
+    official_only_when_available: bool = True,
+    return_before_final: bool = False,
 ) -> List[Dict[str, Any]]:
     merged: Dict[str, Dict[str, Any]] = {}
     for candidate in dense_candidates + sparse_candidates:
@@ -387,7 +431,7 @@ def _merge_candidates(
     official_candidates = [
         candidate for candidate in merged_candidates if candidate["metadata"].get("corpus") == "official"
     ]
-    if official_candidates:
+    if official_candidates and official_only_when_available:
         merged_candidates = official_candidates
 
     for candidate in merged_candidates:
@@ -402,13 +446,19 @@ def _merge_candidates(
         candidate["retrieval_source"] = "+".join(sorted(candidate["retrieval_sources"]))
 
     merged_candidates.sort(key=lambda item: item["rerank_score"], reverse=True)
-    filtered = [candidate for candidate in merged_candidates if candidate["rerank_score"] >= FINAL_RERANK_THRESHOLD]
+    if return_before_final:
+        return merged_candidates
+
+    filtered = [candidate for candidate in merged_candidates if candidate["rerank_score"] >= final_rerank_threshold]
     if filtered:
-        return filtered[:FINAL_TOP_K]
-    return merged_candidates[: min(FINAL_TOP_K, len(merged_candidates))]
+        return filtered[:final_top_k]
+    return merged_candidates[: min(final_top_k, len(merged_candidates))]
 
 
-def _build_evidence_payloads(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _build_evidence_payloads(
+    candidates: List[Dict[str, Any]],
+    max_chars: int = MAX_EVIDENCE_CHARS,
+) -> List[Dict[str, Any]]:
     evidence_payloads: List[Dict[str, Any]] = []
     for index, candidate in enumerate(candidates, start=1):
         metadata = candidate["metadata"]
@@ -427,7 +477,7 @@ def _build_evidence_payloads(candidates: List[Dict[str, Any]]) -> List[Dict[str,
                 "sparse_score": round(float(candidate.get("sparse_score", 0.0)), 4),
                 "rerank_score": round(float(candidate.get("rerank_score", 0.0)), 4),
                 "retrieval_source": candidate.get("retrieval_source", ""),
-                "content": _truncate_text(candidate["page_content"]),
+                "content": _truncate_text(candidate["page_content"], max_chars=max_chars),
             }
         )
     return evidence_payloads
@@ -601,11 +651,138 @@ def get_rag_excerpt(rag_result: Union[str, Dict[str, Any], None], max_chars: int
     return _truncate_text(summary, max_chars=max_chars)
 
 
+def _copy_candidates(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """复制候选列表，避免 trace 阶段之间共享 set 等可变对象。"""
+    copied: List[Dict[str, Any]] = []
+    for candidate in candidates:
+        item = dict(candidate)
+        retrieval_sources = item.get("retrieval_sources")
+        if isinstance(retrieval_sources, set):
+            item["retrieval_sources"] = set(retrieval_sources)
+        item["metadata"] = dict(item.get("metadata", {}))
+        copied.append(item)
+    return copied
+
+
+def _with_stage_rank(candidates: List[Dict[str, Any]], stage: str) -> List[Dict[str, Any]]:
+    """为 trace 输出补充阶段名和阶段排名。"""
+    ranked = _copy_candidates(candidates)
+    for rank, candidate in enumerate(ranked, start=1):
+        candidate["stage"] = stage
+        candidate["rank"] = rank
+        stage_scores = dict(candidate.get("stage_scores", {}))
+        stage_scores.update(
+            {
+                "rank": rank,
+                "dense_score": round(float(candidate.get("dense_score", 0.0)), 4),
+                "sparse_score": round(float(candidate.get("sparse_score", 0.0)), 4),
+                "rerank_score": round(float(candidate.get("rerank_score", 0.0)), 4),
+            }
+        )
+        candidate["stage_scores"] = stage_scores
+    return ranked
+
+
+def _select_final_candidates(candidates: List[Dict[str, Any]], config: RagRetrievalConfig) -> List[Dict[str, Any]]:
+    """应用 final rerank threshold 和 final_top_k 截断。"""
+    filtered = [
+        candidate
+        for candidate in candidates
+        if float(candidate.get("rerank_score", 0.0)) >= config.final_rerank_threshold
+    ]
+    if filtered:
+        return filtered[: config.final_top_k]
+    return candidates[: min(config.final_top_k, len(candidates))]
+
+
+def build_retrieval_trace(
+    question_text: str,
+    config: Optional[RagRetrievalConfig] = None,
+) -> Dict[str, Any]:
+    """
+    执行完整 RAG 检索链路并返回分阶段 trace。
+
+    这是 RAG 测评模块调参的稳定入口，包含：
+    dense_raw -> dense_thresholded -> dense_mmr -> sparse ->
+    merged_before_rerank -> reranked -> final。
+    """
+    active_config = config or RagRetrievalConfig()
+    timings_ms: Dict[str, float] = {}
+    total_start = time.perf_counter()
+
+    started = time.perf_counter()
+    dense_raw = _dense_retrieve(
+        question_text,
+        fetch_k=active_config.dense_fetch_k,
+        score_threshold=0.0,
+    )
+    timings_ms["dense_raw"] = round((time.perf_counter() - started) * 1000, 3)
+
+    started = time.perf_counter()
+    dense_thresholded = [
+        candidate
+        for candidate in dense_raw
+        if float(candidate.get("dense_score", 0.0)) >= active_config.dense_score_threshold
+    ]
+    timings_ms["dense_thresholded"] = round((time.perf_counter() - started) * 1000, 3)
+
+    started = time.perf_counter()
+    dense_mmr = _select_mmr_candidates(
+        question_text,
+        dense_thresholded,
+        top_k=active_config.dense_mmr_k,
+        mmr_lambda=active_config.mmr_lambda,
+    )
+    timings_ms["dense_mmr"] = round((time.perf_counter() - started) * 1000, 3)
+
+    started = time.perf_counter()
+    sparse = _sparse_retrieve(question_text, fetch_k=active_config.sparse_fetch_k)
+    timings_ms["sparse"] = round((time.perf_counter() - started) * 1000, 3)
+
+    started = time.perf_counter()
+    reranked = _merge_candidates(
+        dense_mmr,
+        sparse,
+        final_top_k=active_config.final_top_k,
+        final_rerank_threshold=active_config.final_rerank_threshold,
+        official_only_when_available=active_config.official_only_when_available,
+        return_before_final=True,
+    )
+    timings_ms["merge_rerank"] = round((time.perf_counter() - started) * 1000, 3)
+
+    started = time.perf_counter()
+    final_candidates = _select_final_candidates(reranked, active_config)
+    evidence_payloads = _build_evidence_payloads(
+        final_candidates,
+        max_chars=active_config.max_evidence_chars,
+    )
+    timings_ms["final_select"] = round((time.perf_counter() - started) * 1000, 3)
+    timings_ms["total"] = round((time.perf_counter() - total_start) * 1000, 3)
+
+    return {
+        "question": question_text,
+        "config": active_config.to_dict(),
+        "timings_ms": timings_ms,
+        "stages": {
+            "dense_raw": _with_stage_rank(dense_raw, "dense_raw"),
+            "dense_thresholded": _with_stage_rank(dense_thresholded, "dense_thresholded"),
+            "dense_mmr": _with_stage_rank(dense_mmr, "dense_mmr"),
+            "sparse": _with_stage_rank(sparse, "sparse"),
+            "merged_before_rerank": _with_stage_rank(reranked, "merged_before_rerank"),
+            "reranked": _with_stage_rank(reranked, "reranked"),
+            "final": _with_stage_rank(final_candidates, "final"),
+        },
+        "evidence_payload": evidence_payloads,
+    }
+
+
 ## 检索整体封装
-def _retrieve_candidates(question_text: str) -> List[Dict[str, Any]]:
-    dense_candidates = _select_mmr_candidates(question_text, _dense_retrieve(question_text))
-    sparse_candidates = _sparse_retrieve(question_text)
-    return _merge_candidates(dense_candidates, sparse_candidates)
+def _retrieve_candidates(
+    question_text: str,
+    config: Optional[RagRetrievalConfig] = None,
+) -> List[Dict[str, Any]]:
+    trace = build_retrieval_trace(question_text, config=config)
+    return trace["stages"]["final"]
 
 ## 查询主入口
 def get_rag_response(questions: List[Union[str, Dict[str, Any]]]) -> Dict[str, Any]:

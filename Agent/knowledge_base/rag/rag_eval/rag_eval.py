@@ -10,12 +10,22 @@ if __package__ in {None, ""}:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))  # 将项目根目录添加到 sys.path，以便正确导入模块
 
-from Agent.knowledge_base.rag.query_rag import (
+from Agent.knowledge_base.query_rag import (
     RagRetrievalConfig,
     # build_retrieval_trace 是本评测真正调用知识库检索的入口。
     # 它会走当前 RAG retrieval 链路：dense -> threshold -> MMR -> sparse -> merge/rerank -> final。
     # rag_eval.py 只消费它返回的 trace，不直接操作 FAISS / embedding / sparse index。
     build_retrieval_trace,
+)
+from Agent.knowledge_base.rag.rag_config import (
+    DATA_DIR,
+    EVAL_DATASET_PATH,
+    MACHINE_OUTPUT_DIR,
+    REPORT_OUTPUT_DIR,
+    RETRIEVAL_EVAL_CONFIG,
+    RETRIEVAL_PROFILES,
+    RETRIEVAL_SWEEP_CONFIGS,
+    TRACE_STAGE_ORDER,
 )
 from Agent.knowledge_base.rag.tools.report_utils import (
     build_rag_retrieval_single_markdown_report,
@@ -23,26 +33,11 @@ from Agent.knowledge_base.rag.tools.report_utils import (
     write_markdown_file,
 )
 
-RAG_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = RAG_DIR / "data"
-DEFAULT_DATASET_PATH = DATA_DIR / "rag_eval_smoke.json"
-OUTPUT_DIR = RAG_DIR / "output"
-MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
-REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
+DEFAULT_DATASET_PATH = EVAL_DATASET_PATH
 DEFAULT_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "rag_eval_result.json"
 DEFAULT_SWEEP_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "rag_eval_sweep_result.json"
 DEFAULT_REPORT_PATH = REPORT_OUTPUT_DIR / "rag_eval_report.md"
 DEFAULT_SWEEP_REPORT_PATH = REPORT_OUTPUT_DIR / "rag_eval_sweep_report.md"
-
-TRACE_STAGE_ORDER = [
-    "dense_raw",
-    "dense_thresholded",
-    "dense_mmr",
-    "sparse",
-    "merged_before_rerank",
-    "reranked",
-    "final",
-]
 
 CLAIM_OVERLAP_THRESHOLD = 0.35
 
@@ -50,65 +45,14 @@ CLAIM_OVERLAP_THRESHOLD = 0.35
 # mode="single" 跑一组配置；mode="sweep" 跑下面的 SWEEP_CONFIGS 参数对比。
 # single 模式默认使用 query_rag.py 里的 RagRetrievalConfig() 默认值。
 # 只有 top_k 不为 None 时，才会临时覆盖 final_top_k。
-# 默认数据集使用 data/rag_eval_smoke.json，只包含有 gold_chunk_ids 的核心样本。
-# 原始 rag_eval_sample.json 暂时保留为兼容入口，不作为默认 retrieval gold benchmark。
-EVAL_RUN_CONFIG = {
-    "mode": "sweep", 
-    "dataset_path": str(DEFAULT_DATASET_PATH),
-    "output_path": str(DEFAULT_OUTPUT_PATH),
-    "sweep_output_path": str(DEFAULT_SWEEP_OUTPUT_PATH),
-    "report_path": str(DEFAULT_REPORT_PATH),
-    "sweep_report_path": str(DEFAULT_SWEEP_REPORT_PATH),
-    "limit": None,
-    "top_k": None,  # None 表示不覆盖默认 final_top_k；single 会使用当前 RAG 链路默认配置。
-    "save_output": True,
-    "save_markdown": True,
-}
+# 默认数据集使用 ragas_testset_generate.py 生成的统一测试集。
+# 如果没有 gold_chunk_ids，retrieval recall/MRR 只能作为空 gold 诊断，生成质量主要看 Ragas/claim eval。
+EVAL_RUN_CONFIG = RETRIEVAL_EVAL_CONFIG
 
 # 内部调参用的候选配置。name 只是实验标签，config 会传给 RagRetrievalConfig。
 # baseline_current 是把 single 模式实际使用的默认检索参数显式写出来，
 # 方便在 sweep 报告中和其他参数组横向对比。
-SWEEP_CONFIGS = [
-    {
-        "name": "baseline_current",
-        "config": {
-            "dense_fetch_k": 10,
-            "dense_mmr_k": 6,
-            "sparse_fetch_k": 8,
-            "final_top_k": 4,
-            "dense_score_threshold": 0.45,
-            "final_rerank_threshold": 0.18,
-            "mmr_lambda": 0.7,
-            "official_only_when_available": True,
-        },
-    },
-    {
-        "name": "wider_top20_no_threshold",
-        "config": {
-            "dense_fetch_k": 80,
-            "dense_mmr_k": 40,
-            "sparse_fetch_k": 80,
-            "final_top_k": 20,
-            "dense_score_threshold": 0.0,
-            "final_rerank_threshold": 0.0,
-            "mmr_lambda": 0.7,
-            "official_only_when_available": True,
-        },
-    },
-    {
-        "name": "more_diverse_mmr",
-        "config": {
-            "dense_fetch_k": 80,
-            "dense_mmr_k": 40,
-            "sparse_fetch_k": 80,
-            "final_top_k": 20,
-            "dense_score_threshold": 0.0,
-            "final_rerank_threshold": 0.0,
-            "mmr_lambda": 0.4,
-            "official_only_when_available": True,
-        },
-    },
-]
+SWEEP_CONFIGS = RETRIEVAL_SWEEP_CONFIGS
 
 
 def load_eval_dataset(dataset_path: str) -> List[Dict[str, Any]]:
@@ -555,11 +499,21 @@ def run_eval_from_code_config() -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: 检索评测结果。
     """
+    retrieval_profile = EVAL_RUN_CONFIG.get("retrieval_profile", "baseline_current")
     result = run_eval_with_options(
         dataset_path=EVAL_RUN_CONFIG["dataset_path"],
         limit=EVAL_RUN_CONFIG["limit"],
         top_k=EVAL_RUN_CONFIG["top_k"],
     )
+    if EVAL_RUN_CONFIG.get("top_k") is None and retrieval_profile:
+        dataset = load_eval_dataset(EVAL_RUN_CONFIG["dataset_path"])
+        limit = EVAL_RUN_CONFIG.get("limit")
+        if limit is not None:
+            dataset = dataset[:limit]
+        result = evaluate_retrieval(
+            dataset,
+            retrieval_config=RagRetrievalConfig(**RETRIEVAL_PROFILES[retrieval_profile]),
+        )
     if EVAL_RUN_CONFIG.get("save_output"):
         _write_json_file(Path(EVAL_RUN_CONFIG["output_path"]), result)
     if EVAL_RUN_CONFIG.get("save_markdown"):

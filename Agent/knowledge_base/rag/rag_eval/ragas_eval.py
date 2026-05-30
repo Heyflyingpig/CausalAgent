@@ -21,22 +21,25 @@ if hasattr(sys.stdout, "reconfigure"):
 from langchain_openai import ChatOpenAI
 
 from config.settings import settings
-from Agent.knowledge_base.rag.query_rag import (
+from Agent.knowledge_base.query_rag import (
     RagRetrievalConfig,
     _answer_question,
     _get_embedding_function,
     _normalize_question_payload,
     build_retrieval_trace,
 )
+from Agent.knowledge_base.rag.rag_config import (
+    DATA_DIR,
+    EVAL_DATASET_PATH,
+    MACHINE_OUTPUT_DIR,
+    RAGAS_RUN_CONFIG,
+    REPORT_OUTPUT_DIR,
+    RETRIEVAL_PROFILES,
+)
 from Agent.knowledge_base.rag.rag_eval.rag_eval import load_eval_dataset
 from Agent.knowledge_base.rag.tools.report_utils import build_ragas_markdown_report, write_markdown_file
 
-RAG_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = RAG_DIR / "data"
-DEFAULT_DATASET_PATH = DATA_DIR / "rag_eval_auto.json"
-OUTPUT_DIR = RAG_DIR / "output"
-MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
-REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
+DEFAULT_DATASET_PATH = EVAL_DATASET_PATH
 DEFAULT_RAGAS_DATASET_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_dataset.json"
 DEFAULT_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_result.json"
 DEFAULT_REPORT_PATH = REPORT_OUTPUT_DIR / "ragas_eval_report.md"
@@ -47,7 +50,7 @@ DEFAULT_CROSS_METRIC_CASES_PATH = MACHINE_OUTPUT_DIR / "ragas_cross_metric_bad_c
 ANSWER_BUILD_VERSION = "answer_fallback_v2"
 
 # 本地手动运行时优先改这里。
-# Phase3 默认只跑前 1 条，目的是先形成可复现的自动化 smoke baseline。
+# Phase3 默认读取 ragas_testset_generate.py 生成的统一测试集。
 # Ragas 的部分指标会触发多轮 judge 调用；确认链路稳定后，再把 limit 和指标逐步放大。
 # 为了控制耗时，默认会复用已落盘的 ragas_eval_dataset.json；如果修改了检索参数、
 # context 截断策略或样本数量，脚本会自动重建。
@@ -57,197 +60,13 @@ ANSWER_BUILD_VERSION = "answer_fallback_v2"
 # - context_utilization：回答是否有效利用检索上下文。
 # - context_recall：final contexts 是否覆盖 reference_answer 中的要点，需要 reference 字段。
 #
-# RAGAS_ACTIVE_PROFILE 控制本次运行模式，不需要命令行传参。
-# - smoke_cached：1 条样本，优先验证流程，允许复用 Ragas 分数缓存。
-# - reviewed_5_faithfulness：5 条 reviewed 样本，重新跑 faithfulness。
-# - reviewed_all_faithfulness：全部 reviewed 样本，重新跑 faithfulness。
-# - reviewed_all_core_metrics：全部 reviewed 样本，跑当前接入的 Ragas 核心指标。
+# RAGAS_ACTIVE_PROFILE 在 rag_config.py 中控制本次运行模式，不需要命令行传参。
+# 当前 profile：
+# - quick_cached：1 条样本，优先验证流程，允许复用 Ragas 分数缓存。
+# - reviewed_5_core_metrics：5 条样本，跑当前接入的 Ragas 核心指标。
+# - reviewed_all_core_metrics：统一 generated 测试集全量核心指标。
 # - reviewed_all_prepare_only：只构造 Ragas dataset，不调用 Ragas judge。
-# - standard_all_repeat2：标准 judge 策略，全部 reviewed 样本，四指标重复 2 次。
-# - strict_regression_repeat3：严格 judge 策略，regression 数据集，四指标重复 3 次。
-RAGAS_ACTIVE_PROFILE = "reviewed_all_core_metrics"
-
-RAGAS_RUN_CONFIG = {
-    "dataset_path": str(DEFAULT_DATASET_PATH),
-    "ragas_dataset_path": str(DEFAULT_RAGAS_DATASET_PATH),
-    "output_path": str(DEFAULT_OUTPUT_PATH),
-    "report_path": str(DEFAULT_REPORT_PATH),
-    "score_cache_path": str(DEFAULT_SCORE_CACHE_PATH),
-    "retrieval_eval_path": str(DEFAULT_RETRIEVAL_EVAL_PATH),
-    "low_score_cases_path": str(DEFAULT_LOW_SCORE_CASES_PATH),
-    "cross_metric_cases_path": str(DEFAULT_CROSS_METRIC_CASES_PATH),
-    "limit": 1,
-    "sample_filter": {
-        "review_statuses": ["reviewed"],
-        "question_types": [],
-        "is_smoke_case": None,
-    },
-    "selected_metrics": [
-        "faithfulness",
-    ],
-    "include_reference_metrics": True,
-    "run_ragas": True,
-    "reuse_prepared_dataset": True,
-    "reuse_score_cache": True,
-    "save_dataset": True,
-    "save_output": True,
-    "save_markdown": True,
-    "max_contexts": 3,
-    "max_context_chars": 700,
-    "max_response_chars": 900,
-    "ragas_timeout": 600,
-    "ragas_max_workers": 1,
-    "answer_relevancy_strictness": 1,
-    "judge_profile": "fast_smoke",
-    "repeat_count": 1,
-    "low_score_threshold": 0.5,
-    "retrieval_recall_low_threshold": 0.67,
-    "retrieval_mrr_low_threshold": 0.5,
-    "show_progress": False,
-    "print_full_output": False,
-}
-
-RAGAS_RUN_PROFILES = {
-    "smoke_cached": {
-        "limit": 1,
-        "selected_metrics": ["faithfulness"],
-        "reuse_prepared_dataset": True,
-        "reuse_score_cache": True,
-        "ragas_timeout": 600,
-        "ragas_max_workers": 1,
-        "answer_relevancy_strictness": 1,
-        "judge_profile": "fast_smoke",
-        "repeat_count": 1,
-        "low_score_threshold": 0.5,
-        "retrieval_recall_low_threshold": 0.67,
-        "retrieval_mrr_low_threshold": 0.5,
-    },
-    "reviewed_5_faithfulness": {
-        "limit": 5,
-        "selected_metrics": ["faithfulness"],
-        "reuse_prepared_dataset": True,
-        "reuse_score_cache": False,
-        "ragas_timeout": 900,
-        "ragas_max_workers": 2,
-        "answer_relevancy_strictness": 1,
-        "judge_profile": "fast_dev",
-        "repeat_count": 1,
-        "low_score_threshold": 0.5,
-        "retrieval_recall_low_threshold": 0.67,
-        "retrieval_mrr_low_threshold": 0.5,
-    },
-    "reviewed_all_faithfulness": {
-        "limit": None,
-        "selected_metrics": ["faithfulness"],
-        "reuse_prepared_dataset": True,
-        "reuse_score_cache": False,
-        "ragas_timeout": 900,
-        "ragas_max_workers": 3,
-        "answer_relevancy_strictness": 1,
-        "judge_profile": "standard_single",
-        "repeat_count": 1,
-        "low_score_threshold": 0.5,
-        "retrieval_recall_low_threshold": 0.67,
-        "retrieval_mrr_low_threshold": 0.5,
-    },
-    "reviewed_all_core_metrics": {
-        "limit": None,
-        "selected_metrics": [
-            "faithfulness",
-            "answer_relevancy",
-            "context_utilization",
-            "context_recall",
-        ],
-        "reuse_prepared_dataset": True,
-        "reuse_score_cache": False,
-        "ragas_timeout": 1200,
-        "ragas_max_workers": 2,
-        "answer_relevancy_strictness": 1,
-        "judge_profile": "standard_single",
-        "repeat_count": 1,
-        "low_score_threshold": 0.5,
-        "retrieval_recall_low_threshold": 0.67,
-        "retrieval_mrr_low_threshold": 0.5,
-    },
-    "standard_all_repeat2": {
-        "limit": None,
-        "selected_metrics": [
-            "faithfulness",
-            "answer_relevancy",
-            "context_utilization",
-            "context_recall",
-        ],
-        "reuse_prepared_dataset": True,
-        "reuse_score_cache": False,
-        "ragas_timeout": 1200,
-        "ragas_max_workers": 2,
-        "answer_relevancy_strictness": 1,
-        "judge_profile": "standard_repeat2",
-        "repeat_count": 2,
-        "low_score_threshold": 0.5,
-        "retrieval_recall_low_threshold": 0.67,
-        "retrieval_mrr_low_threshold": 0.5,
-    },
-    "strict_regression_repeat3": {
-        "dataset_path": str(DATA_DIR / "rag_eval_regression.json"),
-        "limit": None,
-        "selected_metrics": [
-            "faithfulness",
-            "answer_relevancy",
-            "context_utilization",
-            "context_recall",
-        ],
-        "reuse_prepared_dataset": True,
-        "reuse_score_cache": False,
-        "ragas_timeout": 1500,
-        "ragas_max_workers": 1,
-        "answer_relevancy_strictness": 1,
-        "judge_profile": "strict_regression_repeat3",
-        "repeat_count": 3,
-        "low_score_threshold": 0.6,
-        "retrieval_recall_low_threshold": 0.8,
-        "retrieval_mrr_low_threshold": 0.75,
-    },
-    "reviewed_all_prepare_only": {
-        "limit": None,
-        "selected_metrics": ["faithfulness"],
-        "run_ragas": False,
-        "reuse_prepared_dataset": True,
-        "reuse_score_cache": False,
-        "answer_relevancy_strictness": 1,
-        "judge_profile": "prepare_only",
-        "repeat_count": 0,
-        "low_score_threshold": 0.5,
-        "retrieval_recall_low_threshold": 0.67,
-        "retrieval_mrr_low_threshold": 0.5,
-    },
-    "reviewed_5_core_metrics": {
-        "limit": 5,
-        "selected_metrics": [
-            "faithfulness",
-            "answer_relevancy",
-            "context_utilization",
-            "context_recall",
-        ],
-        "reuse_prepared_dataset": True,
-        "reuse_score_cache": False,
-        "ragas_timeout": 900,
-        "ragas_max_workers": 2,
-        "answer_relevancy_strictness": 1,
-        "judge_profile": "fast_core",
-        "repeat_count": 1,
-        "low_score_threshold": 0.5,
-        "retrieval_recall_low_threshold": 0.67,
-        "retrieval_mrr_low_threshold": 0.5,
-    },
-}
-
-if RAGAS_ACTIVE_PROFILE not in RAGAS_RUN_PROFILES:
-    raise ValueError(f"Unknown RAGAS_ACTIVE_PROFILE: {RAGAS_ACTIVE_PROFILE}")
-RAGAS_RUN_CONFIG.update(RAGAS_RUN_PROFILES[RAGAS_ACTIVE_PROFILE])
-RAGAS_RUN_CONFIG["active_profile"] = RAGAS_ACTIVE_PROFILE
-
-
+# - strict_generated_repeat3：统一 generated 测试集，四指标重复 3 次。
 def _ensure_parent_dir(path: Path) -> None:
     """确保输出文件所在目录存在。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -269,7 +88,8 @@ def _truncate_for_eval(text: str, max_chars: Optional[int]) -> str:
 def _build_retrieval_config(raw_config: Optional[Dict[str, Any]] = None) -> RagRetrievalConfig:
     """构造 Ragas baseline 使用的检索配置。"""
     if not raw_config:
-        return RagRetrievalConfig()
+        profile_name = RAGAS_RUN_CONFIG.get("retrieval_profile", "baseline_current")
+        return RagRetrievalConfig(**RETRIEVAL_PROFILES[profile_name])
     return RagRetrievalConfig(**raw_config)
 
 

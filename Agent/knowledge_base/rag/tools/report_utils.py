@@ -182,6 +182,7 @@ def build_dataset_validation_markdown_report(result: Dict[str, Any]) -> str:
         "",
         f"- {report_label('status')}: {result['status']}",
         f"- {report_label('error_count')}: {result['error_count']}",
+        f"- warning_count: {result.get('warning_count', 0)}",
         "",
         f"## {report_label('Datasets')}",
         "",
@@ -201,6 +202,23 @@ def build_dataset_validation_markdown_report(result: Dict[str, Any]) -> str:
         lines.extend(f"- {error}" for error in result["errors"])
     else:
         lines.append("No validation errors.")
+
+    warnings = result.get("warnings", [])
+    lines.extend(["", "## Warnings", ""])
+    if warnings:
+        lines.extend(f"- {warning}" for warning in warnings)
+    else:
+        lines.append("No validation warnings.")
+
+    medical_corpus = result.get("medical_corpus", {})
+    if medical_corpus:
+        lines.extend(["", "## Medical Corpus", ""])
+        lines.extend(
+            [
+                f"- exists: {medical_corpus.get('exists')}",
+                f"- doc_count: {medical_corpus.get('doc_count', 0)}",
+            ]
+        )
     return "\n".join(lines).rstrip() + "\n"
 
 

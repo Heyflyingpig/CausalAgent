@@ -14,18 +14,18 @@
 
 - `source/` 中放 PDF / 文档资料。
 - `models/` 中放本地 embedding 模型 `bge-small-zh-v1.5`。
-- `db/` 中保存 FAISS 向量库。
+- `db/` 是运行时 RAG 查询使用的持久化向量库目录；当前本地已重建为 Chroma 格式的 RAGCare-QA 医疗知识库。
 - 检索链路包含 dense retrieve、dense threshold、MMR、sparse retrieve、merge/rerank、final evidence。
 - `query_rag.py` 已提供 `build_retrieval_trace()`，可以输出分阶段检索 trace。
+- `build_knowledge.py` 支持 `--profile default` 和 `--profile medical`；两个 profile 都写入 `db/`，切换前如果需要清空旧索引必须先确认。
 
 当前 RAG 评测相关目录已经拆分为：
 
 ```text
 Agent/knowledge_base/rag/
   data/
-    rag_eval_smoke.json
-    rag_eval_auto.json
-    rag_eval_regression.json
+    README.md
+    ragas_generated_eval_dataset.json
 
   operation_datasets/
     dataset_utils.py
@@ -61,12 +61,10 @@ Agent/knowledge_base/rag/
 
 ### 2. 数据集结构已经从 chunk gold 扩展到语义评测 schema
 
-当前使用三类测试集：
+当前默认只使用一个 Ragas 自产测试集：
 
 ```text
-rag_eval_smoke.json
-rag_eval_auto.json
-rag_eval_regression.json
+data/ragas_generated_eval_dataset.json
 ```
 
 字段已经升级为：
@@ -83,6 +81,12 @@ rag_eval_regression.json
 - `is_smoke_case`：是否属于 smoke 检索强基准。
 - `notes`：人工复查或生成来源说明。
 
+当前生成入口：
+
+```powershell
+D:\Anaconda\envs\CA-py310\python.exe Agent/knowledge_base/rag/operation_datasets/ragas_testset_generate.py
+```
+
 当前校验入口：
 
 ```powershell
@@ -92,18 +96,12 @@ D:\Anaconda\envs\CA-py310\python.exe Agent/knowledge_base/rag/operation_datasets
 当前数据状态：
 
 ```text
-smoke: 5 条，全部有 gold_chunk_ids。
-regression: 15 条，全部 reviewed。
-auto: 当前 14 条，用户正在手动清理 pending_human_review 后准备重新用 Ragas 生成候选样本。
+默认数据集文件: data/ragas_generated_eval_dataset.json
+当前策略: 由 Ragas TestsetGenerator 从 source/*.pdf 自动生成，再转换为统一 eval schema。
+人工 gold_chunk_ids: 不再作为默认维护对象，仅作为未来少量强基准可选字段。
 ```
 
-注意：当前 `auto` 比 `regression` 少 1 条，缺少：
-
-```text
-什么情况下我们应该拒绝回答一个因果问题？
-```
-
-这不是代码错误，是手动清理后的数据状态。后续可以补回，也可以等 Ragas 自动生成候选后重新整理 auto。
+注意：生成脚本会先做本地资源检查，再做一次极小 LLM 预检。当前本地 PDF 和 embedding 模型已经满足条件；如果失败，大概率是 `API_KEY` / `BASE_URL` / `MODEL` 对应服务端额度或模型权限问题。
 
 ### 3. Retrieval eval 已经完成单组、sweep 和分阶段 trace
 
@@ -240,11 +238,21 @@ output/runs/<run_id>/
 
 - 生成 10 条。
 - 保存机器备份。
-- 直接追加到 `data/rag_eval_auto.json`。
+- 写入或合并到 `data/ragas_generated_eval_dataset.json`。
 - 标记 `review_status=pending_human_review`。
 - 不生成额外人工 Markdown。
+- 正式生成前先做一次 LLM preflight，避免 API 配置错误时 Ragas 大量并发重试。
 
-当前先暂停使用这条链路，等用户手动清理 auto 数据集后再重新跑。
+当前实测状态：脚本已进入 Ragas 生成前置链路，本地 PDF 和 embedding 模型可用；最新阻塞是外部 LLM 返回 `403 AllocationQuota.FreeTierOnly`，需要在模型服务控制台关闭 free-tier-only 限制、充值额度，或切换到可用模型/API。
+
+2026-05-30 更新：
+
+- `Agent/knowledge_base/models/bge-small-zh-v1.5` 已补齐完整模型权重。
+- 旧的不完整模型目录 `bge-small-zh-v1.5.1` 已删除。
+- `ragas_testset_generate.py` 已增加 LLM preflight，正式生成前会先做一次极小 API 请求，避免配置错误时 Ragas 大量并发重试。
+- `ragas_testset_generate.py` 已改为优先读取项目根目录 `.env`，避免 Windows 用户变量或旧终端环境覆盖当前 RAG 测试配置。
+- Ragas 自产测试集默认先降为 smoke 配置：`testset_size=2`、`max_pages_per_pdf=10`、`run_config_max_workers=1`。确认链路跑通后，再扩到 10 / 20 / 50。
+- 需要注意：Ragas 基于完整知识库生成测试集会比较慢。即使只生成少量问题，也会先对文档做解析、标题/摘要/节点构建、embedding 和多轮 LLM 调用。全库生成应作为长任务运行，不适合作为每次小改后的快速验证。
 
 ## 关键方向调整
 
@@ -274,18 +282,18 @@ output/runs/<run_id>/
 
 1. 数据集状态还不稳定
 
-- `auto` 正在被手动清理，当前只有 14 条。
-- `regression` 有 15 条 reviewed，但 `auto` 里缺少 1 条 regression 问题。
-- 旧的 Ragas / claim / trace 输出仍来自之前 15 条 reviewed baseline，因此 latest 输出和当前 auto 数据集不是完全同一版本。
-- 需要重新跑完整 pipeline，才能让报告和当前数据集严格一致。
+- 三套旧数据集策略已经降级，当前默认数据集切换为 `ragas_generated_eval_dataset.json`。
+- 该文件需要先由 Ragas testset generation 生成，目前还受外部 LLM 额度限制。
+- 旧的 Ragas / claim / trace 输出来自早期手工 reviewed baseline，不能再直接视为当前默认数据集的最新结果。
+- 需要等 Ragas 自产数据集生成成功后，重新跑 retrieval / Ragas / claim / trace / Phoenix，才能让报告和当前数据集严格一致。
 
 2. Ragas 自动生成测试集还只是候选池入口
 
-- `ragas_testset_generate.py` 已经可用，但尚未完成质量验证。
+- `ragas_testset_generate.py` 已经具备资源预检、LLM 预检、Ragas 生成和 schema 转换能力，但尚未在当前 API 额度下完成全量生成。
 - Ragas 生成的问题、reference answer 和 claims 不能直接视为可信 benchmark。
 - 当前 `expected_claims` 是从 reference answer 切分得到的初版 claim，需要人工复查。
 - PDF 抽取有 `pypdf` 字符映射 warning，可能影响生成质量。
-- Ragas 0.4.3 的 LangChain wrapper 有 deprecation warning，后续需要迁移到新版 factory / provider。
+- 当前已避免旧的 `LangchainLLMWrapper` deprecation 路径，LLM 使用 Ragas `llm_factory`；embedding 仍使用本地 HuggingFace wrapper。
 
 3. 自动评测仍依赖 LLM judge，存在成本和稳定性问题
 
@@ -958,6 +966,72 @@ output/runs/<run_id>/
 - 阈值先采用保守工程阈值，后续 Phase7 应固定 baseline run，再做相对变化对比。
 - `summary.md` 依赖 latest 输出中的 Ragas / claim 结果；如果没有重跑对应 step，它会使用已有结果。
 
+### Phase 6.5：外部医疗 RAG 数据集接入
+
+目标：新增一条和 Pearl 因果知识库解耦的 medical RAG 分支，用真实 evidence-grounded 医疗数据练习“语料入库、测试集构造、检索评测、生成评测、可视化、调参闭环”。
+
+当前推荐数据集：
+
+```text
+ChatMED-Project/RAGCare-QA
+```
+
+Todo list：
+
+- [x] 下载 `ChatMED-Project/RAGCare-QA` 到 `Agent/knowledge_base/rag/data/external/ragcare_qa/raw/`。
+- [x] 编写 `operation_datasets/prepare_ragcare_qa.py`，把原始数据转换成两个产物：
+  - `medical_corpus_docs.jsonl`
+  - `medical_eval_dataset.json`
+- [x] 切分时按字段拆分，而不是按 row 随机拆分：
+  - `Context` / `Reference` / `Page` 进入医疗知识库文档。
+  - `Question` / `Answer` / `Text Answer` 进入测试集。
+  - 同一条样本生成稳定 `doc_id`，写入 `expected_sources` 和 `gold_doc_ids`。
+- [x] 做去泄漏处理：知识库正文只放 `Context`，不能把 `Question`、`Answer`、`Text Answer` 写入可检索正文。
+- [x] 新增医疗数据 schema 校验，至少检查：
+  - `doc_id` 唯一。
+  - 每条测试样本都有对应 `gold_doc_ids`。
+  - `reference_answer` 非空。
+  - `expected_sources` 可在 corpus 中解析到。
+- [ ] 新增 medical RAG build profile，和当前 Pearl 因果知识库分开构建，避免污染现有 baseline。
+- [ ] 医疗分支优先使用 API embedding 模型，不再默认下载本地 `bge-m3`：
+  - 推荐使用服务商提供的英文/多语言 embedding API。
+  - embedding 模型名、base_url、batch_size、维度写入独立 config。
+  - 本地 `bge-m3` 仅作为离线备选，不作为当前主方案。
+- [ ] 新增 medical retrieval eval profile：
+  - 以 `gold_doc_ids` / `expected_sources` 为主评估对象。
+  - chunk-level `precision` 仍不作为主指标。
+  - 重点看 doc-level recall、MRR、loss reason 和 evidence trace。
+- [ ] 新增 medical Ragas / claim eval profile：
+  - 使用 `reference_answer` 和 `expected_claims`。
+  - 重点看 faithfulness、answer_relevancy、context_recall、claim_coverage。
+  - 对医疗安全问题单独记录 unsupported medical advice。
+- [ ] 新增 medical trace / Phoenix 导出：
+  - trace 中显式标记 `corpus=medical`、`dataset=ragcare_qa`。
+  - 与 Pearl 因果 RAG trace 分开 project 或分开 run tag。
+- [x] 先跑 20 条 smoke，确认转换和 schema 校验链路通。
+- [x] 再扩到 100 条 pilot，用于确认分页 raw 数据解析和去重逻辑。
+- [x] 最后全量 420 条，生成 medical corpus 和 medical eval dataset。
+
+2026-05-30 更新：
+
+- 已通过 Hugging Face rows API 下载 `ChatMED-Project/RAGCare-QA` 全量 420 条到 `data/external/ragcare_qa/raw/`。
+- 已生成 `processed/medical_corpus_docs.jsonl` 和 `processed/medical_eval_dataset.json`，样本数均为 420。
+- 已执行 `validate_eval_datasets.py`，医疗数据 `error_count=0`；当前仅有默认 `ragas_generated_eval_dataset.json` 缺失 warning。
+- 当前完成的是“数据接入、转换、去泄漏、schema 校验、物理目录解耦”。medical build profile、medical retrieval/Ragas/claim/trace 仍未完成，不能声称 medical RAG 评测闭环已跑通。
+- `Agent/knowledge_base/build_knowledge.py` 已新增 `--profile medical`，会复用原 `Agent/knowledge_base/db` 持久化目录，用 API embedding 构建医疗知识库。
+- medical profile 需要环境变量 `MEDICAL_EMBEDDING_API_KEY`、`MEDICAL_EMBEDDING_BASE_URL`，可选 `MEDICAL_EMBEDDING_MODEL`。
+- 当前已按确认清空原 `db` 目录，并用 `qwen/qwen3-embedding-8b` 构建医疗知识库：420 个源文档、2422 个 chunk。最小检索验证 `What is cardiac index?` 已返回 `medical` corpus 结果，并命中 `ragcare_000013`。
+
+Phase6.5 的验收标准：
+
+```text
+1. 能从 RAGCare-QA 自动生成 medical corpus 和 medical eval dataset。
+2. 每个测试问题都有可追踪 evidence doc_id。
+3. 医疗知识库和因果知识库物理/配置上解耦。
+4. 能独立跑 medical retrieval eval、Ragas eval、claim eval 和 trace export。
+5. 输出报告能指出问题来自 embedding、retrieval、rerank、evidence 缺失、answer hallucination 还是 judge 不稳定。
+```
+
 ### Phase 7：长期回归与项目组展示
 
 - [ ] 固定一套 `baseline` run。
@@ -974,26 +1048,26 @@ output/runs/<run_id>/
 
 ## 最终 RAG 板块项目结构
 
-目标结构如下：
+当前实际结构如下：
 
 ```text
 Agent/knowledge_base/
   source/
-    *.pdf
-    *.txt
+    *.pdf / *.txt                 # default profile 的 Pearl/因果资料源
 
   models/
-    bge-small-zh-v1.5/
+    bge-small-zh-v1.5/            # default profile 本地 embedding
 
   db/
-    faiss_index/
+    chroma.sqlite3
+    <collection uuid>/            # 当前持久化向量库；本地已重建为 RAGCare-QA 医疗库
+
+  build_knowledge.py              # 知识库构建入口，支持 --profile default / medical
+  query_rag.py                    # RAG 查询、检索 trace 与证据生成入口
 
   rag/
-    README.md
+    rag_config.py                 # RAG 测评和外部数据配置
     RAG测评框架开发.md
-
-    build_knowledge.py
-    query_rag.py
 
     rag_eval/
       __init__.py
@@ -1017,55 +1091,43 @@ Agent/knowledge_base/
       report_utils.py
 
     data/
-      rag_eval_smoke.json
-      rag_eval_auto.json
-      rag_eval_regression.json
-
-    configs/
-      retrieval_baseline.json
-      retrieval_sweep.json
-      ragas_eval.json
-      claim_judge.json
-      regression_thresholds.json
+      README.md
+      ragas_generated_eval_dataset.json       # 默认 Ragas 自产数据集；当前本地可能不存在
+      external/
+        ragcare_qa/
+          raw/
+            ragcare_qa_rows_*.json
+          processed/
+            medical_corpus_docs.jsonl
+            medical_eval_dataset.json
 
     output/
-      latest/
-        machine/
-          retrieval_eval_result.json
-          ragas_eval_dataset.json
-          ragas_eval_result.json
-          ragas_eval_score_cache.json
-          claim_eval_result.json
-          claim_eval_bad_cases.json
-          trace.jsonl
-          trace_index.json
-        reports/
-          summary.md
-          retrieval_eval_report.md
-          ragas_eval_report.md
-          claim_eval_report.md
-
+      machine/
+      reports/
       runs/
-        2026-05-24_153000_baseline/
-          machine/
-            config_snapshot.json
-            dataset_snapshot.json
-            retrieval_eval_result.json
-            ragas_eval_result.json
-            claim_eval_result.json
-            trace.jsonl
-          reports/
-            summary.md
+      medical/
+        machine/
+        reports/
 ```
 
-当前已经按“流程入口”和“数据集操作”拆分：
+当前已经按“流程入口”“数据集操作”“外部医疗数据”拆分：
 
 ```text
 Agent/knowledge_base/rag/
   data/
-    rag_eval_smoke.json
-    rag_eval_auto.json
-    rag_eval_regression.json
+    README.md
+    ragas_generated_eval_dataset.json
+    external/
+      ragcare_qa/
+        raw/
+          ragcare_qa_rows_000.json
+          ragcare_qa_rows_100.json
+          ragcare_qa_rows_200.json
+          ragcare_qa_rows_300.json
+          ragcare_qa_rows_400.json
+        processed/
+          medical_corpus_docs.jsonl
+          medical_eval_dataset.json
 
   operation_datasets/
     __init__.py
@@ -1073,6 +1135,7 @@ Agent/knowledge_base/rag/
     validate_eval_datasets.py
     generate_rag_candidates.py
     ragas_testset_generate.py
+    prepare_ragcare_qa.py
     export_metadata.py
 
   rag_eval/
@@ -1088,8 +1151,6 @@ Agent/knowledge_base/rag/
     __init__.py
     report_utils.py
 
-  query_rag.py
-  rag_eval_sample.json
   output/
     machine/
       rag_eval_result.json
@@ -1117,6 +1178,8 @@ Agent/knowledge_base/rag/
 - `operation_datasets/` 放“操作测试数据集”的脚本和工具，不放真实数据集文件，避免和 `data/` 混淆。
 - `rag_eval/` 放“测试 RAG 效果”的流程入口，包括 retrieval、Ragas、claim、trace、Phoenix 和 pipeline。
 - `tools/` 只放跨流程复用工具，例如 Markdown report 生成。
+- `data/external/ragcare_qa/` 放外部医疗数据原始分页和转换后的两个产物；它是 medical profile 的数据源。
+- `Agent/knowledge_base/db` 仍是运行时 RAG 查询使用的唯一持久化目录；当前本地内容是 RAGCare-QA 医疗知识库，不是 Pearl 因果知识库。
 
 ## 成熟评测系统的判断标准
 
@@ -1495,3 +1558,155 @@ faithfulness
 医疗外部测试集可以用于测试当前 RAG 的知识边界和拒答能力；
 不能用于评估当前因果知识库的检索覆盖率或因果问答质量。
 ```
+
+## 附录：医疗 RAG 数据集接入方案
+
+当前医疗数据集的目标不是评估 Pearl 因果知识库，而是新增一条独立的 medical RAG 分支，用来练习“外部语料入库 + evidence-grounded QA 测试 + RAG 指标闭环”。
+
+推荐第一版使用：
+
+```text
+ChatMED-Project/RAGCare-QA
+```
+
+选择理由：
+
+- 数据规模小，约 420 条，适合先接入工程链路。
+- 样本字段包含 `Question`、`Answer`、`Text Answer`、`Reference`、`Page`、`Context`。
+- `Context` 可以作为可嵌入知识库的证据文本。
+- `Question` 可以作为测试 query。
+- `Answer` / `Text Answer` 可以作为 reference answer。
+- `Reference` / `Page` 可以转为稳定的文档级 evidence metadata。
+
+不优先使用 `MedAlign` 的原因：
+
+- 它更偏 instruction following / 临床对话，不是 evidence-grounded RAG benchmark。
+- 很多样本只有 `input` / `instruction` / `output`，缺少稳定 context 文档。
+- 如果直接用来测检索，很难判断失败来自 RAG 检索差，还是知识库本来没有对应证据。
+
+### 切分原则
+
+不能简单把 RAGCare-QA 的 row 随机拆成“70% 入库、30% 测试”。这样会导致测试集里的问题对应证据不一定在知识库中，检索失败无法解释。
+
+正确切分是按字段拆：
+
+```text
+知识库侧：
+  使用每条样本的 Context / Reference / Page 构造 evidence document。
+
+测试集侧：
+  使用同一条样本的 Question 作为 query。
+  使用 Answer / Text Answer 作为 reference answer。
+  使用 evidence doc_id 作为 expected_sources / gold_doc_ids。
+```
+
+也就是说，同一条原始样本会产生两类产物：
+
+```text
+medical_corpus_docs.jsonl
+  doc_id
+  text = Context
+  metadata = Reference / Page / Type / Complexity
+
+medical_eval_dataset.json
+  question
+  reference_answer
+  expected_sources = [doc_id]
+  gold_doc_ids = [doc_id]
+  expected_claims
+  judge_rubric
+```
+
+这样做的好处：
+
+- 每个测试问题都有明确证据在知识库中。
+- 检索指标可以解释为“是否召回了对应 evidence doc”。
+- 不依赖 chunk id，未来 chunking 改动后只需要重新映射 doc_id 到 chunk metadata。
+- 可以同时做 retrieval eval、Ragas eval 和 claim eval。
+
+### 去泄漏处理
+
+构造知识库时只放 `Context` 和必要 metadata，不把 `Question`、`Answer`、`Text Answer` 写入知识库正文。否则检索可能直接搜到答案文本，评测会虚高。
+
+推荐文档格式：
+
+```json
+{
+  "doc_id": "ragcare_000123",
+  "source_dataset": "ChatMED-Project/RAGCare-QA",
+  "reference": "...",
+  "page": "...",
+  "text": "Context field only."
+}
+```
+
+推荐测试样本格式：
+
+```json
+{
+  "question": "...",
+  "question_type": "medical_rag",
+  "expected_corpus": "medical",
+  "expected_sources": ["ragcare_000123"],
+  "expected_claims": ["..."],
+  "reference_answer": "...",
+  "gold_chunk_ids": [],
+  "gold_doc_ids": ["ragcare_000123"],
+  "judge_rubric": {
+    "must_cover": ["..."],
+    "avoid": ["编造不在证据中的诊断", "给出脱离证据的治疗建议"]
+  },
+  "review_status": "pending_human_review",
+  "is_smoke_case": false
+}
+```
+
+### 推荐实验规模
+
+第一版不要直接全量接入：
+
+```text
+smoke: 20 条
+pilot: 100 条
+full: 420 条
+```
+
+先用 20 条确认：
+
+- 数据下载和转换能跑通。
+- 医疗 corpus 能单独建库。
+- eval dataset 能通过 schema validation。
+- retrieval 能按 doc_id 解释召回情况。
+- Ragas / claim eval 能消费 reference answer。
+
+### Embedding 模型选择
+
+当前因果知识库使用本地 `bge-small-zh-v1.5`，更适合中文轻量场景。RAGCare-QA 是英文医疗数据集，医疗分支不建议继续沿用这个 embedding。
+
+当前主方案改为使用 API embedding 模型：
+
+- 优先选择服务商提供的英文/多语言 embedding API。
+- embedding 配置独立于当前因果 RAG，包括 `model`、`base_url`、`api_key_env`、`batch_size`、`embedding_dim`。
+- 每次 medical baseline 报告必须记录 embedding 模型名和维度，避免不同 embedding 结果混在一起比较。
+- 本地 `bge-m3` 可以保留为离线备选，但不作为当前默认方案。
+- 这条分支应和因果知识库解耦，避免为了医疗测试影响当前 Pearl 因果 RAG 的 baseline。
+
+建议目录：
+
+```text
+Agent/knowledge_base/rag/data/external/ragcare_qa/
+Agent/knowledge_base/rag/output/medical/
+```
+
+建议配置：
+
+```text
+MEDICAL_EMBEDDING_CONFIG
+  provider: openai_compatible
+  model: <api embedding model>
+  base_url: <embedding api base url>
+  api_key_env: MEDICAL_EMBEDDING_API_KEY
+  batch_size: 32
+```
+
+后续接入时，应新增独立 build/eval profile，而不是把医疗数据直接混进当前 Pearl 因果知识库。

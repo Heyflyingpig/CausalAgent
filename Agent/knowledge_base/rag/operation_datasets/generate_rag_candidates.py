@@ -14,26 +14,25 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-from Agent.knowledge_base.rag.query_rag import RagRetrievalConfig, build_retrieval_trace
+from Agent.knowledge_base.query_rag import RagRetrievalConfig, build_retrieval_trace
+from Agent.knowledge_base.rag.rag_config import (
+    CANDIDATE_GENERATION_CONFIG,
+    DATA_DIR,
+    EVAL_DATASET_PATH,
+    MACHINE_OUTPUT_DIR,
+    RETRIEVAL_PROFILES,
+)
 
 RAG_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = RAG_DIR / "data"
 LEGACY_DATASET_PATH = RAG_DIR / "rag_eval_sample.json"
-DEFAULT_DATASET_PATH = DATA_DIR / "rag_eval_auto.json"
-OUTPUT_DIR = RAG_DIR / "output"
-MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
+DEFAULT_DATASET_PATH = EVAL_DATASET_PATH
 DEFAULT_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "rag_eval_candidates_top20.json"
 
 # 本地手动运行时优先改这里；不传命令行参数时会直接使用这组配置。
 # 例如只想先给前 5 道题生成 top-20 候选，就把 limit 设为 5。
-# 默认读取 data/rag_eval_auto.json，覆盖全量自动评估样本；
+# 默认读取 ragas_testset_generate.py 生成的统一测试集；
 # 旧的 rag_eval_sample.json 暂时保留为兼容入口。
-CANDIDATE_RUN_CONFIG = {
-    "dataset_path": str(DEFAULT_DATASET_PATH),
-    "output_path": str(DEFAULT_OUTPUT_PATH),
-    "top_k": 20,
-    "limit": None,
-}
+CANDIDATE_RUN_CONFIG = CANDIDATE_GENERATION_CONFIG
 
 
 def load_eval_dataset(dataset_path: str) -> List[Dict[str, Any]]:
@@ -93,6 +92,7 @@ def generate_candidate_file(
     output_path: str = str(DEFAULT_OUTPUT_PATH),
     top_k: int = 20,
     limit: Optional[int] = None,
+    retrieval_profile: str = "candidate_top20",
 ) -> Dict[str, Any]:
     """
     生成 RAG 检索候选结果文件
@@ -114,14 +114,9 @@ def generate_candidate_file(
         dataset = dataset[:limit]
 
     # 创建 RAG 检索配置，生成更宽松的 top-k 候选池，便于后续人工筛选 gold
-    config = RagRetrievalConfig(
-        dense_fetch_k=max(20, top_k),
-        dense_mmr_k=max(20, top_k),
-        sparse_fetch_k=max(20, top_k),
-        final_top_k=top_k,
-        dense_score_threshold=0.0,
-        final_rerank_threshold=0.0,
-    )
+    config_values = dict(RETRIEVAL_PROFILES[retrieval_profile])
+    config_values["final_top_k"] = top_k
+    config = RagRetrievalConfig(**config_values)
 
     results: List[Dict[str, Any]] = []
     # 遍历数据集中的每个样本，生成对应的 top-k 候选列表
@@ -159,6 +154,7 @@ def generate_candidate_file(
         "dataset_path": str(Path(dataset_path).resolve()),
         "output_path": str(Path(output_path).resolve()),
         "top_k": top_k,
+        "retrieval_profile": retrieval_profile,
         "sample_count": len(results),
         "results": results,
     }
@@ -183,6 +179,7 @@ def run_candidate_generation_from_code_config() -> Dict[str, Any]:
         output_path=CANDIDATE_RUN_CONFIG["output_path"],
         top_k=CANDIDATE_RUN_CONFIG["top_k"],
         limit=CANDIDATE_RUN_CONFIG["limit"],
+        retrieval_profile=CANDIDATE_RUN_CONFIG["retrieval_profile"],
     )
 
 
