@@ -756,6 +756,11 @@ python Run_causal.py
 ---
 2026.5.30
 - 【bug修复】
-  - Cannot add or update a child row: a foreign key constraint fails
+  - 报错：Cannot add or update a child row: a foreign key constraint fails
   - LangGraph checkpointer 写 MySQL 时失败，增加延迟写入
   - 修复RAG格式化问题
+
+---
+2026.5.31
+- 【BUG修复】
+  - 梳理ToolNode 的标准消息协议
