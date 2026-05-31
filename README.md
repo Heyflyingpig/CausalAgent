@@ -734,7 +734,7 @@ python Run_causal.py
 - 【内容新增与重构】：
   - 任务创建、任务领取、事件写入和 SSE 推送已经拆分到不同层，Web 不再直接承担长任务执行。
   - 新增 `analysis_jobs` 与 `analysis_job_events` 数据库作为任务队列和事件流的持久化数据库。
-  - 后台 worker 以 slot 为单位持有独立 MCP session 和 Agent graph，避免 Web 进程阻塞。
+  - 后台 worker 以 slot 为单位持有独立 MCP session、由 LangChain MCP adapter 加载的 MCP tools 和 Agent graph，避免 Web 进程阻塞。
   - 同一 `user_id + session_id` 的并发任务通过唯一约束兜底，防止重复执行。
   - 旧接口 `POST /api/send_stream` 已转为迁移提示，前端改走 `POST /api/agent/jobs` 与 SSE 订阅。
 
@@ -764,3 +764,4 @@ python Run_causal.py
 2026.5.31
 - 【BUG修复】
   - 梳理ToolNode 的标准消息协议
+  - MCP worker 主路径迁移到 `langchain-mcp-adapters`：每个 slot 使用 `MultiServerMCPClient.session("causal")` 打开持久 session，再通过 `load_mcp_tools(session)` 加载 ToolNode 可执行工具。
