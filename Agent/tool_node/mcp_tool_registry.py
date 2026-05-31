@@ -79,7 +79,7 @@ async def build_mcp_algorithm_tools(mcp_session: Any) -> list[StructuredTool]:
 
             _call_tool.__name__ = name
             return _call_tool
-
+        ## 包装为 LangChain tool
         tools.append(
             StructuredTool.from_function(
                 coroutine=make_call(tool_name),

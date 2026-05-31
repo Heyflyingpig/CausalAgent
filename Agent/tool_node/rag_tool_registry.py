@@ -1,18 +1,17 @@
+"注册rag工具节点"
 from __future__ import annotations
-
 from typing import Any
 
 from langchain_core.tools import tool
-
+from Agent.tool_node.rag_query_task import rag_query_task
 
 @tool
 async def rag_enrichment_search(
     questions: list[Any],
     max_results: int = 5,
 ) -> dict[str, Any]:
-    """Search the knowledge base after causal analysis and return supporting evidence."""
-    from Agent.tool_node.rag_query_task import rag_query_task
-
+    """查询知识库Toolnode节点"""
+    
     questions = questions[:max_results] if max_results > 0 else questions
     return await rag_query_task(questions)
 
