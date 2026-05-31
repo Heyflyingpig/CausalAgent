@@ -176,12 +176,10 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
 
 
 
-async def create_graph_from_session(llm: "ChatOpenAI", mcp_session: "ClientSession"):
-    """异步创图逻辑，支持mcp和rag工具"""
-    from Agent.tool_node.mcp_tool_registry import build_mcp_algorithm_tools
+def create_graph_from_tools(llm: "ChatOpenAI", mcp_tools: list):
+    """使用已加载的 MCP tools 构建父图，返回可直接执行的 compiled graph。"""
     from Agent.tool_node.rag_tool_registry import build_rag_tools
-
-    mcp_tools = await build_mcp_algorithm_tools(mcp_session)
+    # graph 层不再关心 MCP session。
     rag_tools = build_rag_tools()
     return build_graph(llm=llm, mcp_tools=mcp_tools, rag_tools=rag_tools)
 

@@ -8,6 +8,7 @@ app.agent.core - agent核心模块
 """
 import asyncio, threading, logging, sys, os, json, time
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from config.settings import settings
@@ -25,6 +26,14 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 mcp_dir = os.path.join(BASE_DIR, "Agent")
 mcp_server_path = os.path.join(mcp_dir, "CausalChatMCP", "mcp_server.py")
 knowledge_base_dir = os.path.join(BASE_DIR, "Agent","knowledge_base")
+
+
+@dataclass
+class McpClientResources:
+    """worker slot 级 MCP 资源，生命周期由传入的 AsyncExitStack 管理。"""
+    client: Any
+    session: Any
+    tools: list
 
 # 将 MCP 和事件循环,llm和rag链的相关的状态集中管理
 mcp_session: ClientSession | None = None
@@ -64,88 +73,37 @@ def initialize_llm():
 
     return True
 
-async def initialize_mcp_connection(ready_event: threading.Event):
-    """
-    旧 Web 内执行模式使用的全局 MCP 初始化入口。
 
-    当前生产路径已经改为 worker slot 调用 open_mcp_session() 创建独立会话；
-    本函数仅保留给历史兼容或本地调试，不应由 Flask Web 入口自动调用。
-    完成后通过 ready_event 通知调用线程。
+
+async def open_mcp_client_resources(process_stack: AsyncExitStack) -> McpClientResources:
     """
-    global mcp_session, mcp_tools
-    logging.info("正在初始化持久 MCP 连接...")
+    使用 LangChain MCP adapter 打开 slot 级持久 session 并加载 tools。
+
+    这里显式使用 client.session("causal")，避免 MultiServerMCPClient 默认
+    stateless get_tools() 路径在每次工具调用时重新创建 ClientSession。
+    """
     try:
-        mcp_session, mcp_tools = await open_mcp_session(mcp_process_stack)
-        logging.info(f"MCP服务器连接成功，会话已激活。发现工具: {[tool['function']['name'] for tool in mcp_tools]}")
-        
-    except Exception as e:
-        logging.error(f"严重错误：应用启动时初始化MCP连接失败: {e}", exc_info=True)
-        mcp_session = None
-    finally:
-        logging.info("MCP 初始化过程结束，通知主线程。")
-        ready_event.set()
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+        from langchain_mcp_adapters.tools import load_mcp_tools
+    except ImportError as exc:
+        raise RuntimeError(
+            "缺少 langchain-mcp-adapters，无法初始化 LangChain MCP adapter。"
+        ) from exc
 
-
-async def open_mcp_session(process_stack: AsyncExitStack):
-    """
-    创建一组独立 MCP 进程和 ClientSession。
-
-    Web 旧模式只使用一个全局会话；worker 池会为每个 slot 调用本函数，
-    确保 slot = MCP session/process = graph instance。
-    """
-    server_params = StdioServerParameters(command=sys.executable, args=[mcp_server_path])
-    ## 这里enter_async_context(...) 会立刻执行它的 __aenter__()，真正打开资源
-    ## 同时，它的 __aexit__() 被登记到 process_stack这个栈，也就是只有__aexit__()被登记到栈里
-    read_stream, write_stream = await process_stack.enter_async_context(stdio_client(server_params))
-    session = await process_stack.enter_async_context(ClientSession(read_stream, write_stream))
-    await session.initialize()
-
-    tools_response = await session.list_tools()
-    tools = [{
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": tool.inputSchema,
+    client = MultiServerMCPClient(
+        {
+            "causal": {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": [mcp_server_path],
+            }
         }
-    } for tool in tools_response.tools]
-    return session, tools
+    )
+    logging.info("MCP 初始化。")
+    session = await process_stack.enter_async_context(client.session("causal"))
+    tools = await load_mcp_tools(session)
+    return McpClientResources(client=client, session=session, tools=tools)
 
-def shutdown_mcp_connection():
-    """
-    已废弃
-    关闭旧全局 MCP 会话。
-
-    当前 worker slot 使用自己的 AsyncExitStack 管理 MCP 生命周期；
-    本函数只对应 initialize_mcp_connection() 创建的历史全局会话。
-    """
-    if background_loop and background_loop.is_running():
-        logging.info("请求关闭 MCP 服务器...")
-        future = asyncio.run_coroutine_threadsafe(mcp_process_stack.aclose(), background_loop)
-        try:
-            future.result(timeout=5)
-            logging.info("MCP 服务器已成功关闭。")
-        except Exception as e:
-            logging.error(f"关闭 MCP 服务器时出错: {e}")
-    else:
-        logging.warning("无法关闭 MCP 服务器：事件循环未运行。")
-
-def start_event_loop(loop: asyncio.AbstractEventLoop, ready_event: threading.Event):
-    """
-    已废弃
-    旧 Web 内执行模式的后台事件循环启动器。
-
-    新的长任务队列模式不再让 Web 进程启动 MCP；worker 进程直接在
-    asyncio 主循环中为每个 slot 初始化 MCP session 和 Agent graph。
-    """
-    global background_loop
-    asyncio.set_event_loop(loop)
-    background_loop = loop
-    
-    loop.create_task(initialize_mcp_connection(ready_event))
-    
-    logging.info("后台事件循环已启动，MCP 初始化任务已安排。")
-    loop.run_forever()
 
 def initialize_rag_system():
     """
@@ -163,69 +121,6 @@ def initialize_rag_system():
 
     logging.info("RAG 启动检查通过；向量库将在首次实际查询时由 query_rag.py 延迟初始化。")
     return True
-
-#  LangChain Agent 的 MCP 工具封装 
-# 这里是对mcp格式的langchain翻译，翻译成一个类
-# 目前的逻辑下，并没有使用该方法
-def create_pydantic(schema: dict, model_name: str) -> Type[BaseModel]:
-    """
-    根据 MCP 工具提供的 JSON Schema 动态创建 Pydantic 模型。
-    这是让 LangChain Agent 理解工具参数的关键。
-    """
-    fields = {}
-    properties = schema.get('properties', {})
-    required_fields = schema.get('required', [])
-    ## 转换为键值对应的列表
-    for prop_name, prop_schema in properties.items():
-        # 这里对类型做了简化映射，可以根据未来工具的复杂性进行扩展
-        field_type: Type[Any] = str  # 默认为字符串类型
-        if prop_schema.get('type') == 'integer':
-            field_type = int
-        elif prop_schema.get('type') == 'number':
-            field_type = float
-        elif prop_schema.get('type') == 'boolean':
-            field_type = bool
-        
-        # Pydantic 的 create_model 需要一个元组: (类型, 默认值)
-        # 对于必需字段，默认值是 ... (Ellipsis)
-        if prop_name in required_fields:
-            fields[prop_name] = (field_type, ...)
-        else:
-            fields[prop_name] = (field_type, None)
-    
-    # 使用 Pydantic 的 create_model 动态创建模型类
-    return create_model(model_name, **fields)
-
-class McpTool(BaseTool):
-    """
-    一个自定义的 LangChain 工具 (BaseTool)，用于封装 MCP 会话的工具调用功能。
-    它充当了 LangChain Agent 和我们现有 MCP 服务之间的桥梁。
-    """
-    name: str
-    description: str
-    args_schema: Type[BaseModel]  # 强制工具必须有参数结构
-    session: "ClientSession"      # 类型前向引用（类型前向引用指的是在类型注解中使用尚未在当前作用域定义的类型名）
-    username: str
-
- # mcp定于的异步执行方法 _arun表示这个方法可以接收任意数量的关键字参数，并将它们收集到一个名为 kwargs 的字典中
-    async def _arun(self, **kwargs: Any) -> Any:
-        """
-        通过 MCP 会话异步执行工具。
-        Agent Executor 会将从 LLM 获取的参数作为关键字参数传递到这里。
-        """
-        # 将 MCP server 工具所需的 'username' 参数补充进去
-        kwargs['username'] = self.username
-        logging.info(f"LangChain Agent 正在调用工具 '{self.name}'，参数: {kwargs}")
-        
-        # 通过已建立的 mcp_session 调用真实的工具
-        # 相当于调用mcp
-        response_obj = await self.session.call_tool(self.name, kwargs)
-        
-        # 提取文本内容并返回给 Agent
-        function_response_text = response_obj.content[0].text
-        logging.debug(f"工具 '{self.name}' 返回了原始数据 (前200字符): {function_response_text[:200]}...")
-        
-        return function_response_text
 
 
 async def ai_call_stream(text, user_id, username, session_id, graph=None):
@@ -444,3 +339,28 @@ def process_final_result(final_state_data):
     
     logging.warning("未找到任何可返回的内容，返回默认消息")
     return {"type": "text", "summary": "抱歉，我在处理时遇到了问题。"}
+
+async def open_mcp_session(process_stack: AsyncExitStack):
+    """
+    旧函数：创建一组独立 MCP 进程和 ClientSession。
+
+    Web 旧模式只使用一个全局会话；worker 池会为每个 slot 调用本函数，
+    确保 slot = MCP session/process = graph instance。
+    """
+    server_params = StdioServerParameters(command=sys.executable, args=[mcp_server_path])
+    ## 这里enter_async_context(...) 会立刻执行它的 __aenter__()，真正打开资源
+    ## 同时，它的 __aexit__() 被登记到 process_stack这个栈，也就是只有__aexit__()被登记到栈里
+    read_stream, write_stream = await process_stack.enter_async_context(stdio_client(server_params))
+    session = await process_stack.enter_async_context(ClientSession(read_stream, write_stream))
+    await session.initialize()
+
+    tools_response = await session.list_tools()
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.inputSchema,
+        }
+    } for tool in tools_response.tools]
+    return session, tools

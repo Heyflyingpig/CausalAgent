@@ -15,7 +15,7 @@ import socket
 import sys
 from typing import Any
 
-from Agent.causal_agent.graph import create_graph_from_session
+from Agent.causal_agent.graph import create_graph_from_tools
 from app.agent import core as agent_core
 from app.agent import job_service
 from app.chat.services import save_chat
@@ -123,9 +123,13 @@ async def _run_slot(slot_index: int) -> None:
     stack = AsyncExitStack()
     try:
         # 独占session和graph
-        session, _tools = await agent_core.open_mcp_session(stack)
-        graph = await create_graph_from_session(agent_core.llm, session)
-        logging.info("[worker] slot ready worker=%s", worker_id)
+        mcp_resources = await agent_core.open_mcp_client_resources(stack)
+        graph = create_graph_from_tools(agent_core.llm, mcp_resources.tools)
+        logging.info(
+            "[worker] slot ready worker=%s tools=%s",
+            worker_id,
+            [tool.name for tool in mcp_resources.tools],
+        )
         
         # 死循环领取job
         while True:

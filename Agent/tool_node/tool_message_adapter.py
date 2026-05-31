@@ -7,11 +7,60 @@ from typing import Any
 from langchain_core.messages import ToolMessage
 
 
+def _normalize_payload(payload: Any) -> dict[str, Any]:
+    """把 adapter 或手写工具返回载荷统一成业务 dict。"""
+    if isinstance(payload, dict):
+        return payload
+    return {"success": True, "data": payload}
+
+
+def _json_object_from_text(text: str) -> dict[str, Any] | None:
+    """尝试从文本解析 JSON object；非 JSON 文本返回 None。"""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return _normalize_payload(parsed)
+
+
+def _structured_content_from_artifact(artifact: Any) -> Any:
+    """兼容 langchain-mcp-adapters 的 artifact structured_content。"""
+    if isinstance(artifact, dict) and "structured_content" in artifact:
+        return artifact["structured_content"]
+    structured_content = getattr(artifact, "structured_content", None)
+    if structured_content is not None:
+        return structured_content
+    return None
+
+
+def _parse_content_blocks(tool_message: ToolMessage) -> dict[str, Any] | None:
+    """从 ToolMessage content_blocks 中提取第一个可解析的文本或结构化块。"""
+    blocks = getattr(tool_message, "content_blocks", None)
+    if not blocks:
+        return None
+    for block in blocks:
+        if isinstance(block, dict):
+            if "structured_content" in block:
+                return _normalize_payload(block["structured_content"])
+            text = block.get("text")
+            if isinstance(text, str) and (parsed := _json_object_from_text(text)) is not None:
+                return parsed
+        elif isinstance(block, str) and (parsed := _json_object_from_text(block)) is not None:
+            return parsed
+    return None
+
+
 def parse_tool_message_json(tool_message: ToolMessage) -> dict[str, Any]:
     """解析 ToolMessage 有效载荷并将其转换为业务结果字典。"""
+    artifact_payload = _structured_content_from_artifact(getattr(tool_message, "artifact", None))
+    if artifact_payload is not None:
+        return _normalize_payload(artifact_payload)
+
     content = getattr(tool_message, "content", "")
     if isinstance(content, dict):
         return content
+    if content_blocks_result := _parse_content_blocks(tool_message):
+        return content_blocks_result
     if not isinstance(content, str):
         return {"success": True, "data": content}
     try:
