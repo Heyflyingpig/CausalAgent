@@ -31,8 +31,6 @@ from .back_prompt import causal_report_prompt
 
 # 数据库
 from Database.agent_connect import get_file_content, get_recent_file
-# 处理llm的输出，提取json对象
-from Agent.tool_node.excute_output import excute_output
 
 
 def llm_prompt_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -439,119 +437,22 @@ async def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
 
 from Agent.knowledge_base.query_rag import format_rag_summary_for_prompt
-from Agent.tool_node.causal_analysis_task import causal_analysis_task
 from Agent.tool_node.rag_query_task import rag_query_task
 from Agent.tool_node.rag_questions import get_rag_questions
-
-
-def parse_tool_message_json(tool_message: ToolMessage) -> dict[str, Any]:
-    """解析 ToolMessage 有效载荷并将其转换为字典，同时保留失败上下文。"""
-    content = getattr(tool_message, "content", "")
-    if isinstance(content, dict):
-        return content
-    if not isinstance(content, str):
-        return {"success": True, "data": content}
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError as exc:
-        return {
-            "success": False,
-            "error": f"ToolMessage content is not valid JSON: {exc}",
-            "raw_content": content,
-        }
-    return parsed if isinstance(parsed, dict) else {"success": True, "data": parsed}
-
-
-def _latest_tool_message(messages: list) -> ToolMessage | None:
-    """从消息列表中，获取最新的工具返回消息。"""
-    tool_messages = [
-        message for message in messages
-        if isinstance(message, ToolMessage) or getattr(message, "type", None) == "tool"
-    ]
-    return tool_messages[-1] if tool_messages else None
-
-
-def _latest_ai_tool_call_ids(messages: list) -> set[str]:
-    """获取最新 AI 工具调用消息中的 tool_call id 集合。"""
-    for message in reversed(messages):
-        tool_calls = getattr(message, "tool_calls", None)
-        if tool_calls:
-            return {
-                tool_call.get("id") if isinstance(tool_call, dict) else getattr(tool_call, "id", None)
-                for tool_call in tool_calls
-                if (
-                    (isinstance(tool_call, dict) and tool_call.get("id"))
-                    or getattr(tool_call, "id", None)
-                )
-            }
-    return set()
-
-
-def _latest_matching_tool_message(messages: list) -> ToolMessage | None:
-    """获取与最新 AIMessage.tool_calls 匹配的最新 ToolMessage。"""
-    tool_call_ids = _latest_ai_tool_call_ids(messages)
-    if not tool_call_ids:
-        return _latest_tool_message(messages)
-
-    for message in reversed(messages):
-        is_tool_message = isinstance(message, ToolMessage) or getattr(message, "type", None) == "tool"
-        if is_tool_message and getattr(message, "tool_call_id", None) in tool_call_ids:
-            return message
-    return None
-
-
-
-def _tool_name(tool: Any) -> str | None:
-    """Return the stable LangChain/MCP tool name from object or dict tools."""
-    if isinstance(tool, dict):
-        function = tool.get("function", {})
-        return function.get("name") if isinstance(function, dict) else None
-    return getattr(tool, "name", None)
-
-
-def _valid_mcp_tool_names(mcp_tools: list) -> set[str]:
-    """校验模型返回的 tool call 是否真的能被 ToolNode 执行。"""
-    return {name for name in (_tool_name(tool) for tool in mcp_tools) if name}
-
-
-def _inject_mcp_runtime_arguments(ai_message: AIMessage, state: CausalChatState) -> AIMessage:
-    """注入csv文件"""
-    file_content = state.get("file_content")
-    if not file_content:
-        return ai_message
-
-    for tool_call in getattr(ai_message, "tool_calls", []) or []:
-        args = tool_call.setdefault("args", {})
-        args.setdefault("csv_data", file_content)
-
-    return ai_message
-
-
-def _normalize_mcp_tool_call_message(ai_message: AIMessage, state: CausalChatState, mcp_tools: list) -> AIMessage:
-    """验证mcp——plan获取结果"""
-    valid_names = _valid_mcp_tool_names(mcp_tools)
-    tool_calls = list(getattr(ai_message, "tool_calls", []) or [])
-    if not tool_calls:
-        raise ValueError("MCP planner did not return tool_calls.")
-
-    selected_call = dict(tool_calls[0])
-    tool_name = selected_call.get("name")
-    if tool_name not in valid_names:
-        raise ValueError(f"MCP planner returned unknown MCP tool: {tool_name}")
-
-    normalized_message = AIMessage(
-        content=getattr(ai_message, "content", "") or "",
-        tool_calls=[selected_call],
-    )
-
-    return _inject_mcp_runtime_arguments(normalized_message, state)
+from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
+from Agent.tool_node.tool_message_adapter import (
+    attach_tool_call_metadata,
+    latest_ai_tool_call_ids,
+    latest_matching_tool_result,
+    parse_tool_message_json,
+)
 
 
 async def mcp_planner_node(state: CausalChatState, llm: ChatOpenAI, mcp_tools: list) -> dict:
     """获取MCP tool call"""
     if not mcp_tools:
         raise RuntimeError("No MCP tools are available for causal analysis.")
-
+    ## 使用bind_tools 方法，返回标准化toolcall
     mcp_llm = llm.bind_tools(
         mcp_tools,
         parallel_tool_calls=False,
@@ -579,20 +480,25 @@ async def mcp_planner_node(state: CausalChatState, llm: ChatOpenAI, mcp_tools: l
         "preprocess_summary": state.get("preprocess_summary", ""),
     })
     ai_message = await mcp_llm.ainvoke(prompt_value.to_messages())
-    ai_message = _normalize_mcp_tool_call_message(ai_message, state, mcp_tools)
+    ai_message = normalize_mcp_tool_call_message(ai_message, state, mcp_tools)
     return {"messages": [ai_message]}
 
 
 async def mcp_result_parser_node(state: CausalChatState) -> dict:
     """解析 MCP ToolNode 产生的 ToolMessage，并把结果注入状态。"""
     messages = state.get("messages", [])
-    latest_tool_message = _latest_matching_tool_message(messages)
+    latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
     if latest_tool_message is None:
         raise ValueError("MCP result parser expected a matching ToolMessage.")
 
     parsed = parse_tool_message_json(latest_tool_message)
+    result = attach_tool_call_metadata(
+        parsed,
+        latest_tool_message,
+        latest_tool_call,
+    )
     return {
-        "causal_analysis_result": parsed,
+        "causal_analysis_result": result,
         "tool_call_request": bool(parsed.get("success")),
     }
 
@@ -626,9 +532,9 @@ async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag
 async def rag_result_parser_node(state: CausalChatState) -> dict:
     """子节点：获取rag返回内容，注入state当中"""
     messages = state.get("messages", [])
-    latest_tool_message = _latest_matching_tool_message(messages)
+    latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
     if latest_tool_message is None:
-        if _latest_ai_tool_call_ids(messages):
+        if latest_ai_tool_call_ids(messages):
             return {
                 "knowledge_base_result": {
                     "success": False,
@@ -656,68 +562,14 @@ async def rag_result_parser_node(state: CausalChatState) -> dict:
         parsed.setdefault("summary", "知识库增强暂不可用，报告将仅基于因果分析结果生成。")
         parsed.setdefault("questions", [])
         parsed.setdefault("evidence_count", 0)
-    return {"knowledge_base_result": parsed}
-
-
-async def execute_tools_node(state: CausalChatState, mcp_session: ClientSession, llm: ChatOpenAI) -> dict:
-    """
-    旧工具执行模块。
-
-    当前主路径已迁移到 MCP/RAG ToolNode 子图；本函数仅保留给历史调用或回滚参考。
-    输入：mcp模块
-    输出：因果分析结果和知识库查询结果
-    """
-    
-    logging.info(" 步骤: 执行工具节点 ")
-    
-    ## 获取编码的文件信息
-    file_content = state.get("file_content")
-
-    # 并行执行任务并等待结果 
-    logging.info(" 开始并行执行因果分析和RAG查询 ")
-
-    rag_question_future = get_rag_questions(state, llm, max_questions=2)
-    causal_future = causal_analysis_task(file_content, mcp_session, llm, state)
-
-    rag_questions = await rag_question_future
-    rag_future = rag_query_task(rag_questions)
-
-    causal_task_result, rag_task_result = await asyncio.gather(causal_future, rag_future)
-    
-    logging.info(" 因果分析和RAG查询均已完成 ")
-    
-    state["causal_analysis_result"] = causal_task_result
-    state["knowledge_base_result"] = rag_task_result
-    
-    # 根据主要工具（因果分析）的结果来决定下一步
-    if causal_task_result.get("success"):
-        response_message = AIMessage(
-            content="信息完备：工具执行完成，获得了因果分析和知识库查询结果。", 
-            name="execute_tools"
-        )
-        # 只返回新消息和需要更新的状态
-        return {
-            "messages": [response_message],
-            "causal_analysis_result": state["causal_analysis_result"],
-            "knowledge_base_result": state["knowledge_base_result"],
-            "tool_call_request": True
-        }
-    
-    else:
-        error_message = causal_task_result.get("message", "未知工具错误")
-        logging.warning(f"工具执行失败: {error_message}")
-        response_message = AIMessage(
-            content=f"决策：工具执行失败：{error_message}",
-            name="execute_tools"
-        )
-        # 只返回新消息和需要更新的状态
-        return {
-            "messages": [response_message],
-            "causal_analysis_result": state["causal_analysis_result"],
-            "knowledge_base_result": state["knowledge_base_result"],
-            "tool_call_request": False
-        }
-
+    result = attach_tool_call_metadata(
+        parsed,
+        latest_tool_message,
+        latest_tool_call,
+    )
+    return {
+        "knowledge_base_result": result,
+    }
 
 
 # 环路检测模块
