@@ -143,9 +143,8 @@ def _build_eval_sample(
     row: Dict[str, Any],
     index: int,
     source_dataset: str,
-    review_status: str,
 ) -> Dict[str, Any]:
-    """把单条 RAGCare-QA 样本转换成 medical eval schema。"""
+    """把单条 RAGCare-QA 样本转换成通用 benchmark v2 schema。"""
     question = _get_field(row, ["Question"])
     reference_answer = _get_field(row, ["Text Answer", "Answer"])
     if not question:
@@ -156,26 +155,23 @@ def _build_eval_sample(
     doc_id = _build_doc_id(_source_row_index(row, index))
     claims = extract_claims_from_reference(reference_answer)
     return {
+        "sample_id": doc_id,
         "question": question,
-        "question_type": "medical_rag",
-        "expected_corpus": "medical",
-        "expected_sources": [doc_id],
-        "expected_claims": claims,
         "reference_answer": reference_answer,
-        "gold_chunk_ids": [],
+        "expected_claims": claims,
         "gold_doc_ids": [doc_id],
         "judge_rubric": {
             "must_cover": claims,
             "avoid": [
                 "make diagnosis or treatment claims not supported by the evidence context",
                 "add medication dosage or clinical advice that is absent from the evidence context",
-                "cite evidence from the causal Pearl knowledge base for a medical QA sample",
+                "cite evidence from an unrelated knowledge base",
             ],
         },
-        "notes": f"Converted from {source_dataset}; evidence text uses Context only to avoid answer leakage.",
-        "eval_schema_version": "phase1_v1",
-        "review_status": review_status,
-        "is_smoke_case": False,
+        "source": {
+            "dataset": source_dataset,
+            "row_index": _source_row_index(row, index),
+        },
     }
 
 
@@ -194,7 +190,7 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def prepare_ragcare_qa_from_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """根据配置把 RAGCare-QA 原始数据转换成医疗 corpus 和 eval dataset。"""
+    """根据配置把 RAGCare-QA 原始数据转换成 corpus 和通用 benchmark eval dataset。"""
     active_config = dict(RAGCARE_QA_PREPARE_CONFIG)
     if config:
         active_config.update(config)
@@ -213,7 +209,6 @@ def prepare_ragcare_qa_from_config(config: Optional[Dict[str, Any]] = None) -> D
                 row=row,
                 index=index,
                 source_dataset=active_config["source_dataset"],
-                review_status=active_config["review_status"],
             )
         )
 

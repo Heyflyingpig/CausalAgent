@@ -191,9 +191,11 @@ def build_dataset_validation_markdown_report(result: Dict[str, Any]) -> str:
         "| --- | ---: | ---: | ---: | --- |",
     ]
     for dataset_name, detail in result["datasets"].items():
-        type_text = ", ".join(f"{key}: {value}" for key, value in detail["question_type_counts"].items())
+        type_counts = detail.get("question_type_counts", {})
+        type_text = ", ".join(f"{key}: {value}" for key, value in type_counts.items()) if type_counts else "-"
+        with_gold = detail.get("with_gold_chunk_ids", detail.get("with_gold_doc_ids", 0))
         lines.append(
-            f"| {dataset_name} | {detail['sample_count']} | {detail['with_gold_chunk_ids']} | "
+            f"| {dataset_name} | {detail['sample_count']} | {with_gold} | "
             f"{detail['with_expected_claims']} | {escape_markdown_cell(type_text)} |"
         )
 
@@ -210,13 +212,13 @@ def build_dataset_validation_markdown_report(result: Dict[str, Any]) -> str:
     else:
         lines.append("No validation warnings.")
 
-    medical_corpus = result.get("medical_corpus", {})
-    if medical_corpus:
-        lines.extend(["", "## Medical Corpus", ""])
+    benchmark_corpus = result.get("benchmark_corpus", result.get("medical_corpus", {}))
+    if benchmark_corpus:
+        lines.extend(["", "## Benchmark Corpus", ""])
         lines.extend(
             [
-                f"- exists: {medical_corpus.get('exists')}",
-                f"- doc_count: {medical_corpus.get('doc_count', 0)}",
+                f"- exists: {benchmark_corpus.get('exists')}",
+                f"- doc_count: {benchmark_corpus.get('doc_count', 0)}",
             ]
         )
     return "\n".join(lines).rstrip() + "\n"
@@ -292,7 +294,7 @@ def build_pipeline_summary_markdown_report(summary: Dict[str, Any]) -> str:
         lines.append("No dataset fingerprints recorded.")
 
     lines.extend(["", f"## {report_label('Notes')}", ""])
-    lines.append("- 默认 pipeline 不重跑昂贵的 LLM judge；需要完整复评时，在 `rag_eval/run_rag_eval.py` 中打开对应 step。")
+    lines.append("- 当前默认 pipeline 会按 `rag_config.py` 中的步骤运行完整 RAG 测评；大样本运行耗时取决于 embedding、answer 和 judge API。")
     lines.append("- `runs/` 目录保存本次机器结果、人工报告、配置快照和 summary，便于后续和 baseline 对比。")
     return "\n".join(lines).rstrip() + "\n"
 

@@ -8,20 +8,20 @@ OUTPUT_DIR = RAG_DIR / "output"
 MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
 REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
 RUNS_DIR = OUTPUT_DIR / "runs"
-MEDICAL_OUTPUT_DIR = OUTPUT_DIR / "medical"
-MEDICAL_MACHINE_OUTPUT_DIR = MEDICAL_OUTPUT_DIR / "machine"
-MEDICAL_REPORT_OUTPUT_DIR = MEDICAL_OUTPUT_DIR / "reports"
 SOURCE_DIR = KNOWLEDGE_BASE_DIR / "source"
 DEFAULT_EMBEDDING_MODEL_PATH = KNOWLEDGE_BASE_DIR / "models" / "bge-small-zh-v1.5"
+VECTOR_DB_DIR = KNOWLEDGE_BASE_DIR / "db"
 
 EVAL_DATASET_PATH = DATA_DIR / "ragas_generated_eval_dataset.json"
 RAGCARE_QA_DIR = DATA_DIR / "external" / "ragcare_qa"
 RAGCARE_QA_RAW_DIR = RAGCARE_QA_DIR / "raw"
 RAGCARE_QA_PROCESSED_DIR = RAGCARE_QA_DIR / "processed"
-RAGCARE_QA_DB_DIR = RAGCARE_QA_DIR / "db"
 MEDICAL_CORPUS_PATH = RAGCARE_QA_PROCESSED_DIR / "medical_corpus_docs.jsonl"
 MEDICAL_EVAL_DATASET_PATH = RAGCARE_QA_PROCESSED_DIR / "medical_eval_dataset.json"
-MEDICAL_VECTOR_DB_DIR = RAGCARE_QA_DB_DIR / "chroma"
+MEDICAL_VECTOR_DB_DIR = VECTOR_DB_DIR
+ACTIVE_BENCHMARK_NAME = "ragcare_qa"
+ACTIVE_CORPUS_PATH = MEDICAL_CORPUS_PATH
+ACTIVE_EVAL_DATASET_PATH = MEDICAL_EVAL_DATASET_PATH
 
 TRACE_STAGE_ORDER = [
     "dense_raw",
@@ -65,27 +65,57 @@ RETRIEVAL_PROFILES: Dict[str, Dict[str, Any]] = {
         "mmr_lambda": 0.4,
         "official_only_when_available": True,
     },
+    "active_current": {
+        "dense_fetch_k": 10,
+        "dense_mmr_k": 10,
+        "sparse_fetch_k": 8,
+        "final_top_k": 4,
+        "dense_score_threshold": 0.45,
+        "final_rerank_threshold": 0.18,
+        "mmr_lambda": 0.7,
+        "official_only_when_available": False,
+    },
+    "active_candidate_top20": {
+        "dense_fetch_k": 80,
+        "dense_mmr_k": 40,
+        "sparse_fetch_k": 80,
+        "final_top_k": 20,
+        "dense_score_threshold": 0.0,
+        "final_rerank_threshold": 0.0,
+        "mmr_lambda": 0.7,
+        "official_only_when_available": False,
+    },
+    "active_more_diverse_mmr": {
+        "dense_fetch_k": 80,
+        "dense_mmr_k": 40,
+        "sparse_fetch_k": 80,
+        "final_top_k": 20,
+        "dense_score_threshold": 0.0,
+        "final_rerank_threshold": 0.0,
+        "mmr_lambda": 0.4,
+        "official_only_when_available": False,
+    },
 }
 
 # retrieval eval 的 single/sweep 都从这里取参数，不需要命令行传参。
 RETRIEVAL_EVAL_CONFIG = {
-    "mode": "sweep",
-    "dataset_path": str(EVAL_DATASET_PATH),
+    "mode": "single",
+    "dataset_path": str(ACTIVE_EVAL_DATASET_PATH),
     "output_path": str(MACHINE_OUTPUT_DIR / "rag_eval_result.json"),
     "sweep_output_path": str(MACHINE_OUTPUT_DIR / "rag_eval_sweep_result.json"),
     "report_path": str(REPORT_OUTPUT_DIR / "rag_eval_report.md"),
     "sweep_report_path": str(REPORT_OUTPUT_DIR / "rag_eval_sweep_report.md"),
     "limit": None,
     "top_k": None,
-    "retrieval_profile": "baseline_current",
+    "retrieval_profile": "active_current",
     "save_output": True,
     "save_markdown": True,
 }
 
 RETRIEVAL_SWEEP_CONFIGS: List[Dict[str, Any]] = [
-    {"name": "baseline_current", "config": RETRIEVAL_PROFILES["baseline_current"]},
-    {"name": "candidate_top20", "config": RETRIEVAL_PROFILES["candidate_top20"]},
-    {"name": "more_diverse_mmr", "config": RETRIEVAL_PROFILES["more_diverse_mmr"]},
+    {"name": "active_current", "config": RETRIEVAL_PROFILES["active_current"]},
+    {"name": "active_candidate_top20", "config": RETRIEVAL_PROFILES["active_candidate_top20"]},
+    {"name": "active_more_diverse_mmr", "config": RETRIEVAL_PROFILES["active_more_diverse_mmr"]},
 ]
 
 CANDIDATE_GENERATION_CONFIG = {
@@ -99,7 +129,7 @@ CANDIDATE_GENERATION_CONFIG = {
 RAGAS_ACTIVE_PROFILE = "reviewed_all_core_metrics"
 
 RAGAS_BASE_CONFIG = {
-    "dataset_path": str(EVAL_DATASET_PATH),
+    "dataset_path": str(ACTIVE_EVAL_DATASET_PATH),
     "ragas_dataset_path": str(MACHINE_OUTPUT_DIR / "ragas_eval_dataset.json"),
     "output_path": str(MACHINE_OUTPUT_DIR / "ragas_eval_result.json"),
     "report_path": str(REPORT_OUTPUT_DIR / "ragas_eval_report.md"),
@@ -132,7 +162,7 @@ RAGAS_BASE_CONFIG = {
     "low_score_threshold": 0.5,
     "retrieval_recall_low_threshold": 0.67,
     "retrieval_mrr_low_threshold": 0.5,
-    "retrieval_profile": "baseline_current",
+    "retrieval_profile": "active_current",
     "show_progress": False,
     "print_full_output": False,
 }
@@ -218,8 +248,8 @@ RAGAS_RUN_CONFIG = {
 }
 
 RUN_PIPELINE_CONFIG = {
-    "run_name": "local_pipeline",
-    "steps": ["validate_datasets", "trace_export", "summary"],
+    "run_name": "active_benchmark_full_pipeline",
+    "steps": ["validate_datasets", "retrieval_eval", "ragas_eval", "claim_eval", "trace_export", "summary"],
     "copy_latest_outputs_to_run_dir": True,
     "thresholds": {
         "retrieval_hit_rate_min": 1.0,
@@ -255,7 +285,6 @@ RAGCARE_QA_PREPARE_CONFIG = {
     "corpus_output_path": str(MEDICAL_CORPUS_PATH),
     "eval_output_path": str(MEDICAL_EVAL_DATASET_PATH),
     "limit": None,
-    "review_status": "pending_human_review",
     "source_dataset": "ChatMED-Project/RAGCare-QA",
     "print_full_output": False,
 }
@@ -270,24 +299,24 @@ MEDICAL_EMBEDDING_CONFIG = {
     "chunk_size": 700,
     "chunk_overlap": 100,
     "persist_directory": str(MEDICAL_VECTOR_DB_DIR),
-    "collection_name": "ragcare_qa_medical",
+    "collection_name": "causal_agent_default",
 }
 
 MEDICAL_KNOWLEDGE_BUILD_CONFIG = {
     "corpus_path": str(MEDICAL_CORPUS_PATH),
     "persist_directory": str(MEDICAL_VECTOR_DB_DIR),
-    "collection_name": "ragcare_qa_medical",
+    "collection_name": "causal_agent_default",
     "chunk_size": 700,
     "chunk_overlap": 100,
     "embedding_config": MEDICAL_EMBEDDING_CONFIG,
     "print_full_output": False,
 }
 
-MEDICAL_RETRIEVAL_EVAL_CONFIG = {
-    "corpus_path": str(MEDICAL_CORPUS_PATH),
-    "dataset_path": str(MEDICAL_EVAL_DATASET_PATH),
-    "output_path": str(MEDICAL_MACHINE_OUTPUT_DIR / "medical_retrieval_eval_result.json"),
-    "report_path": str(MEDICAL_REPORT_OUTPUT_DIR / "medical_retrieval_eval_report.md"),
+ACTIVE_RETRIEVAL_EVAL_CONFIG = {
+    "corpus_path": str(ACTIVE_CORPUS_PATH),
+    "dataset_path": str(ACTIVE_EVAL_DATASET_PATH),
+    "output_path": str(MACHINE_OUTPUT_DIR / "retrieval_eval_result.json"),
+    "report_path": str(REPORT_OUTPUT_DIR / "retrieval_eval_report.md"),
     "top_k": 5,
     "limit": 20,
     "save_output": True,

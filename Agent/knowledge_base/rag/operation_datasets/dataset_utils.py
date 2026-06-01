@@ -4,7 +4,12 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from Agent.knowledge_base.rag.tools.report_utils import build_dataset_validation_markdown_report, write_markdown_file
-from Agent.knowledge_base.rag.rag_config import EVAL_DATASET_PATH, MEDICAL_CORPUS_PATH, MEDICAL_EVAL_DATASET_PATH
+from Agent.knowledge_base.rag.rag_config import (
+    ACTIVE_BENCHMARK_NAME,
+    ACTIVE_CORPUS_PATH,
+    ACTIVE_EVAL_DATASET_PATH,
+    EVAL_DATASET_PATH,
+)
 
 
 RAG_DIR = Path(__file__).resolve().parents[1]
@@ -14,7 +19,7 @@ MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
 REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
 DATASET_FILES = {
     "generated": EVAL_DATASET_PATH,
-    "medical_ragcare": MEDICAL_EVAL_DATASET_PATH,
+    ACTIVE_BENCHMARK_NAME: ACTIVE_EVAL_DATASET_PATH,
 }
 ALLOWED_QUESTION_TYPES = {
     "definition",
@@ -181,21 +186,109 @@ def validate_dataset(dataset_name: str, samples: List[Dict[str, Any]]) -> Dict[s
     }
 
 
-def validate_medical_corpus(corpus_path: Path) -> Dict[str, Any]:
-    """校验医疗语料文档，确保 doc_id 唯一且正文只保存 evidence context。"""
+def validate_benchmark_v2_dataset(
+    samples: List[Dict[str, Any]],
+    available_doc_ids: set[str],
+    dataset_name: str = "active_benchmark",
+) -> Dict[str, Any]:
+    """校验通用 benchmark v2 测试集。"""
+    errors: List[str] = []
+    sample_ids: List[str] = []
+    seen_questions = set()
+    duplicate_questions = []
+
+    for index, sample in enumerate(samples, start=1):
+        prefix = f"{dataset_name}[{index}]"
+        sample_id = sample.get("sample_id")
+        if not _is_nonempty_string(sample_id):
+            errors.append(f"{prefix}: sample_id must be a non-empty string.")
+        else:
+            sample_ids.append(sample_id)
+
+        if not _is_nonempty_string(sample.get("question")):
+            errors.append(f"{prefix}: question must be a non-empty string.")
+        if not _is_nonempty_string(sample.get("reference_answer")):
+            errors.append(f"{prefix}: reference_answer must be a non-empty string.")
+        if not _is_nonempty_string_list(sample.get("expected_claims")):
+            errors.append(f"{prefix}: expected_claims must be a non-empty list of strings.")
+
+        gold_doc_ids = sample.get("gold_doc_ids", [])
+        if not _is_nonempty_string_list(gold_doc_ids):
+            errors.append(f"{prefix}: gold_doc_ids must be a non-empty list of strings.")
+        else:
+            missing_doc_ids = [doc_id for doc_id in gold_doc_ids if doc_id not in available_doc_ids]
+            if missing_doc_ids:
+                errors.append(f"{prefix}: gold_doc_ids not found in benchmark corpus: {missing_doc_ids}.")
+
+        rubric = sample.get("judge_rubric")
+        if not isinstance(rubric, dict):
+            errors.append(f"{prefix}: judge_rubric must be an object.")
+        else:
+            if not _is_nonempty_string_list(rubric.get("must_cover")):
+                errors.append(f"{prefix}: judge_rubric.must_cover must be a non-empty list of strings.")
+            if not _is_nonempty_string_list(rubric.get("avoid")):
+                errors.append(f"{prefix}: judge_rubric.avoid must be a non-empty list of strings.")
+
+        source = sample.get("source")
+        if not isinstance(source, dict):
+            errors.append(f"{prefix}: source must be an object.")
+        else:
+            if not _is_nonempty_string(source.get("dataset")):
+                errors.append(f"{prefix}: source.dataset must be a non-empty string.")
+            if not isinstance(source.get("row_index"), int):
+                errors.append(f"{prefix}: source.row_index must be an integer.")
+
+        removed_fields = [
+            "gold_chunk_ids",
+            "review_status",
+            "is_smoke_case",
+            "expected_sources",
+            "expected_corpus",
+            "question_type",
+            "notes",
+            "eval_schema_version",
+        ]
+        present_removed = [field for field in removed_fields if field in sample]
+        if present_removed:
+            errors.append(f"{prefix}: benchmark v2 sample must not contain removed fields: {present_removed}.")
+
+        question = sample.get("question")
+        if question in seen_questions:
+            duplicate_questions.append(question)
+        seen_questions.add(question)
+
+    duplicate_sample_ids = sorted({sample_id for sample_id in sample_ids if sample_ids.count(sample_id) > 1})
+    if duplicate_sample_ids:
+        errors.append(f"{dataset_name}: duplicate sample_id values: {duplicate_sample_ids}.")
+    if duplicate_questions:
+        errors.append(f"{dataset_name}: duplicate questions: {duplicate_questions}.")
+
+    return {
+        "schema_version": "benchmark_v2",
+        "sample_count": len(samples),
+        "with_expected_claims": sum(bool(sample.get("expected_claims")) for sample in samples),
+        "with_gold_doc_ids": sum(bool(sample.get("gold_doc_ids")) for sample in samples),
+        "sample_id_count": len(set(sample_ids)),
+        "benchmark_corpus_doc_count": len(available_doc_ids),
+        "errors": errors,
+    }
+
+
+def validate_benchmark_corpus(corpus_path: Path) -> Dict[str, Any]:
+    """校验 active benchmark corpus，确保 doc_id 唯一且正文不泄漏问答字段。"""
     errors: List[str] = []
     if not corpus_path.exists():
         return {
             "exists": False,
             "doc_count": 0,
             "doc_ids": [],
-            "errors": [f"medical corpus missing: {corpus_path}."],
+            "errors": [f"benchmark corpus missing: {corpus_path}."],
         }
 
     docs = load_jsonl_file(corpus_path)
     doc_ids: List[str] = []
     for index, doc in enumerate(docs, start=1):
-        prefix = f"medical_corpus[{index}]"
+        prefix = f"benchmark_corpus[{index}]"
         doc_id = doc.get("doc_id")
         if not _is_nonempty_string(doc_id):
             errors.append(f"{prefix}: doc_id must be a non-empty string.")
@@ -214,7 +307,7 @@ def validate_medical_corpus(corpus_path: Path) -> Dict[str, Any]:
 
     duplicate_doc_ids = sorted({doc_id for doc_id in doc_ids if doc_ids.count(doc_id) > 1})
     if duplicate_doc_ids:
-        errors.append(f"medical_corpus: duplicate doc_id values: {duplicate_doc_ids}.")
+        errors.append(f"benchmark_corpus: duplicate doc_id values: {duplicate_doc_ids}.")
 
     return {
         "exists": True,
@@ -224,38 +317,31 @@ def validate_medical_corpus(corpus_path: Path) -> Dict[str, Any]:
     }
 
 
-def validate_medical_eval_dataset(samples: List[Dict[str, Any]], available_doc_ids: set[str]) -> List[str]:
-    """校验医疗 eval dataset 和 corpus 的 doc_id 关联。"""
+def validate_legacy_doc_dataset(samples: List[Dict[str, Any]], available_doc_ids: set[str], dataset_name: str) -> List[str]:
+    """校验旧 schema 数据集中 doc-level gold 与 active corpus 的关联。"""
     errors: List[str] = []
     for index, sample in enumerate(samples, start=1):
-        prefix = f"medical_ragcare[{index}]"
+        prefix = f"{dataset_name}[{index}]"
         gold_doc_ids = sample.get("gold_doc_ids", [])
         if not _is_nonempty_string_list(gold_doc_ids):
             errors.append(f"{prefix}: gold_doc_ids must be a non-empty list of strings.")
-        expected_sources = sample.get("expected_sources", [])
-        if gold_doc_ids != expected_sources:
-            errors.append(f"{prefix}: expected_sources must match gold_doc_ids for medical eval.")
         missing_doc_ids = [doc_id for doc_id in gold_doc_ids if doc_id not in available_doc_ids]
         if missing_doc_ids:
-            errors.append(f"{prefix}: gold_doc_ids not found in medical corpus: {missing_doc_ids}.")
-        if sample.get("expected_corpus") != "medical":
-            errors.append(f"{prefix}: expected_corpus must be 'medical'.")
-        if sample.get("question_type") != "medical_rag":
-            errors.append(f"{prefix}: question_type must be 'medical_rag'.")
+            errors.append(f"{prefix}: gold_doc_ids not found in benchmark corpus: {missing_doc_ids}.")
     return errors
 
 
 def validate_all_datasets() -> Dict[str, Any]:
     """校验当前统一 RAG eval 测试集并返回总结果。"""
-    result: Dict[str, Any] = {"datasets": {}, "medical_corpus": {}, "errors": [], "warnings": []}
+    result: Dict[str, Any] = {"datasets": {}, "benchmark_corpus": {}, "errors": [], "warnings": []}
     loaded: Dict[str, List[Dict[str, Any]]] = {}
-    medical_corpus = validate_medical_corpus(MEDICAL_CORPUS_PATH)
-    result["medical_corpus"] = {
+    benchmark_corpus = validate_benchmark_corpus(ACTIVE_CORPUS_PATH)
+    result["benchmark_corpus"] = {
         key: value
-        for key, value in medical_corpus.items()
+        for key, value in benchmark_corpus.items()
         if key != "doc_ids"
     }
-    available_medical_doc_ids = set(medical_corpus.get("doc_ids", []))
+    available_benchmark_doc_ids = set(benchmark_corpus.get("doc_ids", []))
 
     for dataset_name, path in DATASET_FILES.items():
         if not path.exists():
@@ -263,14 +349,22 @@ def validate_all_datasets() -> Dict[str, Any]:
             continue
         samples = load_dataset_json(path)
         loaded[dataset_name] = samples
-        detail = validate_dataset(dataset_name, samples)
-        if dataset_name == "medical_ragcare":
-            detail["errors"].extend(validate_medical_eval_dataset(samples, available_medical_doc_ids))
-            detail["medical_corpus_doc_count"] = len(available_medical_doc_ids)
+        if dataset_name == ACTIVE_BENCHMARK_NAME:
+            detail = validate_benchmark_v2_dataset(samples, available_benchmark_doc_ids, dataset_name=dataset_name)
+            if detail["errors"] and any("sample_id" in error for error in detail["errors"]):
+                legacy_detail = validate_dataset(dataset_name, samples)
+                legacy_detail["errors"].extend(
+                    validate_legacy_doc_dataset(samples, available_benchmark_doc_ids, dataset_name=dataset_name)
+                )
+                legacy_detail["benchmark_corpus_doc_count"] = len(available_benchmark_doc_ids)
+                legacy_detail["schema_version"] = "legacy_phase1_v1"
+                detail = legacy_detail
+        else:
+            detail = validate_dataset(dataset_name, samples)
         result["datasets"][dataset_name] = detail
         result["errors"].extend(detail["errors"])
-        if dataset_name == "medical_ragcare":
-            result["errors"].extend(medical_corpus["errors"])
+        if dataset_name == ACTIVE_BENCHMARK_NAME:
+            result["errors"].extend(benchmark_corpus["errors"])
 
     result["error_count"] = len(result["errors"])
     result["warning_count"] = len(result["warnings"])
@@ -411,3 +505,4 @@ def write_generated_eval_dataset(
         "skipped_duplicate_questions": skipped_duplicates,
         "final_count": len(existing),
     }
+

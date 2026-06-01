@@ -81,6 +81,7 @@ def load_eval_dataset(dataset_path: str) -> List[Dict[str, Any]]:
 def _collect_stage_metrics(
     stage_candidates: List[Dict[str, Any]],
     gold_chunk_ids: set[str],
+    gold_doc_ids: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
     """
     统计单个检索阶段相对 gold 的命中情况
@@ -88,27 +89,39 @@ def _collect_stage_metrics(
     Args:
         stage_candidates (List[Dict[str, Any]]): 某一阶段返回的候选列表
         gold_chunk_ids (set[str]): 当前问题对应的 gold chunk id 集合
+        gold_doc_ids (Optional[set[str]]): 没有 chunk gold 时使用的 gold doc id 集合
 
     Returns:
         Dict[str, Any]: 包含召回、MRR、命中与命中 chunk 列表的统计结果
     """
-       # 提取检索到的所有chunk IDs
     retrieved_chunk_ids = [candidate["metadata"]["chunk_id"] for candidate in stage_candidates]
-    # 找出检索结果中匹配gold标准的chunk IDs
-    matched = [chunk_id for chunk_id in retrieved_chunk_ids if chunk_id in gold_chunk_ids]
+    retrieved_doc_ids = [candidate["metadata"].get("doc_id", "") for candidate in stage_candidates]
+    match_mode = "chunk" if gold_chunk_ids else "doc"
+    gold_ids = gold_chunk_ids or (gold_doc_ids or set())
+    retrieved_ids = retrieved_chunk_ids if match_mode == "chunk" else retrieved_doc_ids
+    matched = [retrieved_id for retrieved_id in retrieved_ids if retrieved_id in gold_ids]
+    matched_chunk_ids = [
+        chunk_id
+        for chunk_id, doc_id in zip(retrieved_chunk_ids, retrieved_doc_ids)
+        if (chunk_id in gold_chunk_ids if match_mode == "chunk" else doc_id in gold_ids)
+    ]
+    matched_doc_ids = [doc_id for doc_id in retrieved_doc_ids if doc_id in gold_ids] if match_mode == "doc" else []
     
     # 计算Reciprocal Rank (倒数排名): 第一个相关文档的位置的倒数
     reciprocal_rank = 0.0
-    for index, chunk_id in enumerate(retrieved_chunk_ids, start=1):
-        if chunk_id in gold_chunk_ids:
+    for index, retrieved_id in enumerate(retrieved_ids, start=1):
+        if retrieved_id in gold_ids:
             reciprocal_rank = 1.0 / index
             break
  
     # 计算召回率: 检索到的相关文档数量 / 所有相关文档数量
-    recall = len(matched) / len(gold_chunk_ids) if gold_chunk_ids else 0.0
+    recall = len(set(matched)) / len(gold_ids) if gold_ids else 0.0
     return {
+        "match_mode": match_mode,
         "retrieved_chunk_ids": retrieved_chunk_ids,
-        "matched_chunk_ids": matched,
+        "retrieved_doc_ids": retrieved_doc_ids,
+        "matched_chunk_ids": matched_chunk_ids,
+        "matched_doc_ids": matched_doc_ids,
         "recall": recall,
         "reciprocal_rank": reciprocal_rank,
         "hit": 1 if matched else 0,
@@ -135,16 +148,28 @@ def _summarize_stage_metrics(stage_details: List[Dict[str, Any]]) -> Dict[str, A
     }
 
 
-def _collect_gold_rank_summary(stage_results: Dict[str, Dict[str, Any]], gold_chunk_ids: set[str]) -> Dict[str, Any]:
-    """记录 gold chunk 在各阶段中的排名位置，便于观察 rerank / final 截断影响。"""
+def _collect_gold_rank_summary(
+    stage_results: Dict[str, Dict[str, Any]],
+    gold_chunk_ids: set[str],
+    gold_doc_ids: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    """记录 gold 在各阶段中的排名位置，便于观察 rerank / final 截断影响。"""
     summary: Dict[str, Any] = {}
+    match_mode = "chunk" if gold_chunk_ids else "doc"
+    gold_ids = gold_chunk_ids or (gold_doc_ids or set())
     for stage_name, stage_result in stage_results.items():
+        retrieved_ids = (
+            stage_result["retrieved_chunk_ids"]
+            if match_mode == "chunk"
+            else stage_result.get("retrieved_doc_ids", [])
+        )
         ranks = {
-            chunk_id: index
-            for index, chunk_id in enumerate(stage_result["retrieved_chunk_ids"], start=1)
-            if chunk_id in gold_chunk_ids
+            retrieved_id: index
+            for index, retrieved_id in enumerate(retrieved_ids, start=1)
+            if retrieved_id in gold_ids
         }
         summary[stage_name] = {
+            "match_mode": match_mode,
             "matched_count": len(ranks),
             "best_rank": min(ranks.values()) if ranks else None,
             "gold_ranks": ranks,
@@ -337,12 +362,13 @@ def evaluate_retrieval(
     for sample in dataset:
         question = sample["question"]
         gold_chunk_ids = set(sample.get("gold_chunk_ids", []))
+        gold_doc_ids = set(sample.get("gold_doc_ids", []))
         # 调用知识库检索入口：这里会真正访问本地向量库 / 稀疏检索资源，
-        # 并返回各阶段候选结果。后续指标只基于这个 trace 和 gold_chunk_ids 计算。
+        # 并返回各阶段候选结果。优先使用 chunk gold；没有 chunk gold 时使用 doc gold。
         trace = build_retrieval_trace(question, config=config)
         timing_details.append(trace.get("timings_ms", {}))
         stage_results = {
-            stage_name: _collect_stage_metrics(stage_candidates, gold_chunk_ids)
+            stage_name: _collect_stage_metrics(stage_candidates, gold_chunk_ids, gold_doc_ids)
             for stage_name, stage_candidates in trace["stages"].items()
         }
         for stage_name, stage_result in stage_results.items():
@@ -350,14 +376,16 @@ def evaluate_retrieval(
 
         final_result = stage_results["final"]
         loss_reasons = _detect_loss_reasons(stage_results)
-        gold_rank_summary = _collect_gold_rank_summary(stage_results, gold_chunk_ids)
+        gold_rank_summary = _collect_gold_rank_summary(stage_results, gold_chunk_ids, gold_doc_ids)
         claim_diagnostics = _collect_claim_diagnostics(sample.get("expected_claims", []), trace)
         for reason in loss_reasons:
             loss_reason_counts[reason] = loss_reason_counts.get(reason, 0) + 1
 
         details.append(
             {
+                "sample_id": sample.get("sample_id", ""),
                 "question": question,
+                "source": sample.get("source", {}),
                 "question_type": sample.get("question_type", ""),
                 "expected_corpus": sample.get("expected_corpus", ""),
                 "expected_sources": sample.get("expected_sources", sample.get("gold_doc_ids", [])),
@@ -365,9 +393,12 @@ def evaluate_retrieval(
                 "reference_answer": sample.get("reference_answer", ""),
                 "judge_rubric": sample.get("judge_rubric", {}),
                 "gold_chunk_ids": list(gold_chunk_ids),
-                "gold_doc_ids": sample.get("gold_doc_ids", []),
+                "gold_doc_ids": list(gold_doc_ids),
+                "retrieval_match_mode": final_result.get("match_mode", ""),
                 "retrieved_chunk_ids": final_result["retrieved_chunk_ids"],
+                "retrieved_doc_ids": final_result.get("retrieved_doc_ids", []),
                 "matched_chunk_ids": final_result["matched_chunk_ids"],
+                "matched_doc_ids": final_result.get("matched_doc_ids", []),
                 "recall": final_result["recall"],
                 "reciprocal_rank": final_result["reciprocal_rank"],
                 "stage_results": stage_results,

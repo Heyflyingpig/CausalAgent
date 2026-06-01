@@ -129,7 +129,10 @@ def _build_ragas_eval_row(
         ragas_row["reference"] = reference
 
     metadata = {
+        "sample_id": sample.get("sample_id", ""),
         "question": question,
+        "source": sample.get("source", {}),
+        "gold_doc_ids": sample.get("gold_doc_ids", []),
         "question_type": sample.get("question_type", ""),
         "expected_corpus": sample.get("expected_corpus", ""),
         "expected_sources": sample.get("expected_sources", sample.get("gold_doc_ids", [])),
@@ -158,16 +161,28 @@ def filter_eval_samples(
     dataset: List[Dict[str, Any]],
     sample_filter: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """按评测配置筛选样本，避免把未复查样本混入正式 Ragas baseline。"""
+    """按评测配置筛选样本；v2 benchmark 不要求旧 review/question_type 字段。"""
     if not sample_filter:
         return dataset
 
+    sample_ids = set(sample_filter.get("sample_ids") or [])
+    source_datasets = set(sample_filter.get("source_datasets") or [])
+    row_range = sample_filter.get("source_row_range") or []
     review_statuses = set(sample_filter.get("review_statuses") or [])
     question_types = set(sample_filter.get("question_types") or [])
     is_smoke_case = sample_filter.get("is_smoke_case")
 
     filtered = []
     for sample in dataset:
+        source = sample.get("source") or {}
+        row_index = source.get("row_index")
+        if sample_ids and sample.get("sample_id") not in sample_ids:
+            continue
+        if source_datasets and source.get("dataset") not in source_datasets:
+            continue
+        if len(row_range) == 2 and isinstance(row_index, int):
+            if row_index < int(row_range[0]) or row_index > int(row_range[1]):
+                continue
         if review_statuses and sample.get("review_status") not in review_statuses:
             continue
         if question_types and sample.get("question_type") not in question_types:
@@ -217,6 +232,7 @@ def build_ragas_dataset(
 
     dataset_build_config = {
         "limit": limit,
+        "dataset_sha256": _sha256_file(dataset_path),
         "retrieval_config": config.to_dict(),
         "max_contexts": max_contexts,
         "max_context_chars": max_context_chars,
@@ -254,6 +270,11 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _sha256_file(path: str) -> str:
+    """计算文件 SHA256，用于让 prepared dataset 缓存感知数据内容变化。"""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 def _expected_dataset_build_config(
     dataset_path: str,
     limit: Optional[int],
@@ -266,6 +287,7 @@ def _expected_dataset_build_config(
     """生成用于判断 prepared dataset 缓存是否可复用的配置签名。"""
     return {
         "limit": limit,
+        "dataset_sha256": _sha256_file(dataset_path),
         "retrieval_config": retrieval_config.to_dict(),
         "max_contexts": max_contexts,
         "max_context_chars": max_context_chars,
