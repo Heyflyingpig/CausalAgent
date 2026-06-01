@@ -51,7 +51,7 @@ def _parse_content_blocks(tool_message: ToolMessage) -> dict[str, Any] | None:
 
 
 def parse_tool_message_json(tool_message: ToolMessage) -> dict[str, Any]:
-    """解析 ToolMessage 有效载荷并将其转换为业务结果字典。"""
+    """解析 ToolMessage 多种有效载荷并将其转换为业务结果字典。"""
     artifact_payload = _structured_content_from_artifact(getattr(tool_message, "artifact", None))
     if artifact_payload is not None:
         return _normalize_payload(artifact_payload)
@@ -59,6 +59,7 @@ def parse_tool_message_json(tool_message: ToolMessage) -> dict[str, Any]:
     content = getattr(tool_message, "content", "")
     if isinstance(content, dict):
         return content
+    # 海象表达法，先赋值，后判断
     if content_blocks_result := _parse_content_blocks(tool_message):
         return content_blocks_result
     if not isinstance(content, str):

@@ -67,7 +67,8 @@ def execute_tool_router(state:CausalChatState) -> str:
 def mcp_router(state: CausalChatState) -> str:
     """检测mcp是否调用成功"""
     logging.info("--- 路由: MCP决策 ---")
-    if state.get("causal_analysis_result"):
+    mcp_result =  state.get("causal_analysis_result")
+    if isinstance(mcp_result, dict) and mcp_result.get("success") is True:
         logging.info("路由决策 -> MCP分析成功, 前往[RAG工具阶段]")
         return "rag"
     logging.info("路由决策 -> MCP分析缺失不充足, 前往[Agent决策路由]")
