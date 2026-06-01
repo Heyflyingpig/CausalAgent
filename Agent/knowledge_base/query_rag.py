@@ -507,7 +507,7 @@ def _format_evidence_blocks(evidence_payloads: List[Dict[str, Any]]) -> str:
 def _build_answer_prompt() -> ChatPromptTemplate:
     return ChatPromptTemplate.from_template(
         """
-        你是一位严谨的因果推断知识库问答助手。你的任务不是自由发挥，而是严格依据检索到的证据回答问题。
+        你是一位严谨的 RAG 知识库问答助手。你的任务不是自由发挥，而是严格依据检索到的证据回答问题。
 
         # 问题
         {question}
@@ -529,6 +529,48 @@ def _build_answer_prompt() -> ChatPromptTemplate:
         5. 输出必须是结构化结果，不要附加额外说明。
         """
     )
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    """从普通 LLM 文本输出中提取 JSON object。"""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+
+def _invoke_answer_llm_fallback(
+    question_payload: Dict[str, Any],
+    evidence_blocks: str,
+) -> RagAnswer:
+    """兼容不支持 response_format 的 OpenAI-compatible 模型。"""
+    prompt = _build_answer_prompt()
+    response = (prompt | _get_llm()).invoke(
+        {
+            "question": question_payload.get("question", ""),
+            "intent": question_payload.get("intent", ""),
+            "why_needed": question_payload.get("why_needed", ""),
+            "evidence_blocks": evidence_blocks
+            + "\n\n请只输出 JSON object，字段为 answer、confidence、citations、status。",
+        }
+    )
+    data = _extract_json_object(str(response.content))
+    confidence = data.get("confidence", "low")
+    if isinstance(confidence, (int, float)):
+        if confidence >= 0.75:
+            data["confidence"] = "high"
+        elif confidence >= 0.45:
+            data["confidence"] = "medium"
+        else:
+            data["confidence"] = "low"
+    return RagAnswer.model_validate(data)
 
 
 def _answer_question(question_payload: Dict[str, Any], evidence_payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -558,17 +600,20 @@ def _answer_question(question_payload: Dict[str, Any], evidence_payloads: List[D
             }
         )
     except Exception as exc:
-        return {
-            "question": question_text,
-            "intent": question_payload.get("intent", ""),
-            "priority": question_payload.get("priority", "medium"),
-            "why_needed": question_payload.get("why_needed", ""),
-            "status": "insufficient_evidence",
-            "answer": f"证据已检索，但回答生成失败：{exc}",
-            "confidence": "low",
-            "citations": [],
-            "retrieved_docs": evidence_payloads,
-        }
+        try:
+            answer = _invoke_answer_llm_fallback(question_payload, evidence_blocks)
+        except Exception as fallback_exc:
+            return {
+                "question": question_text,
+                "intent": question_payload.get("intent", ""),
+                "priority": question_payload.get("priority", "medium"),
+                "why_needed": question_payload.get("why_needed", ""),
+                "status": "insufficient_evidence",
+                "answer": f"证据已检索，但回答生成失败：{exc}; fallback_failed={fallback_exc}",
+                "confidence": "low",
+                "citations": [],
+                "retrieved_docs": evidence_payloads,
+            }
 
     valid_citations = {evidence["evidence_id"] for evidence in evidence_payloads}
     citations = [citation for citation in answer.citations if citation in valid_citations]
