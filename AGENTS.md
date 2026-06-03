@@ -48,9 +48,19 @@
 │   ├── Postprocessing/
 │   ├── Report/
 │   ├── knowledge_base/     # RAG 知识库
-│   │   ├── build_knowledge.py
-│   │   ├── db/
-│   │   └── models/
+│   │   ├── build_knowledge.py # 知识库构建入口，支持 default / medical profile
+│   │   ├── query_rag.py       # RAG 查询、检索 trace 与证据生成入口
+│   │   ├── db/                # 当前运行时向量知识库存储；医疗库应使用 PubMedQA active corpus 重建
+│   │   ├── models/            # 本地嵌入模型，default profile 使用 bge-small-zh-v1.5
+│   │   └── rag/               # RAG 测评框架、数据集操作、报告和外部医疗数据
+│   │       ├── rag_config.py
+│   │       ├── RAG测评框架开发.md
+│   │       ├── data/
+│   │       │   └── external/pubmedqa/
+│   │       ├── operation_datasets/
+│   │       ├── rag_eval/
+│   │       ├── tools/
+│   │       └── output/
 │   └── tool_node/
 ├── Database/               # 数据库初始化与迁移逻辑
 │   ├── database_init.py
@@ -100,6 +110,18 @@
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
 - RAG 启动期只检查知识库目录是否可用，不会在启动时完整加载向量库；若 `Agent/knowledge_base/db` 不存在，worker 会记录 warning，并以“无知识库模式”继续运行。
+- `Agent/knowledge_base/build_knowledge.py` 当前支持 `--profile default` 和 `--profile medical`：
+  - `default` 从 `Agent/knowledge_base/source/` 读取 Pearl/因果资料，并使用本地 `bge-small-zh-v1.5`。
+  - `medical` 从 `rag_config.py` 的 `MEDICAL_KNOWLEDGE_BUILD_CONFIG["corpus_path"]` 读取当前 active 医疗语料；当前指向 PubMedQA processed corpus，使用 `MEDICAL_EMBEDDING_API_KEY`、`MEDICAL_EMBEDDING_BASE_URL`、`MEDICAL_EMBEDDING_MODEL` 配置的 OpenAI-compatible embedding。
+  - 两个 profile 都写入原 `Agent/knowledge_base/db` 持久化目录；切换 profile 前如果要清空旧索引，必须先获得用户明确确认。
+- 当前 active benchmark 是 PubMedQA labeled；PubMedQA processed corpus/eval 均为 1000 条，测试集使用通用 `benchmark_v2` schema。
+- 当前本地 `Agent/knowledge_base/db` 已替换为 PubMedQA 医疗知识库，默认 collection `causal_agent_default` 中 doc_id 前缀为 `pubmedqa`；旧 RAGCare 向量库已备份到 `tmp/RAGCare`。
+- 当前医疗知识库应以 PubMedQA corpus 为准；若本地 `Agent/knowledge_base/db` 与 active benchmark 不一致，retrieval_eval 会通过向量库/benchmark mismatch 防护阻止误跑。
+- `query_rag.py` 和 `build_knowledge.py` 支持用 `RAG_VECTOR_DB_DIR` 临时覆盖向量库目录、用 `RAG_COLLECTION_NAME` 临时覆盖 Chroma collection；这可用于 smoke，不必覆盖 `Agent/knowledge_base/db`。
+- retrieval_eval 已增加向量库/benchmark mismatch 防护：若 active gold doc 前缀与当前向量库 doc 前缀不一致，会在检索前失败。
+- `run_rag_eval.py` 默认步骤是 `validate_datasets -> retrieval_eval -> ragas_eval -> claim_eval -> trace_export -> summary`。
+- Active benchmark 测试集使用通用 `benchmark_v2` schema，`gold_doc_ids` 是通用 doc-level 检索 gold；旧因果数据集仍可继续使用 `gold_chunk_ids`。
+- 当前 LLM 若不支持 `response_format` 结构化输出，`query_rag.py` 会退回普通 JSON answer 生成路径。
 
 
 ### 3.1 常用命令

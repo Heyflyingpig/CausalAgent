@@ -464,10 +464,20 @@ python Run_causal.py
 │   ├── Postprocessing/     # 后处理
 │   ├── Report/             # 报告生成逻辑
 │   ├── knowledge_base/     # RAG 知识库
-│   │   ├── build_knowledge.py
-|   |   ├── query_rag.py
-│   │   ├── db/             # 向量知识库存储
-│   │   └── models/         # 嵌入模型
+│   │   ├── build_knowledge.py # 知识库构建入口，支持 default / medical profile
+│   │   ├── query_rag.py    # RAG 查询、检索 trace 与证据生成入口
+│   │   ├── db/             # 当前运行时向量知识库存储；医疗库应使用 PubMedQA active corpus 重建
+│   │   ├── models/         # 本地嵌入模型，default profile 使用 bge-small-zh-v1.5
+│   │   └── rag/            # RAG 测评框架、数据集操作、报告和外部医疗数据
+│   │       ├── rag_config.py
+│   │       ├── RAG测评框架开发.md
+│   │       ├── data/
+│   │       │   └── external/pubmedqa/
+│   │       │       └── processed/
+│   │       ├── operation_datasets/
+│   │       ├── rag_eval/
+│   │       ├── tools/
+│   │       └── output/
 │   └── tool_node/          # MCP 工具节点封装（task、rag 调用等）
 ├── Database/               # 数据库初始化与迁移逻辑
 │   ├── database_init.py    # 数据库初始化引导脚本
@@ -703,6 +713,7 @@ python Run_causal.py
   - 增加了轻量级融合重排逻辑，综合 dense 分数、sparse 分数、语料类型和双路命中情况得到最终 rerank_score。
   - 新增了评测脚本 rag_eval.py，当前支持检索层指标 Recall@k、Precision@k、MRR、Hit Rate，以及轻量级生成层关键点覆盖评测。
   - 新增了 metadata 导出脚本 export_metadata.py，
+  - RAG 测评框架当前使用 PubMedQA labeled 作为 active benchmark；`Agent/knowledge_base/rag/operation_datasets/prepare_pubmedqa.py` 可将 PubMedQA labeled 转换为 processed corpus/eval。当前 processed corpus/eval 均为 1000 条，测试集使用通用 `benchmark_v2` schema。`Agent/knowledge_base/build_knowledge.py --profile medical` 会读取 `rag_config.py` 的 `MEDICAL_KNOWLEDGE_BUILD_CONFIG["corpus_path"]`，并复用原 `Agent/knowledge_base/db` 持久化目录；需要配置 `MEDICAL_EMBEDDING_API_KEY`、`MEDICAL_EMBEDDING_BASE_URL`，可选 `MEDICAL_EMBEDDING_MODEL`。当前本地 `Agent/knowledge_base/db` 已替换为 PubMedQA 医疗知识库，旧 RAGCare 向量库备份在 `tmp/RAGCare`。`query_rag.py` 和 `build_knowledge.py` 支持用 `RAG_VECTOR_DB_DIR` 临时覆盖向量库目录、用 `RAG_COLLECTION_NAME` 临时覆盖 Chroma collection；若本地 `Agent/knowledge_base/db` 与 PubMedQA benchmark 不一致，默认 retrieval smoke 会被向量库/benchmark mismatch 防护拦截。
 
 ---
 2026.5.17
