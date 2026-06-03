@@ -22,9 +22,14 @@ BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parents[1]
 MODEL_PATH = BASE_DIR / "models" / "bge-small-zh-v1.5"
 SOURCE_DIRECTORY = BASE_DIR / "source"
-PERSIST_DIRECTORY = BASE_DIR / "db"
-COLLECTION_NAME = "causal_agent_default"
-MEDICAL_CORPUS_PATH = BASE_DIR / "rag" / "data" / "external" / "ragcare_qa" / "processed" / "medical_corpus_docs.jsonl"
+PERSIST_DIRECTORY = Path(os.environ.get("RAG_VECTOR_DB_DIR", str(BASE_DIR / "db")))
+COLLECTION_NAME = os.environ.get("RAG_COLLECTION_NAME", "causal_agent_default")
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from Agent.knowledge_base.rag.rag_config import MEDICAL_KNOWLEDGE_BUILD_CONFIG
+
+MEDICAL_CORPUS_PATH = Path(MEDICAL_KNOWLEDGE_BUILD_CONFIG["corpus_path"])
 
 
 def _load_project_env() -> None:
@@ -154,21 +159,22 @@ def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
 
 
 def _load_medical_documents(corpus_path: Path = MEDICAL_CORPUS_PATH) -> List[Document]:
-    """加载 RAGCare-QA medical corpus，正文只使用 Context，避免答案泄漏。"""
+    """加载 active medical corpus，正文只使用 evidence text，避免答案泄漏。"""
     if not corpus_path.exists():
         raise FileNotFoundError(f"medical corpus not found: {corpus_path}")
     documents = []
     for row in _load_jsonl(corpus_path):
         doc_id = str(row["doc_id"])
+        source_dataset = row.get("source_dataset", "medical_corpus")
         metadata = {
             "doc_id": doc_id,
-            "source": row.get("source_dataset", "ChatMED-Project/RAGCare-QA"),
-            "source_name": "ChatMED-Project/RAGCare-QA",
+            "source": source_dataset,
+            "source_name": source_dataset,
             "title": doc_id,
             "page": row.get("page", ""),
             "doc_type": "medical_context",
             "corpus": "medical",
-            "dataset": row.get("dataset", "ragcare_qa"),
+            "dataset": row.get("dataset", "medical"),
             "reference": row.get("reference", ""),
             "source_row_index": row.get("source_row_index"),
         }
@@ -221,6 +227,8 @@ def _build_medical_embedding() -> OpenAIEmbeddings:
         api_key=_required_env("MEDICAL_EMBEDDING_API_KEY"),
         base_url=_required_env("MEDICAL_EMBEDDING_BASE_URL"),
         model=model,
+        tiktoken_enabled=False,
+        check_embedding_ctx_length=False,
     )
 
 
@@ -233,22 +241,31 @@ def _profile_settings(profile: str) -> Dict[str, Any]:
             "chunk_size": 500,
             "chunk_overlap": 100,
             "collection_name": COLLECTION_NAME,
+            "persist_directory": PERSIST_DIRECTORY,
         }
     if profile == "medical":
+        persist_directory = Path(
+            os.environ.get("RAG_VECTOR_DB_DIR", MEDICAL_KNOWLEDGE_BUILD_CONFIG["persist_directory"])
+        )
         return {
-            "documents": _load_medical_documents(),
+            "documents": _load_medical_documents(Path(MEDICAL_KNOWLEDGE_BUILD_CONFIG["corpus_path"])),
             "embedding": _build_medical_embedding(),
-            "chunk_size": 700,
-            "chunk_overlap": 100,
-            "collection_name": COLLECTION_NAME,
+            "chunk_size": int(MEDICAL_KNOWLEDGE_BUILD_CONFIG["chunk_size"]),
+            "chunk_overlap": int(MEDICAL_KNOWLEDGE_BUILD_CONFIG["chunk_overlap"]),
+            "collection_name": os.environ.get(
+                "RAG_COLLECTION_NAME",
+                str(MEDICAL_KNOWLEDGE_BUILD_CONFIG["collection_name"]),
+            ),
+            "persist_directory": persist_directory,
         }
     raise ValueError(f"Unsupported build profile: {profile}")
 
 
 def build(profile: str = "default") -> Dict[str, Any]:
     """构建知识库：加载文档 -> 切分 -> embedding -> 写入原持久化目录。"""
-    print(f"开始构建知识库，profile={profile}，persist_directory={PERSIST_DIRECTORY}")
     settings = _profile_settings(profile)
+    persist_directory = Path(settings["persist_directory"])
+    print(f"开始构建知识库，profile={profile}，persist_directory={persist_directory}")
     documents = settings["documents"]
     if not documents:
         raise ValueError("未加载到任何文档，请检查数据源路径。")
@@ -260,11 +277,11 @@ def build(profile: str = "default") -> Dict[str, Any]:
     split_docs = _attach_chunk_metadata(splitter.split_documents(documents))
     print(f"文档已切分为 {len(split_docs)} 个 chunk。")
 
-    PERSIST_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    persist_directory.mkdir(parents=True, exist_ok=True)
     db = Chroma.from_documents(
         split_docs,
         settings["embedding"],
-        persist_directory=str(PERSIST_DIRECTORY),
+        persist_directory=str(persist_directory),
         collection_name=settings["collection_name"],
     )
     if hasattr(db, "persist"):
@@ -273,7 +290,7 @@ def build(profile: str = "default") -> Dict[str, Any]:
     result = {
         "status": "pass",
         "profile": profile,
-        "persist_directory": str(PERSIST_DIRECTORY.resolve()),
+        "persist_directory": str(persist_directory.resolve()),
         "source_doc_count": len(documents),
         "chunk_count": len(split_docs),
         "collection_name": settings["collection_name"],
@@ -289,7 +306,7 @@ def _parse_args() -> argparse.Namespace:
         "--profile",
         choices=["default", "medical"],
         default=os.environ.get("KNOWLEDGE_BUILD_PROFILE", "default"),
-        help="default builds Pearl/causal source files; medical builds RAGCare-QA corpus into the same persist directory.",
+        help="default builds Pearl/causal source files; medical builds the active PubMedQA corpus into the same persist directory.",
     )
     return parser.parse_args()
 

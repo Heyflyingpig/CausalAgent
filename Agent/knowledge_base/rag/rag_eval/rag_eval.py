@@ -16,10 +16,11 @@ from Agent.knowledge_base.query_rag import (
     # 它会走当前 RAG retrieval 链路：dense -> threshold -> MMR -> sparse -> merge/rerank -> final。
     # rag_eval.py 只消费它返回的 trace，不直接操作 FAISS / embedding / sparse index。
     build_retrieval_trace,
+    get_vector_db_metadata_summary,
 )
 from Agent.knowledge_base.rag.rag_config import (
+    ACTIVE_EVAL_DATASET_PATH,
     DATA_DIR,
-    EVAL_DATASET_PATH,
     MACHINE_OUTPUT_DIR,
     REPORT_OUTPUT_DIR,
     RETRIEVAL_EVAL_CONFIG,
@@ -33,7 +34,7 @@ from Agent.knowledge_base.rag.tools.report_utils import (
     write_markdown_file,
 )
 
-DEFAULT_DATASET_PATH = EVAL_DATASET_PATH
+DEFAULT_DATASET_PATH = ACTIVE_EVAL_DATASET_PATH
 DEFAULT_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "rag_eval_result.json"
 DEFAULT_SWEEP_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "rag_eval_sweep_result.json"
 DEFAULT_REPORT_PATH = REPORT_OUTPUT_DIR / "rag_eval_report.md"
@@ -45,7 +46,7 @@ CLAIM_OVERLAP_THRESHOLD = 0.35
 # mode="single" 跑一组配置；mode="sweep" 跑下面的 SWEEP_CONFIGS 参数对比。
 # single 模式默认使用 query_rag.py 里的 RagRetrievalConfig() 默认值。
 # 只有 top_k 不为 None 时，才会临时覆盖 final_top_k。
-# 默认数据集使用 ragas_testset_generate.py 生成的统一测试集。
+# 默认数据集使用 PubMedQA active benchmark。
 # 如果没有 gold_chunk_ids，retrieval recall/MRR 只能作为空 gold 诊断，生成质量主要看 Ragas/claim eval。
 EVAL_RUN_CONFIG = RETRIEVAL_EVAL_CONFIG
 
@@ -163,11 +164,10 @@ def _collect_gold_rank_summary(
             if match_mode == "chunk"
             else stage_result.get("retrieved_doc_ids", [])
         )
-        ranks = {
-            retrieved_id: index
-            for index, retrieved_id in enumerate(retrieved_ids, start=1)
-            if retrieved_id in gold_ids
-        }
+        ranks: Dict[str, int] = {}
+        for index, retrieved_id in enumerate(retrieved_ids, start=1):
+            if retrieved_id in gold_ids and retrieved_id not in ranks:
+                ranks[retrieved_id] = index
         summary[stage_name] = {
             "match_mode": match_mode,
             "matched_count": len(ranks),
@@ -260,6 +260,38 @@ def _summarize_timings(timing_details: List[Dict[str, float]]) -> Dict[str, floa
     }
 
 
+def _doc_id_prefix(doc_id: str) -> str:
+    """从 doc_id 中抽取数据集前缀，用于粗略判断 benchmark gold 和向量库是否匹配。"""
+    return str(doc_id).split("_", 1)[0] if doc_id else ""
+
+
+def _collect_gold_doc_prefixes(dataset: List[Dict[str, Any]]) -> set[str]:
+    """汇总 benchmark 样本里的 gold_doc_ids 前缀。"""
+    prefixes: set[str] = set()
+    for sample in dataset:
+        for doc_id in sample.get("gold_doc_ids", []):
+            prefix = _doc_id_prefix(str(doc_id))
+            if prefix:
+                prefixes.add(prefix)
+    return prefixes
+
+
+def _validate_vector_store_matches_dataset(dataset: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """在检索前检查当前向量库 doc_id 前缀是否覆盖 benchmark gold_doc_ids 前缀。"""
+    summary = get_vector_db_metadata_summary()
+    gold_prefixes = _collect_gold_doc_prefixes(dataset)
+    vector_prefixes = set(summary.get("doc_id_prefix_counts", {}).keys())
+    summary["gold_doc_id_prefixes"] = sorted(gold_prefixes)
+    summary["vector_doc_id_prefixes"] = sorted(vector_prefixes)
+    if gold_prefixes and vector_prefixes and gold_prefixes.isdisjoint(vector_prefixes):
+        raise ValueError(
+            "Active benchmark gold_doc_ids do not match the current vector DB. "
+            f"gold prefixes={sorted(gold_prefixes)}, vector prefixes={sorted(vector_prefixes)}, "
+            f"persist_directory={summary.get('persist_directory')}"
+        )
+    return summary
+
+
 def _detect_loss_reasons(stage_results: Dict[str, Dict[str, Any]]) -> List[str]:
     """
     根据各阶段命中情况，粗略标记当前问题可能的丢失原因
@@ -345,6 +377,7 @@ def evaluate_retrieval(
         "config": config.to_dict(),
         }
 
+    vector_db_summary = _validate_vector_store_matches_dataset(dataset)
     details: List[Dict[str, Any]] = []
     stage_metric_buckets: Dict[str, List[Dict[str, Any]]] = {
         "dense_raw": [],
@@ -419,6 +452,7 @@ def evaluate_retrieval(
         "mrr": final_metrics["mrr"],
         "hit_rate": final_metrics["hit_rate"],
         "avg_timings_ms": _summarize_timings(timing_details),
+        "vector_db_summary": vector_db_summary,
         "stage_metrics": {
             stage_name: _summarize_stage_metrics(stage_details)
             for stage_name, stage_details in stage_metric_buckets.items()

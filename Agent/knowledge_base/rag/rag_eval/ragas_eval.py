@@ -27,10 +27,11 @@ from Agent.knowledge_base.query_rag import (
     _get_embedding_function,
     _normalize_question_payload,
     build_retrieval_trace,
+    get_vector_db_metadata_summary,
 )
 from Agent.knowledge_base.rag.rag_config import (
+    ACTIVE_EVAL_DATASET_PATH,
     DATA_DIR,
-    EVAL_DATASET_PATH,
     MACHINE_OUTPUT_DIR,
     RAGAS_RUN_CONFIG,
     REPORT_OUTPUT_DIR,
@@ -39,7 +40,7 @@ from Agent.knowledge_base.rag.rag_config import (
 from Agent.knowledge_base.rag.rag_eval.rag_eval import load_eval_dataset
 from Agent.knowledge_base.rag.tools.report_utils import build_ragas_markdown_report, write_markdown_file
 
-DEFAULT_DATASET_PATH = EVAL_DATASET_PATH
+DEFAULT_DATASET_PATH = ACTIVE_EVAL_DATASET_PATH
 DEFAULT_RAGAS_DATASET_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_dataset.json"
 DEFAULT_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_result.json"
 DEFAULT_REPORT_PATH = REPORT_OUTPUT_DIR / "ragas_eval_report.md"
@@ -50,7 +51,7 @@ DEFAULT_CROSS_METRIC_CASES_PATH = MACHINE_OUTPUT_DIR / "ragas_cross_metric_bad_c
 ANSWER_BUILD_VERSION = "answer_fallback_v2"
 
 # 本地手动运行时优先改这里。
-# Phase3 默认读取 ragas_testset_generate.py 生成的统一测试集。
+# Phase3 默认读取 PubMedQA active benchmark。
 # Ragas 的部分指标会触发多轮 judge 调用；确认链路稳定后，再把 limit 和指标逐步放大。
 # 为了控制耗时，默认会复用已落盘的 ragas_eval_dataset.json；如果修改了检索参数、
 # context 截断策略或样本数量，脚本会自动重建。
@@ -64,9 +65,9 @@ ANSWER_BUILD_VERSION = "answer_fallback_v2"
 # 当前 profile：
 # - quick_cached：1 条样本，优先验证流程，允许复用 Ragas 分数缓存。
 # - reviewed_5_core_metrics：5 条样本，跑当前接入的 Ragas 核心指标。
-# - reviewed_all_core_metrics：统一 generated 测试集全量核心指标。
+# - reviewed_all_core_metrics：PubMedQA active benchmark 全量核心指标。
 # - reviewed_all_prepare_only：只构造 Ragas dataset，不调用 Ragas judge。
-# - strict_generated_repeat3：统一 generated 测试集，四指标重复 3 次。
+# - strict_repeat3：PubMedQA active benchmark，四指标重复 3 次。
 def _ensure_parent_dir(path: Path) -> None:
     """确保输出文件所在目录存在。"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -241,6 +242,7 @@ def build_ragas_dataset(
         "answer_model": settings.MODEL,
         "answer_base_url": settings.BASE_URL,
         "answer_build_version": ANSWER_BUILD_VERSION,
+        "vector_db_summary": get_vector_db_metadata_summary(),
     }
     return {
         "dataset_path": str(Path(dataset_path).resolve()),
@@ -296,6 +298,7 @@ def _expected_dataset_build_config(
         "answer_model": settings.MODEL,
         "answer_base_url": settings.BASE_URL,
         "answer_build_version": ANSWER_BUILD_VERSION,
+        "vector_db_summary": get_vector_db_metadata_summary(),
     }
 
 

@@ -8,7 +8,6 @@ from Agent.knowledge_base.rag.rag_config import (
     ACTIVE_BENCHMARK_NAME,
     ACTIVE_CORPUS_PATH,
     ACTIVE_EVAL_DATASET_PATH,
-    EVAL_DATASET_PATH,
 )
 
 
@@ -18,7 +17,6 @@ OUTPUT_DIR = RAG_DIR / "output"
 MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
 REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
 DATASET_FILES = {
-    "generated": EVAL_DATASET_PATH,
     ACTIVE_BENCHMARK_NAME: ACTIVE_EVAL_DATASET_PATH,
 }
 ALLOWED_QUESTION_TYPES = {
@@ -479,7 +477,7 @@ def write_generated_eval_dataset(
     merge_existing: bool = True,
 ) -> Dict[str, Any]:
     """写入 Ragas 生成的统一 eval dataset，可选择和现有样本按 question 去重合并。"""
-    target_path = dataset_path or EVAL_DATASET_PATH
+    target_path = dataset_path or ACTIVE_EVAL_DATASET_PATH
     target_path.parent.mkdir(parents=True, exist_ok=True)
     existing = load_dataset_json(target_path) if merge_existing and target_path.exists() else []
     existing_questions = {sample["question"] for sample in existing}

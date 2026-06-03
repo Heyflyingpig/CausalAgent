@@ -21,8 +21,8 @@ from config.settings import settings
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(base_dir, "models", "bge-small-zh-v1.5")
-PERSIST_DIRECTORY = os.path.join(base_dir, "db")
-COLLECTION_NAME = "causal_agent_default"
+PERSIST_DIRECTORY = os.environ.get("RAG_VECTOR_DB_DIR", os.path.join(base_dir, "db"))
+COLLECTION_NAME = os.environ.get("RAG_COLLECTION_NAME", "causal_agent_default")
 
 DENSE_FETCH_K = 10
 DENSE_MMR_K = 6
@@ -87,11 +87,14 @@ def _get_llm() -> ChatOpenAI:
 
 @lru_cache(maxsize=1)
 def _get_embedding_function() -> Any:
+    """构造查询侧 embedding 函数，医疗库使用 OpenAI-compatible API。"""
     if os.environ.get("KNOWLEDGE_BUILD_PROFILE") == "medical" or os.environ.get("MEDICAL_EMBEDDING_API_KEY"):
         return OpenAIEmbeddings(
             api_key=os.environ["MEDICAL_EMBEDDING_API_KEY"],
             base_url=os.environ["MEDICAL_EMBEDDING_BASE_URL"],
             model=os.environ.get("MEDICAL_EMBEDDING_MODEL", "text-embedding-3-small"),
+            tiktoken_enabled=False,
+            check_embedding_ctx_length=False,
         )
     return HuggingFaceEmbeddings(
         model_name=MODEL_PATH,
@@ -112,6 +115,39 @@ def _get_vector_db() -> Chroma:
         embedding_function=_get_embedding_function(),
         collection_name=COLLECTION_NAME,
     )
+
+
+def get_vector_db_metadata_summary(limit: int = 10000) -> Dict[str, Any]:
+    """只读汇总当前 Chroma 向量库 metadata，用于评测前检查知识库和 benchmark 是否匹配。"""
+    if not os.path.exists(PERSIST_DIRECTORY):
+        return {
+            "exists": False,
+            "persist_directory": PERSIST_DIRECTORY,
+            "collection_name": COLLECTION_NAME,
+            "vector_count": 0,
+            "dataset_counts": {},
+            "doc_id_prefix_counts": {},
+            "sample_doc_ids": [],
+        }
+
+    db = Chroma(
+        persist_directory=PERSIST_DIRECTORY,
+        collection_name=COLLECTION_NAME,
+    )
+    raw = db.get(include=["metadatas"], limit=limit)
+    metadatas = raw.get("metadatas") or []
+    doc_ids = [str(metadata.get("doc_id", "")) for metadata in metadatas]
+    datasets = [str(metadata.get("dataset", "")) for metadata in metadatas]
+    prefixes = [doc_id.split("_", 1)[0] for doc_id in doc_ids if doc_id]
+    return {
+        "exists": True,
+        "persist_directory": PERSIST_DIRECTORY,
+        "collection_name": COLLECTION_NAME,
+        "vector_count": len(raw.get("ids") or []),
+        "dataset_counts": dict(Counter(datasets)),
+        "doc_id_prefix_counts": dict(Counter(prefixes)),
+        "sample_doc_ids": doc_ids[:5],
+    }
 
 
 def _slugify(value: str) -> str:
@@ -570,6 +606,38 @@ def _invoke_answer_llm_fallback(
             data["confidence"] = "medium"
         else:
             data["confidence"] = "low"
+    elif isinstance(confidence, str):
+        confidence_map = {
+            "高": "high",
+            "高置信": "high",
+            "高置信度": "high",
+            "中": "medium",
+            "中等": "medium",
+            "中置信": "medium",
+            "中置信度": "medium",
+            "低": "low",
+            "低置信": "low",
+            "低置信度": "low",
+        }
+        normalized_confidence = confidence.strip().lower()
+        data["confidence"] = confidence_map.get(confidence.strip(), normalized_confidence)
+
+    status = data.get("status", "insufficient_evidence")
+    if isinstance(status, str):
+        status_map = {
+            "已回答": "answered",
+            "可回答": "answered",
+            "回答": "answered",
+            "证据不足": "insufficient_evidence",
+            "证据不充分": "insufficient_evidence",
+            "无法回答": "insufficient_evidence",
+        }
+        normalized_status = status.strip().lower()
+        data["status"] = status_map.get(status.strip(), normalized_status)
+
+    citations = data.get("citations", [])
+    if isinstance(citations, str):
+        data["citations"] = [item.strip() for item in re.split(r"[,，;；\s]+", citations) if item.strip()]
     return RagAnswer.model_validate(data)
 
 

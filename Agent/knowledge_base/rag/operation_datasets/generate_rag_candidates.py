@@ -16,21 +16,21 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from Agent.knowledge_base.query_rag import RagRetrievalConfig, build_retrieval_trace
 from Agent.knowledge_base.rag.rag_config import (
+    ACTIVE_EVAL_DATASET_PATH,
     CANDIDATE_GENERATION_CONFIG,
     DATA_DIR,
-    EVAL_DATASET_PATH,
     MACHINE_OUTPUT_DIR,
     RETRIEVAL_PROFILES,
 )
 
 RAG_DIR = Path(__file__).resolve().parents[1]
 LEGACY_DATASET_PATH = RAG_DIR / "rag_eval_sample.json"
-DEFAULT_DATASET_PATH = EVAL_DATASET_PATH
+DEFAULT_DATASET_PATH = ACTIVE_EVAL_DATASET_PATH
 DEFAULT_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "rag_eval_candidates_top20.json"
 
 # 本地手动运行时优先改这里；不传命令行参数时会直接使用这组配置。
 # 例如只想先给前 5 道题生成 top-20 候选，就把 limit 设为 5。
-# 默认读取 ragas_testset_generate.py 生成的统一测试集；
+# 默认读取 PubMedQA active benchmark；
 # 旧的 rag_eval_sample.json 暂时保留为兼容入口。
 CANDIDATE_RUN_CONFIG = CANDIDATE_GENERATION_CONFIG
 
