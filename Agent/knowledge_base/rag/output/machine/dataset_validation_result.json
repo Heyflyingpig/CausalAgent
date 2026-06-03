@@ -1,0 +1,23 @@
+{
+  "datasets": {
+    "pubmedqa": {
+      "schema_version": "benchmark_v2",
+      "sample_count": 1000,
+      "with_expected_claims": 1000,
+      "with_gold_doc_ids": 1000,
+      "sample_id_count": 1000,
+      "benchmark_corpus_doc_count": 1000,
+      "errors": []
+    }
+  },
+  "benchmark_corpus": {
+    "exists": true,
+    "doc_count": 1000,
+    "errors": []
+  },
+  "errors": [],
+  "warnings": [],
+  "error_count": 0,
+  "warning_count": 0,
+  "status": "pass"
+}
