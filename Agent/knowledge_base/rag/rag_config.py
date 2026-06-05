@@ -221,9 +221,13 @@ RAGAS_RUN_PROFILES = {
         ],
         "reuse_prepared_dataset": True,  # 签名不一致时会自动重建 prepared dataset。
         "reuse_score_cache": False,  # 调参 smoke 默认重新 judge。
+        "retrieval_config": {
+            **RETRIEVAL_PROFILES["active_current"],
+            "max_evidence_chars": 1200,
+        },  # Ragas 需要完整 PubMedQA rationale；只覆盖评测链路，不改业务默认证据长度。
         "ragas_timeout": 1800,  # 单任务超时秒数；context 变长后给 judge 更长时间。
         "ragas_max_workers": 1,  # 单 worker，降低 API 压力和 judge 波动。
-        "judge_profile": "pubmedqa_smoke20_ctx5_1200",  # judge 标签，进入缓存签名。
+        "judge_profile": "pubmedqa_smoke20_ctx5_1200_evidence1200_compact_rationale_prompt",  # judge 标签，进入缓存签名。
         "repeat_count": 1,  # judge 不重复。
     },
     "reviewed_all_core_metrics": {  # 当前 active benchmark 全量四指标配置。
@@ -307,8 +311,7 @@ RUN_PIPELINE_CONFIG = {
 RAGAS_TESTSET_GENERATE_CONFIG = {
     "mode": "generate",  # Ragas generated testset 工具运行模式。
     "source_dir": str(SOURCE_DIR),  # 旧因果资料源文档目录。
-    "embedding_model_path": str(DEFAULT_EMBEDDING_MODEL_PATH),  # 生成测试集用的本地 embedding。
-    "embedding_device": "cpu",  # 本地 embedding 运行设备。
+    "embedding_provider": "medical_openai_compatible",  # 复用 build_knowledge._build_medical_embedding()。
     "raw_output_path": str(MACHINE_OUTPUT_DIR / "ragas_generated_testset.json"),  # Ragas 原始测试集输出。
     "converted_output_path": str(MACHINE_OUTPUT_DIR / "ragas_generated_eval_samples.json"),  # 转换后样本输出。
     "eval_dataset_path": str(ACTIVE_EVAL_DATASET_PATH),  # 默认写入 PubMedQA active benchmark 路径。
@@ -317,8 +320,10 @@ RAGAS_TESTSET_GENERATE_CONFIG = {
     "write_eval_dataset": True,  # 是否写 benchmark JSON。
     "save_machine_output": True,  # 是否保存机器可读输出。
     "llm_preflight_enabled": True,  # 生成前是否检查 LLM 可用性。
+    "llm_max_tokens": 4096,  # Ragas 结构化抽取输出上限，避免默认 token 太小导致截断。
     "run_config_timeout": 1200,  # Ragas 生成超时秒数。
     "run_config_max_workers": 1,  # Ragas 生成 worker 数。
+    "raise_exceptions": False,  # 单个 Ragas transform 节点失败时继续生成，便于 smoke。
     "print_full_output": False,  # CLI 是否打印完整输出。
 }
 

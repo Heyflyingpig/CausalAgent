@@ -397,20 +397,25 @@ def infer_question_type(question: str) -> str:
 
 
 def extract_claims_from_reference(reference_answer: str, max_claims: int = 3) -> List[str]:
-    """从 reference answer 中切出初版 expected_claims。"""
+    """从 reference answer 中切出初版 expected_claims，兼容中英文句子边界。"""
+    normalized = re.sub(r"\s+", " ", reference_answer).strip()
+    if not normalized:
+        return []
+
+    protected = re.sub(r"(?<=\d)\.(?=\d)", "<DOT>", normalized)
     parts = [
-        part.strip()
-        for part in re.split(r"[。；;！？!?]\s*", reference_answer)
+        part.replace("<DOT>", ".").strip()
+        for part in re.findall(r"[^。；;！？!?.]+[。；;！？!?.]?", protected)
         if part.strip()
     ]
     claims = []
     for part in parts:
         if len(part) < 8:
             continue
-        claims.append(part + "。")
+        claims.append(part)
         if len(claims) >= max_claims:
             break
-    return claims or [reference_answer.strip()]
+    return claims or [normalized]
 
 
 def _get_generated_field(row: Dict[str, Any], names: List[str], default: Any = "") -> Any:

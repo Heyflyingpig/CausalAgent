@@ -585,9 +585,10 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
 def _invoke_answer_llm_fallback(
     question_payload: Dict[str, Any],
     evidence_blocks: str,
+    answer_prompt: Optional[ChatPromptTemplate] = None,
 ) -> RagAnswer:
     """兼容不支持 response_format 的 OpenAI-compatible 模型。"""
-    prompt = _build_answer_prompt()
+    prompt = answer_prompt or _build_answer_prompt()
     response = (prompt | _get_llm()).invoke(
         {
             "question": question_payload.get("question", ""),
@@ -615,12 +616,16 @@ def _invoke_answer_llm_fallback(
             "中等": "medium",
             "中置信": "medium",
             "中置信度": "medium",
+            "moderate": "medium",
             "低": "low",
             "低置信": "low",
             "低置信度": "low",
         }
         normalized_confidence = confidence.strip().lower()
-        data["confidence"] = confidence_map.get(confidence.strip(), normalized_confidence)
+        data["confidence"] = confidence_map.get(
+            confidence.strip(),
+            confidence_map.get(normalized_confidence, normalized_confidence),
+        )
 
     status = data.get("status", "insufficient_evidence")
     if isinstance(status, str):
@@ -641,7 +646,12 @@ def _invoke_answer_llm_fallback(
     return RagAnswer.model_validate(data)
 
 
-def _answer_question(question_payload: Dict[str, Any], evidence_payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _answer_question(
+    question_payload: Dict[str, Any],
+    evidence_payloads: List[Dict[str, Any]],
+    answer_prompt: Optional[ChatPromptTemplate] = None,
+) -> Dict[str, Any]:
+    """基于检索证据回答问题；可选 prompt 仅用于评测等特殊链路，默认业务行为不变。"""
     question_text = question_payload.get("question", "")
     if not evidence_payloads:
         return {
@@ -657,8 +667,9 @@ def _answer_question(question_payload: Dict[str, Any], evidence_payloads: List[D
         }
 
     evidence_blocks = _format_evidence_blocks(evidence_payloads)
+    prompt = answer_prompt or _build_answer_prompt()
     try:
-        runnable = _build_answer_prompt() | _get_llm().with_structured_output(RagAnswer)
+        runnable = prompt | _get_llm().with_structured_output(RagAnswer)
         answer = runnable.invoke(
             {
                 "question": question_text,
@@ -669,7 +680,7 @@ def _answer_question(question_payload: Dict[str, Any], evidence_payloads: List[D
         )
     except Exception as exc:
         try:
-            answer = _invoke_answer_llm_fallback(question_payload, evidence_blocks)
+            answer = _invoke_answer_llm_fallback(question_payload, evidence_blocks, answer_prompt=prompt)
         except Exception as fallback_exc:
             return {
                 "question": question_text,
