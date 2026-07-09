@@ -121,6 +121,7 @@ graph TD;
 
     subgraph "Tools & Data"
         MCP --> PC[PC Algorithm]
+        MCP --> OLC[OLC Algorithm]
         MCP --> FCI[FCI Algorithm]
         Pre --> Data[(MySQL/Files)]
     end
@@ -128,7 +129,7 @@ graph TD;
 ```
 
 - **Router Agent**：根据用户意图在「预处理 / 因果分析 / 知识库问答 / 报告生成」等节点之间自动路由，无需用户关心底层算法。
-- **Causal Agent**：负责与 MCP 因果算法工具交互（如 PC、FCI 等），完成因果结构学习与干预效应估计的核心推理。
+- **Causal Agent**：负责与 MCP 因果算法工具交互（如 PC、OLC、FCI 等），完成因果结构学习与干预效应估计的核心推理。
 - **Writer Agent**：结合因果结果与 RAG 知识库，自动撰写结构化专业报告（背景、方法、结果、结论与局限性）。
 - **Chat Agent**：面向一般问答与解释型对话，为非专业用户提供自然语言解释与操作指引。
 
@@ -146,6 +147,7 @@ graph TD;
 - **可插拔算法框架**：通过 MCP 将因果发现与估计算法以「工具」形式解耦，便于在不改动 Agent 主逻辑的前提下扩展/更换算法库。
 - **当前支持**：
   - PC 算法（基于条件独立检验的因果结构学习）。
+  - OLC 算法（基于 CDMIR，面向连续数值数据和潜在混杂/隐变量场景）。
 - **规划中**：
   - FCI 等含潜在混杂的结构学习算法；
   - 因果效应估计（ATE/CATE）与反事实分析等模块。
@@ -191,6 +193,8 @@ SECRET_KEY=
 # API 基础URL（OpenAI官方或第三方兼容接口）
 BASE_URL=
 MODEL=
+# LangChain 结构化输出方式；第三方兼容接口通常使用 json_mode
+LLM_STRUCTURED_OUTPUT_METHOD=json_mode
 
 # OpenAI API 密钥或兼容 API 的密钥
 API_KEY=
@@ -244,11 +248,13 @@ JOB_MAX_ATTEMPTS=3
 MAX_UPLOAD_SIZE_MB=20
 
 
-# LangSmith API 密钥(不强制)
+# LangSmith 追踪（不强制）。无 key 时保持 false；配置 key 后应用会在运行时启用追踪。
+LANGSMITH_TRACING=false
+LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=CausalChat-Debug
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 LANGCHAIN_API_KEY=
-
-# LangSmith 项目名称（不强制）
-LANGCHAIN_PROJECT=
+LANGCHAIN_PROJECT=CausalChat-Debug
 
 ```
 3. 在项目根目录运行docker-compose
@@ -321,6 +327,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
     ```bash
     pip install -r requirements.txt
     ```
+    OLC 算法依赖 CDMIR，并通过 GitHub 安装；本地安装前请确保已安装 `git`，且当前网络可访问 GitHub。
 
 7. 项目配置
 
@@ -336,6 +343,8 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
     # API 基础URL（OpenAI官方或第三方兼容接口）
     BASE_URL=
     MODEL=
+    # LangChain 结构化输出方式；第三方兼容接口通常使用 json_mode
+    LLM_STRUCTURED_OUTPUT_METHOD=json_mode
 
     # OpenAI API 密钥或兼容 API 的密钥
     API_KEY=
@@ -368,11 +377,13 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
     MYSQL_REPLICATION_USER=replica
     MYSQL_REPLICATION_PASSWORD=
 
-    # LangSmith API 密钥(不强制)
+    # LangSmith 追踪（不强制）。无 key 时保持 false；配置 key 后应用会在运行时启用追踪。
+    LANGSMITH_TRACING=false
+    LANGSMITH_API_KEY=
+    LANGSMITH_PROJECT=CausalChat-Debug
+    LANGSMITH_ENDPOINT=https://api.smith.langchain.com
     LANGCHAIN_API_KEY=
-
-    # LangSmith 项目名称（不强制）
-    LANGCHAIN_PROJECT=
+    LANGCHAIN_PROJECT=CausalChat-Debug
 
     ```
 

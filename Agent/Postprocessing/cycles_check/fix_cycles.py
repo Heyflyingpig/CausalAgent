@@ -3,6 +3,7 @@ from typing import List
 import numpy as np
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from Agent.llm_structured_output import with_compatible_structured_output
 from Agent.causal_agent.state import CausalChatState
 from Agent.knowledge_base.query_rag import get_rag_excerpt
 import json
@@ -80,10 +81,11 @@ def fix_cycles_with_llm(
         3. 参考领域知识中的常识判断
         4. 如果有target和treatment变量，优先保留与它们相关的边
 
-        请仔细分析后，决定删除环路中的哪一条边。输出格式必须严格遵循CycleFixDecision模型。"""),
+        请仔细分析后，决定删除环路中的哪一条边。输出格式必须严格遵循CycleFixDecision模型。
+        只返回一个 JSON 对象，不要输出 Markdown、代码块或额外解释。"""),
             ])
             
-            runnable = prompt | llm.with_structured_output(CycleFixDecision)
+            runnable = prompt | with_compatible_structured_output(llm, CycleFixDecision)
             
             decision = runnable.invoke({
                 "cycle_description": cycle_description,
