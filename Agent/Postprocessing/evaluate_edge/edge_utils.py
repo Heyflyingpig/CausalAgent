@@ -32,34 +32,32 @@ def _parse_edge_string(raw_edge: Any, index: int) -> Optional[EdgeRecord]:
     if not text:
         return None
 
-    directed_match = re.match(r"^(.+?)\s*-+>\s*(.+?)$", text)
-    if directed_match:
-        return _make_edge_record(
-            source=directed_match.group(1).strip(),
-            target=directed_match.group(2).strip(),
-            edge_type="directed",
-            raw_edge=raw_edge,
-            index=index,
-            label=text,
-        )
+    edge_match = re.match(
+        r"^(.+?)\s*(<->|o->|<-o|-->|<--|o-o|o--|--o|---|--)\s*(.+?)$",
+        text,
+    )
+    if edge_match:
+        left = edge_match.group(1).strip()
+        connector = edge_match.group(2)
+        right = edge_match.group(3).strip()
 
-    reverse_match = re.match(r"^(.+?)\s*<-+\s*(.+?)$", text)
-    if reverse_match:
-        return _make_edge_record(
-            source=reverse_match.group(2).strip(),
-            target=reverse_match.group(1).strip(),
-            edge_type="directed",
-            raw_edge=raw_edge,
-            index=index,
-            label=text,
-        )
+        if connector == "<--":
+            source, target, edge_type = right, left, "directed"
+        elif connector == "<-o":
+            source, target, edge_type = right, left, "partially_oriented"
+        elif connector == "<->":
+            source, target, edge_type = left, right, "bidirected"
+        elif connector == "o->":
+            source, target, edge_type = left, right, "partially_oriented"
+        elif connector == "-->":
+            source, target, edge_type = left, right, "directed"
+        else:
+            source, target, edge_type = left, right, "undirected"
 
-    undirected_match = re.match(r"^(.+?)\s*(?:---|--|o-o|o--|--o)\s*(.+?)$", text)
-    if undirected_match:
         return _make_edge_record(
-            source=undirected_match.group(1).strip(),
-            target=undirected_match.group(2).strip(),
-            edge_type="undirected",
+            source=source,
+            target=target,
+            edge_type=edge_type,
             raw_edge=raw_edge,
             index=index,
             label=text,
@@ -150,16 +148,16 @@ def extract_critical_edges(analysis_result: Any) -> Tuple[List[EdgeRecord], Dict
 
     debug_info["algorithm"] = analysis_result.get("algorithm")
 
-    raw_edges = analysis_result.get("raw_results", {}).get("edges")
+    raw_edges = analysis_result.get("data", {}).get("edges")
     if isinstance(raw_edges, list):
-        debug_info["source"] = "raw_results.edges"
+        debug_info["source"] = "data.edges"
     else:
-        raw_edges = analysis_result.get("data", {}).get("edges")
+        raw_edges = analysis_result.get("raw_results", {}).get("edges")
         if isinstance(raw_edges, list):
-            debug_info["source"] = "data.edges"
+            debug_info["source"] = "raw_results.edges"
 
     if not isinstance(raw_edges, list):
-        debug_info["reason"] = "未找到 raw_results.edges 或 data.edges"
+        debug_info["reason"] = "未找到 data.edges 或 raw_results.edges"
         return [], debug_info
 
     normalized_edges = _normalize_edges(raw_edges)
