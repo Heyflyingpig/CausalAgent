@@ -15,6 +15,7 @@ import networkx as nx
 from mcp import ClientSession
 from langgraph.func import task
 from langgraph.types import interrupt
+from Agent.llm_structured_output import with_compatible_structured_output
 
 ## 基本配置
 from config.settings import settings
@@ -124,25 +125,18 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         ]
     )
     
-    # 强制模型使用JSON模式，这是更可靠的方法
-    structured_llm = llm.bind(
-        response_format={"type": "json_object"}
-    )
-    
-    # 构建并调用LLM链
-    runnable = prompt | structured_llm | JsonOutputParser()
+    # 通过共享适配器统一选择 json_mode/json_schema/function_calling。
+    runnable = prompt | with_compatible_structured_output(llm, RouteQuery)
     
     logging.info("正在调用LLM进行路由决策...")
     try:
-        decision_dict = await runnable.ainvoke(
+        structured_response = await runnable.ainvoke(
             {
                 "messages": state["messages"][-1],
                 "has_tool_results": has_tool_results,
                 "final_report": state.get("final_report", None)
             }
         )
-        # 用Pydantic模型解析和验证这个字典
-        structured_response = RouteQuery.model_validate(decision_dict)
         route_decision = structured_response.route
 
     except Exception as e:
@@ -540,6 +534,57 @@ from Agent.Postprocessing.cycles_check.fix_cycles import fix_cycles_with_llm
 from Agent.Postprocessing.evaluate_edge.evaluate_edge_llm import evaluate_edges_with_llm
 from Agent.Postprocessing.evaluate_edge.edge_utils import extract_critical_edges
 
+
+def _matrix_convention_for_analysis(analysis_result: Dict[str, Any]) -> str:
+    """根据算法标识或 OLC 特有元数据确定邻接矩阵方向。"""
+    algorithm = str(analysis_result.get("algorithm", "")).strip().lower()
+    raw_results = analysis_result.get("raw_results", {})
+    if algorithm == "olc" or "coefficient_matrix" in raw_results:
+        return "olc"
+    return "causallearn"
+
+
+def _as_revised_graph(
+    graph_nodes: List[Dict[str, Any]],
+    revised_edges: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """把内部 EdgeRecord 集合序列化成前端可直接渲染的 vis-network 图。"""
+    vis_edges = []
+    for edge in revised_edges:
+        edge_type = edge.get("edge_type", "directed")
+        if edge_type == "bidirected":
+            arrows = "to,from"
+        elif edge_type in {"directed", "partially_oriented"}:
+            arrows = "to"
+        else:
+            arrows = ""
+
+        vis_edges.append(
+            {
+                "from": edge["source"],
+                "to": edge["target"],
+                "arrows": arrows,
+                "dashes": edge_type in {"undirected", "partially_oriented"},
+                "label": edge.get("label", ""),
+            }
+        )
+
+    return {"nodes": list(graph_nodes), "edges": vis_edges}
+
+
+def _without_removed_edges(
+    candidate_edges: List[Dict[str, Any]],
+    removed_edges: List[Tuple[str, str]],
+) -> List[Dict[str, Any]]:
+    """从 LLM 边评估候选中排除已经由环路修复真实删除的边。"""
+    removed_keys = set(removed_edges)
+    return [
+        edge
+        for edge in candidate_edges
+        if (edge.get("source"), edge.get("target")) not in removed_keys
+    ]
+
+
 async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
     后处理模块：
@@ -574,21 +619,32 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         
         # 创建原始图的副本用于修正
         working_matrix = adjacency_matrix.copy()
+        matrix_convention = _matrix_convention_for_analysis(analysis_result)
+        cycle_removed_edges: List[Tuple[str, str]] = []
         
         # 环路检测和修正
-        has_cycle, cycles = detect_cycles(working_matrix, node_names)
+        has_cycle, cycles = detect_cycles(
+            working_matrix,
+            node_names,
+            matrix_convention=matrix_convention,
+        )
         if has_cycle:
             logging.info(f"检测到 {len(cycles)} 个环路，开始LLM辅助修正...")
-            working_matrix = await asyncio.to_thread(
+            working_matrix, cycle_removed_edges = await asyncio.to_thread(
                 fix_cycles_with_llm,
                 working_matrix, 
                 cycles, 
                 node_names,
                 llm, 
-                state
+                state,
+                matrix_convention=matrix_convention,
             )
             # 再次检测以确认环路已被消除
-            has_cycle_after, _ = detect_cycles(working_matrix, node_names)
+            has_cycle_after, _ = detect_cycles(
+                working_matrix,
+                node_names,
+                matrix_convention=matrix_convention,
+            )
             if has_cycle_after:
                 logging.warning("警告：部分环路仍然存在，可能需要人工干预。")
 
@@ -605,13 +661,51 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
             edge_debug_info.get("algorithm"),
             edge_debug_info.get("reason"),
         )
+        candidate_edge_count = edge_debug_info.get("candidate_edge_count", 0)
+        normalized_edge_count = edge_debug_info.get("normalized_edge_count", 0)
+        if candidate_edge_count != normalized_edge_count:
+            error_msg = (
+                "因果边结构校验失败："
+                f"候选边 {candidate_edge_count} 条，仅成功规范化 {normalized_edge_count} 条。"
+            )
+            logging.error(error_msg)
+            return {
+                "messages": [
+                    AIMessage(
+                        content=f"后处理遇到问题: {error_msg}\n\n将使用原始分析结果继续生成报告。",
+                        name="postprocess",
+                    )
+                ],
+                "postprocess_result": {
+                    "error": error_msg,
+                    "original_graph": analysis_result.get("data", {}),
+                    "edge_evaluation_debug": edge_debug_info,
+                },
+            }
+        critical_edges = _without_removed_edges(critical_edges, cycle_removed_edges)
         
-        edge_evaluations = {}
+        edge_evaluations: Dict[str, Any] = {}
         if critical_edges:
             logging.info(f"识别到 {len(critical_edges)} 条关键边，开始LLM评估...")
             edge_evaluations = await asyncio.to_thread(evaluate_edges_with_llm, critical_edges, state, llm)
         else:
             logging.info("未识别到需要评估的关键边")
+            edge_evaluations = {
+                "schema_version": "edge_evaluation_v2",
+                "decisions": [],
+                "revised_edges": [],
+                "revision_summary": "",
+                "confidence": "low",
+            }
+
+        serialized_cycle_removals = [
+            {"source": source, "target": target}
+            for source, target in cycle_removed_edges
+        ]
+        edge_evaluations = {
+            **edge_evaluations,
+            "cycle_removed_edges": serialized_cycle_removals,
+        }
         
         
         revised_edges = edge_evaluations.get(
@@ -622,11 +716,21 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
             "revision_summary",
             edge_evaluations.get("reason", ""),
         )
+        if cycle_removed_edges:
+            cycle_summary = "环路修订删除边：" + "、".join(
+                f"{source} -> {target}" for source, target in cycle_removed_edges
+            )
+            revision_summary = "；".join(
+                summary for summary in (cycle_summary, revision_summary) if summary
+            )
 
         # 准备结构化输出
         postprocess_result = {
             "original_graph": state["causal_analysis_result"].get("data", {}),
-            "revised_graph": revised_edges,
+            "revised_graph": _as_revised_graph(
+                analysis_result.get("data", {}).get("nodes", []),
+                revised_edges,
+            ),
             "revision_summary": revision_summary,
             "edge_evaluation": edge_evaluations,
             "edge_evaluation_debug": {
@@ -635,10 +739,12 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
                 "schema_version": edge_evaluations.get("schema_version", ""),
                 "decision_count": len(edge_evaluations.get("decisions", [])),
                 "revised_edge_count": len(revised_edges),
+                "cycle_removed_count": len(cycle_removed_edges),
                 "confidence": edge_evaluations.get("confidence", ""),
             },
             "had_cycles": has_cycle,
-            "num_cycles_fixed": len(cycles) if has_cycle else 0
+            "num_cycles_fixed": len(cycle_removed_edges),
+            "matrix_convention": matrix_convention,
         }
         
         state["postprocess_result"] = postprocess_result
@@ -866,4 +972,3 @@ async def inquiry_answer_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     })
     # 只返回新消息
     return {"messages": [AIMessage(content=response, name="inquiry_answer")]}
-

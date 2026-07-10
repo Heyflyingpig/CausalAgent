@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Tuple
 import numpy as np
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -20,13 +20,29 @@ class CycleFixDecision(BaseModel):
         description="删除这条边的理由，基于领域知识和数据特征的分析。"
     )
 
+
+def _matrix_cell_for_edge(
+    source_index: int,
+    target_index: int,
+    matrix_convention: str,
+) -> Tuple[int, int]:
+    """返回指定有向边在不同算法邻接矩阵中的真实存储位置。"""
+    if matrix_convention == "causallearn":
+        return target_index, source_index
+    if matrix_convention == "olc":
+        return source_index, target_index
+    raise ValueError(f"unsupported matrix convention: {matrix_convention}")
+
+
 def fix_cycles_with_llm(
         adjacency_matrix: np.ndarray, 
         cycles: List[List[str]], 
         node_names: List[str],
         llm: ChatOpenAI, 
-        state: CausalChatState
-    ) -> np.ndarray:
+        state: CausalChatState,
+        *,
+        matrix_convention: str = "causallearn",
+    ) -> Tuple[np.ndarray, List[Tuple[str, str]]]:
     """
     使用LLM辅助决策，通过删除某些边来打破环路。
     
@@ -36,9 +52,10 @@ def fix_cycles_with_llm(
         node_names: 节点名称列表
         llm: LangChain的ChatOpenAI实例
         state: 当前状态，用于获取数据摘要和知识库结果
+        matrix_convention: 邻接矩阵的方向约定
         
     Returns:
-        修正后的邻接矩阵
+        修正后的邻接矩阵，以及实际成功置零的 (source, target) 边列表
         
     策略：
         - 对每个环路，调用LLM决策删除哪条边
@@ -46,6 +63,7 @@ def fix_cycles_with_llm(
         - 逐个修正所有环路
     """
     revised_matrix = adjacency_matrix.copy()
+    removed_edges: List[Tuple[str, str]] = []
     
     # 获取上下文信息
     analysis_parameters = state.get("analysis_parameters", {})
@@ -102,6 +120,17 @@ def fix_cycles_with_llm(
                 continue
             
             from_node, to_node = edge_to_remove
+            cycle_edges = {
+                (cycle[position], cycle[(position + 1) % len(cycle)])
+                for position in range(len(cycle))
+            }
+            if (from_node, to_node) not in cycle_edges:
+                logging.error(
+                    "LLM返回的边不属于当前环路，拒绝删除: %s -> %s",
+                    from_node,
+                    to_node,
+                )
+                continue
             
             # 找到节点索引
             if from_node not in node_names or to_node not in node_names:
@@ -111,17 +140,25 @@ def fix_cycles_with_llm(
             from_idx = node_names.index(from_node)
             to_idx = node_names.index(to_node)
             
-            # 删除边：记住邻接矩阵的约定 matrix[i][j]=1 表示 j->i
-            # 所以删除 from_node -> to_node 意味着设置 matrix[to_idx][from_idx] = 0
-            if revised_matrix[to_idx][from_idx] != 0:
-                revised_matrix[to_idx][from_idx] = 0
+            row_idx, column_idx = _matrix_cell_for_edge(
+                from_idx,
+                to_idx,
+                matrix_convention,
+            )
+            if revised_matrix[row_idx][column_idx] == 1:
+                revised_matrix[row_idx][column_idx] = 0
+                removed_edges.append((from_node, to_node))
                 logging.info(f"已删除边: {from_node} -> {to_node}")
                 logging.info(f"删除理由: {reason}")
             else:
-                logging.warning(f"边 {from_node} -> {to_node} 在矩阵中不存在，可能已被删除。")
+                logging.warning(
+                    "边 %s -> %s 不是当前矩阵中的确定有向边，拒绝删除。",
+                    from_node,
+                    to_node,
+                )
                 
         except Exception as e:
             logging.error(f"修正环路 {idx+1} 时发生错误: {e}", exc_info=True)
             continue
     
-    return revised_matrix
+    return revised_matrix, removed_edges

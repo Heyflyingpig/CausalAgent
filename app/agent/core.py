@@ -410,9 +410,25 @@ def process_final_result(final_state_data):
                 if final_state_data.get("causal_analysis_result"):
                     analysis_data = final_state_data["causal_analysis_result"]
                     if analysis_data.get("success"):
+                        original_graph = analysis_data.get("data")
+                        postprocess_result = final_state_data.get("postprocess_result") or {}
+                        revised_graph = postprocess_result.get("revised_graph")
+                        has_valid_revised_graph = (
+                            isinstance(revised_graph, dict)
+                            and isinstance(revised_graph.get("nodes"), list)
+                            and isinstance(revised_graph.get("edges"), list)
+                            and not postprocess_result.get("error")
+                        )
                         result["type"] = "causal_graph"
-                        result["data"] = analysis_data.get("data")
-                        logging.info("返回因果图数据")
+                        result["data"] = revised_graph if has_valid_revised_graph else original_graph
+                        result["graph_source"] = (
+                            "postprocessed" if has_valid_revised_graph else "original"
+                        )
+                        result["revision_summary"] = postprocess_result.get(
+                            "revision_summary",
+                            "",
+                        )
+                        logging.info("返回因果图数据: source=%s", result["graph_source"])
 
                 if "type" not in result:
                     result["type"] = "text"

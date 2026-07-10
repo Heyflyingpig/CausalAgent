@@ -254,11 +254,13 @@ def _apply_edge_decisions(
 
         revised_edge = _serialize_edge_for_prompt(edge)
         if decision.action == "reverse":
-            revised_source = decision.revised_source or target
-            revised_target = decision.revised_target or source
+            # 反转端点只能由原始候选边确定，不能信任模型自报的新节点名。
+            revised_source = target
+            revised_target = source
             revised_edge["source"] = revised_source
             revised_edge["target"] = revised_target
             revised_edge["edge_type"] = "directed"
+            revised_edge["label"] = ""
             applied["revised_source"] = revised_source
             applied["revised_target"] = revised_target
         else:
