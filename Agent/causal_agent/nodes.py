@@ -42,6 +42,32 @@ class RouteQuery(BaseModel):
     )
 
 # agentnode节点用于做初步的decision
+def _latest_human_text(state: CausalChatState) -> str:
+    """Return the latest human message content from the graph state."""
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, HumanMessage):
+            content = getattr(message, "content", "")
+            return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    return ""
+
+
+def _is_explicit_causal_analysis_request(text: str) -> bool:
+    """Detect requests that should deterministically enter the causal analysis flow."""
+    normalized = text.lower()
+    has_data_target = any(token in normalized for token in (".csv", "csv", "pc")) or any(
+        token in text for token in ("文件", "数据", "读取", "上传")
+    )
+    has_causal_intent = any(
+        token in text
+        for token in ("因果分析", "因果推断", "因果边", "边合理性", "后处理", "因果发现")
+    )
+    has_action = any(
+        token in text
+        for token in ("分析", "执行", "运行", "读取", "处理", "生成报告", "立即", "使用")
+    )
+    return has_data_target and has_causal_intent and has_action
+
+
 async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
     """
@@ -50,9 +76,24 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
     logging.info(" 步骤: Agent 节点 (LLM 决策) ")
 
-    # 检查生成报告所需的结果是否已存在。
-    has_tool_results = state.get('causal_analysis_result') is not None
+    causal_analysis_result = state.get('causal_analysis_result') or {}
+    if causal_analysis_result and causal_analysis_result.get("success") is False:
+        error_message = causal_analysis_result.get("message", "因果分析工具执行失败。")
+        response_message = AIMessage(
+            content=f"决策：普通问答。工具执行失败：{error_message}",
+            name="agent"
+        )
+        return {"messages": [response_message]}
+
+    # 检查生成报告所需的有效分析结果是否已存在。
+    has_tool_results = causal_analysis_result.get("success") is True
     
+    latest_human_text = _latest_human_text(state)
+    if not has_tool_results and _is_explicit_causal_analysis_request(latest_human_text):
+        logging.info("检测到明确因果分析请求，绕过LLM路由并进入文件加载模块。")
+        response_message = AIMessage(content="决策：信息不全，启动文件加载模块。", name="agent")
+        return {"messages": [response_message]}
+
     agent_prompt = """
             你是一个专业的AI助手路由中枢。你的任务是根据用户的对话历史和当前状态，决定下一步的最佳路径。
             
@@ -497,6 +538,7 @@ from Agent.Postprocessing.cycles_check.fix_cycles import fix_cycles_with_llm
 
 # 边评估模块
 from Agent.Postprocessing.evaluate_edge.evaluate_edge_llm import evaluate_edges_with_llm
+from Agent.Postprocessing.evaluate_edge.edge_utils import extract_critical_edges
 
 async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
@@ -554,12 +596,15 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
                 logging.info("所有环路已成功修正！")
         
         # LLM评估关键边
-        analysis_parameters = state.get("analysis_parameters", {})
-        ananlysis_result = state.get(("causal_analysis_result"),{})
-        if isinstance(ananlysis_result, str):
-            critical_edges = ananlysis_result.get("raw_results", {}).get("edges", [])
-        else:
-            critical_edges = []
+        critical_edges, edge_debug_info = extract_critical_edges(analysis_result)
+        logging.info(
+            "边评估候选提取结果: source=%s, count=%s, input_type=%s, algorithm=%s, reason=%s",
+            edge_debug_info.get("source"),
+            edge_debug_info.get("candidate_edge_count"),
+            edge_debug_info.get("input_type"),
+            edge_debug_info.get("algorithm"),
+            edge_debug_info.get("reason"),
+        )
         
         edge_evaluations = {}
         if critical_edges:
@@ -569,11 +614,29 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
             logging.info("未识别到需要评估的关键边")
         
         
+        revised_edges = edge_evaluations.get(
+            "revised_edges",
+            edge_evaluations.get("decision", []),
+        )
+        revision_summary = edge_evaluations.get(
+            "revision_summary",
+            edge_evaluations.get("reason", ""),
+        )
+
         # 准备结构化输出
         postprocess_result = {
             "original_graph": state["causal_analysis_result"].get("data", {}),
-            "revised_graph": edge_evaluations.get("decision", []),
-            "revision_summary": edge_evaluations.get("reason", ""),
+            "revised_graph": revised_edges,
+            "revision_summary": revision_summary,
+            "edge_evaluation": edge_evaluations,
+            "edge_evaluation_debug": {
+                **edge_debug_info,
+                "ran": bool(critical_edges),
+                "schema_version": edge_evaluations.get("schema_version", ""),
+                "decision_count": len(edge_evaluations.get("decisions", [])),
+                "revised_edge_count": len(revised_edges),
+                "confidence": edge_evaluations.get("confidence", ""),
+            },
             "had_cycles": has_cycle,
             "num_cycles_fixed": len(cycles) if has_cycle else 0
         }
@@ -586,7 +649,7 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         
         # 如果有环路被修正，添加额外说明
         if has_cycle:
-            explanation = f"\n\n**注意**：原始图中检测到 {len(cycles)} 个环路，部分已通过LLM辅助决策进行修正。理由如下：{edge_evaluations.get('reason', '')}"      
+            explanation = f"\n\n**注意**：原始图中检测到 {len(cycles)} 个环路，部分已通过LLM辅助决策进行修正。理由如下：{revision_summary}"
             new_messages.append(AIMessage(content=explanation, name="postprocess"))
         
         new_messages.append(AIMessage(
@@ -636,8 +699,13 @@ async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
          1. 预处理结果：{preprocess_summary}
          2. 预处理元数据：{preprocess_meta_data}
          2. 因果分析结果：{causal_analysis_result}
-         3. 知识库结果：{knowledge_base_result}
-         4. 后处理结果：{postprocess_result}
+        3. 知识库结果：{knowledge_base_result}
+        4. 后处理结果：{postprocess_result}
+
+        ## 因果分析结果解读规则
+        - 如果因果分析结果包含 error_type，请明确说明算法未能产生有效因果图，不要声称“没有因果关系”。
+        - 如果因果分析结果包含 fallback_from 和 fallback_reason，请说明原算法不适用并已改用 fallback_tool 的结果。
+        - 只有当算法 success 为 true 且边列表为空时，才可以表述为“未发现显著因果边/因果关系”。
          
         ## 报告结构要求
         1. **数据概览**：基于上述数据概览进行总结

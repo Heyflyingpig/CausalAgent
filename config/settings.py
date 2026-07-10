@@ -46,6 +46,16 @@ class AppConfig:
         self.API_KEY = self._get_config("API_KEY")
         self.BASE_URL = self._get_config("BASE_URL")
         self.MODEL = self._get_config("MODEL")
+        self.LLM_STRUCTURED_OUTPUT_METHOD = self._get_config(
+            "LLM_STRUCTURED_OUTPUT_METHOD",
+            required=False,
+            default="json_mode",
+        )
+        if self.LLM_STRUCTURED_OUTPUT_METHOD not in {"json_mode", "json_schema", "function_calling"}:
+            raise ValueError(
+                "配置错误: 环境变量 'LLM_STRUCTURED_OUTPUT_METHOD' "
+                "只能是 json_mode、json_schema 或 function_calling。"
+            )
 
         # 数据库配置。MYSQL_HOST 作为历史兼容项，默认等价于写库地址。
         self.MYSQL_HOST = self._get_config("MYSQL_HOST", required=False)
@@ -139,13 +149,31 @@ class AppConfig:
             default=None
         )
         
-        # LangSmith 
-        # 可选配置不强制要求，缺失时使用默认值
-        self.LANGCHAIN_API_KEY = self._get_config("LANGCHAIN_API_KEY", required=False)
-        self.LANGCHAIN_PROJECT = self._get_config(
-            "LANGCHAIN_PROJECT", 
-            required=False, 
-            default="CausalAgent-Default-Project"
+        # LangSmith
+        # 优先使用新版 LANGSMITH_* 变量，兼容旧版 LANGCHAIN_* 配置。
+        legacy_langchain_api_key = self._get_config("LANGCHAIN_API_KEY", required=False)
+        self.LANGSMITH_API_KEY = self._get_config(
+            "LANGSMITH_API_KEY",
+            required=False,
+            default=legacy_langchain_api_key,
+        )
+        self.LANGCHAIN_API_KEY = self.LANGSMITH_API_KEY
+
+        legacy_langchain_project = self._get_config(
+            "LANGCHAIN_PROJECT",
+            required=False,
+            default="CausalAgent-Default-Project",
+        )
+        self.LANGSMITH_PROJECT = self._get_config(
+            "LANGSMITH_PROJECT",
+            required=False,
+            default=legacy_langchain_project,
+        )
+        self.LANGCHAIN_PROJECT = self.LANGSMITH_PROJECT
+        self.LANGSMITH_ENDPOINT = self._get_config(
+            "LANGSMITH_ENDPOINT",
+            required=False,
+            default="https://api.smith.langchain.com",
         )
 
         # 初始化完成后，自动设置 LangSmith
@@ -218,16 +246,26 @@ class AppConfig:
         根据配置设置 LangSmith 追踪的环境变量。
         
         LangSmith 是可选功能，用于追踪和调试 LangChain 应用。
-        如果未配置 LANGCHAIN_API_KEY，应用仍可正常运行，只是不会有追踪功能。
+        如果未配置 LANGSMITH_API_KEY/LANGCHAIN_API_KEY，应用仍可正常运行，只是不会有追踪功能。
         """
         if self.LANGCHAIN_API_KEY:
+            os.environ["LANGSMITH_TRACING"] = "true"
             os.environ["LANGCHAIN_TRACING"] = "true"
+            os.environ["LANGCHAIN_TRACING_V2"] = "true"
+            os.environ["LANGSMITH_API_KEY"] = self.LANGSMITH_API_KEY
             os.environ["LANGCHAIN_API_KEY"] = self.LANGCHAIN_API_KEY
-            os.environ["LANGSMITH_ENDPOINT"] = "https://api.smith.langchain.com"
+            os.environ["LANGSMITH_ENDPOINT"] = self.LANGSMITH_ENDPOINT
+            os.environ["LANGSMITH_PROJECT"] = self.LANGSMITH_PROJECT
             os.environ["LANGCHAIN_PROJECT"] = self.LANGCHAIN_PROJECT
             logging.info(f"LangSmith 追踪已启用，项目名: '{self.LANGCHAIN_PROJECT}'")
         else:
-            logging.warning("未找到 'LANGCHAIN_API_KEY' 环境变量。LangSmith 追踪将不会启用。")
+            os.environ["LANGSMITH_TRACING"] = "false"
+            os.environ["LANGCHAIN_TRACING"] = "false"
+            os.environ["LANGCHAIN_TRACING_V2"] = "false"
+            logging.warning(
+                "未找到 'LANGSMITH_API_KEY' 或 'LANGCHAIN_API_KEY' 环境变量。"
+                "LangSmith 追踪将不会启用。"
+            )
 
 #  单例模式：创建全局唯一的配置实例 
 # 在应用启动时，尝试加载配置。
