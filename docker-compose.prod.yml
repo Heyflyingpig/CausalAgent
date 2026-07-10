@@ -111,10 +111,6 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
-      - LANGSMITH_TRACING=${LANGSMITH_TRACING:-}
-      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
-      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-}
-      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-}
       
       # === 关键区别5：生产环境变量 ===
       - FLASK_ENV=production
@@ -255,4 +251,3 @@ volumes:
 # 监控：
 #   docker stats  # 实时查看资源使用
 #   docker-compose -f docker-compose.prod.yml logs --tail=100
-

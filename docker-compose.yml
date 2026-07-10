@@ -71,10 +71,6 @@ services:
 
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
-      - LANGSMITH_TRACING=${LANGSMITH_TRACING:-}
-      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
-      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-}
-      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-}
 
     
     ports:
@@ -133,10 +129,6 @@ services:
       - FLASK_ENV=development
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
-      - LANGSMITH_TRACING=${LANGSMITH_TRACING:-}
-      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
-      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-}
-      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-}
 
     volumes:
       - .:/app
@@ -163,5 +155,4 @@ networks:
 volumes:
   mysql_data:
     driver: local
-
 
