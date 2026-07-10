@@ -191,6 +191,8 @@ SECRET_KEY=
 # API 基础URL（OpenAI官方或第三方兼容接口）
 BASE_URL=
 MODEL=
+# 可选：第三方 OpenAI 兼容接口通常使用 json_mode。
+LLM_STRUCTURED_OUTPUT_METHOD=json_mode
 
 # OpenAI API 密钥或兼容 API 的密钥
 API_KEY=
@@ -244,10 +246,8 @@ JOB_MAX_ATTEMPTS=3
 MAX_UPLOAD_SIZE_MB=20
 
 
-# LangSmith API 密钥(不强制)
+# LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
 LANGCHAIN_API_KEY=
-
-# LangSmith 项目名称（不强制）
 LANGCHAIN_PROJECT=
 
 ```
@@ -321,7 +321,6 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
     ```bash
     pip install -r requirements.txt
     ```
-
 7. 项目配置
 
 在首次运行前，你必须在项目根目录下创建一个 `.env` 文件，用于存放所有敏感配置信息。
@@ -336,6 +335,8 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
     # API 基础URL（OpenAI官方或第三方兼容接口）
     BASE_URL=
     MODEL=
+    # 可选：第三方 OpenAI 兼容接口通常使用 json_mode。
+    LLM_STRUCTURED_OUTPUT_METHOD=json_mode
 
     # OpenAI API 密钥或兼容 API 的密钥
     API_KEY=
@@ -368,10 +369,8 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
     MYSQL_REPLICATION_USER=replica
     MYSQL_REPLICATION_PASSWORD=
 
-    # LangSmith API 密钥(不强制)
+    # LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
     LANGCHAIN_API_KEY=
-
-    # LangSmith 项目名称（不强制）
     LANGCHAIN_PROJECT=
 
     ```
@@ -746,3 +745,11 @@ python Run_causal.py
 - 【bug修复】
   - 升级到 langgraph-checkpoint==4.1.1 后，JsonPlusSerializer 不再有 dumps/loads，新版接口是 dumps_typed/loads_typed。
   - 修复前端报告占位符问题
+---
+2026.7.10
+- 【内容修复】
+  - 修复 PC、OLC 因果边在后处理中的格式和矩阵方向不一致问题。
+  - 环路修订会生成实际的修订图，最终 SSE、前端展示和历史会话统一使用该图；结构异常时安全回退原图。
+  - 统一结构化输出配置入口，Compose 支持 `LLM_STRUCTURED_OUTPUT_METHOD`，并移除 `LANGSMITH_*` 配置。
+- 【验证】
+  - 新增后处理、最终图选择和结构化输出配置测试；完整测试集已通过。
