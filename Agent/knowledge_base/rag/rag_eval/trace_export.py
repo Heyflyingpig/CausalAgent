@@ -58,7 +58,6 @@ TRACE_EXPORT_CONFIG = {
     "answer_preview_chars": 360,
     "save_output": True,
     "save_markdown": True,
-    "print_full_output": False,
 }
 
 
@@ -269,23 +268,20 @@ def _build_trace_rows(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """读取所有评测输出并按 question 对齐为 trace rows。"""
     retrieval_result = _load_json_object(Path(config["retrieval_result_path"]))
     ragas_result = _load_json_object(Path(config["ragas_result_path"]))
-    claim_result = _load_json_object(Path(config["claim_result_path"]))
     ragas_low_cases = _load_json_object(Path(config["ragas_low_cases_path"]))
     ragas_cross_cases = _load_json_object(Path(config["ragas_cross_cases_path"]))
-    claim_bad_cases = _load_json_object(Path(config["claim_bad_cases_path"]))
 
     retrieval_by_question = _index_by_question(retrieval_result.get("details", []))
     ragas_rows_by_question = _index_ragas_rows(ragas_result)
     ragas_scores_by_question = _index_ragas_scores(ragas_result)
-    claim_by_question = _index_by_question(claim_result.get("details", []))
+    claim_by_question: Dict[str, Dict[str, Any]] = {}
     ragas_low_by_question = _index_case_reasons(ragas_low_cases, "ragas_low_score")
     ragas_cross_by_question = _index_case_reasons(ragas_cross_cases, "ragas_cross_metric")
-    claim_bad_by_question = _index_case_reasons(claim_bad_cases, "claim_eval_bad_case")
 
     trace_rows = []
     for question_key, ragas_row in ragas_rows_by_question.items():
         question_index = int(ragas_row.get("question_index", len(trace_rows) + 1))
-        bad_cases = _collect_cases(question_key, ragas_low_by_question, ragas_cross_by_question, claim_bad_by_question)
+        bad_cases = _collect_cases(question_key, ragas_low_by_question, ragas_cross_by_question)
         trace_rows.append(
             {
                 "trace_id": _build_trace_id(question_index, ragas_row.get("question", "")),
@@ -365,11 +361,3 @@ def run_trace_export_from_code_config() -> Dict[str, Any]:
         "report_path": str(Path(TRACE_EXPORT_CONFIG["report_path"]).resolve()),
         **{key: trace_index[key] for key in trace_index if key.endswith("_count")},
     }
-
-
-if __name__ == "__main__":
-    output = run_trace_export_from_code_config()
-    if TRACE_EXPORT_CONFIG.get("print_full_output"):
-        print(json.dumps(output, ensure_ascii=False, indent=2))
-    else:
-        print(json.dumps(output, ensure_ascii=False, indent=2))

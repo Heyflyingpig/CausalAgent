@@ -1,9 +1,9 @@
-﻿import json
+import json
 import re
 import sys
 from pathlib import Path
 from statistics import mean
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parents[4]
@@ -41,6 +41,39 @@ DEFAULT_REPORT_PATH = REPORT_OUTPUT_DIR / "rag_eval_report.md"
 DEFAULT_SWEEP_REPORT_PATH = REPORT_OUTPUT_DIR / "rag_eval_sweep_report.md"
 
 CLAIM_OVERLAP_THRESHOLD = 0.35
+EvalEventCallback = Callable[[str, str, Dict[str, Any]], None]
+EvalCancelChecker = Callable[[], bool]
+
+
+def _cancel_requested(cancel_checker: Optional[EvalCancelChecker]) -> bool:
+    """Return whether the caller has requested cooperative cancellation."""
+    return bool(cancel_checker and cancel_checker())
+
+
+def _emit_sample_progress(
+    event_callback: Optional[EvalEventCallback],
+    step_name: str,
+    phase: str,
+    current: int,
+    total: int,
+    sample: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Emit sample-level progress for long RAG evaluation loops."""
+    if event_callback is None:
+        return
+    sample = sample or {}
+    event_callback(
+        "step_progress",
+        f"{step_name} {phase}: {current}/{total}",
+        {
+            "step": step_name,
+            "phase": phase,
+            "current": current,
+            "total": total,
+            "sample_id": sample.get("sample_id", ""),
+            "question": sample.get("question", ""),
+        },
+    )
 
 # 本地手动运行时，优先改这里。
 # mode="single" 跑一组配置；mode="sweep" 跑下面的 SWEEP_CONFIGS 参数对比。
@@ -146,6 +179,14 @@ def _summarize_stage_metrics(stage_details: List[Dict[str, Any]]) -> Dict[str, A
         "recall": round(mean(detail["recall"] for detail in stage_details), 4),
         "mrr": round(mean(detail["reciprocal_rank"] for detail in stage_details), 4), #MRR - Mean Reciprocal Rank
         "hit_rate": round(mean(detail["hit"] for detail in stage_details), 4),
+    }
+
+
+def _summarize_prefix_metrics(prefix_metric_buckets: Dict[int, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+    """汇总 final evidence 前 N 条的命中情况，用于评估 Ragas contexts 输入质量。"""
+    return {
+        f"top{prefix_k}": _summarize_stage_metrics(stage_details)
+        for prefix_k, stage_details in prefix_metric_buckets.items()
     }
 
 
@@ -333,6 +374,9 @@ def evaluate_retrieval(
     dataset: List[Dict[str, Any]],
     top_k: Optional[int] = None,
     retrieval_config: Optional[RagRetrievalConfig] = None,
+    event_callback: Optional[EvalEventCallback] = None,
+    cancel_checker: Optional[EvalCancelChecker] = None,
+    step_name: str = "retrieval_eval",
 ) -> Dict[str, Any]:
     """
     评估 RAG 检索链路在给定数据集上的表现
@@ -390,9 +434,17 @@ def evaluate_retrieval(
     }
     loss_reason_counts: Dict[str, int] = {}
     timing_details: List[Dict[str, float]] = []
+    final_prefix_metric_buckets: Dict[int, List[Dict[str, Any]]] = {4: [], 5: []}
+
+    total_count = len(dataset)
+    cancelled = False
 
     # 逐题执行检索追踪，并记录每个阶段相对 gold 的命中情况
-    for sample in dataset:
+    for sample_index, sample in enumerate(dataset, start=1):
+        if _cancel_requested(cancel_checker):
+            cancelled = True
+            _emit_sample_progress(event_callback, step_name, "cancelled", sample_index - 1, total_count, sample)
+            break
         question = sample["question"]
         gold_chunk_ids = set(sample.get("gold_chunk_ids", []))
         gold_doc_ids = set(sample.get("gold_doc_ids", []))
@@ -404,6 +456,10 @@ def evaluate_retrieval(
             stage_name: _collect_stage_metrics(stage_candidates, gold_chunk_ids, gold_doc_ids)
             for stage_name, stage_candidates in trace["stages"].items()
         }
+        for prefix_k in final_prefix_metric_buckets:
+            final_prefix_metric_buckets[prefix_k].append(
+                _collect_stage_metrics(trace["stages"]["final"][:prefix_k], gold_chunk_ids, gold_doc_ids)
+            )
         for stage_name, stage_result in stage_results.items():
             stage_metric_buckets[stage_name].append(stage_result)
 
@@ -442,11 +498,18 @@ def evaluate_retrieval(
                 "loss_reasons": loss_reasons,
             }
         )
+        _emit_sample_progress(event_callback, step_name, "retrieval", sample_index, total_count, sample)
+        if _cancel_requested(cancel_checker):
+            cancelled = True
+            _emit_sample_progress(event_callback, step_name, "cancelled", sample_index, total_count, sample)
+            break
 
-    sample_count = len(dataset)
+    sample_count = len(details)
     final_metrics = _summarize_stage_metrics(stage_metric_buckets["final"])
-    return {
+    result = {
+        "status": "cancelled" if cancelled else "pass",
         "sample_count": sample_count,
+        "source_sample_count": total_count,
         "config": config.to_dict(),
         "recall_at_k": final_metrics["recall"],
         "mrr": final_metrics["mrr"],
@@ -457,9 +520,13 @@ def evaluate_retrieval(
             stage_name: _summarize_stage_metrics(stage_details)
             for stage_name, stage_details in stage_metric_buckets.items()
         },
+        "final_prefix_metrics": _summarize_prefix_metrics(final_prefix_metric_buckets),
         "loss_reason_counts": loss_reason_counts,
         "details": details,
     }
+    if cancelled:
+        result["cancelled_after_samples"] = sample_count
+    return result
 
 
 def run_eval(dataset_path: str) -> Dict[str, Any]:
@@ -481,6 +548,9 @@ def run_eval_with_options(
     dataset_path: str,
     limit: Optional[int] = None,
     top_k: Optional[int] = None,
+    event_callback: Optional[EvalEventCallback] = None,
+    cancel_checker: Optional[EvalCancelChecker] = None,
+    step_name: str = "retrieval_eval",
 ) -> Dict[str, Any]:
     """
     使用命令行选项风格运行检索评测
@@ -499,7 +569,13 @@ def run_eval_with_options(
     dataset = load_eval_dataset(dataset_path)
     if limit is not None:
         dataset = dataset[:limit]
-    return evaluate_retrieval(dataset, top_k=top_k)
+    return evaluate_retrieval(
+        dataset,
+        top_k=top_k,
+        event_callback=event_callback,
+        cancel_checker=cancel_checker,
+        step_name=step_name,
+    )
 
 
 def sweep_retrieval_configs(
@@ -530,6 +606,7 @@ def sweep_retrieval_configs(
                     "hit_rate": result["hit_rate"],
                     "avg_timings_ms": result.get("avg_timings_ms", {}),
                     "stage_metrics": result["stage_metrics"],
+                    "final_prefix_metrics": result.get("final_prefix_metrics", {}),
                     "loss_reason_counts": result["loss_reason_counts"],
                 },
             }
@@ -553,7 +630,10 @@ def _write_json_file(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def run_eval_from_code_config() -> Dict[str, Any]:
+def run_eval_from_code_config(
+    event_callback: Optional[EvalEventCallback] = None,
+    cancel_checker: Optional[EvalCancelChecker] = None,
+) -> Dict[str, Any]:
     """
     使用文件顶部的 EVAL_RUN_CONFIG 运行单组检索评测。
 
@@ -565,12 +645,8 @@ def run_eval_from_code_config() -> Dict[str, Any]:
         Dict[str, Any]: 检索评测结果。
     """
     retrieval_profile = EVAL_RUN_CONFIG.get("retrieval_profile", "baseline_current")
-    result = run_eval_with_options(
-        dataset_path=EVAL_RUN_CONFIG["dataset_path"],
-        limit=EVAL_RUN_CONFIG["limit"],
-        top_k=EVAL_RUN_CONFIG["top_k"],
-    )
-    if EVAL_RUN_CONFIG.get("top_k") is None and retrieval_profile:
+    top_k = EVAL_RUN_CONFIG.get("top_k")
+    if top_k is None and retrieval_profile:
         dataset = load_eval_dataset(EVAL_RUN_CONFIG["dataset_path"])
         limit = EVAL_RUN_CONFIG.get("limit")
         if limit is not None:
@@ -578,6 +654,16 @@ def run_eval_from_code_config() -> Dict[str, Any]:
         result = evaluate_retrieval(
             dataset,
             retrieval_config=RagRetrievalConfig(**RETRIEVAL_PROFILES[retrieval_profile]),
+            event_callback=event_callback,
+            cancel_checker=cancel_checker,
+        )
+    else:
+        result = run_eval_with_options(
+            dataset_path=EVAL_RUN_CONFIG["dataset_path"],
+            limit=EVAL_RUN_CONFIG["limit"],
+            top_k=top_k,
+            event_callback=event_callback,
+            cancel_checker=cancel_checker,
         )
     if EVAL_RUN_CONFIG.get("save_output"):
         _write_json_file(Path(EVAL_RUN_CONFIG["output_path"]), result)
@@ -618,17 +704,15 @@ def run_sweep_from_code_config() -> Dict[str, Any]:
     return result
 
 
-def run_from_code_config() -> Dict[str, Any]:
+def run_from_code_config(
+    event_callback: Optional[EvalEventCallback] = None,
+    cancel_checker: Optional[EvalCancelChecker] = None,
+) -> Dict[str, Any]:
     """根据 EVAL_RUN_CONFIG["mode"] 选择 single 或 sweep。"""
     mode = EVAL_RUN_CONFIG.get("mode", "single")
     if mode == "single":
-        return run_eval_from_code_config()
+        return run_eval_from_code_config(event_callback=event_callback, cancel_checker=cancel_checker)
     if mode == "sweep":
         return run_sweep_from_code_config()
     raise ValueError(f"Unsupported EVAL_RUN_CONFIG mode: {mode}")
-
-
-if __name__ == "__main__":
-    result = run_from_code_config()
-    print(json.dumps(result, ensure_ascii=False, indent=2))
 

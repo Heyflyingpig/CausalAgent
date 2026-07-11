@@ -1,4 +1,5 @@
-﻿import json
+import json
+import os
 import re
 import sys
 import time
@@ -16,6 +17,10 @@ if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+# Windows 上 numpy 与 torch 各自带 libiomp，同时导入会触发 OpenMP 重复初始化。
+# 在加载任何可能链接 OpenMP 的库之前设置；setdefault 不覆盖用户显式设置。
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -54,7 +59,6 @@ CLAIM_EVAL_CONFIG = {
     "low_claim_coverage_threshold": 0.7,
     "judge_max_retries": 2,
     "retry_sleep_seconds": 2.0,
-    "print_full_output": False,
 }
 
 
@@ -468,24 +472,4 @@ def run_claim_eval_from_code_config() -> Dict[str, Any]:
     if CLAIM_EVAL_CONFIG.get("save_markdown"):
         write_markdown_file(Path(CLAIM_EVAL_CONFIG["report_path"]), build_claim_eval_markdown_report(result))
     return result
-
-
-if __name__ == "__main__":
-    output = run_claim_eval_from_code_config()
-    if CLAIM_EVAL_CONFIG.get("print_full_output"):
-        print(json.dumps(output, ensure_ascii=False, indent=2))
-    else:
-        summary = {
-            "status": output.get("status"),
-            "judge_model": output.get("judge_model"),
-            "sample_count": output.get("sample_count"),
-            "valid_sample_count": output.get("valid_sample_count"),
-            "judge_failed_count": output.get("judge_failed_count"),
-            "score_summary": output.get("score_summary", {}),
-            "low_coverage_case_count": len(output.get("low_coverage_cases", [])),
-            "bad_case_count": len(output.get("bad_cases", [])),
-            "output_path": str(Path(CLAIM_EVAL_CONFIG["output_path"]).resolve()),
-            "report_path": str(Path(CLAIM_EVAL_CONFIG["report_path"]).resolve()),
-        }
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
 

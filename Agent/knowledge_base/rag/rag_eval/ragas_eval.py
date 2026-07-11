@@ -1,11 +1,15 @@
 import json
 import math
+import os
+import importlib.util
+from importlib import metadata as importlib_metadata
 import hashlib
 import sys
 import time
+import types
 from pathlib import Path
 from statistics import mean, stdev
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 if __package__ in {None, ""}:
     project_root = Path(__file__).resolve().parents[4]
@@ -17,6 +21,10 @@ if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
+
+# Windows 上 numpy 与 torch 各自带 libiomp，同时导入会触发 OpenMP 重复初始化。
+# 在加载任何可能链接 OpenMP 的库之前设置；setdefault 不覆盖用户显式设置。
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -38,8 +46,12 @@ from Agent.knowledge_base.rag.rag_config import (
     REPORT_OUTPUT_DIR,
     RETRIEVAL_PROFILES,
 )
-from Agent.knowledge_base.rag.rag_eval.rag_eval import load_eval_dataset
-from Agent.knowledge_base.rag.tools.report_utils import build_ragas_markdown_report, write_markdown_file
+from Agent.knowledge_base.rag.rag_eval.rag_eval import evaluate_retrieval, load_eval_dataset
+from Agent.knowledge_base.rag.tools.report_utils import (
+    build_rag_retrieval_single_markdown_report,
+    build_ragas_markdown_report,
+    write_markdown_file,
+)
 
 DEFAULT_DATASET_PATH = ACTIVE_EVAL_DATASET_PATH
 DEFAULT_RAGAS_DATASET_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_dataset.json"
@@ -50,6 +62,49 @@ DEFAULT_RETRIEVAL_EVAL_PATH = MACHINE_OUTPUT_DIR / "rag_eval_result.json"
 DEFAULT_LOW_SCORE_CASES_PATH = MACHINE_OUTPUT_DIR / "ragas_low_score_cases.json"
 DEFAULT_CROSS_METRIC_CASES_PATH = MACHINE_OUTPUT_DIR / "ragas_cross_metric_bad_cases.json"
 ANSWER_BUILD_VERSION = "answer_fallback_v5_pubmedqa_compact_rationale_prompt"
+RagasEventCallback = Callable[[str, str, Dict[str, Any]], None]
+RagasCancelChecker = Callable[[], bool]
+
+
+class RagasEvalCancelled(RuntimeError):
+    """Raised when a caller requests cooperative cancellation inside Ragas eval."""
+
+
+def _cancel_requested(cancel_checker: Optional[RagasCancelChecker]) -> bool:
+    """Return whether the caller has requested cooperative cancellation."""
+    return bool(cancel_checker and cancel_checker())
+
+
+def _raise_if_cancelled(cancel_checker: Optional[RagasCancelChecker], message: str) -> None:
+    """Stop the current Ragas phase if cooperative cancellation was requested."""
+    if _cancel_requested(cancel_checker):
+        raise RagasEvalCancelled(message)
+
+
+def _emit_step_progress(
+    event_callback: Optional[RagasEventCallback],
+    step_name: str,
+    phase: str,
+    current: int,
+    total: int,
+    sample: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Emit sample-level progress for Ragas preparation and refresh loops."""
+    if event_callback is None:
+        return
+    sample = sample or {}
+    event_callback(
+        "step_progress",
+        f"{step_name} {phase}: {current}/{total}",
+        {
+            "step": step_name,
+            "phase": phase,
+            "current": current,
+            "total": total,
+            "sample_id": sample.get("sample_id", ""),
+            "question": sample.get("question", ""),
+        },
+    )
 
 # 本地手动运行时优先改这里。
 # Phase3 默认读取 PubMedQA active benchmark。
@@ -69,11 +124,15 @@ ANSWER_BUILD_VERSION = "answer_fallback_v5_pubmedqa_compact_rationale_prompt"
 # - reviewed_all_core_metrics：PubMedQA active benchmark 全量核心指标。
 # - reviewed_all_prepare_only：只构造 Ragas dataset，不调用 Ragas judge。
 # - strict_repeat3：PubMedQA active benchmark，四指标重复 3 次。
-def run_ragas_eval_from_code_config() -> Dict[str, Any]:
+def run_ragas_eval_from_code_config(
+    event_callback: Optional[RagasEventCallback] = None,
+    cancel_checker: Optional[RagasCancelChecker] = None,
+) -> Dict[str, Any]:
     """根据 RAGAS_RUN_CONFIG 准备数据、运行 Ragas，并写入输出文件。"""
     retrieval_config = _build_retrieval_config(RAGAS_RUN_CONFIG.get("retrieval_config"))
     sample_filter = RAGAS_RUN_CONFIG.get("sample_filter")
     prepared_dataset = None
+    _raise_if_cancelled(cancel_checker, "cancelled before Ragas dataset preparation")
     if RAGAS_RUN_CONFIG.get("reuse_prepared_dataset"):
         prepared_dataset = load_prepared_dataset_if_compatible(
             dataset_path=RAGAS_RUN_CONFIG["dataset_path"],
@@ -85,6 +144,7 @@ def run_ragas_eval_from_code_config() -> Dict[str, Any]:
             max_response_chars=RAGAS_RUN_CONFIG["max_response_chars"],
             sample_filter=sample_filter,
         )
+    _raise_if_cancelled(cancel_checker, "cancelled after loading prepared Ragas dataset")
     if prepared_dataset is None:
         prepared_dataset = build_ragas_dataset(
             dataset_path=RAGAS_RUN_CONFIG["dataset_path"],
@@ -94,6 +154,8 @@ def run_ragas_eval_from_code_config() -> Dict[str, Any]:
             max_context_chars=RAGAS_RUN_CONFIG["max_context_chars"],
             max_response_chars=RAGAS_RUN_CONFIG["max_response_chars"],
             sample_filter=sample_filter,
+            event_callback=event_callback,
+            cancel_checker=cancel_checker,
         )
 
     if RAGAS_RUN_CONFIG.get("save_dataset"):
@@ -119,9 +181,69 @@ def run_ragas_eval_from_code_config() -> Dict[str, Any]:
         "ragas_rows": prepared_dataset["ragas_rows"],
         "metadata": prepared_dataset["metadata"],
         "metrics": RAGAS_RUN_CONFIG["selected_metrics"],
+        "kmp_duplicate_lib_ok": os.environ.get("KMP_DUPLICATE_LIB_OK", ""),
     }
+    if prepared_dataset.get("status") == "cancelled":
+        result["status"] = "cancelled"
+        result["cancelled_after_samples"] = prepared_dataset.get("cancelled_after_samples", 0)
+        return result
+    invalid_answers = _find_invalid_ragas_answers(prepared_dataset.get("ragas_rows", []))
+    if invalid_answers:
+        result.update(
+            {
+                "status": "fail",
+                "status_reason": "answer_generation_failed",
+                "error": "Ragas dataset contains generated-answer failures; skip judge to avoid misleading scores.",
+                "invalid_answer_count": len(invalid_answers),
+                "invalid_answer_examples": invalid_answers[:5],
+                "score_summary": {},
+                "score_records": [],
+            }
+        )
+        if RAGAS_RUN_CONFIG.get("save_output"):
+            _write_json_file(Path(RAGAS_RUN_CONFIG["output_path"]), result)
+        if RAGAS_RUN_CONFIG.get("save_markdown"):
+            write_markdown_file(Path(RAGAS_RUN_CONFIG["report_path"]), build_ragas_markdown_report(result))
+        return result
 
     if RAGAS_RUN_CONFIG.get("run_ragas"):
+        _raise_if_cancelled(cancel_checker, "cancelled before Ragas judge")
+        if RAGAS_RUN_CONFIG.get("refresh_retrieval_eval_before_ragas", True):
+            try:
+                result["retrieval_eval_freshness"] = ensure_retrieval_eval_for_ragas(
+                    prepared_dataset=prepared_dataset,
+                    retrieval_config=retrieval_config,
+                    sample_filter=sample_filter,
+                    event_callback=event_callback,
+                    cancel_checker=cancel_checker,
+                )
+                if result["retrieval_eval_freshness"].get("status") == "cancelled":
+                    result["status"] = "cancelled"
+                    return result
+            except Exception as exc:
+                if isinstance(exc, RagasEvalCancelled):
+                    result.update(
+                        {
+                            "status": "cancelled",
+                            "error": str(exc),
+                            "score_summary": {},
+                            "score_records": [],
+                        }
+                    )
+                    return result
+                result.update(
+                    {
+                        "status": "retrieval_refresh_failed",
+                        "error": repr(exc),
+                        "score_summary": {},
+                        "score_records": [],
+                    }
+                )
+                if RAGAS_RUN_CONFIG.get("save_output"):
+                    _write_json_file(Path(RAGAS_RUN_CONFIG["output_path"]), result)
+                if RAGAS_RUN_CONFIG.get("save_markdown"):
+                    write_markdown_file(Path(RAGAS_RUN_CONFIG["report_path"]), build_ragas_markdown_report(result))
+                return result
         try:
             score_cache_signature = _build_score_cache_signature(
                 prepared_dataset=prepared_dataset,
@@ -129,6 +251,8 @@ def run_ragas_eval_from_code_config() -> Dict[str, Any]:
                 include_reference_metrics=RAGAS_RUN_CONFIG["include_reference_metrics"],
                 timeout=RAGAS_RUN_CONFIG["ragas_timeout"],
                 max_workers=RAGAS_RUN_CONFIG["ragas_max_workers"],
+                max_retries=RAGAS_RUN_CONFIG.get("ragas_max_retries", 3),
+                max_wait=RAGAS_RUN_CONFIG.get("ragas_max_wait", 20),
                 answer_relevancy_strictness=RAGAS_RUN_CONFIG["answer_relevancy_strictness"],
                 repeat_count=RAGAS_RUN_CONFIG["repeat_count"],
                 judge_profile=RAGAS_RUN_CONFIG["judge_profile"],
@@ -146,11 +270,15 @@ def run_ragas_eval_from_code_config() -> Dict[str, Any]:
                     include_reference_metrics=RAGAS_RUN_CONFIG["include_reference_metrics"],
                     timeout=RAGAS_RUN_CONFIG["ragas_timeout"],
                     max_workers=RAGAS_RUN_CONFIG["ragas_max_workers"],
+                    max_retries=RAGAS_RUN_CONFIG.get("ragas_max_retries", 3),
+                    max_wait=RAGAS_RUN_CONFIG.get("ragas_max_wait", 20),
                     show_progress=RAGAS_RUN_CONFIG["show_progress"],
                     answer_relevancy_strictness=RAGAS_RUN_CONFIG["answer_relevancy_strictness"],
                     repeat_count=RAGAS_RUN_CONFIG["repeat_count"],
                     judge_profile=RAGAS_RUN_CONFIG["judge_profile"],
                     low_score_threshold=RAGAS_RUN_CONFIG["low_score_threshold"],
+                    event_callback=event_callback,
+                    cancel_checker=cancel_checker,
                 )
                 ragas_result["loaded_score_from_cache"] = False
                 if RAGAS_RUN_CONFIG.get("reuse_score_cache"):
@@ -178,14 +306,24 @@ def run_ragas_eval_from_code_config() -> Dict[str, Any]:
                 ),
             )
         except Exception as exc:
-            result.update(
-                {
-                    "status": "ragas_failed",
-                    "error": repr(exc),
-                    "score_summary": {},
-                    "score_records": [],
-                }
-            )
+            if isinstance(exc, RagasEvalCancelled):
+                result.update(
+                    {
+                        "status": "cancelled",
+                        "error": str(exc),
+                        "score_summary": {},
+                        "score_records": [],
+                    }
+                )
+            else:
+                result.update(
+                    {
+                        "status": "ragas_failed",
+                        "error": repr(exc),
+                        "score_summary": {},
+                        "score_records": [],
+                    }
+                )
 
     if RAGAS_RUN_CONFIG.get("save_output"):
         _write_json_file(Path(RAGAS_RUN_CONFIG["output_path"]), result)
@@ -216,11 +354,15 @@ def run_repeated_ragas_baseline(
     include_reference_metrics: bool = True,
     timeout: int = 180,
     max_workers: int = 2,
+    max_retries: int = 3,
+    max_wait: int = 20,
     show_progress: bool = True,
     answer_relevancy_strictness: int = 1,
     repeat_count: int = 1,
     judge_profile: str = "standard_single",
     low_score_threshold: float = 0.5,
+    event_callback: Optional[RagasEventCallback] = None,
+    cancel_checker: Optional[RagasCancelChecker] = None,
 ) -> Dict[str, Any]:
     """运行一次或多次 Ragas，并聚合 judge 稳定性统计。"""
     effective_repeat_count = max(int(repeat_count), 1)
@@ -228,17 +370,32 @@ def run_repeated_ragas_baseline(
     started_at = time.perf_counter()
 
     for run_index in range(effective_repeat_count):
+        _raise_if_cancelled(cancel_checker, f"cancelled before Ragas judge repeat {run_index + 1}")
+        if event_callback is not None:
+            event_callback(
+                "step_progress",
+                f"ragas_eval judge: {run_index + 1}/{effective_repeat_count}",
+                {
+                    "step": "ragas_eval",
+                    "phase": "judge",
+                    "current": run_index + 1,
+                    "total": effective_repeat_count,
+                },
+            )
         run_result = run_ragas_baseline(
             prepared_dataset=prepared_dataset,
             metric_names=metric_names,
             include_reference_metrics=include_reference_metrics,
             timeout=timeout,
             max_workers=max_workers,
+            max_retries=max_retries,
+            max_wait=max_wait,
             show_progress=show_progress,
             answer_relevancy_strictness=answer_relevancy_strictness,
         )
         run_result["run_index"] = run_index + 1
         run_results.append(run_result)
+        _raise_if_cancelled(cancel_checker, f"cancelled after Ragas judge repeat {run_index + 1}")
 
     effective_metric_names = run_results[0].get("metrics", metric_names) if run_results else metric_names
     aggregated_records = _aggregate_repeated_score_records(run_results, effective_metric_names)
@@ -267,6 +424,8 @@ def run_repeated_ragas_baseline(
         "eval_seconds": round(time.perf_counter() - started_at, 3),
         "ragas_timeout": timeout,
         "ragas_max_workers": max_workers,
+        "ragas_max_retries": max_retries,
+        "ragas_max_wait": max_wait,
         "answer_relevancy_strictness": answer_relevancy_strictness,
         "low_score_threshold": low_score_threshold,
         "score_summary": score_summary,
@@ -287,6 +446,8 @@ def run_ragas_baseline(
     include_reference_metrics: bool = True,
     timeout: int = 180,
     max_workers: int = 2,
+    max_retries: int = 3,
+    max_wait: int = 20,
     show_progress: bool = True,
     answer_relevancy_strictness: int = 1,
 ) -> Dict[str, Any]:
@@ -304,7 +465,12 @@ def run_ragas_baseline(
     embeddings = None
     if "answer_relevancy" in effective_metric_names:
         embeddings = components["LangchainEmbeddingsWrapper"](_get_embedding_function())
-    run_config = components["RunConfig"](timeout=timeout, max_workers=max_workers)
+    run_config = components["RunConfig"](
+        timeout=timeout,
+        max_workers=max_workers,
+        max_retries=max_retries,
+        max_wait=max_wait,
+    )
 
     started_at = time.perf_counter()
     evaluation_result = components["evaluate"](
@@ -330,6 +496,8 @@ def run_ragas_baseline(
         "eval_seconds": round(time.perf_counter() - started_at, 3),
         "ragas_timeout": timeout,
         "ragas_max_workers": max_workers,
+        "ragas_max_retries": max_retries,
+        "ragas_max_wait": max_wait,
         "answer_relevancy_strictness": answer_relevancy_strictness,
         "score_summary": summary,
         "score_stddev": {metric_name: 0.0 for metric_name in summary},
@@ -347,6 +515,7 @@ def _load_legacy_ragas_components(
     answer_relevancy_strictness: int = 1,
 ) -> Dict[str, Any]:
     """按当前已验证的 Ragas 0.4.x API 加载评测组件。"""
+    _install_ragas_vertexai_import_shim()
     import ragas
     from ragas import EvaluationDataset, evaluate
     from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -385,6 +554,65 @@ def _load_legacy_ragas_components(
     }
 
 
+def preflight_ragas_dependencies(
+    metric_names: Optional[List[str]] = None,
+    include_reference_metrics: Optional[bool] = None,
+    answer_relevancy_strictness: Optional[int] = None,
+) -> Dict[str, Any]:
+    """轻量检查 Ragas / LangChain 导入链，不触发真实 judge 调用。"""
+    effective_metric_names = metric_names or list(RAGAS_RUN_CONFIG.get("selected_metrics", []))
+    effective_include_reference = (
+        RAGAS_RUN_CONFIG.get("include_reference_metrics", True)
+        if include_reference_metrics is None
+        else include_reference_metrics
+    )
+    effective_strictness = (
+        RAGAS_RUN_CONFIG.get("answer_relevancy_strictness", 1)
+        if answer_relevancy_strictness is None
+        else answer_relevancy_strictness
+    )
+    components = _load_legacy_ragas_components(
+        metric_names=effective_metric_names,
+        include_reference_metrics=effective_include_reference,
+        answer_relevancy_strictness=effective_strictness,
+    )
+    return {
+        "status": "pass",
+        "ragas_version": getattr(components["ragas"], "__version__", "unknown"),
+        "metrics": effective_metric_names,
+        "versions": {
+            "ragas": _package_version("ragas"),
+            "langchain": _package_version("langchain"),
+            "langchain-community": _package_version("langchain-community"),
+            "langchain-core": _package_version("langchain-core"),
+            "langchain-openai": _package_version("langchain-openai"),
+        },
+    }
+
+
+def _package_version(package_name: str) -> str:
+    """读取已安装包版本；缺失时返回 unavailable，避免 preflight 自身失败。"""
+    try:
+        return importlib_metadata.version(package_name)
+    except importlib_metadata.PackageNotFoundError:
+        return "unavailable"
+
+
+def _install_ragas_vertexai_import_shim() -> None:
+    """为 Ragas 0.4.x 兼容新版 langchain-community 移除的 VertexAI chat import。"""
+    module_name = "langchain_community.chat_models.vertexai"
+    if module_name in sys.modules:
+        return
+    if importlib.util.find_spec(module_name) is not None:
+        return
+    from langchain_community.llms.vertexai import VertexAI
+
+    shim = types.ModuleType(module_name)
+    shim.__package__ = "langchain_community.chat_models"
+    shim.ChatVertexAI = VertexAI
+    sys.modules[module_name] = shim
+
+
 def _build_legacy_ragas_judge_llm() -> Any:
     """构造旧版 Ragas wrapper 使用的 judge LLM。"""
     return ChatOpenAI(
@@ -403,6 +631,9 @@ def build_ragas_dataset(
     max_context_chars: Optional[int] = None,
     max_response_chars: Optional[int] = None,
     sample_filter: Optional[Dict[str, Any]] = None,
+    event_callback: Optional[RagasEventCallback] = None,
+    cancel_checker: Optional[RagasCancelChecker] = None,
+    step_name: str = "ragas_eval",
 ) -> Dict[str, Any]:
     """
     生成 Ragas 评测输入数据。
@@ -418,8 +649,14 @@ def build_ragas_dataset(
     rows: List[Dict[str, Any]] = []
     metadata_rows: List[Dict[str, Any]] = []
     started_at = time.perf_counter()
+    total_count = len(dataset)
+    cancelled = False
 
-    for sample in dataset:
+    for sample_index, sample in enumerate(dataset, start=1):
+        if _cancel_requested(cancel_checker):
+            cancelled = True
+            _emit_step_progress(event_callback, step_name, "cancelled", sample_index - 1, total_count, sample)
+            break
         if not sample.get("question", "").strip():
             continue
         converted = _build_ragas_eval_row(
@@ -431,6 +668,11 @@ def build_ragas_dataset(
         )
         rows.append(converted["ragas_row"])
         metadata_rows.append(converted["metadata"])
+        _emit_step_progress(event_callback, step_name, "build_dataset", sample_index, total_count, sample)
+        if _cancel_requested(cancel_checker):
+            cancelled = True
+            _emit_step_progress(event_callback, step_name, "cancelled", sample_index, total_count, sample)
+            break
 
     dataset_build_config = {
         "limit": limit,
@@ -445,7 +687,8 @@ def build_ragas_dataset(
         "answer_build_version": ANSWER_BUILD_VERSION,
         "vector_db_summary": get_vector_db_metadata_summary(),
     }
-    return {
+    result = {
+        "status": "cancelled" if cancelled else "pass",
         "dataset_path": str(Path(dataset_path).resolve()),
         "sample_count": len(rows),
         "source_sample_count": len(load_eval_dataset(dataset_path)),
@@ -455,6 +698,173 @@ def build_ragas_dataset(
         "ragas_rows": rows,
         "metadata": metadata_rows,
     }
+    if cancelled:
+        result["cancelled_after_samples"] = len(rows)
+    return result
+
+
+def _find_invalid_ragas_answers(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Find generated-answer failures that would make Ragas scores misleading."""
+    failure_markers = (
+        "回答生成失败",
+        "Insufficient Balance",
+        "Error code:",
+        "fallback_failed",
+        "证据已检索，但回答生成失败",
+    )
+    invalid_rows: List[Dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        response = str(row.get("response") or "").strip()
+        if not response:
+            invalid_rows.append(
+                {
+                    "index": index,
+                    "reason": "empty_response",
+                    "user_input": row.get("user_input", ""),
+                }
+            )
+            continue
+        matched_marker = next((marker for marker in failure_markers if marker in response), "")
+        if matched_marker:
+            invalid_rows.append(
+                {
+                    "index": index,
+                    "reason": matched_marker,
+                    "user_input": row.get("user_input", ""),
+                    "response_preview": response[:240],
+                }
+            )
+    return invalid_rows
+
+
+def ensure_retrieval_eval_for_ragas(
+    prepared_dataset: Dict[str, Any],
+    retrieval_config: RagRetrievalConfig,
+    sample_filter: Optional[Dict[str, Any]] = None,
+    event_callback: Optional[RagasEventCallback] = None,
+    cancel_checker: Optional[RagasCancelChecker] = None,
+) -> Dict[str, Any]:
+    """保证 cross-metric 使用的 retrieval latest 与本次 Ragas 样本和检索配置一致。"""
+    retrieval_path = Path(RAGAS_RUN_CONFIG["retrieval_eval_path"])
+    report_path = Path(
+        RAGAS_RUN_CONFIG.get(
+            "retrieval_report_path",
+            str(REPORT_OUTPUT_DIR / "rag_eval_report.md"),
+        )
+    )
+    existing = _check_retrieval_eval_compatibility(
+        retrieval_path=retrieval_path,
+        prepared_dataset=prepared_dataset,
+        retrieval_config=retrieval_config,
+    )
+    if existing["compatible"]:
+        _raise_if_cancelled(cancel_checker, "cancelled after checking retrieval freshness")
+        return {
+            "status": "reused",
+            "reason": "latest retrieval eval already matches current Ragas run",
+            "retrieval_eval_path": str(retrieval_path.resolve()),
+            "retrieval_report_path": str(report_path.resolve()),
+            "sample_count": prepared_dataset["sample_count"],
+        }
+
+    dataset = _load_ragas_source_samples(
+        dataset_path=RAGAS_RUN_CONFIG["dataset_path"],
+        limit=RAGAS_RUN_CONFIG["limit"],
+        sample_filter=sample_filter,
+    )
+    _raise_if_cancelled(cancel_checker, "cancelled before refreshing retrieval eval for Ragas")
+    refreshed = evaluate_retrieval(
+        dataset,
+        retrieval_config=retrieval_config,
+        event_callback=event_callback,
+        cancel_checker=cancel_checker,
+        step_name="ragas_eval",
+    )
+    if refreshed.get("status") == "cancelled":
+        return {
+            "status": "cancelled",
+            "reason": "cancelled while refreshing retrieval eval for Ragas",
+            "retrieval_eval_path": str(retrieval_path.resolve()),
+            "retrieval_report_path": str(report_path.resolve()),
+            "sample_count": refreshed.get("sample_count"),
+            "cancelled_after_samples": refreshed.get("cancelled_after_samples", refreshed.get("sample_count", 0)),
+        }
+    _write_json_file(retrieval_path, refreshed)
+    write_markdown_file(report_path, build_rag_retrieval_single_markdown_report(refreshed))
+    return {
+        "status": "refreshed",
+        "reason": existing["reason"],
+        "retrieval_eval_path": str(retrieval_path.resolve()),
+        "retrieval_report_path": str(report_path.resolve()),
+        "sample_count": refreshed.get("sample_count"),
+        "config": refreshed.get("config", {}),
+    }
+
+
+def _check_retrieval_eval_compatibility(
+    retrieval_path: Path,
+    prepared_dataset: Dict[str, Any],
+    retrieval_config: RagRetrievalConfig,
+) -> Dict[str, Any]:
+    """检查已落盘 retrieval 结果是否可安全用于当前 Ragas cross-metric 报告。"""
+    if not retrieval_path.exists():
+        return {"compatible": False, "reason": "retrieval eval file is missing"}
+    try:
+        retrieval_eval = _load_json_file(retrieval_path)
+    except Exception as exc:
+        return {"compatible": False, "reason": f"retrieval eval file is unreadable: {exc!r}"}
+
+    expected_questions = [
+        metadata.get("question", "").strip()
+        for metadata in prepared_dataset.get("metadata", [])
+        if metadata.get("question", "").strip()
+    ]
+    actual_questions = [
+        detail.get("question", "").strip()
+        for detail in retrieval_eval.get("details", [])
+        if detail.get("question", "").strip()
+    ]
+    if retrieval_eval.get("sample_count") != prepared_dataset.get("sample_count"):
+        return {"compatible": False, "reason": "sample_count mismatch"}
+    if actual_questions != expected_questions:
+        return {"compatible": False, "reason": "question order mismatch"}
+    if retrieval_eval.get("config") != retrieval_config.to_dict():
+        return {"compatible": False, "reason": "retrieval config mismatch"}
+
+    expected_vector_summary = prepared_dataset.get("dataset_build_config", {}).get("vector_db_summary")
+    actual_vector_summary = retrieval_eval.get("vector_db_summary")
+    if expected_vector_summary and not _stable_vector_summary_equal(expected_vector_summary, actual_vector_summary):
+        return {"compatible": False, "reason": "vector db summary mismatch"}
+    return {"compatible": True, "reason": ""}
+
+
+def _stable_vector_summary_equal(expected: Dict[str, Any], actual: Optional[Dict[str, Any]]) -> bool:
+    """只比较向量库身份稳定字段，忽略 retrieval 额外诊断字段。"""
+    if not actual:
+        return False
+    stable_keys = [
+        "exists",
+        "persist_directory",
+        "collection_name",
+        "vector_count",
+        "dataset_counts",
+        "doc_id_prefix_counts",
+        "sample_doc_ids",
+    ]
+    return {key: expected.get(key) for key in stable_keys} == {key: actual.get(key) for key in stable_keys}
+
+
+def _load_ragas_source_samples(
+    dataset_path: str,
+    limit: Optional[int],
+    sample_filter: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """按 Ragas 当前数据选择规则加载 retrieval 刷新所需的同一批源样本。"""
+    dataset = load_eval_dataset(dataset_path)
+    dataset = filter_eval_samples(dataset, sample_filter=sample_filter)
+    if limit is not None:
+        dataset = dataset[:limit]
+    return [sample for sample in dataset if sample.get("question", "").strip()]
 
 
 def _build_ragas_eval_row(
@@ -530,7 +940,7 @@ def _build_pubmedqa_eval_answer_prompt() -> ChatPromptTemplate:
     return ChatPromptTemplate.from_template(
         """
         You are a careful biomedical RAG answer writer for PubMedQA evaluation.
-        Answer strictly from the retrieved evidence. Do not add biomedical claims that are not supported by the evidence.
+        Your answer must be grounded only in the retrieved evidence and must stay close to the PubMedQA long-answer rationale.
 
         # Question
         {question}
@@ -545,20 +955,18 @@ def _build_pubmedqa_eval_answer_prompt() -> ChatPromptTemplate:
         {evidence_blocks}
 
         # Answer rules
-        1. Use only the provided evidence. If the evidence is insufficient, set status to `insufficient_evidence`.
-        2. Keep the answer compact: 3 to 4 sentences, no bullet list, and no more than 180 English words or 300 Chinese characters.
-        3. For PubMedQA-style evidence, cover the long-answer rationale instead of giving only a yes/no/maybe conclusion.
-        4. Include the study design or population when available.
-        5. Include the most important findings, especially numbers, group differences, efficacy, safety, risk, or statistical direction when available.
-        6. Include limitations, uncertainty, or qualifying conditions when the evidence contains them.
-        7. End with the direct answer direction: yes, no, or maybe/uncertain, when the evidence supports such a direction.
-        8. `citations` may only contain evidence IDs that you actually used, such as E1 or E2.
-        9. `status` must be `answered` or `insufficient_evidence`.
-        10. `confidence` must be exactly `high`, `medium`, or `low`.
-        11. Return only the structured result, without extra commentary.
+        1. Use only the provided evidence. Do not add biomedical claims, populations, mechanisms, outcomes, or safety statements that are absent from the evidence.
+        2. Prefer evidence from the same PubMedQA article as the question. Ignore unrelated retrieved contexts when enough same-article evidence exists.
+        3. Mark `status` as `insufficient_evidence` only when the retrieved evidence does not contain the study population/design plus at least one direct result relevant to the question.
+        4. If same-article evidence is present but incomplete, answer with `status="answered"`, `confidence="medium"` or `low`, and explicitly state the limitation.
+        5. Cover the PubMedQA rationale: study design or population, main numeric/statistical/directional findings, limitations or uncertainty, and the final yes/no/maybe direction when supported.
+        6. Keep the answer compact: 4 to 6 sentences, no bullet list, no more than 220 English words or 360 Chinese characters.
+        7. Every substantive claim in the answer must be supported by one or more cited evidence IDs.
+        8. `citations` must contain only evidence IDs actually used in the answer, such as E1 or E2. If `status="answered"`, include at least one citation.
+        9. `status` must be exactly `answered` or `insufficient_evidence`; `confidence` must be exactly `high`, `medium`, or `low`.
+        10. Return only the structured result, without extra commentary.
         """
     )
-
 
 def filter_eval_samples(
     dataset: List[Dict[str, Any]],
@@ -982,6 +1390,8 @@ def _build_score_cache_signature(
     include_reference_metrics: bool,
     timeout: int,
     max_workers: int,
+    max_retries: int,
+    max_wait: int,
     answer_relevancy_strictness: int,
     repeat_count: int,
     judge_profile: str,
@@ -994,6 +1404,8 @@ def _build_score_cache_signature(
         "include_reference_metrics": include_reference_metrics,
         "timeout": timeout,
         "max_workers": max_workers,
+        "max_retries": max_retries,
+        "max_wait": max_wait,
         "answer_relevancy_strictness": answer_relevancy_strictness,
         "repeat_count": repeat_count,
         "judge_profile": judge_profile,
@@ -1029,6 +1441,8 @@ def _write_score_cache(cache_path: str, signature: str, result: Dict[str, Any]) 
             "eval_seconds",
             "ragas_timeout",
             "ragas_max_workers",
+            "ragas_max_retries",
+            "ragas_max_wait",
             "answer_relevancy_strictness",
             "judge_profile",
             "repeat_count",
@@ -1064,7 +1478,18 @@ def _truncate_for_eval(text: str, max_chars: Optional[int]) -> str:
 def _write_json_file(path: Path, data: Dict[str, Any]) -> None:
     """写入 JSON 文件。"""
     _ensure_parent_dir(path)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(_json_safe(data), ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+
+
+def _json_safe(value: Any) -> Any:
+    """把非有限浮点数转为 None，保证输出是标准 JSON。"""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -1091,34 +1516,4 @@ def _sha256_text(text: str) -> str:
 def _sha256_file(path: str) -> str:
     """计算文件 SHA256，用于让 prepared dataset 缓存感知数据内容变化。"""
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-if __name__ == "__main__":
-    output = run_ragas_eval_from_code_config()
-    if RAGAS_RUN_CONFIG.get("print_full_output"):
-        print(json.dumps(output, ensure_ascii=False, indent=2))
-    else:
-        summary = {
-            "status": output.get("status"),
-            "active_profile": output.get("active_profile"),
-            "judge_profile": output.get("judge_profile"),
-            "repeat_count": output.get("repeat_count"),
-            "sample_count": output.get("sample_count"),
-            "judge_model": output.get("judge_model"),
-            "metrics": output.get("metrics"),
-            "score_summary": output.get("score_summary", {}),
-            "score_stddev": output.get("score_stddev", {}),
-            "metric_validity": output.get("metric_validity", {}),
-            "low_score_case_count": len(output.get("low_score_cases", [])),
-            "cross_metric_bad_case_count": output.get("cross_metric_bad_cases", {})
-            .get("summary", {})
-            .get("bad_case_count"),
-            "build_seconds": output.get("build_seconds"),
-            "eval_seconds": output.get("eval_seconds"),
-            "loaded_from_cache": output.get("loaded_from_cache", False),
-            "loaded_score_from_cache": output.get("loaded_score_from_cache", False),
-            "output_path": str(Path(RAGAS_RUN_CONFIG["output_path"]).resolve()),
-            "report_path": str(Path(RAGAS_RUN_CONFIG["report_path"]).resolve()),
-        }
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
 

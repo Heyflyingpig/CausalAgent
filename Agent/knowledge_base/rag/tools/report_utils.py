@@ -87,6 +87,8 @@ TERM_TRANSLATIONS = {
     "question_type": "问题类型",
     "question_types": "问题类型分布",
     "ragas_eval_trace_count": "Ragas 评测链路数",
+    "ragas_max_retries": "Ragas 最大重试次数",
+    "ragas_max_wait": "Ragas 最长重试等待秒数",
     "ragas_max_workers": "Ragas 最大并发数",
     "ragas_timeout": "Ragas 超时秒数",
     "ragas_version": "Ragas 版本",
@@ -124,6 +126,7 @@ TERM_TRANSLATIONS = {
     "std": "标准差",
     "step": "步骤",
     "status": "状态",
+    "status_reason": "状态原因",
     "threshold": "阈值",
     "threshold_name": "阈值名称",
     "claim_coverage_min": "断言覆盖率下限",
@@ -234,6 +237,7 @@ def build_pipeline_summary_markdown_report(summary: Dict[str, Any]) -> str:
         f"| {report_label('field')} | {report_label('value')} |",
         "| --- | --- |",
         f"| {report_label('status')} | {summary.get('status', '')} |",
+        f"| {report_label('status_reason')} | {summary.get('status_reason', '')} |",
         f"| run_id | {summary.get('run_id', '')} |",
         f"| run_dir | {escape_markdown_cell(summary.get('run_dir', ''))} |",
         f"| started_at | {summary.get('started_at', '')} |",
@@ -405,20 +409,28 @@ def build_rag_retrieval_sweep_markdown_report(result: Dict[str, Any]) -> str:
         f"## {report_label('Runs')}",
         "",
         f"| {report_label('rank')} | name | {report_label('recall')} | {report_label('mrr')} | "
-        f"{report_label('hit_rate')} | {report_label('avg_total_ms')} | {report_label('final_top_k')} | "
+        f"{report_label('hit_rate')} | top4 recall | top4 mrr | top5 recall | top5 mrr | "
+        f"{report_label('avg_total_ms')} | {report_label('final_top_k')} | "
         f"{report_label('dense_fetch_k')} | {report_label('dense_mmr_k')} | {report_label('sparse_fetch_k')} | "
         f"{report_label('mmr_lambda')} |",
-        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for rank, run in enumerate(result.get("runs", []), start=1):
         metrics = run.get("metrics", {})
         config = run.get("config", {})
         avg_timings = metrics.get("avg_timings_ms", {})
+        prefix_metrics = metrics.get("final_prefix_metrics", {})
+        top4_metrics = prefix_metrics.get("top4", {})
+        top5_metrics = prefix_metrics.get("top5", {})
         lines.append(
             f"| {rank} | {escape_markdown_cell(run.get('name', run.get('run_id', '')))} | "
             f"{format_metric(metrics.get('recall_at_k', 0.0))} | "
             f"{format_metric(metrics.get('mrr', 0.0))} | "
             f"{format_metric(metrics.get('hit_rate', 0.0))} | "
+            f"{format_metric(top4_metrics.get('recall', 0.0))} | "
+            f"{format_metric(top4_metrics.get('mrr', 0.0))} | "
+            f"{format_metric(top5_metrics.get('recall', 0.0))} | "
+            f"{format_metric(top5_metrics.get('mrr', 0.0))} | "
             f"{format_metric(avg_timings.get('total', 0.0))} | "
             f"{config.get('final_top_k', '')} | {config.get('dense_fetch_k', '')} | "
             f"{config.get('dense_mmr_k', '')} | {config.get('sparse_fetch_k', '')} | "
@@ -495,6 +507,8 @@ def build_ragas_markdown_report(result: Dict[str, Any]) -> str:
         f"| {report_label('loaded_score_from_cache')} | {result.get('loaded_score_from_cache', False)} |",
         f"| {report_label('ragas_timeout')} | {result.get('ragas_timeout', '')} |",
         f"| {report_label('ragas_max_workers')} | {result.get('ragas_max_workers', '')} |",
+        f"| {report_label('ragas_max_retries')} | {result.get('ragas_max_retries', '')} |",
+        f"| {report_label('ragas_max_wait')} | {result.get('ragas_max_wait', '')} |",
         f"| {report_label('answer_relevancy_strictness')} | "
         f"{result.get('answer_relevancy_strictness', '')} |",
         f"| {report_label('low_score_threshold')} | {result.get('low_score_threshold', '')} |",
