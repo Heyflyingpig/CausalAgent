@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG 评测工作台</title>
+<link rel="stylesheet" href="/static/css/rag_eval.css">
+</head>
+<body>
+  <header class="shell-header">
+    <div class="header-inner">
+      <div class="brand-block">
+        <span class="announce-chip"><span>PubMedQA</span> RAG Eval</span>
+        <h1>RAG 评测工作台</h1>
+      </div>
+      <div class="header-actions">
+        <span class="connection-pill"><span id="status-indicator" class="status-dot offline"></span><span id="status-text">未连接</span></span>
+        <button id="btn-toggle-lang" class="ghost-button" type="button">中 / EN</button>
+        <button id="btn-refresh-status" class="ghost-button" type="button">刷新</button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="workspace-tabs" aria-label="RAG评测导航">
+    <button class="tabnav-btn active" data-tab="overview" type="button">总览</button>
+    <button class="tabnav-btn" data-tab="config" type="button">配置</button>
+    <button class="tabnav-btn" data-tab="pipeline" type="button">运行</button>
+    <button class="tabnav-btn" data-tab="analysis" type="button">分析</button>
+    <button class="tabnav-btn" data-tab="reports" type="button">报告</button>
+    <button class="tabnav-btn" data-tab="history" type="button">历史</button>
+  </nav>
+
+  <div id="run-notice" class="run-notice hidden" role="status" aria-live="polite">
+    <div class="run-notice-main">
+      <span id="run-notice-state" class="state-tag">--</span>
+      <div>
+        <div id="run-notice-title" class="run-notice-title">测评完成</div>
+        <div id="run-notice-detail" class="run-notice-detail">可以查看报告和坏例。</div>
+      </div>
+    </div>
+    <div class="run-notice-actions">
+      <button id="btn-run-notice-reports" class="ghost-button" type="button">查看报告</button>
+      <button id="btn-run-notice-analysis" class="ghost-button" type="button">查看坏例</button>
+      <button id="btn-run-notice-dismiss" class="ghost-button" type="button">关闭</button>
+    </div>
+  </div>
+
+  <main class="workspace">
+    <section id="tab-overview" class="tab-panel active">
+      <div class="metric-strip" id="overview-metrics"></div>
+      <div class="layout-two">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Benchmark</p>
+              <h2 id="benchmark-name">--</h2>
+            </div>
+            <span id="benchmark-state" class="state-tag">--</span>
+          </div>
+          <div class="kv-list" id="benchmark-info"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Vector Store</p>
+              <h2 id="vectordb-title">--</h2>
+            </div>
+            <span id="vectordb-state" class="state-tag">--</span>
+          </div>
+          <div class="kv-list" id="vectordb-info"></div>
+        </section>
+      </div>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Model Runtime</p>
+            <h2>模型运行状态</h2>
+          </div>
+        </div>
+        <div id="model-runtime-grid" class="model-runtime-grid"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Latest Run</p>
+            <h2 id="latest-run-title">暂无评测结果</h2>
+          </div>
+          <span id="latest-run-status" class="state-tag">--</span>
+        </div>
+        <div id="threshold-checks" class="check-grid"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Developer Diagnosis</p>
+            <h2>调参诊断</h2>
+          </div>
+        </div>
+        <div id="overview-diagnosis" class="diagnosis-panel empty-state">暂无诊断</div>
+      </section>
+    </section>
+
+    <section id="tab-config" class="tab-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Runtime Config</p>
+          <h2>运行时参数</h2>
+        </div>
+        <button id="btn-save-config" class="primary-button" type="button">保存配置</button>
+      </div>
+      <div id="config-save-msg" class="inline-message"></div>
+      <div class="config-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Retrieval</p>
+              <h2>检索参数</h2>
+            </div>
+            <select id="cfg-active-retrieval-profile" class="select-inline"></select>
+          </div>
+          <div class="form-grid" id="cfg-retrieval-profiles"></div>
+          <div class="form-grid compact">
+            <label class="field"><span id="cfg-retrieval-mode-title" data-config-title="mode">Mode</span><select id="cfg-retrieval-mode"><option value="single">single</option><option value="sweep">sweep</option></select></label>
+            <label class="field"><span id="cfg-retrieval-limit-title" data-config-title="limit">Limit</span><input id="cfg-retrieval-limit" type="text" placeholder="null" data-key="retrieval_eval.limit"></label>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Ragas</p>
+              <h2>生成质量参数</h2>
+            </div>
+            <select id="cfg-ragas-active-profile" class="select-inline"></select>
+          </div>
+          <div class="form-grid" id="cfg-ragas-params"></div>
+        </section>
+        <section class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Pipeline</p>
+              <h2>步骤与阈值</h2>
+            </div>
+          </div>
+          <div class="pipeline-config">
+            <div id="cfg-pipeline-steps" class="step-list"></div>
+            <div id="cfg-pipeline-thresholds" class="form-grid"></div>
+          </div>
+        </section>
+        <section class="panel span-2">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Production RAG</p>
+              <h2>正式 RAG 调用配置</h2>
+            </div>
+            <button id="btn-publish-production-config" class="primary-button" type="button">发布当前评测配置</button>
+          </div>
+          <div id="production-config-msg" class="inline-message"></div>
+          <div id="production-config-view" class="production-config-view empty-state">加载中...</div>
+        </section>
+      </div>
+    </section>
+
+    <section id="tab-pipeline" class="tab-panel">
+      <div class="layout-two">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Pipeline</p>
+              <h2>运行控制</h2>
+            </div>
+            <span id="pipeline-run-status" class="state-tag idle">空闲</span>
+          </div>
+          <div id="step-desc-loading" class="inline-message">步骤加载中...</div>
+          <div id="step-checklist" class="step-list"></div>
+          <label class="field run-name-field">Run Name
+            <input id="pipeline-run-name" type="text" placeholder="active_benchmark_full_pipeline">
+          </label>
+          <div class="run-actions">
+            <button id="btn-run-pipeline" class="primary-button" type="button">运行 Pipeline</button>
+            <button id="btn-cancel-pipeline" class="ghost-button danger" type="button" disabled>停止</button>
+            <span id="pipeline-current-run" class="mono-note"></span>
+          </div>
+          <div id="pipeline-run-config-preview" class="run-config-preview empty-state">
+            运行前会显示本次表单参数预览；修改配置后请先保存，再运行。
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Events</p>
+              <h2>实时事件</h2>
+            </div>
+          </div>
+          <div id="pipeline-log" class="log-console"><div class="log-line dim">等待启动...</div></div>
+          <div id="pipeline-phase-progress" class="phase-progress"></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="tab-analysis" class="tab-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Trace Review</p>
+          <h2>坏例与证据链</h2>
+        </div>
+        <button id="btn-refresh-analysis" class="ghost-button" type="button">刷新分析</button>
+      </div>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Developer Diagnosis</p>
+            <h2>调参诊断与下一步建议</h2>
+          </div>
+        </div>
+        <div id="analysis-diagnosis" class="diagnosis-panel empty-state">暂无诊断</div>
+      </section>
+      <div class="analysis-layout">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Bad Cases</p>
+              <h2 id="bad-case-title">--</h2>
+            </div>
+          </div>
+          <div id="bad-case-list" class="case-list"></div>
+        </section>
+        <section class="panel detail-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Selected Trace</p>
+              <h2 id="case-detail-title">选择一个坏例</h2>
+            </div>
+          </div>
+          <div id="case-detail" class="case-detail empty-state">暂无选中样本</div>
+        </section>
+      </div>
+    </section>
+
+    <section id="tab-reports" class="tab-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Reports</p>
+          <h2>评测报告</h2>
+        </div>
+        <div class="section-actions">
+          <button id="btn-refresh-reports" class="ghost-button" type="button">刷新报告</button>
+          <button id="btn-save-report" class="ghost-button" type="button">保存报告</button>
+        </div>
+      </div>
+      <div id="report-summary-cards" class="report-summary-grid"></div>
+      <div id="report-insights" class="report-insights"></div>
+      <div class="report-layout">
+        <div id="report-list" class="report-list"></div>
+        <article id="report-content" class="report-content">暂无报告</article>
+      </div>
+    </section>
+
+    <section id="tab-history" class="tab-panel">
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Runs</p>
+            <h2>历史记录</h2>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" id="history-table">
+            <thead><tr><th>Run ID</th><th>状态</th><th>开始时间</th><th>Recall@K</th><th>Faithfulness</th><th>坏例链路</th><th>操作</th></tr></thead>
+          <tbody id="history-tbody"><tr><td colspan="7">加载中...</td></tr></tbody>
+          </table>
+        </div>
+        <div id="history-pagination" class="history-pagination"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Run Diff</p>
+            <h2>选择基线对比</h2>
+          </div>
+        </div>
+        <div class="diff-controls">
+          <label class="field">Baseline
+            <select id="diff-baseline-select" class="select-inline"></select>
+          </label>
+          <div class="diff-candidate-box">
+            <span class="metric-label">Candidate</span>
+            <div id="diff-candidate-run" class="mono">--</div>
+          </div>
+        </div>
+        <div id="run-diff-panel" class="run-diff empty-state">暂无对比数据</div>
+      </section>
+      <section id="run-detail-panel" class="panel hidden">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Run Detail</p>
+            <h2 id="run-detail-title">Run详情</h2>
+          </div>
+          <button id="btn-close-run-detail" class="ghost-button" type="button">关闭</button>
+        </div>
+        <div id="run-detail-body" class="run-detail"></div>
+      </section>
+    </section>
+  </main>
+
+<script src="/static/js/rag_eval.js"></script>
+</body>
+</html>

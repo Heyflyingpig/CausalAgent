@@ -1,4 +1,4 @@
-from flask import Flask
+﻿from flask import Flask
 from config.settings import settings
 import logging
 
@@ -11,6 +11,7 @@ def create_app():
     from app.agent.routes import agent_bp
     from app.main.routes import main_bp
     from app.admin.routes import admin_bp
+    from app.rag_eval.routes import rag_eval_bp
 
     app = Flask(__name__, static_folder="static")
     app.secret_key = settings.SECRET_KEY
@@ -28,4 +29,5 @@ def create_app():
     app.register_blueprint(agent_bp)
     app.register_blueprint(main_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(rag_eval_bp)
     return app
