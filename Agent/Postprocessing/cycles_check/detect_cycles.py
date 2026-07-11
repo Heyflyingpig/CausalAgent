@@ -3,13 +3,32 @@ import numpy as np
 import networkx as nx
 import logging
 
-def detect_cycles(adjacency_matrix: np.ndarray, node_names: List[str]) -> Tuple[bool, List[List[str]]]:
+
+def _as_networkx_adjacency(
+    adjacency_matrix: np.ndarray,
+    matrix_convention: str,
+) -> np.ndarray:
+    """按算法矩阵约定转换为 networkx 使用的 row-to-column 邻接矩阵。"""
+    if matrix_convention == "causallearn":
+        return adjacency_matrix.T
+    if matrix_convention == "olc":
+        return adjacency_matrix
+    raise ValueError(f"unsupported matrix convention: {matrix_convention}")
+
+
+def detect_cycles(
+    adjacency_matrix: np.ndarray,
+    node_names: List[str],
+    matrix_convention: str = "causallearn",
+) -> Tuple[bool, List[List[str]]]:
     """
     检测因果图中是否存在环路。
     
     Args:
         adjacency_matrix: 邻接矩阵 (n x n)
         node_names: 节点名称列表
+        matrix_convention: causallearn 表示 matrix[target, source]；
+            olc 表示 matrix[source, target]
         
     Returns:
         (has_cycle, cycles): 是否有环路，以及所有环路的列表
@@ -28,9 +47,8 @@ def detect_cycles(adjacency_matrix: np.ndarray, node_names: List[str]) -> Tuple[
         # 由于causal-learn的邻接矩阵会重复输出-1值，所以需要先转换为1
         adj_binary = (adjacency_matrix == 1).astype(int)
         
-        # 转置矩阵，因为networkx的约定是adj[i][j]=1表示i->j
-        # 而causal-learn的约定是adj[i][j]=1表示j->i
-        adj_for_nx = adj_binary.T
+        # networkx 固定使用 adj[source][target]，这里按算法约定显式转换。
+        adj_for_nx = _as_networkx_adjacency(adj_binary, matrix_convention)
         
         # 创建有向图
         G = nx.from_numpy_array(adj_for_nx, create_using=nx.DiGraph)
