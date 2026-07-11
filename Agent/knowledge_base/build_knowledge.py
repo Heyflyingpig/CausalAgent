@@ -1,10 +1,12 @@
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+import chromadb
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyMuPDFLoader, PyPDFLoader
 from langchain_core.documents import Document
@@ -20,6 +22,7 @@ except ImportError:  # pragma: no cover - python-dotenv 是可选依赖
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parents[1]
+LOG_PATH = BASE_DIR / "build_knowledge.log"
 MODEL_PATH = BASE_DIR / "models" / "bge-small-zh-v1.5"
 SOURCE_DIRECTORY = BASE_DIR / "source"
 PERSIST_DIRECTORY = Path(os.environ.get("RAG_VECTOR_DB_DIR", str(BASE_DIR / "db")))
@@ -27,9 +30,26 @@ COLLECTION_NAME = os.environ.get("RAG_COLLECTION_NAME", "causal_agent_default")
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from Agent.knowledge_base.embedding_runtime import resolve_embedding_runtime_config
 from Agent.knowledge_base.rag.rag_config import MEDICAL_KNOWLEDGE_BUILD_CONFIG
 
 MEDICAL_CORPUS_PATH = Path(MEDICAL_KNOWLEDGE_BUILD_CONFIG["corpus_path"])
+LOGGER = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    """配置知识库构建日志，同时输出到控制台和本地日志文件。"""
+    if LOGGER.handlers:
+        return
+    LOGGER.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    LOGGER.addHandler(stream_handler)
+    LOGGER.addHandler(file_handler)
+    LOGGER.propagate = False
 
 
 def _load_project_env() -> None:
@@ -218,15 +238,24 @@ def _required_env(name: str) -> str:
     return value
 
 
-def _build_medical_embedding() -> OpenAIEmbeddings:
-    """构造医疗知识库的 OpenAI-compatible API embedding。"""
+def _build_medical_embedding() -> Any:
+    """按 RAG_EMBEDDING_PROVIDER 构造 active medical 知识库 embedding。"""
     _load_project_env()
-    model = os.environ.get("MEDICAL_EMBEDDING_MODEL", "text-embedding-3-small")
-    print(f"正在加载医疗 API embedding: {model}")
+    embedding_config = resolve_embedding_runtime_config()
+    if embedding_config["mode"] == "local":
+        print(f"正在加载医疗本地 embedding: {embedding_config['model']}")
+        return HuggingFaceEmbeddings(
+            model_name=embedding_config["path"],
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    if embedding_config["status"] != "ready":
+        raise ValueError(embedding_config["message"])
+    print(f"正在加载医疗 API embedding: {embedding_config['model']}")
     return OpenAIEmbeddings(
-        api_key=_required_env("MEDICAL_EMBEDDING_API_KEY"),
-        base_url=_required_env("MEDICAL_EMBEDDING_BASE_URL"),
-        model=model,
+        api_key=_required_env(embedding_config["api_key_env"]),
+        base_url=_required_env(embedding_config["base_url_env"]),
+        model=embedding_config["model"],
         tiktoken_enabled=False,
         check_embedding_ctx_length=False,
     )
@@ -242,6 +271,7 @@ def _profile_settings(profile: str) -> Dict[str, Any]:
             "chunk_overlap": 100,
             "collection_name": COLLECTION_NAME,
             "persist_directory": PERSIST_DIRECTORY,
+            "batch_size": 0,
         }
     if profile == "medical":
         persist_directory = Path(
@@ -257,14 +287,88 @@ def _profile_settings(profile: str) -> Dict[str, Any]:
                 str(MEDICAL_KNOWLEDGE_BUILD_CONFIG["collection_name"]),
             ),
             "persist_directory": persist_directory,
+            "batch_size": int(MEDICAL_KNOWLEDGE_BUILD_CONFIG["embedding_config"]["batch_size"]),
         }
     raise ValueError(f"Unsupported build profile: {profile}")
 
 
-def build(profile: str = "default") -> Dict[str, Any]:
+def _existing_collection_count(persist_directory: Path, collection_name: str) -> Optional[int]:
+    """返回目标 Chroma collection 现有向量数量；collection 不存在时返回 None。"""
+    if not persist_directory.exists():
+        return None
+    client = chromadb.PersistentClient(path=str(persist_directory))
+    collection_names = {collection.name for collection in client.list_collections()}
+    if collection_name not in collection_names:
+        return None
+    return client.get_collection(collection_name).count()
+
+
+def _ensure_append_allowed(settings: Dict[str, Any], persist_directory: Path, allow_append: bool) -> None:
+    """阻止误向非空 collection 追加写入，除非用户显式允许追加。"""
+    collection_name = str(settings["collection_name"])
+    existing_count = _existing_collection_count(persist_directory, collection_name)
+    if not existing_count:
+        LOGGER.info(
+            "collection is empty or absent; build can continue: persist_directory=%s collection=%s",
+            persist_directory,
+            collection_name,
+        )
+        return
+    if allow_append:
+        LOGGER.warning(
+            "allowing append to non-empty collection: persist_directory=%s collection=%s existing_count=%s",
+            persist_directory,
+            collection_name,
+            existing_count,
+        )
+        return
+    message = (
+        "Refusing to append to non-empty Chroma collection. "
+        f"persist_directory={persist_directory}, collection={collection_name}, existing_count={existing_count}. "
+        "Use --allow-append only when intentional."
+    )
+    LOGGER.error(message)
+    raise ValueError(message)
+
+
+def _write_chroma_documents(settings: Dict[str, Any], documents: List[Document], persist_directory: Path) -> Chroma:
+    """按配置把切分后的文档写入 Chroma，避免 API embedding 单批超限。"""
+    batch_size = int(settings.get("batch_size") or 0)
+    if batch_size <= 0:
+        return Chroma.from_documents(
+            documents,
+            settings["embedding"],
+            persist_directory=str(persist_directory),
+            collection_name=settings["collection_name"],
+        )
+
+    db = Chroma(
+        persist_directory=str(persist_directory),
+        embedding_function=settings["embedding"],
+        collection_name=settings["collection_name"],
+    )
+    for start in range(0, len(documents), batch_size):
+        batch = documents[start : start + batch_size]
+        db.add_documents(batch)
+        written = min(start + batch_size, len(documents))
+        LOGGER.info("written chunks: %s/%s", written, len(documents))
+        print(f"已写入 chunk: {written}/{len(documents)}")
+    return db
+
+
+def build(profile: str = "default", allow_append: bool = False) -> Dict[str, Any]:
     """构建知识库：加载文档 -> 切分 -> embedding -> 写入原持久化目录。"""
+    _configure_logging()
     settings = _profile_settings(profile)
     persist_directory = Path(settings["persist_directory"])
+    _ensure_append_allowed(settings, persist_directory, allow_append)
+    LOGGER.info(
+        "starting knowledge build: profile=%s persist_directory=%s collection=%s allow_append=%s",
+        profile,
+        persist_directory,
+        settings["collection_name"],
+        allow_append,
+    )
     print(f"开始构建知识库，profile={profile}，persist_directory={persist_directory}")
     documents = settings["documents"]
     if not documents:
@@ -278,12 +382,7 @@ def build(profile: str = "default") -> Dict[str, Any]:
     print(f"文档已切分为 {len(split_docs)} 个 chunk。")
 
     persist_directory.mkdir(parents=True, exist_ok=True)
-    db = Chroma.from_documents(
-        split_docs,
-        settings["embedding"],
-        persist_directory=str(persist_directory),
-        collection_name=settings["collection_name"],
-    )
+    db = _write_chroma_documents(settings, split_docs, persist_directory)
     if hasattr(db, "persist"):
         db.persist()
 
@@ -294,7 +393,9 @@ def build(profile: str = "default") -> Dict[str, Any]:
         "source_doc_count": len(documents),
         "chunk_count": len(split_docs),
         "collection_name": settings["collection_name"],
+        "allow_append": allow_append,
     }
+    LOGGER.info("knowledge build finished: %s", json.dumps(result, ensure_ascii=False))
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
@@ -308,9 +409,14 @@ def _parse_args() -> argparse.Namespace:
         default=os.environ.get("KNOWLEDGE_BUILD_PROFILE", "default"),
         help="default builds Pearl/causal source files; medical builds the active PubMedQA corpus into the same persist directory.",
     )
+    parser.add_argument(
+        "--allow-append",
+        action="store_true",
+        help="Allow writing to a non-empty Chroma collection. By default the build fails to prevent duplicate chunks.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    build(profile=args.profile)
+    build(profile=args.profile, allow_append=args.allow_append)

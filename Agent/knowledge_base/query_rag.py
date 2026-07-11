@@ -17,12 +17,16 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
+from Agent.knowledge_base.embedding_runtime import resolve_embedding_runtime_config
 from config.settings import settings
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(base_dir, "models", "bge-small-zh-v1.5")
 PERSIST_DIRECTORY = os.environ.get("RAG_VECTOR_DB_DIR", os.path.join(base_dir, "db"))
-COLLECTION_NAME = os.environ.get("RAG_COLLECTION_NAME", "causal_agent_default")
+COLLECTION_NAME = os.environ.get("RAG_COLLECTION_NAME", "pubmedqa_clean")
+PRODUCTION_RAG_CONFIG_PATH = os.environ.get(
+    "RAG_PRODUCTION_CONFIG_PATH",
+    os.path.join(base_dir, "rag", "runtime", "production_rag_config.json"),
+)
 
 DENSE_FETCH_K = 10
 DENSE_MMR_K = 6
@@ -58,6 +62,38 @@ class RagRetrievalConfig:
         return asdict(self)
 
 
+def get_production_rag_config_status() -> Dict[str, Any]:
+    """返回正式 RAG 当前使用的检索配置来源和配置值。"""
+    config, source = _load_production_rag_config()
+    return {
+        "source": source,
+        "path": PRODUCTION_RAG_CONFIG_PATH,
+        "config": config.to_dict(),
+    }
+
+
+def _load_production_rag_config() -> Tuple[RagRetrievalConfig, str]:
+    """加载正式 RAG 检索配置；没有发布配置时保持代码默认值。"""
+    path = PRODUCTION_RAG_CONFIG_PATH
+    if not os.path.exists(path):
+        return RagRetrievalConfig(), "code_default"
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return RagRetrievalConfig(), "invalid_config_fallback"
+
+    raw_config = payload.get("retrieval_config") if isinstance(payload, dict) else None
+    if not isinstance(raw_config, dict):
+        return RagRetrievalConfig(), "invalid_config_fallback"
+    allowed_fields = set(RagRetrievalConfig.__dataclass_fields__.keys())
+    filtered = {key: value for key, value in raw_config.items() if key in allowed_fields}
+    try:
+        return RagRetrievalConfig(**filtered), "published_config"
+    except (TypeError, ValueError):
+        return RagRetrievalConfig(), "invalid_config_fallback"
+
+
 class RagAnswer(BaseModel):
     """RAG生成阶段的结构化输出。"""
 
@@ -87,17 +123,20 @@ def _get_llm() -> ChatOpenAI:
 
 @lru_cache(maxsize=1)
 def _get_embedding_function() -> Any:
-    """构造查询侧 embedding 函数，医疗库使用 OpenAI-compatible API。"""
-    if os.environ.get("KNOWLEDGE_BUILD_PROFILE") == "medical" or os.environ.get("MEDICAL_EMBEDDING_API_KEY"):
+    """构造查询侧 embedding 函数，按 RAG_EMBEDDING_PROVIDER 选择本地或 API。"""
+    embedding_config = resolve_embedding_runtime_config()
+    if embedding_config["mode"] == "api":
+        if embedding_config["status"] != "ready":
+            raise ValueError(embedding_config["message"])
         return OpenAIEmbeddings(
-            api_key=os.environ["MEDICAL_EMBEDDING_API_KEY"],
-            base_url=os.environ["MEDICAL_EMBEDDING_BASE_URL"],
-            model=os.environ.get("MEDICAL_EMBEDDING_MODEL", "text-embedding-3-small"),
+            api_key=os.environ[embedding_config["api_key_env"]],
+            base_url=os.environ[embedding_config["base_url_env"]],
+            model=embedding_config["model"],
             tiktoken_enabled=False,
             check_embedding_ctx_length=False,
         )
     return HuggingFaceEmbeddings(
-        model_name=MODEL_PATH,
+        model_name=embedding_config["path"],
         model_kwargs={"device": "cpu"},
         encode_kwargs={"normalize_embeddings": True},
     )
@@ -696,19 +735,25 @@ def _answer_question(
 
     valid_citations = {evidence["evidence_id"] for evidence in evidence_payloads}
     citations = [citation for citation in answer.citations if citation in valid_citations]
+    status = answer.status
+    confidence = answer.confidence
+    answer_text = answer.answer
+    if status == "answered" and not citations:
+        status = "insufficient_evidence"
+        confidence = "low"
+        answer_text = "根据当前检索到的证据，无法可靠回答该问题。"
 
     return {
         "question": question_text,
         "intent": question_payload.get("intent", ""),
         "priority": question_payload.get("priority", "medium"),
         "why_needed": question_payload.get("why_needed", ""),
-        "status": answer.status,
-        "answer": answer.answer,
-        "confidence": answer.confidence,
+        "status": status,
+        "answer": answer_text,
+        "confidence": confidence,
         "citations": citations,
         "retrieved_docs": evidence_payloads,
     }
-
 ## 统一问题对象格式
 def _normalize_question_payload(question: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
     if isinstance(question, str):
@@ -905,7 +950,8 @@ def _retrieve_candidates(
     question_text: str,
     config: Optional[RagRetrievalConfig] = None,
 ) -> List[Dict[str, Any]]:
-    trace = build_retrieval_trace(question_text, config=config)
+    active_config = config or _load_production_rag_config()[0]
+    trace = build_retrieval_trace(question_text, config=active_config)
     return trace["stages"]["final"]
 
 ## 查询主入口
@@ -931,8 +977,9 @@ def get_rag_response(questions: List[Union[str, Dict[str, Any]]]) -> Dict[str, A
         if not question_text:
             continue
 
-        candidates = _retrieve_candidates(question_text)
-        evidence_payloads = _build_evidence_payloads(candidates)
+        production_config = _load_production_rag_config()[0]
+        candidates = _retrieve_candidates(question_text, config=production_config)
+        evidence_payloads = _build_evidence_payloads(candidates, max_chars=production_config.max_evidence_chars)
         total_evidence_count += len(evidence_payloads)
 
         answer_result = _answer_question(question_payload, evidence_payloads)
