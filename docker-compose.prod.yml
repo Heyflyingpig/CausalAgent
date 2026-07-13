@@ -107,7 +107,10 @@ services:
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
+      - LLM_STRUCTURED_OUTPUT_METHOD=${LLM_STRUCTURED_OUTPUT_METHOD:-json_mode}
       - SECRET_KEY=${SECRET_KEY}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
       
       # === 关键区别5：生产环境变量 ===
       - FLASK_ENV=production
@@ -248,4 +251,3 @@ volumes:
 # 监控：
 #   docker stats  # 实时查看资源使用
 #   docker-compose -f docker-compose.prod.yml logs --tail=100
-

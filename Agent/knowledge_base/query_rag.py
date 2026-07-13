@@ -1,6 +1,5 @@
 import hashlib
 import json
-import logging
 import math
 import os
 import re
@@ -15,12 +14,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
+from Agent.llm_structured_output import with_compatible_structured_output
 from config.settings import settings
-from Agent.tool_node.structured_output import (
-    is_response_format_unavailable_error,
-    parse_json_payload,
-    supports_structured_output,
-)
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(base_dir, "models", "bge-small-zh-v1.5")
@@ -52,34 +47,6 @@ class RagAnswer(BaseModel):
         ...,
         description="是否成功基于证据回答问题。",
     )
-
-
-def _normalize_rag_answer_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """规范化普通 JSON 降级输出，兼容模型返回的数值置信度等轻微漂移。"""
-    normalized = dict(payload)
-    confidence = normalized.get("confidence")
-    if isinstance(confidence, (int, float)):
-        if confidence >= 0.75:
-            normalized["confidence"] = "high"
-        elif confidence >= 0.4:
-            normalized["confidence"] = "medium"
-        else:
-            normalized["confidence"] = "low"
-    elif isinstance(confidence, str):
-        normalized_confidence = confidence.strip().lower()
-        confidence_aliases = {
-            "高": "high",
-            "较高": "high",
-            "high": "high",
-            "中": "medium",
-            "中等": "medium",
-            "medium": "medium",
-            "低": "low",
-            "较低": "low",
-            "low": "low",
-        }
-        normalized["confidence"] = confidence_aliases.get(normalized_confidence, normalized_confidence)
-    return normalized
 
 
 @lru_cache(maxsize=1)
@@ -510,59 +477,13 @@ def _build_answer_prompt() -> ChatPromptTemplate:
         2. 如果证据不足，请明确给出“根据当前检索到的证据，无法可靠回答该问题”。
         3. `citations` 只能填写你真正使用到的证据ID，例如 E1、E2。
         4. `status` 只能是 `answered` 或 `insufficient_evidence`。
-        5. 输出必须是 JSON 对象，不要附加额外说明。JSON 字段必须包含 answer、confidence、citations、status。
+        5. 输出必须是结构化结果，不要附加额外说明。
+        6. 只返回一个 JSON 对象，不要输出 Markdown、代码块或额外解释。
         """
     )
 
 
-def _parse_rag_answer_payload(payload: Any) -> RagAnswer:
-    """把普通 LLM JSON 输出校验成 RagAnswer。"""
-    if isinstance(payload, RagAnswer):
-        return payload
-
-    parsed = parse_json_payload(payload)
-    if not isinstance(parsed, dict):
-        raise ValueError("RAG answer payload must be a JSON object.")
-    return RagAnswer.model_validate(_normalize_rag_answer_payload(parsed))
-
-
-def _invoke_plain_json_answer(
-    question_text: str,
-    question_payload: Dict[str, Any],
-    evidence_blocks: str,
-) -> RagAnswer:
-    """在结构化输出不可用时，用普通 JSON 提示完成回答生成。"""
-    runnable = _build_answer_prompt() | _get_llm()
-    payload = runnable.invoke(
-        {
-            "question": question_text,
-            "intent": question_payload.get("intent", ""),
-            "why_needed": question_payload.get("why_needed", ""),
-            "evidence_blocks": evidence_blocks,
-        }
-    )
-    return _parse_rag_answer_payload(payload)
-
-
-def _invoke_structured_answer(
-    question_text: str,
-    question_payload: Dict[str, Any],
-    evidence_blocks: str,
-) -> RagAnswer:
-    """使用模型原生结构化输出生成 RAG 回答。"""
-    runnable = _build_answer_prompt() | _get_llm().with_structured_output(RagAnswer)
-    return runnable.invoke(
-        {
-            "question": question_text,
-            "intent": question_payload.get("intent", ""),
-            "why_needed": question_payload.get("why_needed", ""),
-            "evidence_blocks": evidence_blocks,
-        }
-    )
-
-
 def _answer_question(question_payload: Dict[str, Any], evidence_payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """根据检索证据生成单题 RAG 回答，并在结构化输出不可用时降级。"""
     question_text = question_payload.get("question", "")
     if not evidence_payloads:
         return {
@@ -578,55 +499,28 @@ def _answer_question(question_payload: Dict[str, Any], evidence_payloads: List[D
         }
 
     evidence_blocks = _format_evidence_blocks(evidence_payloads)
-    if supports_structured_output(settings.BASE_URL):
-        try:
-            answer = _invoke_structured_answer(question_text, question_payload, evidence_blocks)
-        except Exception as exc:
-            if not is_response_format_unavailable_error(exc):
-                return {
-                    "question": question_text,
-                    "intent": question_payload.get("intent", ""),
-                    "priority": question_payload.get("priority", "medium"),
-                    "why_needed": question_payload.get("why_needed", ""),
-                    "status": "insufficient_evidence",
-                    "answer": f"证据已检索，但回答生成失败：{exc}",
-                    "confidence": "low",
-                    "citations": [],
-                    "retrieved_docs": evidence_payloads,
-                }
-            logging.warning(
-                "RAG structured answer generation is unavailable; falling back to plain JSON output: %s",
-                exc,
-            )
-            try:
-                answer = _invoke_plain_json_answer(question_text, question_payload, evidence_blocks)
-            except Exception as fallback_exc:
-                return {
-                    "question": question_text,
-                    "intent": question_payload.get("intent", ""),
-                    "priority": question_payload.get("priority", "medium"),
-                    "why_needed": question_payload.get("why_needed", ""),
-                    "status": "insufficient_evidence",
-                    "answer": f"证据已检索，但回答生成失败：{exc}；JSON降级也失败：{fallback_exc}",
-                    "confidence": "low",
-                    "citations": [],
-                    "retrieved_docs": evidence_payloads,
-                }
-    else:
-        try:
-            answer = _invoke_plain_json_answer(question_text, question_payload, evidence_blocks)
-        except Exception as exc:
-            return {
+    try:
+        runnable = _build_answer_prompt() | with_compatible_structured_output(_get_llm(), RagAnswer)
+        answer = runnable.invoke(
+            {
                 "question": question_text,
                 "intent": question_payload.get("intent", ""),
-                "priority": question_payload.get("priority", "medium"),
                 "why_needed": question_payload.get("why_needed", ""),
-                "status": "insufficient_evidence",
-                "answer": f"证据已检索，但JSON回答生成失败：{exc}",
-                "confidence": "low",
-                "citations": [],
-                "retrieved_docs": evidence_payloads,
+                "evidence_blocks": evidence_blocks,
             }
+        )
+    except Exception as exc:
+        return {
+            "question": question_text,
+            "intent": question_payload.get("intent", ""),
+            "priority": question_payload.get("priority", "medium"),
+            "why_needed": question_payload.get("why_needed", ""),
+            "status": "insufficient_evidence",
+            "answer": f"证据已检索，但回答生成失败：{exc}",
+            "confidence": "low",
+            "citations": [],
+            "retrieved_docs": evidence_payloads,
+        }
 
     valid_citations = {evidence["evidence_id"] for evidence in evidence_payloads}
     citations = [citation for citation in answer.citations if citation in valid_citations]
