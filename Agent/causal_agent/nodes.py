@@ -1,7 +1,7 @@
-from .state import CausalChatState
 import asyncio
+from .state import CausalChatState
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
@@ -32,8 +32,20 @@ from .back_prompt import causal_report_prompt
 
 # 数据库
 from Database.agent_connect import get_file_content, get_recent_file
-# 处理llm的输出，提取json对象
-from Agent.tool_node.excute_output import excute_output
+
+
+def llm_prompt_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """过滤掉 ToolNode 内部转录，避免把工具调用协议消息回放给后续 LLM。"""
+    safe_messages = []
+    for message in messages:
+        if isinstance(message, ToolMessage) or getattr(message, "type", None) == "tool":
+            continue
+        if getattr(message, "tool_calls", None) or getattr(message, "invalid_tool_calls", None):
+            continue
+        if getattr(message, "additional_kwargs", {}).get("tool_calls"):
+            continue
+        safe_messages.append(message)
+    return safe_messages
 
 class RouteQuery(BaseModel):
     """定义Agent决策的选项。"""
@@ -79,7 +91,11 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
     causal_analysis_result = state.get('causal_analysis_result') or {}
     if causal_analysis_result and causal_analysis_result.get("success") is False:
-        error_message = causal_analysis_result.get("message", "因果分析工具执行失败。")
+        error_message = (
+            causal_analysis_result.get("message")
+            or causal_analysis_result.get("error")
+            or "因果分析工具执行失败。"
+        )
         response_message = AIMessage(
             content=f"决策：普通问答。工具执行失败：{error_message}",
             name="agent"
@@ -88,13 +104,12 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
     # 检查生成报告所需的有效分析结果是否已存在。
     has_tool_results = causal_analysis_result.get("success") is True
-    
+
     latest_human_text = _latest_human_text(state)
     if not has_tool_results and _is_explicit_causal_analysis_request(latest_human_text):
         logging.info("检测到明确因果分析请求，绕过LLM路由并进入文件加载模块。")
         response_message = AIMessage(content="决策：信息不全，启动文件加载模块。", name="agent")
         return {"messages": [response_message]}
-
     agent_prompt = """
             你是一个专业的AI助手路由中枢。你的任务是根据用户的对话历史和当前状态，决定下一步的最佳路径。
             
@@ -235,7 +250,7 @@ async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         ])
     try:
         runnable = prompt | llm | JsonOutputParser()
-        response = await runnable.ainvoke({"messages": state["messages"]})
+        response = await runnable.ainvoke({"messages": llm_prompt_messages(state["messages"])})
 
         structured_response = foldQuery.model_validate(response)
 
@@ -461,68 +476,139 @@ async def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
 
 from Agent.knowledge_base.query_rag import format_rag_summary_for_prompt
-from Agent.tool_node.causal_analysis_task import causal_analysis_task
 from Agent.tool_node.rag_query_task import rag_query_task
 from Agent.tool_node.rag_questions import get_rag_questions
+from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
+from Agent.tool_node.tool_message_adapter import (
+    attach_tool_call_metadata,
+    latest_ai_tool_call_ids,
+    latest_matching_tool_result,
+    parse_tool_message_json,
+)
 
 
-async def execute_tools_node(state: CausalChatState, mcp_session: ClientSession, llm: ChatOpenAI) -> dict:
-    """
-    执行工具模块。
-    输入：mcp模块
-    输出：因果分析结果和知识库查询结果
-    """
-    
-    logging.info(" 步骤: 执行工具节点 ")
-    
-    ## 获取编码的文件信息
-    file_content = state.get("file_content")
+async def mcp_planner_node(state: CausalChatState, llm: ChatOpenAI, mcp_tools: list) -> dict:
+    """获取MCP tool call"""
+    if not mcp_tools:
+        raise RuntimeError("No MCP tools are available for causal analysis.")
+    ## 使用bind_tools 方法，返回标准化toolcall
+    mcp_llm = llm.bind_tools(
+        mcp_tools,
+        parallel_tool_calls=False,
+    )
+    logging.info("正在启动 MCP 查询生成任务...")
 
-    # 并行执行任务并等待结果 
-    logging.info(" 开始并行执行因果分析和RAG查询 ")
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """你是 MCP 因果分析工具规划器。
 
-    rag_question_future = get_rag_questions(state, llm, num_questions=2)
-    causal_future = causal_analysis_task(file_content, mcp_session, llm, state)
+            你的任务是你必须通过 tool call 选择一个最合适的因果分析工具；并且通过 tool calling 协议返回tool_calls
+            返回不要普通回答，不要输出 JSON 文本。
+            根据用户需求、数据摘要和预处理总结选择工具.""",
+        ),
+        (
+            "human",
+            "用户上下文：{messages}\n\n数据摘要：{data_summary}\n\n预处理总结：{preprocess_summary},请完成任务。",
+        ),
+    ])
 
-    rag_questions = await rag_question_future
-    rag_future = rag_query_task(rag_questions)
+    prompt_value = await prompt.ainvoke({
+        "messages": llm_prompt_messages(state.get("messages", [])),
+        "data_summary": json.dumps(state.get("analysis_parameters", {}), indent=2, ensure_ascii=False),
+        "preprocess_summary": state.get("preprocess_summary", ""),
+    })
+    ai_message = await mcp_llm.ainvoke(prompt_value.to_messages())
+    ai_message = normalize_mcp_tool_call_message(ai_message, state, mcp_tools)
+    return {"messages": [ai_message]}
 
-    causal_task_result, rag_task_result = await asyncio.gather(causal_future, rag_future)
-    
-    logging.info(" 因果分析和RAG查询均已完成 ")
-    
-    state["causal_analysis_result"] = causal_task_result
-    state["knowledge_base_result"] = rag_task_result
-    
-    # 根据主要工具（因果分析）的结果来决定下一步
-    if causal_task_result.get("success"):
-        response_message = AIMessage(
-            content="信息完备：工具执行完成，获得了因果分析和知识库查询结果。", 
-            name="execute_tools"
-        )
-        # 只返回新消息和需要更新的状态
+
+async def mcp_result_parser_node(state: CausalChatState) -> dict:
+    """解析 MCP ToolNode 产生的 ToolMessage，并把结果注入状态。"""
+    messages = state.get("messages", [])
+    latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
+    if latest_tool_message is None:
+        raise ValueError("MCP result parser expected a matching ToolMessage.")
+
+    parsed = parse_tool_message_json(latest_tool_message)
+    result = attach_tool_call_metadata(
+        parsed,
+        latest_tool_message,
+        latest_tool_call,
+    )
+    return {
+        "causal_analysis_result": result,
+        "tool_call_request": bool(parsed.get("success")),
+    }
+
+
+async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag_tools: list) -> dict:
+    """子节点：获取rag问题"""
+    logging.info("正在启动 RAG 问题生成任务...")
+
+    max_questions = 3
+    rag_questions = await get_rag_questions(state, llm, max_questions=max_questions)
+    tool_name = "rag_enrichment_search"
+    if rag_tools:
+        tool_name = getattr(rag_tools[0], "name", tool_name)
+
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": tool_name,
+                "args": {
+                    "questions": rag_questions,
+                    "max_results": 5,
+                },
+                "id": "rag_enrichment_search_1",
+            }
+        ],
+    )
+    return {"messages": [ai_message]}
+
+
+async def rag_result_parser_node(state: CausalChatState) -> dict:
+    """子节点：获取rag返回内容，注入state当中"""
+    messages = state.get("messages", [])
+    latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
+    if latest_tool_message is None:
+        if latest_ai_tool_call_ids(messages):
+            return {
+                "knowledge_base_result": {
+                    "success": False,
+                    "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
+                    "questions": [],
+                    "evidence_count": 0,
+                    "error": "No RAG tool result was produced.",
+                }
+            }
+        existing_result = state.get("knowledge_base_result")
+        if isinstance(existing_result, dict):
+            return {"knowledge_base_result": existing_result}
         return {
-            "messages": [response_message],
-            "causal_analysis_result": state["causal_analysis_result"],
-            "knowledge_base_result": state["knowledge_base_result"],
-            "tool_call_request": True
-        }
-    
-    else:
-        error_message = causal_task_result.get("message", "未知工具错误")
-        logging.warning(f"工具执行失败: {error_message}")
-        response_message = AIMessage(
-            content=f"决策：工具执行失败：{error_message}",
-            name="execute_tools"
-        )
-        # 只返回新消息和需要更新的状态
-        return {
-            "messages": [response_message],
-            "causal_analysis_result": state["causal_analysis_result"],
-            "knowledge_base_result": state["knowledge_base_result"],
-            "tool_call_request": False
+            "knowledge_base_result": {
+                "success": False,
+                "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
+                "questions": [],
+                "evidence_count": 0,
+                "error": "No RAG tool result was produced.",
+            }
         }
 
+    parsed = parse_tool_message_json(latest_tool_message)
+    if not parsed.get("success"):
+        parsed.setdefault("summary", "知识库增强暂不可用，报告将仅基于因果分析结果生成。")
+        parsed.setdefault("questions", [])
+        parsed.setdefault("evidence_count", 0)
+    result = attach_tool_call_metadata(
+        parsed,
+        latest_tool_message,
+        latest_tool_call,
+    )
+    return {
+        "knowledge_base_result": result,
+    }
 
 
 # 环路检测模块
@@ -866,7 +952,7 @@ async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     )
 
     response = await runnable.ainvoke({
-        "messages": state["messages"],
+        "messages": llm_prompt_messages(state["messages"]),
         "preprocess_meta_data": meta_data,
         "preprocess_summary": state.get("preprocess_summary", {}),
         "causal_analysis_result": state.get("causal_analysis_result", {}),
@@ -925,7 +1011,7 @@ async def normal_chat_node(state: CausalChatState,llm: ChatOpenAI) -> dict:
     )
     runnable = prompt | llm | StrOutputParser()
     response = await runnable.ainvoke({
-        "messages": state["messages"],
+        "messages": llm_prompt_messages(state["messages"]),
     })
     # 只返回新消息
     return {"messages": [AIMessage(content=response, name="normal_chat")]}
@@ -963,7 +1049,7 @@ async def inquiry_answer_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     )
 
     response = await runnable.ainvoke({
-        "messages": state["messages"],
+        "messages": llm_prompt_messages(state["messages"]),
         "causal_analysis_result": state.get("causal_analysis_result", {}),
         "knowledge_base_result": knowledge_summary,
         "postprocess_result": state.get("postprocess_result", {}),

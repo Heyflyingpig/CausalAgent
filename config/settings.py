@@ -230,7 +230,9 @@ class AppConfig:
         如果未配置 LANGCHAIN_API_KEY，应用仍可正常运行，只是不会有追踪功能。
         """
         if self.LANGCHAIN_API_KEY:
-            os.environ["LANGCHAIN_TRACING"] = "true"
+            os.environ.pop("LANGCHAIN_TRACING", None)
+            os.environ.pop("LANGCHAIN_HANDLER", None)
+            os.environ["LANGCHAIN_TRACING_V2"] = "true"
             os.environ["LANGCHAIN_API_KEY"] = self.LANGCHAIN_API_KEY
             os.environ["LANGSMITH_ENDPOINT"] = "https://api.smith.langchain.com"
             os.environ["LANGCHAIN_PROJECT"] = self.LANGCHAIN_PROJECT

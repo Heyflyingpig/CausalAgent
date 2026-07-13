@@ -12,7 +12,7 @@
 6. 以最小必要改动解决问题，不做无关重构，不引入炫技式复杂度。
 7. 修改后必须做与改动直接相关的验证；如果受环境限制无法验证，要明确说明未验证部分和风险。
 8. 对于结构、目录、启动方式、数据库初始化方式等“项目事实”的改动，需要同步检查并更新 `AGENTS.md` 和 `README.md` 是否仍准确。
-  
+
 ### git 要求
 1. 禁止主动提交更改
 2. 当修改完成时候，为修改提出相应的提交信息和批次建议
@@ -21,7 +21,7 @@
 
 ### 文档日志
 1. 当一个功能完成时，补充日志
-  
+
 ## 2. 项目目录
 
 项目结构会持续更新，以下内容仅用于快速定位；最新情况请以仓库实际目录和代码实现为准。
@@ -83,7 +83,8 @@
 - 当前实际注册的蓝图有 6 个：`auth`、`chat`、`files`、`agent`、`main`、`admin`。
 - Web 进程只负责登录态校验、短请求、analysis job 入队和 SSE 推送；Agent/RAG/MCP 长任务不在 Web 进程内执行，而是由独立 worker 进程处理。
 - 后台 worker 入口是 `python -m app.agent.worker`；worker 启动流程是：数据库就绪检查 -> 初始化 LLM -> 检查 RAG 可用性 -> 按 `JOB_WORKERS` 启动多个 slot。
-- 每个 worker slot 会独占一组 MCP server process、一个 `ClientSession` 和一个编译好的 Agent graph；真实执行单元是 slot，不是 Flask 请求线程。
+- 每个 worker slot 会独占一组 MCP server process、一个通过 `MultiServerMCPClient.session("causal")` 打开的持久 `ClientSession`、一组由 `load_mcp_tools(session)` 生成的 LangChain tools，以及一个编译好的 Agent graph；真实执行单元是 slot，不是 Flask 请求线程。旧 `open_mcp_session()` / 手写 `list_tools()` 包装仅保留作历史兼容入口。
+- 父图当前只暴露 `mcp`、`rag` 两个工具阶段节点：`mcp` 子图内部执行 `mcp_planner -> mcp_tool_node -> mcp_result_parser`，`rag` 子图内部执行 `rag_question_planner -> rag_tool_node -> rag_result_parser`；worker 事件流仍沿用旧 `astream(stream_mode="updates")` 适配，不要求本轮输出 tool-level SSE 事件。
 - 配置统一由 `config/settings.py` 从系统环境变量读取；若项目根目录存在 `.env`，会先通过 `python-dotenv` 加载到环境变量。
 - 前端当前仍是 Flask 静态资源方案，不是 Node/Vite/React 工程；关键文件是：
   - `app/static/chat.html`
@@ -178,6 +179,9 @@ MYSQL_READ_USER：应用读主库/从库业务数据用。
 MYSQL_REPLICA_STATUS_USER：只给应用执行 SHOW REPLICA STATUS 用。
 MYSQL_REPLICATION_USER：只给 MySQL 从库拉主库 binlog 用。
 MYSQL_USER/MYSQL_PASSWORD：现在主要是兼容兜底，主从开发里不依赖它。
+
+### 3.3 环境问题
+1. 如果在本地无法找到包，如langgrph，尝试访问conda环境
 
 ## 4. 工具与 skills 使用原则
 

@@ -60,6 +60,11 @@ def _error_message(error: NodeError) -> str:
     return f"{error.node} 节点执行失败: {error.error}"
 
 
+def sanitize_error(exc: BaseException) -> str:
+    """Return a display-safe error string without exposing implementation detail."""
+    return str(exc) or exc.__class__.__name__
+
+
 def route_to_normal_chat(state: CausalChatState, error: NodeError) -> Command:
     """Agent 路由失败后的保守恢复：进入普通问答兜底分支。"""
     return Command(
@@ -111,6 +116,33 @@ def recover_tools_to_agent(state: CausalChatState, error: NodeError) -> Command:
         },
         goto="agent",
     )
+
+
+def recover_mcp_tool_failure(state: CausalChatState, error: NodeError) -> dict:
+    """MCP ToolNode 失败后的恢复：写入因果分析失败结构，由父图决定后续路由。"""
+    message = sanitize_error(error.error)
+    return {
+        "messages": [AIMessage(content=f"决策：MCP 工具执行失败：{message}", name=error.node)],
+        "causal_analysis_result": {
+            "success": False,
+            "error": message,
+            "error_type": type(error.error).__name__,
+        },
+        "tool_call_request": False,
+    }
+
+
+def degrade_rag_tool_result(state: CausalChatState, error: NodeError) -> dict:
+    """RAG ToolNode 失败后的降级：保留稳定结构，让报告继续生成。"""
+    return {
+        "knowledge_base_result": {
+            "success": False,
+            "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
+            "questions": [],
+            "evidence_count": 0,
+            "error": sanitize_error(error.error),
+        }
+    }
 
 
 def recover_postprocess_to_report(state: CausalChatState, error: NodeError) -> Command:

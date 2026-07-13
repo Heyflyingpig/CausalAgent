@@ -200,3 +200,12 @@ Agent/knowledge_base/unfinish_source/
 
 # skils
 skills/
+
+# test
+tests/
+
+# study
+study/
+
+# docs
+docs/

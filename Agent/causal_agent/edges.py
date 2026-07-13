@@ -1,6 +1,6 @@
-from .state import CausalChatState
 from langchain_core.messages import AIMessage
 import logging
+from .state import CausalChatState
 
 def decision_router(state: CausalChatState) -> str:
     """
@@ -51,18 +51,29 @@ def preprocess_router(state: CausalChatState) -> str:
     如果验证成功，则执行工具
     """
     logging.info("--- 路由: 预处理后决策 ---")
-    logging.info("路由决策 -> 参数充足, 前往[执行工具]")
-    return "execute_tools"
+    logging.info("路由决策 -> 参数充足, 前往[MCP工具阶段]")
+    return "mcp"
 
 
 def execute_tool_router(state:CausalChatState) -> str:
     """
-    工具执行节点后的路由器。
-    返回agent节点，等待agent节点做出决策
+    旧 execute_tools 节点后的兼容路由器。
+    当前父图已改为 preprocess -> mcp -> rag -> agent，本函数仅保留给历史调用。
     """
     logging.info("--- 路由: 执行工具后决策 ---")
     logging.info(f"前往decision_router")
     return "agent"
+
+def mcp_router(state: CausalChatState) -> str:
+    """检测mcp是否调用成功"""
+    logging.info("--- 路由: MCP决策 ---")
+    mcp_result =  state.get("causal_analysis_result")
+    if isinstance(mcp_result, dict) and mcp_result.get("success") is True:
+        logging.info("路由决策 -> MCP分析成功, 前往[RAG工具阶段]")
+        return "rag"
+    logging.info("路由决策 -> MCP分析缺失不充足, 前往[Agent决策路由]")
+    return "agent"
+
 
 def postprocess_router(state:CausalChatState) -> str:
     '''
