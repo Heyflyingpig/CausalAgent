@@ -1,7 +1,7 @@
-from .state import CausalChatState
 import asyncio
+from .state import CausalChatState
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
@@ -15,6 +15,7 @@ import networkx as nx
 from mcp import ClientSession
 from langgraph.func import task
 from langgraph.types import interrupt
+from Agent.llm_structured_output import with_compatible_structured_output
 
 ## 基本配置
 from config.settings import settings
@@ -31,8 +32,20 @@ from .back_prompt import causal_report_prompt
 
 # 数据库
 from Database.agent_connect import get_file_content, get_recent_file
-# 处理llm的输出，提取json对象
-from Agent.tool_node.excute_output import excute_output
+
+
+def llm_prompt_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """过滤掉 ToolNode 内部转录，避免把工具调用协议消息回放给后续 LLM。"""
+    safe_messages = []
+    for message in messages:
+        if isinstance(message, ToolMessage) or getattr(message, "type", None) == "tool":
+            continue
+        if getattr(message, "tool_calls", None) or getattr(message, "invalid_tool_calls", None):
+            continue
+        if getattr(message, "additional_kwargs", {}).get("tool_calls"):
+            continue
+        safe_messages.append(message)
+    return safe_messages
 
 class RouteQuery(BaseModel):
     """定义Agent决策的选项。"""
@@ -42,6 +55,32 @@ class RouteQuery(BaseModel):
     )
 
 # agentnode节点用于做初步的decision
+def _latest_human_text(state: CausalChatState) -> str:
+    """Return the latest human message content from the graph state."""
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, HumanMessage):
+            content = getattr(message, "content", "")
+            return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    return ""
+
+
+def _is_explicit_causal_analysis_request(text: str) -> bool:
+    """Detect requests that should deterministically enter the causal analysis flow."""
+    normalized = text.lower()
+    has_data_target = any(token in normalized for token in (".csv", "csv", "pc")) or any(
+        token in text for token in ("文件", "数据", "读取", "上传")
+    )
+    has_causal_intent = any(
+        token in text
+        for token in ("因果分析", "因果推断", "因果边", "边合理性", "后处理", "因果发现")
+    )
+    has_action = any(
+        token in text
+        for token in ("分析", "执行", "运行", "读取", "处理", "生成报告", "立即", "使用")
+    )
+    return has_data_target and has_causal_intent and has_action
+
+
 async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
     """
@@ -50,9 +89,27 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
     logging.info(" 步骤: Agent 节点 (LLM 决策) ")
 
-    # 检查生成报告所需的结果是否已存在。
-    has_tool_results = state.get('causal_analysis_result') is not None
-    
+    causal_analysis_result = state.get('causal_analysis_result') or {}
+    if causal_analysis_result and causal_analysis_result.get("success") is False:
+        error_message = (
+            causal_analysis_result.get("message")
+            or causal_analysis_result.get("error")
+            or "因果分析工具执行失败。"
+        )
+        response_message = AIMessage(
+            content=f"决策：普通问答。工具执行失败：{error_message}",
+            name="agent"
+        )
+        return {"messages": [response_message]}
+
+    # 检查生成报告所需的有效分析结果是否已存在。
+    has_tool_results = causal_analysis_result.get("success") is True
+
+    latest_human_text = _latest_human_text(state)
+    if not has_tool_results and _is_explicit_causal_analysis_request(latest_human_text):
+        logging.info("检测到明确因果分析请求，绕过LLM路由并进入文件加载模块。")
+        response_message = AIMessage(content="决策：信息不全，启动文件加载模块。", name="agent")
+        return {"messages": [response_message]}
     agent_prompt = """
             你是一个专业的AI助手路由中枢。你的任务是根据用户的对话历史和当前状态，决定下一步的最佳路径。
             
@@ -83,25 +140,18 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         ]
     )
     
-    # 强制模型使用JSON模式，这是更可靠的方法
-    structured_llm = llm.bind(
-        response_format={"type": "json_object"}
-    )
-    
-    # 构建并调用LLM链
-    runnable = prompt | structured_llm | JsonOutputParser()
+    # 通过共享适配器统一选择 json_mode/json_schema/function_calling。
+    runnable = prompt | with_compatible_structured_output(llm, RouteQuery)
     
     logging.info("正在调用LLM进行路由决策...")
     try:
-        decision_dict = await runnable.ainvoke(
+        structured_response = await runnable.ainvoke(
             {
                 "messages": state["messages"][-1],
                 "has_tool_results": has_tool_results,
                 "final_report": state.get("final_report", None)
             }
         )
-        # 用Pydantic模型解析和验证这个字典
-        structured_response = RouteQuery.model_validate(decision_dict)
         route_decision = structured_response.route
 
     except Exception as e:
@@ -200,7 +250,7 @@ async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         ])
     try:
         runnable = prompt | llm | JsonOutputParser()
-        response = await runnable.ainvoke({"messages": state["messages"]})
+        response = await runnable.ainvoke({"messages": llm_prompt_messages(state["messages"])})
 
         structured_response = foldQuery.model_validate(response)
 
@@ -426,68 +476,139 @@ async def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
 
 from Agent.knowledge_base.query_rag import format_rag_summary_for_prompt
-from Agent.tool_node.causal_analysis_task import causal_analysis_task
 from Agent.tool_node.rag_query_task import rag_query_task
 from Agent.tool_node.rag_questions import get_rag_questions
+from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
+from Agent.tool_node.tool_message_adapter import (
+    attach_tool_call_metadata,
+    latest_ai_tool_call_ids,
+    latest_matching_tool_result,
+    parse_tool_message_json,
+)
 
 
-async def execute_tools_node(state: CausalChatState, mcp_session: ClientSession, llm: ChatOpenAI) -> dict:
-    """
-    执行工具模块。
-    输入：mcp模块
-    输出：因果分析结果和知识库查询结果
-    """
-    
-    logging.info(" 步骤: 执行工具节点 ")
-    
-    ## 获取编码的文件信息
-    file_content = state.get("file_content")
+async def mcp_planner_node(state: CausalChatState, llm: ChatOpenAI, mcp_tools: list) -> dict:
+    """获取MCP tool call"""
+    if not mcp_tools:
+        raise RuntimeError("No MCP tools are available for causal analysis.")
+    ## 使用bind_tools 方法，返回标准化toolcall
+    mcp_llm = llm.bind_tools(
+        mcp_tools,
+        parallel_tool_calls=False,
+    )
+    logging.info("正在启动 MCP 查询生成任务...")
 
-    # 并行执行任务并等待结果 
-    logging.info(" 开始并行执行因果分析和RAG查询 ")
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """你是 MCP 因果分析工具规划器。
 
-    rag_question_future = get_rag_questions(state, llm, num_questions=2)
-    causal_future = causal_analysis_task(file_content, mcp_session, llm, state)
+            你的任务是你必须通过 tool call 选择一个最合适的因果分析工具；并且通过 tool calling 协议返回tool_calls
+            返回不要普通回答，不要输出 JSON 文本。
+            根据用户需求、数据摘要和预处理总结选择工具.""",
+        ),
+        (
+            "human",
+            "用户上下文：{messages}\n\n数据摘要：{data_summary}\n\n预处理总结：{preprocess_summary},请完成任务。",
+        ),
+    ])
 
-    rag_questions = await rag_question_future
-    rag_future = rag_query_task(rag_questions)
+    prompt_value = await prompt.ainvoke({
+        "messages": llm_prompt_messages(state.get("messages", [])),
+        "data_summary": json.dumps(state.get("analysis_parameters", {}), indent=2, ensure_ascii=False),
+        "preprocess_summary": state.get("preprocess_summary", ""),
+    })
+    ai_message = await mcp_llm.ainvoke(prompt_value.to_messages())
+    ai_message = normalize_mcp_tool_call_message(ai_message, state, mcp_tools)
+    return {"messages": [ai_message]}
 
-    causal_task_result, rag_task_result = await asyncio.gather(causal_future, rag_future)
-    
-    logging.info(" 因果分析和RAG查询均已完成 ")
-    
-    state["causal_analysis_result"] = causal_task_result
-    state["knowledge_base_result"] = rag_task_result
-    
-    # 根据主要工具（因果分析）的结果来决定下一步
-    if causal_task_result.get("success"):
-        response_message = AIMessage(
-            content="信息完备：工具执行完成，获得了因果分析和知识库查询结果。", 
-            name="execute_tools"
-        )
-        # 只返回新消息和需要更新的状态
+
+async def mcp_result_parser_node(state: CausalChatState) -> dict:
+    """解析 MCP ToolNode 产生的 ToolMessage，并把结果注入状态。"""
+    messages = state.get("messages", [])
+    latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
+    if latest_tool_message is None:
+        raise ValueError("MCP result parser expected a matching ToolMessage.")
+
+    parsed = parse_tool_message_json(latest_tool_message)
+    result = attach_tool_call_metadata(
+        parsed,
+        latest_tool_message,
+        latest_tool_call,
+    )
+    return {
+        "causal_analysis_result": result,
+        "tool_call_request": bool(parsed.get("success")),
+    }
+
+
+async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag_tools: list) -> dict:
+    """子节点：获取rag问题"""
+    logging.info("正在启动 RAG 问题生成任务...")
+
+    max_questions = 3
+    rag_questions = await get_rag_questions(state, llm, max_questions=max_questions)
+    tool_name = "rag_enrichment_search"
+    if rag_tools:
+        tool_name = getattr(rag_tools[0], "name", tool_name)
+
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": tool_name,
+                "args": {
+                    "questions": rag_questions,
+                    "max_results": 5,
+                },
+                "id": "rag_enrichment_search_1",
+            }
+        ],
+    )
+    return {"messages": [ai_message]}
+
+
+async def rag_result_parser_node(state: CausalChatState) -> dict:
+    """子节点：获取rag返回内容，注入state当中"""
+    messages = state.get("messages", [])
+    latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
+    if latest_tool_message is None:
+        if latest_ai_tool_call_ids(messages):
+            return {
+                "knowledge_base_result": {
+                    "success": False,
+                    "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
+                    "questions": [],
+                    "evidence_count": 0,
+                    "error": "No RAG tool result was produced.",
+                }
+            }
+        existing_result = state.get("knowledge_base_result")
+        if isinstance(existing_result, dict):
+            return {"knowledge_base_result": existing_result}
         return {
-            "messages": [response_message],
-            "causal_analysis_result": state["causal_analysis_result"],
-            "knowledge_base_result": state["knowledge_base_result"],
-            "tool_call_request": True
-        }
-    
-    else:
-        error_message = causal_task_result.get("message", "未知工具错误")
-        logging.warning(f"工具执行失败: {error_message}")
-        response_message = AIMessage(
-            content=f"决策：工具执行失败：{error_message}",
-            name="execute_tools"
-        )
-        # 只返回新消息和需要更新的状态
-        return {
-            "messages": [response_message],
-            "causal_analysis_result": state["causal_analysis_result"],
-            "knowledge_base_result": state["knowledge_base_result"],
-            "tool_call_request": False
+            "knowledge_base_result": {
+                "success": False,
+                "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
+                "questions": [],
+                "evidence_count": 0,
+                "error": "No RAG tool result was produced.",
+            }
         }
 
+    parsed = parse_tool_message_json(latest_tool_message)
+    if not parsed.get("success"):
+        parsed.setdefault("summary", "知识库增强暂不可用，报告将仅基于因果分析结果生成。")
+        parsed.setdefault("questions", [])
+        parsed.setdefault("evidence_count", 0)
+    result = attach_tool_call_metadata(
+        parsed,
+        latest_tool_message,
+        latest_tool_call,
+    )
+    return {
+        "knowledge_base_result": result,
+    }
 
 
 # 环路检测模块
@@ -497,6 +618,58 @@ from Agent.Postprocessing.cycles_check.fix_cycles import fix_cycles_with_llm
 
 # 边评估模块
 from Agent.Postprocessing.evaluate_edge.evaluate_edge_llm import evaluate_edges_with_llm
+from Agent.Postprocessing.evaluate_edge.edge_utils import extract_critical_edges
+
+
+def _matrix_convention_for_analysis(analysis_result: Dict[str, Any]) -> str:
+    """根据算法标识或 OLC 特有元数据确定邻接矩阵方向。"""
+    algorithm = str(analysis_result.get("algorithm", "")).strip().lower()
+    raw_results = analysis_result.get("raw_results", {})
+    if algorithm == "olc" or "coefficient_matrix" in raw_results:
+        return "olc"
+    return "causallearn"
+
+
+def _as_revised_graph(
+    graph_nodes: List[Dict[str, Any]],
+    revised_edges: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """把内部 EdgeRecord 集合序列化成前端可直接渲染的 vis-network 图。"""
+    vis_edges = []
+    for edge in revised_edges:
+        edge_type = edge.get("edge_type", "directed")
+        if edge_type == "bidirected":
+            arrows = "to,from"
+        elif edge_type in {"directed", "partially_oriented"}:
+            arrows = "to"
+        else:
+            arrows = ""
+
+        vis_edges.append(
+            {
+                "from": edge["source"],
+                "to": edge["target"],
+                "arrows": arrows,
+                "dashes": edge_type in {"undirected", "partially_oriented"},
+                "label": edge.get("label", ""),
+            }
+        )
+
+    return {"nodes": list(graph_nodes), "edges": vis_edges}
+
+
+def _without_removed_edges(
+    candidate_edges: List[Dict[str, Any]],
+    removed_edges: List[Tuple[str, str]],
+) -> List[Dict[str, Any]]:
+    """从 LLM 边评估候选中排除已经由环路修复真实删除的边。"""
+    removed_keys = set(removed_edges)
+    return [
+        edge
+        for edge in candidate_edges
+        if (edge.get("source"), edge.get("target")) not in removed_keys
+    ]
+
 
 async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
@@ -532,21 +705,32 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         
         # 创建原始图的副本用于修正
         working_matrix = adjacency_matrix.copy()
+        matrix_convention = _matrix_convention_for_analysis(analysis_result)
+        cycle_removed_edges: List[Tuple[str, str]] = []
         
         # 环路检测和修正
-        has_cycle, cycles = detect_cycles(working_matrix, node_names)
+        has_cycle, cycles = detect_cycles(
+            working_matrix,
+            node_names,
+            matrix_convention=matrix_convention,
+        )
         if has_cycle:
             logging.info(f"检测到 {len(cycles)} 个环路，开始LLM辅助修正...")
-            working_matrix = await asyncio.to_thread(
+            working_matrix, cycle_removed_edges = await asyncio.to_thread(
                 fix_cycles_with_llm,
                 working_matrix, 
                 cycles, 
                 node_names,
                 llm, 
-                state
+                state,
+                matrix_convention=matrix_convention,
             )
             # 再次检测以确认环路已被消除
-            has_cycle_after, _ = detect_cycles(working_matrix, node_names)
+            has_cycle_after, _ = detect_cycles(
+                working_matrix,
+                node_names,
+                matrix_convention=matrix_convention,
+            )
             if has_cycle_after:
                 logging.warning("警告：部分环路仍然存在，可能需要人工干预。")
 
@@ -554,28 +738,99 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
                 logging.info("所有环路已成功修正！")
         
         # LLM评估关键边
-        analysis_parameters = state.get("analysis_parameters", {})
-        ananlysis_result = state.get(("causal_analysis_result"),{})
-        if isinstance(ananlysis_result, str):
-            critical_edges = ananlysis_result.get("raw_results", {}).get("edges", [])
-        else:
-            critical_edges = []
+        critical_edges, edge_debug_info = extract_critical_edges(analysis_result)
+        logging.info(
+            "边评估候选提取结果: source=%s, count=%s, input_type=%s, algorithm=%s, reason=%s",
+            edge_debug_info.get("source"),
+            edge_debug_info.get("candidate_edge_count"),
+            edge_debug_info.get("input_type"),
+            edge_debug_info.get("algorithm"),
+            edge_debug_info.get("reason"),
+        )
+        candidate_edge_count = edge_debug_info.get("candidate_edge_count", 0)
+        normalized_edge_count = edge_debug_info.get("normalized_edge_count", 0)
+        if candidate_edge_count != normalized_edge_count:
+            error_msg = (
+                "因果边结构校验失败："
+                f"候选边 {candidate_edge_count} 条，仅成功规范化 {normalized_edge_count} 条。"
+            )
+            logging.error(error_msg)
+            return {
+                "messages": [
+                    AIMessage(
+                        content=f"后处理遇到问题: {error_msg}\n\n将使用原始分析结果继续生成报告。",
+                        name="postprocess",
+                    )
+                ],
+                "postprocess_result": {
+                    "error": error_msg,
+                    "original_graph": analysis_result.get("data", {}),
+                    "edge_evaluation_debug": edge_debug_info,
+                },
+            }
+        critical_edges = _without_removed_edges(critical_edges, cycle_removed_edges)
         
-        edge_evaluations = {}
+        edge_evaluations: Dict[str, Any] = {}
         if critical_edges:
             logging.info(f"识别到 {len(critical_edges)} 条关键边，开始LLM评估...")
             edge_evaluations = await asyncio.to_thread(evaluate_edges_with_llm, critical_edges, state, llm)
         else:
             logging.info("未识别到需要评估的关键边")
+            edge_evaluations = {
+                "schema_version": "edge_evaluation_v2",
+                "decisions": [],
+                "revised_edges": [],
+                "revision_summary": "",
+                "confidence": "low",
+            }
+
+        serialized_cycle_removals = [
+            {"source": source, "target": target}
+            for source, target in cycle_removed_edges
+        ]
+        edge_evaluations = {
+            **edge_evaluations,
+            "cycle_removed_edges": serialized_cycle_removals,
+        }
         
         
+        revised_edges = edge_evaluations.get(
+            "revised_edges",
+            edge_evaluations.get("decision", []),
+        )
+        revision_summary = edge_evaluations.get(
+            "revision_summary",
+            edge_evaluations.get("reason", ""),
+        )
+        if cycle_removed_edges:
+            cycle_summary = "环路修订删除边：" + "、".join(
+                f"{source} -> {target}" for source, target in cycle_removed_edges
+            )
+            revision_summary = "；".join(
+                summary for summary in (cycle_summary, revision_summary) if summary
+            )
+
         # 准备结构化输出
         postprocess_result = {
             "original_graph": state["causal_analysis_result"].get("data", {}),
-            "revised_graph": edge_evaluations.get("decision", []),
-            "revision_summary": edge_evaluations.get("reason", ""),
+            "revised_graph": _as_revised_graph(
+                analysis_result.get("data", {}).get("nodes", []),
+                revised_edges,
+            ),
+            "revision_summary": revision_summary,
+            "edge_evaluation": edge_evaluations,
+            "edge_evaluation_debug": {
+                **edge_debug_info,
+                "ran": bool(critical_edges),
+                "schema_version": edge_evaluations.get("schema_version", ""),
+                "decision_count": len(edge_evaluations.get("decisions", [])),
+                "revised_edge_count": len(revised_edges),
+                "cycle_removed_count": len(cycle_removed_edges),
+                "confidence": edge_evaluations.get("confidence", ""),
+            },
             "had_cycles": has_cycle,
-            "num_cycles_fixed": len(cycles) if has_cycle else 0
+            "num_cycles_fixed": len(cycle_removed_edges),
+            "matrix_convention": matrix_convention,
         }
         
         state["postprocess_result"] = postprocess_result
@@ -586,7 +841,7 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         
         # 如果有环路被修正，添加额外说明
         if has_cycle:
-            explanation = f"\n\n**注意**：原始图中检测到 {len(cycles)} 个环路，部分已通过LLM辅助决策进行修正。理由如下：{edge_evaluations.get('reason', '')}"      
+            explanation = f"\n\n**注意**：原始图中检测到 {len(cycles)} 个环路，部分已通过LLM辅助决策进行修正。理由如下：{revision_summary}"
             new_messages.append(AIMessage(content=explanation, name="postprocess"))
         
         new_messages.append(AIMessage(
@@ -636,8 +891,13 @@ async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
          1. 预处理结果：{preprocess_summary}
          2. 预处理元数据：{preprocess_meta_data}
          2. 因果分析结果：{causal_analysis_result}
-         3. 知识库结果：{knowledge_base_result}
-         4. 后处理结果：{postprocess_result}
+        3. 知识库结果：{knowledge_base_result}
+        4. 后处理结果：{postprocess_result}
+
+        ## 因果分析结果解读规则
+        - 如果因果分析结果包含 error_type，请明确说明算法未能产生有效因果图，不要声称“没有因果关系”。
+        - 如果因果分析结果包含 fallback_from 和 fallback_reason，请说明原算法不适用并已改用 fallback_tool 的结果。
+        - 只有当算法 success 为 true 且边列表为空时，才可以表述为“未发现显著因果边/因果关系”。
          
         ## 报告结构要求
         1. **数据概览**：基于上述数据概览进行总结
@@ -692,7 +952,7 @@ async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     )
 
     response = await runnable.ainvoke({
-        "messages": state["messages"],
+        "messages": llm_prompt_messages(state["messages"]),
         "preprocess_meta_data": meta_data,
         "preprocess_summary": state.get("preprocess_summary", {}),
         "causal_analysis_result": state.get("causal_analysis_result", {}),
@@ -751,7 +1011,7 @@ async def normal_chat_node(state: CausalChatState,llm: ChatOpenAI) -> dict:
     )
     runnable = prompt | llm | StrOutputParser()
     response = await runnable.ainvoke({
-        "messages": state["messages"],
+        "messages": llm_prompt_messages(state["messages"]),
     })
     # 只返回新消息
     return {"messages": [AIMessage(content=response, name="normal_chat")]}
@@ -789,7 +1049,7 @@ async def inquiry_answer_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     )
 
     response = await runnable.ainvoke({
-        "messages": state["messages"],
+        "messages": llm_prompt_messages(state["messages"]),
         "causal_analysis_result": state.get("causal_analysis_result", {}),
         "knowledge_base_result": knowledge_summary,
         "postprocess_result": state.get("postprocess_result", {}),
@@ -798,4 +1058,3 @@ async def inquiry_answer_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     })
     # 只返回新消息
     return {"messages": [AIMessage(content=response, name="inquiry_answer")]}
-

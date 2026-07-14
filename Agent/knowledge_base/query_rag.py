@@ -18,6 +18,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from Agent.knowledge_base.embedding_runtime import resolve_embedding_runtime_config
+from Agent.llm_structured_output import with_compatible_structured_output
 from config.settings import settings
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -602,6 +603,7 @@ def _build_answer_prompt() -> ChatPromptTemplate:
         3. `citations` 只能填写你真正使用到的证据ID，例如 E1、E2。
         4. `status` 只能是 `answered` 或 `insufficient_evidence`。
         5. 输出必须是结构化结果，不要附加额外说明。
+        6. 只返回一个 JSON 对象，不要输出 Markdown、代码块或额外解释。
         """
     )
 
@@ -708,7 +710,7 @@ def _answer_question(
     evidence_blocks = _format_evidence_blocks(evidence_payloads)
     prompt = answer_prompt or _build_answer_prompt()
     try:
-        runnable = prompt | _get_llm().with_structured_output(RagAnswer)
+        runnable = prompt | with_compatible_structured_output(_get_llm(), RagAnswer)
         answer = runnable.invoke(
             {
                 "question": question_text,
