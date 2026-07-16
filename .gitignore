@@ -202,10 +202,15 @@ Agent/knowledge_base/unfinish_source/
 skills/
 
 # test
-tests/
+tests/*
+!tests/rag_ingestion/
+!tests/rag_ingestion/**
 
 # study
 study/
 
 # docs
-docs/
+docs/*
+!docs/adr/
+docs/adr/*
+!docs/adr/0001-textualize-multimodal-knowledge-before-retrieval.md
