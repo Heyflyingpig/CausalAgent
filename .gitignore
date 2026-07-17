@@ -209,16 +209,8 @@ tests/*
 # study
 study/
 
-# docs
-docs/*
-!docs/adr/
-docs/adr/*
-
-# rag_enhancement local-only documents
-Agent/knowledge_base/rag/RAG测评框架开发日志.md
-Agent/knowledge_base/rag/Ragas论文带读教程.md
-Agent/knowledge_base/rag/多模态知识摄取开发规划.md
-Agent/knowledge_base/rag/多模态知识摄取技术调研.md
-Agent/knowledge_base/rag/output/reports/*.md
+# local-only documents
+/docs/
+Agent/knowledge_base/rag/docs/
+Agent/knowledge_base/rag/output/reports/
 app/DESIGN.md
-docs/adr/0001-textualize-multimodal-knowledge-before-retrieval.md
