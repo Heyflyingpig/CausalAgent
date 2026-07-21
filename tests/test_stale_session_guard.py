@@ -1,0 +1,123 @@
+import os
+import sys
+import types
+import unittest
+from unittest.mock import patch
+
+from flask import Flask
+
+
+TEST_ENV = {
+    "SECRET_KEY": "test-secret",
+    "API_KEY": "test-api-key",
+    "BASE_URL": "https://example.test",
+    "MODEL": "test-model",
+    "MYSQL_HOST": "test-mysql",
+    "MYSQL_USER": "test-user",
+    "MYSQL_PASSWORD": "test-password",
+    "MYSQL_DATABASE": "test-database",
+}
+for key, value in TEST_ENV.items():
+    os.environ.setdefault(key, value)
+
+from app.auth.routes import auth_bp
+
+
+def build_app():
+    """构建只注册认证蓝图的最小测试应用。"""
+    app = Flask(__name__)
+    app.secret_key = "session-test-secret"
+    app.register_blueprint(auth_bp)
+    return app
+
+
+class SessionGuardTests(unittest.TestCase):
+    """验证主库用户状态会立即约束已有浏览器会话。"""
+
+    def test_deleted_user_session_is_cleared(self):
+        """数据库中不存在的用户不能继续保持登录状态。"""
+        app = build_app()
+        with patch("app.auth.session_guard.find_user_by_id", return_value=None):
+            with app.test_client() as client:
+                with client.session_transaction() as flask_session:
+                    flask_session["user_id"] = 1
+                    flask_session["username"] = "missing"
+
+                response = client.get("/api/check_auth")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json(), {"isLoggedIn": False})
+                with client.session_transaction() as flask_session:
+                    self.assertNotIn("user_id", flask_session)
+                    self.assertNotIn("username", flask_session)
+
+    def test_disabled_user_session_is_cleared(self):
+        """用户被禁用后，其旧 session 在下一请求立即失效。"""
+        app = build_app()
+        disabled_user = {
+            "id": 2,
+            "username": "disabled",
+            "role": "admin",
+            "is_active": False,
+        }
+        with patch("app.auth.session_guard.find_user_by_id", return_value=disabled_user):
+            with app.test_client() as client:
+                with client.session_transaction() as flask_session:
+                    flask_session["user_id"] = 2
+                    flask_session["username"] = "disabled"
+
+                response = client.get("/api/check_auth")
+
+                self.assertEqual(response.get_json(), {"isLoggedIn": False})
+                with client.session_transaction() as flask_session:
+                    self.assertNotIn("user_id", flask_session)
+                    self.assertNotIn("username", flask_session)
+
+    def test_active_user_session_does_not_cache_role(self):
+        """有效用户返回数据库角色，但 session 本身不保存角色副本。"""
+        app = build_app()
+        active_admin = {
+            "id": 3,
+            "username": "active-admin",
+            "role": "admin",
+            "is_active": True,
+        }
+        with patch("app.auth.session_guard.find_user_by_id", return_value=active_admin):
+            with app.test_client() as client:
+                with client.session_transaction() as flask_session:
+                    flask_session["user_id"] = 3
+                    flask_session["username"] = "active-admin"
+
+                response = client.get("/api/check_auth")
+
+                self.assertEqual(
+                    response.get_json(),
+                    {"isLoggedIn": True, "username": "active-admin"},
+                )
+                with client.session_transaction() as flask_session:
+                    self.assertNotIn("role", flask_session)
+
+    def test_disabled_user_cannot_login(self):
+        """认证路由必须在密码校验前拒绝已禁用账号。"""
+        app = build_app()
+        service_module = types.ModuleType("app.auth.service")
+        service_module.find_user = lambda _username: {
+            "id": 4,
+            "username": "disabled-login",
+            "password_hash": "unused",
+            "role": "user",
+            "is_active": False,
+        }
+        with patch.dict(sys.modules, {"app.auth.service": service_module}):
+            with app.test_client() as client:
+                response = client.post(
+                    "/api/login",
+                    json={"username": "disabled-login", "password": "secret"},
+                )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json(), {"success": False, "error": "账号已被禁用"})
+
+
+if __name__ == "__main__":
+    unittest.main()
