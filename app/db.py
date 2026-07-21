@@ -251,6 +251,24 @@ def check_database_readiness():
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)
 
+            cursor.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = 'users'
+                  AND column_name = 'role'
+                """,
+                (settings.MYSQL_DATABASE,),
+            )
+            if cursor.fetchone() is None:
+                error_msg = (
+                    "数据库关键字段缺失: users.role。"
+                    "请先执行 'alembic upgrade head'。"
+                )
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+
             cursor.execute("SELECT 1")
             test_result = cursor.fetchone()
             if not test_result or test_result[0] != 1:
