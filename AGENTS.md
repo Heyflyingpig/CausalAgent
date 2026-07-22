@@ -59,6 +59,7 @@
 │   ├── knowledge_base/     # RAG 知识库
 │   │   ├── build_knowledge.py # 知识库构建入口，支持 default / medical profile
 │   │   ├── query_rag.py       # RAG 查询、检索 trace 与证据生成入口
+│   │   ├── ingestion/         # 来源发现、P05/P06 adapter 与不写索引的 execute_ingest 编排
 │   │   ├── db/                # 当前运行时向量知识库存储；医疗库应使用 PubMedQA active corpus 重建
 │   │   ├── models/            # 本地嵌入模型，default profile 使用 bge-small-zh-v1.5
 │   │   └── rag/               # RAG 测评框架、数据集操作、报告和外部医疗数据

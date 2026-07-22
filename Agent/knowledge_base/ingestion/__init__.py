@@ -37,6 +37,7 @@ from .models import (
     CausalEdgeExpectation,
     validate_maintenance_command,
 )
+from .pipeline import execute_ingest
 
 __all__ = [
     "ContentKind",
@@ -74,4 +75,5 @@ __all__ = [
     "VisionMode",
     "CausalEdgeExpectation",
     "validate_maintenance_command",
+    "execute_ingest",
 ]
