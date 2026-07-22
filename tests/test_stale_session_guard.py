@@ -92,7 +92,11 @@ class SessionGuardTests(unittest.TestCase):
 
                 self.assertEqual(
                     response.get_json(),
-                    {"isLoggedIn": True, "username": "active-admin"},
+                    {
+                        "isLoggedIn": True,
+                        "username": "active-admin",
+                        "role": "admin",
+                    },
                 )
                 with client.session_transaction() as flask_session:
                     self.assertNotIn("role", flask_session)
@@ -117,6 +121,33 @@ class SessionGuardTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.get_json(), {"success": False, "error": "账号已被禁用"})
+
+    def test_admin_login_returns_role_for_frontend_routing(self):
+        """管理员登录成功响应应携带实时角色，供前端进入受保护后台。"""
+        app = build_app()
+        service_module = types.ModuleType("app.auth.service")
+        service_module.find_user = lambda _username: {
+            "id": 5,
+            "username": "admin-login",
+            "password_hash": "stored-hash",
+            "role": "admin",
+            "is_active": True,
+        }
+        with (
+            patch.dict(sys.modules, {"app.auth.service": service_module}),
+            patch("app.auth.routes.bcrypt.checkpw", return_value=True),
+        ):
+            with app.test_client() as client:
+                response = client.post(
+                    "/api/login",
+                    json={"username": "admin-login", "password": "secret"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json(),
+            {"success": True, "username": "admin-login", "role": "admin"},
+        )
 
 
 if __name__ == "__main__":
