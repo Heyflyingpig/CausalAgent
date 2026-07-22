@@ -1,102 +1,69 @@
-"""
-数据库轻量监控查询。
-"""
+"""兼容旧管理接口的数据库只读监控适配层。"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.db import get_read_connection, get_replica_status
-from config.settings import settings
+from Database.inspection import get_database_overview, inspect_slow_queries
 
 
-def _status_values(cursor, names: list[str]) -> dict[str, int]:
-    placeholders = ", ".join(["%s"] * len(names))
-    cursor.execute(f"SHOW GLOBAL STATUS WHERE Variable_name IN ({placeholders})", names)
-    return {row["Variable_name"]: int(row["Value"]) for row in cursor.fetchall()}
-
-
-def _max_connections(cursor) -> int | None:
-    cursor.execute("SHOW VARIABLES LIKE 'max_connections'")
-    row = cursor.fetchone()
-    return int(row["Value"]) if row else None
-
-
-def _replica_status() -> dict[str, Any] | None:
-    if not settings.MYSQL_READ_HOSTS:
-        return None
-    row = get_replica_status(settings.MYSQL_READ_HOSTS[0])
-    if not row:
+def _legacy_replica_value(replica: dict[str, Any]) -> dict[str, Any] | None:
+    """把标准从库检查结果映射回旧接口字段。"""
+    value = replica.get("value")
+    if not value or not value.get("available"):
         return None
     return {
-        "Replica_IO_Running": row.get("Replica_IO_Running"),
-        "Replica_SQL_Running": row.get("Replica_SQL_Running"),
-        "Seconds_Behind_Source": row.get("Seconds_Behind_Source"),
-        "Last_IO_Error": row.get("Last_IO_Error"),
-        "Last_SQL_Error": row.get("Last_SQL_Error"),
+        "Replica_IO_Running": value.get("io_running"),
+        "Replica_SQL_Running": value.get("sql_running"),
+        "Seconds_Behind_Source": value.get("lag_seconds"),
+        "Last_IO_Error": value.get("last_io_error"),
+        "Last_SQL_Error": value.get("last_sql_error"),
     }
 
 
-def _table_sizes(cursor) -> list[dict[str, Any]]:
-    cursor.execute("""
-        SELECT
-            table_name,
-            table_rows,
-            data_length,
-            index_length,
-            data_length + index_length AS total_length
-        FROM information_schema.tables
-        WHERE table_schema = DATABASE()
-        ORDER BY total_length DESC
-    """)
-    return cursor.fetchall()
-
-
 def get_db_health() -> dict[str, Any]:
-    with get_read_connection(consistency="eventual") as conn:
-        cursor = conn.cursor(dictionary=True)
-        status = _status_values(cursor, ["Threads_connected", "Threads_running", "Slow_queries"])
-        return {
-            "connections": {
-                "Threads_connected": status.get("Threads_connected"),
-                "Threads_running": status.get("Threads_running"),
-                "max_connections": _max_connections(cursor),
-            },
-            "slow_queries": status.get("Slow_queries"),
-            "replica": _replica_status(),
-            "tables": _table_sizes(cursor),
-        }
+    """返回兼容旧字段并附带来源元数据的数据库健康摘要。"""
+    overview = get_database_overview()
+    connection_value = overview["connections"].get("value") or {}
+    table_value = overview["tables"].get("value") or []
+    return {
+        "connections": {
+            "Threads_connected": connection_value.get("threads_connected"),
+            "Threads_running": connection_value.get("threads_running"),
+            "max_connections": connection_value.get("max_connections"),
+        },
+        "slow_queries": connection_value.get("slow_queries"),
+        "replica": _legacy_replica_value(overview["replica"]),
+        "tables": table_value,
+        "status": overview["status"],
+        "observed_at": overview["observed_at"],
+        "sources": {
+            key: {
+                "source_role": overview[key]["source_role"],
+                "source_alias": overview[key]["source_alias"],
+                "observed_at": overview[key]["observed_at"],
+                "is_estimate": overview[key]["is_estimate"],
+                "warning": overview[key]["warning"],
+            }
+            for key in ("connections", "replica", "tables")
+        },
+    }
 
 
 def get_slow_query_summary(limit: int = 20) -> dict[str, Any]:
-    with get_read_connection(consistency="eventual") as conn:
-        cursor = conn.cursor(dictionary=True)
-        status = _status_values(cursor, ["Slow_queries"])
-        try:
-            cursor.execute("""
-                SELECT
-                    DIGEST_TEXT AS digest_text,
-                    COUNT_STAR AS count_star,
-                    ROUND(SUM_TIMER_WAIT / 1000000000000, 6) AS total_seconds,
-                    ROUND(AVG_TIMER_WAIT / 1000000000000, 6) AS avg_seconds,
-                    SUM_ROWS_EXAMINED AS rows_examined,
-                    SUM_ROWS_SENT AS rows_sent
-                FROM performance_schema.events_statements_summary_by_digest
-                WHERE SCHEMA_NAME = DATABASE()
-                  AND DIGEST_TEXT IS NOT NULL
-                ORDER BY SUM_TIMER_WAIT DESC
-                LIMIT %s
-            """, (limit,))
-            top_statements = cursor.fetchall()
-        except Exception as exc:
-            top_statements = []
-            return {
-                "Slow_queries": status.get("Slow_queries"),
-                "top_statements": top_statements,
-                "warning": f"无法读取 performance_schema 摘要: {exc}",
-            }
-
-        return {
-            "Slow_queries": status.get("Slow_queries"),
-            "top_statements": top_statements,
-        }
+    """返回兼容旧字段并附带节点来源、配置和状态的慢查询摘要。"""
+    result = inspect_slow_queries(limit=limit)
+    value = result.get("value") or {}
+    return {
+        "Slow_queries": value.get("Slow_queries"),
+        "top_statements": value.get("top_statements") or [],
+        "slow_query_log": value.get("slow_query_log"),
+        "long_query_time": value.get("long_query_time"),
+        "limit": value.get("limit", limit),
+        "status": result["status"],
+        "observed_at": result["observed_at"],
+        "source_role": result["source_role"],
+        "source_alias": result["source_alias"],
+        "is_estimate": result["is_estimate"],
+        "warning": result["warning"],
+    }

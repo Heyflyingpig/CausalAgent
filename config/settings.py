@@ -123,6 +123,30 @@ class AppConfig:
             default=2
         )
         self.MYSQL_QUERY_WARN_MS = self._get_int_config("MYSQL_QUERY_WARN_MS", default=500)
+        self.DB_INSPECTION_QUERY_TIMEOUT_MS = self._get_int_config(
+            "DB_INSPECTION_QUERY_TIMEOUT_MS",
+            default=3000,
+        )
+        self.DB_DASHBOARD_CONNECTION_WARNING_PERCENT = self._get_int_config(
+            "DB_DASHBOARD_CONNECTION_WARNING_PERCENT",
+            default=70,
+        )
+        self.DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT = self._get_int_config(
+            "DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT",
+            default=85,
+        )
+        if self.DB_INSPECTION_QUERY_TIMEOUT_MS <= 0:
+            raise ValueError("配置错误: DB_INSPECTION_QUERY_TIMEOUT_MS 必须大于 0。")
+        if not (
+            0
+            <= self.DB_DASHBOARD_CONNECTION_WARNING_PERCENT
+            < self.DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT
+            <= 100
+        ):
+            raise ValueError(
+                "配置错误: 数据库看板连接阈值必须满足 "
+                "0 <= WARNING < CRITICAL <= 100。"
+            )
         self.JOB_WORKERS = self._get_int_config("JOB_WORKERS", default=2)
         self.JOB_POLL_INTERVAL_SECONDS = self._get_float_config("JOB_POLL_INTERVAL_SECONDS", default=1.0)
         self.JOB_HEARTBEAT_INTERVAL_SECONDS = self._get_int_config(
