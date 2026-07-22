@@ -252,6 +252,7 @@ def check_database_readiness():
                 "checkpoint_writes",
                 "analysis_jobs",
                 "analysis_job_events",
+                "database_monitor_snapshots",
             ]
             cursor.execute(
                 """

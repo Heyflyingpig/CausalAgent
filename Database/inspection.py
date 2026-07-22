@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -263,7 +264,7 @@ def inspect_connections() -> dict[str, Any]:
             values = _show_values(
                 cursor,
                 "SHOW GLOBAL STATUS",
-                ["Threads_connected", "Threads_running", "Max_used_connections", "Slow_queries"],
+                ["Threads_connected", "Threads_running", "Max_used_connections"],
             )
             variables = _show_values(cursor, "SHOW GLOBAL VARIABLES", ["max_connections"])
 
@@ -293,7 +294,6 @@ def inspect_connections() -> dict[str, Any]:
                 "threads_running": running,
                 "max_used_connections": max_used,
                 "max_connections": maximum,
-                "slow_queries": _int_or_none(values.get("Slow_queries")),
                 "utilization_percent": utilization,
                 "warning_threshold_percent": settings.DB_DASHBOARD_CONNECTION_WARNING_PERCENT,
                 "critical_threshold_percent": settings.DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT,
@@ -406,17 +406,83 @@ def get_database_overview() -> dict[str, Any]:
     }
 
 
-def inspect_slow_queries(limit: int = 20) -> dict[str, Any]:
-    """读取所选节点的慢查询配置、累计计数和受限 digest 摘要。"""
+def get_realtime_report() -> dict[str, Any]:
+    """采集高频主从、连接和 Worker/Job 状态，不包含容量与完整性扫描。"""
+    from app.agent.job_service import get_worker_snapshot_report
+
+    blocks = {
+        "primary": inspect_primary(),
+        "replica": inspect_replica(),
+        "connections": inspect_connections(),
+    }
+    jobs = get_worker_snapshot_report()
+    return {
+        "status": _overall_status([*blocks.values(), jobs]),
+        "observed_at": _observed_at(),
+        **blocks,
+        "jobs": jobs,
+        "blocking_issues": _blocking_issues(blocks),
+    }
+
+
+def get_capacity_report() -> dict[str, Any]:
+    """采集低频 schema revision 与表容量信息。"""
+    revision = inspect_revision()
+    tables = inspect_table_capacity()
+    blocks = {"revision": revision, "tables": tables}
+    return {
+        "status": _overall_status(list(blocks.values())),
+        "observed_at": _observed_at(),
+        **blocks,
+        "blocking_issues": _blocking_issues({"revision": revision}),
+    }
+
+
+def _previous_sql_value(previous: dict[str, Any] | None) -> tuple[dict[str, Any], str | None]:
+    """兼容标准检查结果和已展平快照，提取上一轮 SQL 指标。"""
+    if not previous:
+        return {}, None
+    value = previous.get("value") if isinstance(previous.get("value"), dict) else previous
+    return value, previous.get("source_alias")
+
+
+def _server_instance_id(cursor) -> str:
+    """读取并散列 MySQL server UUID，作为不暴露主机名的累计指标来源标识。"""
+    cursor.execute("SELECT @@GLOBAL.server_uuid AS server_uuid")
+    row = cursor.fetchone() or {}
+    raw_uuid = row.get("server_uuid") or row.get("SERVER_UUID")
+    if not raw_uuid:
+        raise RuntimeError("MySQL 未返回 server_uuid")
+    return hashlib.sha256(str(raw_uuid).encode("utf-8")).hexdigest()[:24]
+
+
+def _window_seconds(started_at: str | None, ended_at: str) -> float | None:
+    """计算两个 UTC ISO 时间之间的实际采集窗口秒数。"""
+    if not started_at:
+        return None
+    try:
+        start = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, round((end - start).total_seconds(), 3))
+
+
+def inspect_slow_queries(
+    limit: int = 20,
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """读取主库慢查询累计状态，并计算同一采集来源上的周期增量。"""
     normalized_limit = max(1, min(int(limit), MAX_SLOW_QUERY_LIMIT))
     try:
         from app.db import get_read_connection_with_source
         from config.settings import settings
 
-        connection, source = get_read_connection_with_source(consistency="eventual")
+        connection, source = get_read_connection_with_source(consistency="strong")
         with connection as conn:
             cursor = conn.cursor(dictionary=True)
-            statuses = _show_values(cursor, "SHOW GLOBAL STATUS", ["Slow_queries"])
+            source_instance_id = _server_instance_id(cursor)
+            statuses = _show_values(cursor, "SHOW GLOBAL STATUS", ["Slow_queries", "Uptime"])
             variables = _show_values(
                 cursor,
                 "SHOW GLOBAL VARIABLES",
@@ -441,169 +507,242 @@ def inspect_slow_queries(limit: int = 20) -> dict[str, Any]:
                     """,
                     (normalized_limit,),
                 )
-                top_statements = cursor.fetchall()
+                high_load_statements = cursor.fetchall()
             except Exception as exc:
                 LOGGER.warning("读取 performance_schema digest 失败: %s", type(exc).__name__)
                 LOGGER.debug("performance_schema digest 异常详情", exc_info=True)
-                top_statements = []
+                high_load_statements = []
                 digest_warning = "performance_schema 摘要不可用（权限不足、未启用或查询超时）"
 
+        observed_at = _observed_at()
         slow_query_log = variables.get("slow_query_log")
+        slow_queries_total = _int_or_none(statuses.get("Slow_queries"))
+        uptime_seconds = _int_or_none(statuses.get("Uptime"))
+        previous_value, previous_source = _previous_sql_value(previous)
+        previous_total = _int_or_none(
+            previous_value.get("slow_queries_total", previous_value.get("Slow_queries"))
+        )
+        previous_uptime = _int_or_none(previous_value.get("uptime_seconds"))
+        previous_instance_id = previous_value.get("source_instance_id")
+        window_started_at = previous_value.get("window_ended_at") or (
+            previous.get("observed_at") if previous else None
+        )
+        source_changed = previous_total is not None and (
+            previous_source != source["source_alias"]
+            or previous_instance_id != source_instance_id
+        )
+        counter_reset = (
+            previous_total is not None
+            and slow_queries_total is not None
+            and slow_queries_total < previous_total
+        ) or (
+            previous_uptime is not None
+            and uptime_seconds is not None
+            and uptime_seconds < previous_uptime
+        )
+        baseline_reset = (
+            previous_total is None
+            or slow_queries_total is None
+            or not window_started_at
+            or source_changed
+            or counter_reset
+        )
+        slow_queries_delta = (
+            None
+            if baseline_reset or slow_queries_total is None
+            else slow_queries_total - previous_total
+        )
+        threshold = settings.DB_MONITOR_SLOW_QUERY_WARNING_DELTA
         warnings = [message for message in [digest_warning] if message]
         if str(slow_query_log).upper() not in {"ON", "1"}:
             warnings.append("当前节点未开启 slow_query_log")
+        if baseline_reset:
+            warnings.append("慢查询周期增量正在建立或重置采集基线")
+        elif slow_queries_delta is not None and slow_queries_delta >= threshold:
+            warnings.append("采集窗口内慢查询增量达到告警阈值")
         return _result(
             "warning" if warnings else "healthy",
             {
-                "Slow_queries": _int_or_none(statuses.get("Slow_queries")),
+                "Slow_queries": slow_queries_total,
+                "slow_queries_total": slow_queries_total,
+                "slow_queries_delta": slow_queries_delta,
+                "window_started_at": None if baseline_reset else window_started_at,
+                "window_ended_at": observed_at,
+                "window_seconds": None if baseline_reset else _window_seconds(window_started_at, observed_at),
+                "baseline_reset": baseline_reset,
+                "uptime_seconds": uptime_seconds,
+                "source_instance_id": source_instance_id,
+                "slow_query_warning_threshold": threshold,
                 "slow_query_log": slow_query_log,
                 "long_query_time": float(variables["long_query_time"])
                 if variables.get("long_query_time") is not None
                 else None,
-                "top_statements": top_statements,
+                "high_load_statements": high_load_statements,
+                "top_statements": high_load_statements,
                 "limit": normalized_limit,
             },
             **source,
             warning="；".join(warnings) or None,
+            observed_at=observed_at,
         )
     except Exception as exc:
         return _failed_result(
             "slow-queries",
             exc,
-            source_role="database",
-            source_alias="selected-read-node",
-            warning="读取慢查询配置和摘要失败",
+            source_role="primary",
+            source_alias="primary",
+            warning="读取主库慢查询配置和 SQL 性能摘要失败",
         )
 
 
-def _integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
-    """定义快速完整性检查的只读 SQL、标签和阻塞级别。"""
+EXPECTED_FOREIGN_KEYS = (
+    ("chat_messages", "fk_chat_messages_session", (("session_id", "sessions", "id"),)),
+    ("chat_messages", "fk_chat_messages_user", (("user_id", "users", "id"),)),
+    ("chat_attachments", "fk_chat_attachments_message", (("message_id", "chat_messages", "id"),)),
+    ("analysis_jobs", "fk_analysis_jobs_user", (("user_id", "users", "id"),)),
+    ("analysis_jobs", "fk_analysis_jobs_session", (("session_id", "sessions", "id"),)),
+    ("analysis_job_events", "fk_analysis_job_events_job", (("job_id", "analysis_jobs", "job_id"),)),
+    (
+        "checkpoint_writes",
+        "fk_checkpoint_writes_checkpoint",
+        (
+            ("thread_id", "checkpoints", "thread_id"),
+            ("checkpoint_ns", "checkpoints", "checkpoint_ns"),
+            ("checkpoint_id", "checkpoints", "checkpoint_id"),
+        ),
+    ),
+)
+
+
+def _foreign_key_definition_sql(
+    timeout_ms: int,
+    table_name: str,
+    constraint_name: str,
+    columns: tuple[tuple[str, str, str], ...],
+) -> str:
+    """生成精确核对子列、父表、父列及复合列顺序的轻量元数据查询。"""
+    expected_rows = " OR ".join(
+        "("
+        f"ordinal_position = {position} "
+        f"AND column_name = '{child_column}' "
+        f"AND referenced_table_name = '{parent_table}' "
+        f"AND referenced_column_name = '{parent_column}'"
+        ")"
+        for position, (child_column, parent_table, parent_column) in enumerate(columns, start=1)
+    )
+    return f"""SELECT {_timeout_hint(timeout_ms)} CASE
+        WHEN COUNT(*) = {len(columns)}
+         AND SUM(CASE WHEN {expected_rows} THEN 1 ELSE 0 END) = {len(columns)}
+        THEN 1 ELSE 0 END AS count_value
+        FROM information_schema.key_column_usage
+        WHERE constraint_schema = DATABASE()
+          AND table_name = '{table_name}'
+          AND constraint_name = '{constraint_name}'
+          AND referenced_table_name IS NOT NULL"""
+
+
+def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
+    """定义运行期低频审计，避免重复扫描已由外键保证的关系。"""
     hint = _timeout_hint(timeout_ms)
-    return [
+    definitions = [
         {
-            "key": "orphan_chat_messages_session",
-            "label": "孤立 chat_messages.session_id",
+            "key": f"constraint_{constraint_name}",
+            "label": f"约束 {constraint_name}",
             "severity": "blocking",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM chat_messages cm
-                LEFT JOIN sessions s ON s.id = cm.session_id WHERE s.id IS NULL""",
-        },
+            "healthy_when": "one",
+            "sql": _foreign_key_definition_sql(
+                timeout_ms,
+                table_name,
+                constraint_name,
+                columns,
+            ),
+        }
+        for table_name, constraint_name, columns in EXPECTED_FOREIGN_KEYS
+    ]
+    definitions.extend([
         {
-            "key": "orphan_chat_messages_user",
-            "label": "孤立 chat_messages.user_id",
+            "key": "constraint_chat_attachment_type_enum",
+            "label": "约束 chat_attachments.attachment_type ENUM",
             "severity": "blocking",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM chat_messages cm
-                LEFT JOIN users u ON u.id = cm.user_id WHERE u.id IS NULL""",
-        },
-        {
-            "key": "orphan_chat_attachments_message",
-            "label": "孤立 chat_attachments.message_id",
-            "severity": "blocking",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM chat_attachments ca
-                LEFT JOIN chat_messages cm ON cm.id = ca.message_id WHERE cm.id IS NULL""",
-        },
-        {
-            "key": "invalid_chat_attachment_type",
-            "label": "非法 chat_attachments.attachment_type",
-            "severity": "blocking",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM chat_attachments
-                WHERE attachment_type NOT IN (
-                    'causal_graph', 'analysis_result', 'file_content', 'other', 'visualization'
-                )""",
-        },
-        {
-            "key": "orphan_analysis_jobs_user",
-            "label": "孤立 analysis_jobs.user_id",
-            "severity": "blocking",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM analysis_jobs aj
-                LEFT JOIN users u ON u.id = aj.user_id WHERE u.id IS NULL""",
-        },
-        {
-            "key": "orphan_analysis_jobs_session",
-            "label": "孤立 analysis_jobs.session_id",
-            "severity": "blocking",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM analysis_jobs aj
-                LEFT JOIN sessions s ON s.id = aj.session_id WHERE s.id IS NULL""",
-        },
-        {
-            "key": "orphan_analysis_job_events",
-            "label": "孤立 analysis_job_events.job_id",
-            "severity": "blocking",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM analysis_job_events aje
-                LEFT JOIN analysis_jobs aj ON aj.job_id = aje.job_id WHERE aj.job_id IS NULL""",
+            "healthy_when": "one",
+            "sql": f"""SELECT {hint} COUNT(*) AS count_value
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'chat_attachments'
+                  AND column_name = 'attachment_type'
+                  AND data_type = 'enum'
+                  AND column_type LIKE '%''visualization''%'""",
         },
         {
             "key": "orphan_checkpoints_thread",
             "label": "孤立 checkpoints.thread_id",
             "severity": "blocking",
+            "healthy_when": "zero",
             "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM checkpoints cp
                 LEFT JOIN sessions s ON s.id = cp.thread_id WHERE s.id IS NULL""",
         },
-        {
-            "key": "orphan_checkpoint_writes",
-            "label": "孤立 checkpoint_writes.checkpoint_id",
-            "severity": "blocking",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM checkpoint_writes cw
-                LEFT JOIN checkpoints cp
-                  ON cp.thread_id = cw.thread_id
-                 AND cp.checkpoint_ns = cw.checkpoint_ns
-                 AND cp.checkpoint_id = cw.checkpoint_id
-                WHERE cp.checkpoint_id IS NULL""",
-        },
-        {
-            "key": "chat_messages_partitions",
-            "label": "chat_messages 分区表",
-            "severity": "info",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value
-                FROM information_schema.partitions
-                WHERE table_schema = DATABASE()
-                  AND table_name = 'chat_messages'
-                  AND partition_name IS NOT NULL""",
-        },
-    ]
+    ])
+    return definitions
 
 
-def execute_quick_integrity_checks(
+def _integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
+    """兼容入口：返回运行期完整性审计定义。"""
+    return _operational_integrity_definitions(timeout_ms)
+
+
+def _is_integrity_count_healthy(count: int, condition: str) -> bool:
+    """按定义口径判断完整性计数是否健康。"""
+    if condition == "zero":
+        return count == 0
+    if condition == "one":
+        return count == 1
+    if condition == "positive":
+        return count > 0
+    raise ValueError(f"未知完整性条件: {condition}")
+
+
+def _execute_integrity_definitions(
     connection,
+    definitions: list[dict[str, Any]],
     *,
-    timeout_ms: int,
-    source_role: str = "primary",
-    source_alias: str = "primary",
+    source_role: str,
+    source_alias: str,
 ) -> list[dict[str, Any]]:
-    """在调用方提供的只读连接上逐项执行快速完整性检查。"""
+    """逐项执行给定审计定义，并保留单项失败降级。"""
     cursor = connection.cursor(dictionary=True)
     checks: list[dict[str, Any]] = []
-    for definition in _integrity_definitions(timeout_ms):
+    for definition in definitions:
         observed_at = _observed_at()
         try:
             cursor.execute(definition["sql"])
             row = cursor.fetchone() or {}
             count = int(row.get("count_value") or 0)
-            if definition["severity"] == "blocking":
-                status = "error" if count > 0 else "healthy"
-                warning = "发现阻塞性完整性问题" if count > 0 else None
-            else:
-                status = "healthy" if count > 0 else "warning"
-                warning = None if count > 0 else "未检测到 chat_messages 分区"
+            healthy = _is_integrity_count_healthy(
+                count,
+                definition.get("healthy_when", "zero"),
+            )
             checks.append({
                 "key": definition["key"],
                 "label": definition["label"],
                 "severity": definition["severity"],
+                "applicable": True,
                 **_result(
-                    status,
+                    "healthy" if healthy else "error",
                     count,
                     source_role=source_role,
                     source_alias=source_alias,
-                    warning=warning,
+                    warning=None if healthy else "发现阻塞性完整性问题",
                     observed_at=observed_at,
                 ),
             })
         except Exception as exc:
-            LOGGER.warning("快速完整性检查失败 [%s]: %s", definition["key"], type(exc).__name__)
-            LOGGER.debug("快速完整性检查异常详情 [%s]", definition["key"], exc_info=True)
+            LOGGER.warning("完整性检查失败 [%s]: %s", definition["key"], type(exc).__name__)
+            LOGGER.debug("完整性检查异常详情 [%s]", definition["key"], exc_info=True)
             checks.append({
                 "key": definition["key"],
                 "label": definition["label"],
                 "severity": definition["severity"],
+                "applicable": True,
                 **_result(
                     "unknown",
                     None,
@@ -616,8 +755,220 @@ def execute_quick_integrity_checks(
     return checks
 
 
+def execute_quick_integrity_checks(
+    connection,
+    *,
+    timeout_ms: int,
+    source_role: str = "primary",
+    source_alias: str = "primary",
+) -> list[dict[str, Any]]:
+    """在调用方提供的主库连接上执行运行期低频完整性审计。"""
+    return _execute_integrity_definitions(
+        connection,
+        _operational_integrity_definitions(timeout_ms),
+        source_role=source_role,
+        source_alias=source_alias,
+    )
+
+
+def _not_applicable_check(key: str, label: str, reason: str) -> dict[str, Any]:
+    """构造不会阻塞迁移的“不适用”预检结果。"""
+    return {
+        "key": key,
+        "label": label,
+        "severity": "blocking",
+        "applicable": False,
+        **_result(
+            "healthy",
+            None,
+            source_role="primary",
+            source_alias="primary",
+            warning=reason,
+        ),
+    }
+
+
+FK_MIGRATION_REVISION = "f6b8c9d0e1a2"
+
+
+def _current_schema_revision(cursor, tables: set[str]) -> str | None:
+    """在版本表存在时读取当前 Alembic revision；未纳管旧库返回 None。"""
+    if "alembic_version" not in tables:
+        return None
+    cursor.execute("SELECT version_num FROM alembic_version")
+    row = cursor.fetchone() or {}
+    return row.get("version_num") or row.get("VERSION_NUM")
+
+
+def _revision_contains_migration(current_revision: str | None, target_revision: str) -> bool:
+    """通过 Alembic revision graph 判断当前版本是否已经包含目标迁移。"""
+    if not current_revision:
+        return False
+    if current_revision == target_revision:
+        return True
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        from alembic.script.revision import RangeNotAncestorError
+    except Exception:
+        LOGGER.warning("无法加载 Alembic revision graph，按迁移待执行处理", exc_info=True)
+        return False
+
+    try:
+        project_root = Path(__file__).resolve().parents[1]
+        config = Config(str(project_root / "alembic.ini"))
+        script = ScriptDirectory.from_config(config)
+        list(script.iterate_revisions(current_revision, target_revision))
+        return True
+    except RangeNotAncestorError:
+        return False
+    except Exception:
+        LOGGER.warning(
+            "无法确认 Alembic revision %s 是否包含 %s，按迁移待执行处理",
+            current_revision,
+            target_revision,
+            exc_info=True,
+        )
+        return False
+
+
+def execute_migration_preflight_checks(
+    connection,
+    *,
+    timeout_ms: int,
+    source_role: str = "primary",
+    source_alias: str = "primary",
+) -> list[dict[str, Any]]:
+    """按当前 schema 仅运行待添加外键所需的迁移前数据扫描。"""
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()"
+    )
+    tables = {row.get("table_name") or row.get("TABLE_NAME") for row in cursor.fetchall()}
+    current_revision = _current_schema_revision(cursor, tables)
+    fk_migration_pending = not _revision_contains_migration(
+        current_revision,
+        FK_MIGRATION_REVISION,
+    )
+    cursor.execute("""
+        SELECT table_name, constraint_name
+        FROM information_schema.referential_constraints
+        WHERE constraint_schema = DATABASE()
+    """)
+    foreign_keys = {
+        (
+            row.get("table_name") or row.get("TABLE_NAME"),
+            row.get("constraint_name") or row.get("CONSTRAINT_NAME"),
+        )
+        for row in cursor.fetchall()
+    }
+    hint = _timeout_hint(timeout_ms)
+    candidates = [
+        {
+            "key": "orphan_chat_messages_session",
+            "label": "迁移前孤立 chat_messages.session_id",
+            "child": "chat_messages",
+            "parent": "sessions",
+            "constraint": "fk_chat_messages_session",
+            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM chat_messages cm
+                LEFT JOIN sessions s ON s.id = cm.session_id WHERE s.id IS NULL""",
+        },
+        {
+            "key": "orphan_chat_messages_user",
+            "label": "迁移前孤立 chat_messages.user_id",
+            "child": "chat_messages",
+            "parent": "users",
+            "constraint": "fk_chat_messages_user",
+            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM chat_messages cm
+                LEFT JOIN users u ON u.id = cm.user_id WHERE u.id IS NULL""",
+        },
+        {
+            "key": "orphan_chat_attachments_message",
+            "label": "迁移前孤立 chat_attachments.message_id",
+            "child": "chat_attachments",
+            "parent": "chat_messages",
+            "constraint": "fk_chat_attachments_message",
+            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM chat_attachments ca
+                LEFT JOIN chat_messages cm ON cm.id = ca.message_id WHERE cm.id IS NULL""",
+        },
+        {
+            "key": "orphan_checkpoint_writes",
+            "label": "迁移前孤立 checkpoint_writes.checkpoint_id",
+            "child": "checkpoint_writes",
+            "parent": "checkpoints",
+            "constraint": "fk_checkpoint_writes_checkpoint",
+            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM checkpoint_writes cw
+                LEFT JOIN checkpoints cp
+                  ON cp.thread_id = cw.thread_id
+                 AND cp.checkpoint_ns = cw.checkpoint_ns
+                 AND cp.checkpoint_id = cw.checkpoint_id
+                WHERE cp.checkpoint_id IS NULL""",
+        },
+    ]
+    checks: list[dict[str, Any]] = []
+    definitions: list[dict[str, Any]] = []
+    for candidate in candidates:
+        key = (candidate["child"], candidate["constraint"])
+        if not fk_migration_pending:
+            checks.append(_not_applicable_check(
+                candidate["key"],
+                candidate["label"],
+                f"当前 revision {current_revision} 已包含目标外键迁移，跳过迁移前数据扫描",
+            ))
+        elif candidate["child"] not in tables or candidate["parent"] not in tables:
+            checks.append(_not_applicable_check(
+                candidate["key"], candidate["label"], "相关表尚未创建，跳过迁移前扫描"
+            ))
+        elif key in foreign_keys:
+            checks.append(_not_applicable_check(
+                candidate["key"], candidate["label"], "目标外键已经存在，跳过重复数据扫描"
+            ))
+        else:
+            definitions.append({
+                **candidate,
+                "severity": "blocking",
+                "healthy_when": "zero",
+            })
+    checks.extend(_execute_integrity_definitions(
+        connection,
+        definitions,
+        source_role=source_role,
+        source_alias=source_alias,
+    ))
+
+    chat_fk_missing = (
+        fk_migration_pending
+        and "chat_messages" in tables
+        and ("chat_messages", "fk_chat_messages_session") not in foreign_keys
+    )
+    if chat_fk_missing:
+        checks.extend(_execute_integrity_definitions(
+            connection,
+            [{
+                "key": "chat_messages_preflight_partitions",
+                "label": "迁移前 chat_messages 分区结构",
+                "severity": "blocking",
+                "healthy_when": "positive",
+                "sql": f"""SELECT {hint} COUNT(*) AS count_value
+                    FROM information_schema.partitions
+                    WHERE table_schema = DATABASE()
+                      AND table_name = 'chat_messages'
+                      AND partition_name IS NOT NULL""",
+            }],
+            source_role=source_role,
+            source_alias=source_alias,
+        ))
+    else:
+        checks.append(_not_applicable_check(
+            "chat_messages_preflight_partitions",
+            "迁移前 chat_messages 分区结构",
+            "生产升级外键已存在或表尚未创建，无需检查旧分区结构",
+        ))
+    return checks
+
+
 def get_quick_integrity_report() -> dict[str, Any]:
-    """通过主库强一致读执行快速完整性检查并汇总阻塞项。"""
+    """通过主库强一致读执行运行期低频完整性审计并汇总阻塞项。"""
     from app.db import get_read_connection_with_source
     from config.settings import settings
 
@@ -655,7 +1006,7 @@ def get_quick_integrity_report() -> dict[str, Any]:
         if check["severity"] == "blocking" and check["status"] == "error"
     )
     return {
-        "mode": "quick",
+        "mode": "operational",
         "status": _overall_status(checks),
         "observed_at": _observed_at(),
         "blocking_count": blocking_count,

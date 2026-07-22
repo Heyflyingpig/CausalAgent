@@ -14,9 +14,9 @@ import sys
 import mysql.connector
 
 try:
-    from Database.inspection import execute_quick_integrity_checks
+    from Database.inspection import execute_migration_preflight_checks
 except ModuleNotFoundError:  # 兼容 `python Database/audit_before_db_upgrade.py`
-    from inspection import execute_quick_integrity_checks
+    from inspection import execute_migration_preflight_checks
 
 
 logging.basicConfig(
@@ -64,12 +64,12 @@ def get_connection():
 
 
 def audit() -> list[dict]:
-    """复用看板检查定义，在主库只读连接上执行升级前快速审计。"""
+    """按当前 schema 在主库只读连接上执行迁移前置审计。"""
     with get_connection() as conn:
         timeout_ms = int(os.environ.get("DB_INSPECTION_QUERY_TIMEOUT_MS", "3000"))
         if timeout_ms <= 0:
             raise RuntimeError("DB_INSPECTION_QUERY_TIMEOUT_MS 必须大于 0")
-        return execute_quick_integrity_checks(
+        return execute_migration_preflight_checks(
             conn,
             timeout_ms=timeout_ms,
             source_role="primary",
@@ -78,7 +78,7 @@ def audit() -> list[dict]:
 
 
 def main() -> int:
-    """输出快速审计结果，并在阻塞项非零或检查未知时拒绝升级。"""
+    """输出迁移前审计结果，并在阻塞项非零或检查未知时拒绝升级。"""
     failures = 0
     for check in audit():
         if check["status"] == "unknown":
