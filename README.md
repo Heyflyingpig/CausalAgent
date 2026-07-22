@@ -187,6 +187,75 @@ git clone https://github.com/Heyflyingpig/CausalAgent
 2. 创建.env文件
 ```bash
 cp .env.example .env
+# Flask 应用密钥（用于会话加密等）
+SECRET_KEY=
+
+# API 基础URL（OpenAI官方或第三方兼容接口）
+BASE_URL=
+MODEL=
+# 可选：第三方 OpenAI 兼容接口通常使用 json_mode。
+LLM_STRUCTURED_OUTPUT_METHOD=json_mode
+
+# OpenAI API 密钥或兼容 API 的密钥
+API_KEY=
+# Docker环境：使用服务名 'mysql'
+# 本地开发：使用 'localhost' 或 '127.0.0.1'
+MYSQL_HOST=mysql
+
+# 旧版兼容账号。未配置拆分账号时，写/读连接会回退使用它。
+MYSQL_USER=pyramid
+
+MYSQL_ROOT_PASSWORD=
+MYSQL_PASSWORD=
+
+# 数据库名称
+MYSQL_DATABASE=
+
+# 应用写账号：用于主库写入、迁移和数据库就绪检查。
+MYSQL_WRITE_USER=pyramid_writer
+MYSQL_WRITE_PASSWORD=
+
+# 应用读账号：用于主库/从库业务查询，建议只授予业务库 SELECT。
+MYSQL_READ_USER=pyramid_reader
+MYSQL_READ_PASSWORD=
+
+# 复制状态检查账号：只用于 SHOW REPLICA STATUS，缺失时 eventual 读会回退主库。
+MYSQL_REPLICA_STATUS_USER=replica_status
+MYSQL_REPLICA_STATUS_PASSWORD=
+
+# 复制通道账号：只用于从库拉取主库 binlog。
+MYSQL_REPLICATION_USER=replica
+MYSQL_REPLICATION_PASSWORD=
+
+MYSQL_WRITE_HOST=mysql-primary
+MYSQL_READ_HOSTS=mysql-replica
+
+MYSQL_PORT=3306
+MYSQL_POOL_SIZE_WRITE=5
+MYSQL_POOL_SIZE_READ=5
+MYSQL_REPLICA_MAX_LAG_SECONDS=2
+MYSQL_QUERY_WARN_MS=500
+
+# Web/后台任务并发配置
+WEB_WORKERS=1
+WEB_THREADS=12
+WEB_TIMEOUT=120
+JOB_WORKERS=2
+JOB_HEARTBEAT_INTERVAL_SECONDS=10
+JOB_STALE_AFTER_SECONDS=120
+JOB_MAX_ATTEMPTS=3
+
+MAX_UPLOAD_SIZE_MB=20
+
+
+# LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
+LANGCHAIN_API_KEY=
+LANGCHAIN_PROJECT=
+
+#可选rag嵌入模型配置
+MEDICAL_EMBEDDING_API_KEY=
+MEDICAL_EMBEDDING_BASE_URL=
+MEDICAL_EMBEDDING_MODEL=
 ```
 
 3. 在项目根目录运行docker-compose
@@ -350,6 +419,7 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 │   ├── files/              # 文件上传/管理相关路由
 │   └── static/             # 前端静态资源
 │       ├── chat.html       # 主聊天界面
+│       ├── rag_eval.html   # RAG评测控制台
 │       ├── css/
 │       ├── js/
 │       └── generated_graphs/ # 因果图等生成图像

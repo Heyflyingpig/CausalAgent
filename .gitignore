@@ -199,16 +199,24 @@ Agent/knowledge_base/unfinish_source/
 # skils
 skills/
 
+# test
+tests/*
+!tests/rag_ingestion/
+!tests/rag_ingestion/**
+
 # study
 study/
+
+# local-only documents
+/docs/
+Agent/knowledge_base/rag/docs/
+Agent/knowledge_base/rag/output/reports/
+app/DESIGN.md
 
 # Admin Vue
 admin-frontend/node_modules/
 admin-frontend/test-results/
 admin-frontend/playwright-report/
-
-# docs
-docs/
 
 # 构建产物
 admin-frontend/dist/
