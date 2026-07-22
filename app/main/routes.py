@@ -36,13 +36,5 @@ def setting():
 # 根路由
 @main_bp.route('/')
 def index():
-    """返回主聊天页面。"""
     # 总是返回 chat.html，由前端 JS 决定显示登录还是主界面
     return send_from_directory("static", 'chat.html')
-
-
-@main_bp.route('/rag_eval')
-@main_bp.route('/rag-eval')
-def rag_eval_page():
-    """返回RAG评测控制台页面。"""
-    return send_from_directory("static", 'rag_eval.html')
