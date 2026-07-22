@@ -40,10 +40,13 @@
                 <div>
                     <p class="eyebrow">只读数据库管理</p>
                     <h1>数据库状态看板</h1>
-                    <p class="page-description">查看数据库真实状态、来源节点与采集时间。</p>
+                    <p class="page-description">查看服务端分层采集的共享监控快照；打开多个管理页面不会重复执行数据库采集。</p>
                 </div>
                 <div class="header-actions">
-                    <span id="lastObservedAt" class="last-observed">尚未采集</span>
+                    <div class="header-status">
+                        <span id="lastObservedAt" class="last-observed">尚未采集</span>
+                        <span id="refreshPolicyText" class="last-observed">正在读取刷新策略</span>
+                    </div>
                     <button id="refreshButton" class="button button-blue" type="button">手动刷新</button>
                 </div>
             </header>
@@ -103,12 +106,15 @@
             <section class="panel">
                 <div class="panel-header">
                     <div>
-                        <h2>快速完整性检查</h2>
-                        <p>只读检查消息、附件、任务、事件和 checkpoint 的轻量孤立计数。</p>
+                        <h2>完整性审计</h2>
+                        <p>仅手动、迁移后或按低频策略执行；普通刷新不会触发完整数据库审计。</p>
                     </div>
-                    <span id="integrityMeta" class="source-meta">加载中</span>
+                    <div class="panel-actions">
+                        <span id="integrityMeta" class="source-meta">加载中</span>
+                        <button id="integrityButton" class="button button-secondary" type="button">执行完整性审计</button>
+                    </div>
                 </div>
-                <div id="integrityState" class="section-state">正在执行快速检查…</div>
+                <div id="integrityState" class="section-state">正在读取最近一次审计快照…</div>
                 <div class="table-wrap">
                     <table id="integrityTable" hidden>
                         <thead><tr><th>检查项</th><th>数量</th><th>结果</th><th>来源</th></tr></thead>
@@ -120,20 +126,22 @@
             <section class="panel">
                 <div class="panel-header">
                     <div>
-                        <h2>慢查询摘要</h2>
-                        <p>展示所选节点的实际开关、阈值、累计计数和前 20 条 digest。</p>
+                        <h2>SQL 性能摘要</h2>
+                        <p>慢查询指标以采集周期内增量为主；高负载 SQL 按累计总耗时排序，不代表单次执行超过 long_query_time。</p>
                     </div>
                     <span id="slowMeta" class="source-meta">加载中</span>
                 </div>
-                <div class="inline-metrics">
+                <div class="inline-metrics five-columns">
                     <div><span>slow_query_log</span><strong id="slowLogValue">—</strong></div>
                     <div><span>long_query_time</span><strong id="longQueryTimeValue">—</strong></div>
-                    <div><span>Slow_queries</span><strong id="slowQueriesValue">—</strong></div>
+                    <div class="metric-emphasis"><span>周期内 Slow_queries 增量</span><strong id="slowQueriesDeltaValue">—</strong></div>
+                    <div><span>采集窗口</span><strong id="slowWindowValue">—</strong></div>
+                    <div><span>累计 Slow_queries</span><strong id="slowQueriesTotalValue">—</strong></div>
                 </div>
-                <div id="slowState" class="section-state">正在读取慢查询摘要…</div>
+                <div id="slowState" class="section-state">正在读取 SQL 性能摘要…</div>
                 <div class="table-wrap">
                     <table id="slowTable" hidden>
-                        <thead><tr><th>Digest</th><th>次数</th><th>总耗时</th><th>平均耗时</th><th>扫描行</th><th>返回行</th></tr></thead>
+                        <thead><tr><th>高负载 SQL（Digest）</th><th>次数</th><th>累计总耗时</th><th>平均耗时</th><th>扫描行</th><th>返回行</th></tr></thead>
                         <tbody></tbody>
                     </table>
                 </div>
