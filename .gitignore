@@ -202,15 +202,10 @@ Agent/knowledge_base/unfinish_source/
 skills/
 
 # test
-tests/*
-!tests/rag_ingestion/
-!tests/rag_ingestion/**
+tests/
 
 # study
 study/
 
-# local-only documents
-/docs/
-Agent/knowledge_base/rag/docs/
-Agent/knowledge_base/rag/output/reports/
-app/DESIGN.md
+# docs
+docs/
