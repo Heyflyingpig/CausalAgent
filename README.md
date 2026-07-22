@@ -297,7 +297,8 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 执行包含 `users.role` 的最新 Alembic migration 后，可以把一个已经注册且已启用的用户提升为初始管理员：
 
 ```bash
-python -m app.auth.admin_cli promote <username>
+python -m app.auth.admin_cli promote <username> ----本地运行
+docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.admin_cli promote <username> ----docker运行
 ```
 
 该命令只支持幂等提升，不创建账号、不降级管理员，也不提供 Web 管理入口。目标用户不存在或已禁用时不会修改数据库。
