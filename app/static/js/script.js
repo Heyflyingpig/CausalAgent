@@ -19,6 +19,7 @@ const chatArea = document.getElementById('chatArea');
 //全局变量存储当前会话的用户名
 //一个标签页里同时并行操作多个会话的话，会造成冲突
 let currentUsername = null;
+let currentUserRole = null;
 let currentSessionId = null; // < 全局变量跟踪当前会话ID
 let isNewSessionPendingDisplay = false; //  用于跟踪新会话是否已在UI中临时显示
 let chatEventListenersAttached = false; // 跟踪事件监听器是否已附加
@@ -256,6 +257,11 @@ async function handleLogin() {
         if (data.success && data.username) { // 确保返回了 username
             // 登录成功
             currentUsername = data.username; //  设置全局变量
+            currentUserRole = data.role || 'user';
+            if (currentUserRole === 'admin') {
+                window.location.assign('/admin/database');
+                return;
+            }
             document.body.classList.add('logged-in'); // 添加标记类
             authOverlay.classList.remove('active'); // 隐藏登录/注册层
             
@@ -272,11 +278,13 @@ async function handleLogin() {
         } else {
             loginError.textContent = data.error || '登录失败，请检查用户名和密码。';
             currentUsername = null; //  确保登录失败时全局变量为空
+            currentUserRole = null;
         }
     } catch (error) {
         console.error("Login error:", error);
         loginError.textContent = '登录过程中发生错误。';
         currentUsername = null; //  确保出错时全局变量为空
+        currentUserRole = null;
     }
 }
 
@@ -294,6 +302,7 @@ async function handleLogout() {
         if (data.success) {
             console.log("后端登出成功");
             currentUsername = null; //  清除全局变量
+            currentUserRole = null;
             chatEventListenersAttached = false; //  重置监听器标志 
             document.body.classList.remove('logged-in'); // 移除标记类
             authOverlay.classList.add('active'); // 显示登录/注册层
@@ -324,6 +333,11 @@ async function checkLoginStatus() {
         if (data.isLoggedIn && data.username) {
             console.log(`用户 ${data.username} 已通过后端验证，加载主界面`);
             currentUsername = data.username; // **修改**: 设置全局变量
+            currentUserRole = data.role || 'user';
+            if (currentUserRole === 'admin') {
+                window.location.assign('/admin/database');
+                return;
+            }
             document.body.classList.add('logged-in');
             authOverlay.classList.remove('active');
             
@@ -336,6 +350,7 @@ async function checkLoginStatus() {
         } else {
             console.log("后端验证：用户未登录，显示登录界面");
             currentUsername = null; // **修改**: 确保全局变量为空
+            currentUserRole = null;
             document.body.classList.remove('logged-in');
             authOverlay.classList.add('active');
             loginForm.style.display = 'block';
@@ -348,6 +363,7 @@ async function checkLoginStatus() {
         console.error("检查认证状态时出错:", error);
         // 网络错误等，也显示登录界面
         currentUsername = null;
+        currentUserRole = null;
         document.body.classList.remove('logged-in');
         authOverlay.classList.add('active');
         loginForm.style.display = 'block';

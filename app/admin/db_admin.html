@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CausalAgent 管理后台</title>
+    <link rel="stylesheet" href="/static/css/db_admin.css">
+</head>
+<body>
+    <div class="admin-shell">
+        <aside class="admin-sidebar" aria-label="后台导航">
+            <div class="brand-block">
+                <div class="brand-mark">CA</div>
+                <div>
+                    <strong>CausalAgent</strong>
+                    <span>管理后台</span>
+                </div>
+            </div>
+
+            <nav class="admin-nav">
+                <p class="nav-label">数据库管理</p>
+                <a class="nav-item active" href="/admin/database" aria-current="page">
+                    <span class="nav-dot"></span>
+                    数据库看板
+                </a>
+                <p class="nav-note">后续管理模块将按实施阶段开放。</p>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="admin-identity">
+                    <span class="identity-label">当前管理员</span>
+                    <strong id="adminUsername">正在确认…</strong>
+                </div>
+                <button id="logoutButton" class="button button-green" type="button">退出登录</button>
+            </div>
+        </aside>
+
+        <main class="admin-main">
+            <header class="page-header">
+                <div>
+                    <p class="eyebrow">只读数据库管理</p>
+                    <h1>数据库状态看板</h1>
+                    <p class="page-description">查看数据库真实状态、来源节点与采集时间。</p>
+                </div>
+                <div class="header-actions">
+                    <span id="lastObservedAt" class="last-observed">尚未采集</span>
+                    <button id="refreshButton" class="button button-blue" type="button">手动刷新</button>
+                </div>
+            </header>
+
+            <div id="pageNotice" class="page-notice" role="alert" hidden></div>
+
+            <section class="status-grid" aria-label="核心状态">
+                <article id="revisionCard" class="status-card status-unknown">
+                    <div class="card-heading"><span>Revision</span><span class="status-badge">未知</span></div>
+                    <strong class="card-value">加载中</strong>
+                    <p class="card-detail">正在核对仓库与实例版本</p>
+                    <small class="card-meta">—</small>
+                </article>
+                <article id="primaryCard" class="status-card status-unknown">
+                    <div class="card-heading"><span>主库</span><span class="status-badge">未知</span></div>
+                    <strong class="card-value">加载中</strong>
+                    <p class="card-detail">正在检查主库只读连接</p>
+                    <small class="card-meta">—</small>
+                </article>
+                <article id="replicaCard" class="status-card status-unknown">
+                    <div class="card-heading"><span>第一从库</span><span class="status-badge">未知</span></div>
+                    <strong class="card-value">加载中</strong>
+                    <p class="card-detail">正在读取复制状态</p>
+                    <small class="card-meta">—</small>
+                </article>
+                <article id="blockingCard" class="status-card status-unknown">
+                    <div class="card-heading"><span>阻塞项</span><span class="status-badge">未知</span></div>
+                    <strong class="card-value">—</strong>
+                    <p class="card-detail">等待核心状态与完整性检查</p>
+                    <small class="card-meta">主库强一致检查</small>
+                </article>
+                <article id="connectionsCard" class="status-card status-unknown">
+                    <div class="card-heading"><span>连接使用率</span><span class="status-badge">未知</span></div>
+                    <strong class="card-value">加载中</strong>
+                    <p class="card-detail">正在读取连接指标</p>
+                    <small class="card-meta">—</small>
+                </article>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h2>表容量</h2>
+                        <p>数据量、索引量与总大小；InnoDB 行数为估算值。</p>
+                    </div>
+                    <span id="tablesMeta" class="source-meta">加载中</span>
+                </div>
+                <div id="tablesState" class="section-state">正在读取表容量…</div>
+                <div class="table-wrap">
+                    <table id="tablesTable" hidden>
+                        <thead><tr><th>表名</th><th>估算行数</th><th>数据量</th><th>索引量</th><th>总大小</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h2>快速完整性检查</h2>
+                        <p>只读检查消息、附件、任务、事件和 checkpoint 的轻量孤立计数。</p>
+                    </div>
+                    <span id="integrityMeta" class="source-meta">加载中</span>
+                </div>
+                <div id="integrityState" class="section-state">正在执行快速检查…</div>
+                <div class="table-wrap">
+                    <table id="integrityTable" hidden>
+                        <thead><tr><th>检查项</th><th>数量</th><th>结果</th><th>来源</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h2>慢查询摘要</h2>
+                        <p>展示所选节点的实际开关、阈值、累计计数和前 20 条 digest。</p>
+                    </div>
+                    <span id="slowMeta" class="source-meta">加载中</span>
+                </div>
+                <div class="inline-metrics">
+                    <div><span>slow_query_log</span><strong id="slowLogValue">—</strong></div>
+                    <div><span>long_query_time</span><strong id="longQueryTimeValue">—</strong></div>
+                    <div><span>Slow_queries</span><strong id="slowQueriesValue">—</strong></div>
+                </div>
+                <div id="slowState" class="section-state">正在读取慢查询摘要…</div>
+                <div class="table-wrap">
+                    <table id="slowTable" hidden>
+                        <thead><tr><th>Digest</th><th>次数</th><th>总耗时</th><th>平均耗时</th><th>扫描行</th><th>返回行</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <h2>Worker / Job 快照</h2>
+                        <p>主库强一致读取活动任务；明细最多展示 100 条。</p>
+                    </div>
+                    <span id="jobsMeta" class="source-meta">加载中</span>
+                </div>
+                <div class="inline-metrics four-columns">
+                    <div><span>Queued</span><strong id="queuedValue">—</strong></div>
+                    <div><span>Running</span><strong id="runningValue">—</strong></div>
+                    <div><span>Stale</span><strong id="staleValue">—</strong></div>
+                    <div><span>达到最大尝试仍运行</span><strong id="maxAttemptsValue">—</strong></div>
+                </div>
+                <div id="jobsState" class="section-state">正在读取活动任务…</div>
+                <div class="table-wrap">
+                    <table id="jobsTable" hidden>
+                        <thead><tr><th>Job ID</th><th>状态</th><th>Worker</th><th>尝试次数</th><th>心跳时间</th><th>创建时间</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/js/db_admin.js"></script>
+</body>
+</html>

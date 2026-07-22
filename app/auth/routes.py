@@ -80,7 +80,11 @@ def handle_login():
         session['username'] = user_data['username']
         # Session 会自动通过浏览器 cookie 维护状态，不再需要文件
         
-        return jsonify({'success': True, 'username': username})
+        return jsonify({
+            'success': True,
+            'username': username,
+            'role': user_data['role'],
+        })
     else:
         logging.warning(f"用户登录失败（密码错误）: {username}")
         return jsonify({'success': False, 'error': '密码错误'}), 401 # 401 Unauthorized
@@ -107,7 +111,11 @@ def check_auth():
     if current_user:
         username = current_user['username']
         logging.debug(f"检查认证状态：用户 '{username}' (通过会话) 已登录")
-        return jsonify({'isLoggedIn': True, 'username': username})
+        return jsonify({
+            'isLoggedIn': True,
+            'username': username,
+            'role': current_user['role'],
+        })
     else:
         logging.debug("检查认证状态：无有效会话")
         return jsonify({'isLoggedIn': False})
