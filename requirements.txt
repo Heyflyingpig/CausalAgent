@@ -55,16 +55,6 @@ langchain-mcp-adapters==0.2.2
 # RAG & 数据处理相关
 chromadb==1.5.9
 langchain-chroma==1.1.0
-ragas==0.4.3
-
-# sentence-transformers需要torch，使用CPU版本避免下载2GB+的CUDA库
-torch==2.7.1 
-mcp>=1.9.2,<2.0.0
-langchain-mcp-adapters==0.2.2
-# RAG & 数据处理相关
-chromadb==1.5.9
-langchain-chroma==1.1.0
-ragas==0.4.3
 
 # sentence-transformers需要torch，使用CPU版本避免下载2GB+的CUDA库
 torch==2.7.1 
