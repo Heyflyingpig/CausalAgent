@@ -1,0 +1,152 @@
+{
+  "active_profile": "pubmedqa_smoke20",
+  "judge_profile": "pubmedqa_smoke20_ctx5_1200",
+  "low_score_threshold": 0.5,
+  "case_count": 16,
+  "cases": [
+    {
+      "question_index": 1,
+      "question": "Do mitochondria play a role in remodelling lace plant leaves during programmed cell death?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.25,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 2,
+      "question": "Landolt C and snellen e acuity: differences in strabismus amblyopia?",
+      "question_type": "",
+      "metric": "faithfulness",
+      "score": 0.4,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 4,
+      "question": "Are the long-term results of the transanal pull-through equal to those of the transabdominal pull-through?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.0,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 5,
+      "question": "Can tailored interventions increase mammography use among HMO women?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.3333,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 6,
+      "question": "Double balloon enteroscopy: is it efficacious and safe in a community setting?",
+      "question_type": "",
+      "metric": "answer_relevancy",
+      "score": 0.0,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 6,
+      "question": "Double balloon enteroscopy: is it efficacious and safe in a community setting?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.0,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 8,
+      "question": "Is adjustment for reporting heterogeneity necessary in sleep disorders?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.3333,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 10,
+      "question": "A short stay or 23-hour ward in a general and academic children's hospital: are they effective?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.0,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 12,
+      "question": "Therapeutic anticoagulation in the trauma patient: is it safe?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.0,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 13,
+      "question": "Differentiation of nonalcoholic from alcoholic steatohepatitis: are routine laboratory markers useful?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.0,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 14,
+      "question": "Prompting Primary Care Providers about Increased Patient Risk As a Result of Family History: Does It Work?",
+      "question_type": "",
+      "metric": "context_utilization",
+      "score": 0.3333,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 14,
+      "question": "Prompting Primary Care Providers about Increased Patient Risk As a Result of Family History: Does It Work?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.3333,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 16,
+      "question": "Patient-Controlled Therapy of Breathlessness in Palliative Care: A New Therapeutic Concept for Opioid Administration?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.0,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 17,
+      "question": "Is there still a need for living-related liver transplantation in children?",
+      "question_type": "",
+      "metric": "faithfulness",
+      "score": 0.0,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 17,
+      "question": "Is there still a need for living-related liver transplantation in children?",
+      "question_type": "",
+      "metric": "answer_relevancy",
+      "score": 0.0,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    },
+    {
+      "question_index": 17,
+      "question": "Is there still a need for living-related liver transplantation in children?",
+      "question_type": "",
+      "metric": "context_recall",
+      "score": 0.3333,
+      "reason": "below_threshold",
+      "threshold": 0.5
+    }
+  ]
+}

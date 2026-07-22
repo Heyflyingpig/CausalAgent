@@ -60,7 +60,6 @@ CausalAgent
 - [贡献](#贡献)
 - [Star 趋势](#star-趋势)
 - [项目结构](#项目结构)
-- [更新日志](./README/CHANGELOG.md)
 
 
 
@@ -249,6 +248,11 @@ MAX_UPLOAD_SIZE_MB=20
 # LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
 LANGCHAIN_API_KEY=
 LANGCHAIN_PROJECT=
+
+#可选rag嵌入模型配置
+MEDICAL_EMBEDDING_API_KEY=
+MEDICAL_EMBEDDING_BASE_URL=
+MEDICAL_EMBEDDING_MODEL=
 
 ```
 3. 在项目根目录运行docker-compose
@@ -454,6 +458,7 @@ python Run_causal.py
 │   ├── files/              # 文件上传/管理相关路由
 │   └── static/             # 前端静态资源
 │       ├── chat.html       # 主聊天界面
+│       ├── rag_eval.html   # RAG评测控制台
 │       ├── css/
 │       ├── js/
 │       └── generated_graphs/ # 因果图等生成图像
@@ -464,10 +469,20 @@ python Run_causal.py
 │   ├── Postprocessing/     # 后处理
 │   ├── Report/             # 报告生成逻辑
 │   ├── knowledge_base/     # RAG 知识库
-│   │   ├── build_knowledge.py
-|   |   ├── query_rag.py
-│   │   ├── db/             # 向量知识库存储
-│   │   └── models/         # 嵌入模型
+│   │   ├── build_knowledge.py # 知识库构建入口，支持 default / medical profile
+│   │   ├── query_rag.py    # RAG 查询、检索 trace 与证据生成入口
+│   │   ├── db/             # 当前运行时向量知识库存储；医疗库应使用 PubMedQA active corpus 重建
+│   │   ├── models/         # 本地嵌入模型，default profile 使用 bge-small-zh-v1.5
+│   │   └── rag/            # RAG 测评框架、数据集操作、报告和外部医疗数据
+│   │       ├── rag_config.py
+│   │       ├── RAG测评框架开发.md
+│   │       ├── data/
+│   │       │   └── external/pubmedqa/
+│   │       │       └── processed/
+│   │       ├── operation_datasets/
+│   │       ├── rag_eval/
+│   │       ├── tools/
+│   │       └── output/
 │   └── tool_node/          # MCP 工具节点封装（task、rag 调用等）
 ├── Database/               # 数据库初始化与迁移逻辑
 │   ├── database_init.py    # 数据库初始化引导脚本
