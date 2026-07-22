@@ -1,0 +1,282 @@
+{
+  "available": true,
+  "retrieval_eval_path": "D:\\project\\CausalAgent-demopaper\\Agent\\knowledge_base\\rag\\output\\machine\\pubmedqa_smoke20_retrieval_result.json",
+  "retrieval_summary": {
+    "recall_at_k": 1.0,
+    "mrr": 0.9667,
+    "hit_rate": 1,
+    "loss_reason_counts": {
+      "final_hit": 20
+    }
+  },
+  "thresholds": {
+    "ragas_low_threshold": 0.5,
+    "retrieval_recall_low_threshold": 0.67,
+    "retrieval_mrr_low_threshold": 0.5
+  },
+  "summary": {
+    "shared_count": 20,
+    "ragas_only_count": 0,
+    "retrieval_only_count": 0,
+    "bad_case_count": 10
+  },
+  "cases": [
+    {
+      "question_index": 3,
+      "question": "Syncope during bathing in infants, a pediatric form of water-induced urticaria?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 1.0,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 1,
+      "ragas_scores": {
+        "faithfulness": 0.75,
+        "answer_relevancy": 0.0,
+        "context_utilization": 1.0,
+        "context_recall": 1.0
+      },
+      "low_ragas_metrics": [
+        "answer_relevancy"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_ok_ragas_bad",
+        "loss:final_hit"
+      ]
+    },
+    {
+      "question_index": 4,
+      "question": "Are the long-term results of the transanal pull-through equal to those of the transabdominal pull-through?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 1.0,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 1,
+      "ragas_scores": {
+        "faithfulness": 0.0,
+        "answer_relevancy": 0.0,
+        "context_utilization": 0.0,
+        "context_recall": 0.3333
+      },
+      "low_ragas_metrics": [
+        "faithfulness",
+        "answer_relevancy",
+        "context_utilization",
+        "context_recall"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_ok_ragas_bad",
+        "loss:final_hit"
+      ]
+    },
+    {
+      "question_index": 5,
+      "question": "Can tailored interventions increase mammography use among HMO women?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 1.0,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 1,
+      "ragas_scores": {
+        "faithfulness": 0.8571,
+        "answer_relevancy": 0.9409,
+        "context_utilization": 0.8333,
+        "context_recall": 0.1667
+      },
+      "low_ragas_metrics": [
+        "context_recall"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_ok_ragas_bad",
+        "loss:final_hit"
+      ]
+    },
+    {
+      "question_index": 6,
+      "question": "Double balloon enteroscopy: is it efficacious and safe in a community setting?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 0.3333333333333333,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 3,
+      "ragas_scores": {
+        "faithfulness": 0.0,
+        "answer_relevancy": 0.0,
+        "context_utilization": 1.0,
+        "context_recall": 0.0
+      },
+      "low_ragas_metrics": [
+        "faithfulness",
+        "answer_relevancy",
+        "context_recall"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_and_generation_bad",
+        "loss:final_hit"
+      ]
+    },
+    {
+      "question_index": 8,
+      "question": "Is adjustment for reporting heterogeneity necessary in sleep disorders?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 1.0,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 1,
+      "ragas_scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0,
+        "context_utilization": 1.0,
+        "context_recall": 0.3333
+      },
+      "low_ragas_metrics": [
+        "context_recall"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_ok_ragas_bad",
+        "loss:final_hit"
+      ]
+    },
+    {
+      "question_index": 13,
+      "question": "Differentiation of nonalcoholic from alcoholic steatohepatitis: are routine laboratory markers useful?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 1.0,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 1,
+      "ragas_scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8291,
+        "context_utilization": 1.0,
+        "context_recall": 0.0
+      },
+      "low_ragas_metrics": [
+        "context_recall"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_ok_ragas_bad",
+        "loss:final_hit"
+      ]
+    },
+    {
+      "question_index": 14,
+      "question": "Prompting Primary Care Providers about Increased Patient Risk As a Result of Family History: Does It Work?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 1.0,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 1,
+      "ragas_scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8187,
+        "context_utilization": 0.8333,
+        "context_recall": 0.3333
+      },
+      "low_ragas_metrics": [
+        "context_recall"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_ok_ragas_bad",
+        "loss:final_hit"
+      ]
+    },
+    {
+      "question_index": 16,
+      "question": "Patient-Controlled Therapy of Breathlessness in Palliative Care: A New Therapeutic Concept for Opioid Administration?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 1.0,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 1,
+      "ragas_scores": {
+        "faithfulness": 0.2,
+        "answer_relevancy": 0.6033,
+        "context_utilization": 1.0,
+        "context_recall": 1.0
+      },
+      "low_ragas_metrics": [
+        "faithfulness"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_ok_ragas_bad",
+        "loss:final_hit"
+      ]
+    },
+    {
+      "question_index": 17,
+      "question": "Is there still a need for living-related liver transplantation in children?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 1.0,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 1,
+      "ragas_scores": {
+        "faithfulness": 0.75,
+        "answer_relevancy": 0.0,
+        "context_utilization": 1.0,
+        "context_recall": 0.3333
+      },
+      "low_ragas_metrics": [
+        "answer_relevancy",
+        "context_recall"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_ok_ragas_bad",
+        "loss:final_hit"
+      ]
+    },
+    {
+      "question_index": 18,
+      "question": "Do patterns of knowledge and attitudes exist among unvaccinated seniors?",
+      "question_type": "",
+      "retrieval_recall": 1.0,
+      "retrieval_mrr": 1.0,
+      "retrieval_loss_reasons": [
+        "final_hit"
+      ],
+      "final_best_gold_rank": 1,
+      "ragas_scores": {
+        "faithfulness": 0.6667,
+        "answer_relevancy": 1.0,
+        "context_utilization": 1.0,
+        "context_recall": 0.0
+      },
+      "low_ragas_metrics": [
+        "context_recall"
+      ],
+      "nan_ragas_metrics": [],
+      "categories": [
+        "retrieval_ok_ragas_bad",
+        "loss:final_hit"
+      ]
+    }
+  ],
+  "warning": ""
+}

@@ -590,7 +590,10 @@ class MaintenanceResult(ContractModel):
     run_state: RunState
     run_id: str = Field(min_length=1)
     index_version: str | None = None
+<<<<<<< HEAD
     fragments: tuple[KnowledgeFragment, ...] = ()
+=======
+>>>>>>> parent of 3f629cb (Revert "Feature/rag enhancement")
     reports: tuple[ReportReference, ...] = ()
     issues: tuple[IngestionIssue, ...] = ()
     publishable: bool = False

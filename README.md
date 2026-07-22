@@ -60,7 +60,6 @@ CausalAgent
 - [贡献](#贡献)
 - [Star 趋势](#star-趋势)
 - [项目结构](#项目结构)
-- [更新日志](./README/CHANGELOG.md)
 
 
 
@@ -249,6 +248,11 @@ MAX_UPLOAD_SIZE_MB=20
 # LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
 LANGCHAIN_API_KEY=
 LANGCHAIN_PROJECT=
+
+#可选rag嵌入模型配置
+MEDICAL_EMBEDDING_API_KEY=
+MEDICAL_EMBEDDING_BASE_URL=
+MEDICAL_EMBEDDING_MODEL=
 
 ```
 3. 在项目根目录运行docker-compose
@@ -454,6 +458,7 @@ python Run_causal.py
 │   ├── files/              # 文件上传/管理相关路由
 │   └── static/             # 前端静态资源
 │       ├── chat.html       # 主聊天界面
+│       ├── rag_eval.html   # RAG评测控制台
 │       ├── css/
 │       ├── js/
 │       └── generated_graphs/ # 因果图等生成图像

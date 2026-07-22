@@ -37,7 +37,10 @@ from .models import (
     CausalEdgeExpectation,
     validate_maintenance_command,
 )
+<<<<<<< HEAD
 from .pipeline import execute_ingest
+=======
+>>>>>>> parent of 3f629cb (Revert "Feature/rag enhancement")
 
 __all__ = [
     "ContentKind",
@@ -75,5 +78,8 @@ __all__ = [
     "VisionMode",
     "CausalEdgeExpectation",
     "validate_maintenance_command",
+<<<<<<< HEAD
     "execute_ingest",
+=======
+>>>>>>> parent of 3f629cb (Revert "Feature/rag enhancement")
 ]
