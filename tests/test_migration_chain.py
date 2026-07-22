@@ -35,5 +35,39 @@ class UserRoleMigrationTests(unittest.TestCase):
         self.assertIn("数据库关键字段缺失: users.role", text)
 
 
+class DatabaseMonitorSnapshotMigrationTests(unittest.TestCase):
+    """静态验证共享监控快照 migration 及启动就绪检查。"""
+
+    def test_snapshot_migration_extends_role_head_and_seeds_all_layers(self):
+        """快照 revision 必须承接当前 head，并预建四个分层快照键。"""
+        path = Path(
+            "Database/migrations/versions/b1c2d3e4f5a6_add_database_monitor_snapshots.py"
+        )
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn('revision: str = "b1c2d3e4f5a6"', text)
+        self.assertIn('down_revision: Union[str, Sequence[str], None] = "a8b9c0d1e2f3"', text)
+        self.assertIn("CREATE TABLE database_monitor_snapshots", text)
+        for snapshot_key in ("realtime", "sql_performance", "capacity", "integrity"):
+            self.assertIn(f"'{snapshot_key}'", text)
+
+    def test_snapshot_migration_supports_payload_observation_and_refresh_request(self):
+        """共享表同时保存负载、采集时间和待处理手动刷新时间。"""
+        path = Path(
+            "Database/migrations/versions/b1c2d3e4f5a6_add_database_monitor_snapshots.py"
+        )
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn("payload_json JSON", text)
+        self.assertIn("observed_at DATETIME(6)", text)
+        self.assertIn("refresh_requested_at DATETIME(6)", text)
+        self.assertIn("DROP TABLE IF EXISTS database_monitor_snapshots", text)
+
+    def test_readiness_requires_snapshot_table(self):
+        """应用和 monitor 启动前都能发现未执行快照 migration 的数据库。"""
+        text = Path("app/db.py").read_text(encoding="utf-8")
+        self.assertIn('"database_monitor_snapshots"', text)
+
+
 if __name__ == "__main__":
     unittest.main()

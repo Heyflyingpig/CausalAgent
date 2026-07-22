@@ -23,12 +23,17 @@ for key, value in TEST_ENV.items():
 from app.admin.routes import admin_bp, admin_page_bp
 
 
-ADMIN_ENDPOINTS = (
+ADMIN_GET_ENDPOINTS = (
     "/api/admin/db/health",
     "/api/admin/db/overview",
+    "/api/admin/db/dashboard",
     "/api/admin/db/integrity?mode=quick",
     "/api/admin/db/slow-queries?limit=20",
     "/api/admin/jobs/workers",
+)
+ADMIN_POST_ENDPOINTS = (
+    "/api/admin/db/refresh",
+    "/api/admin/db/integrity/run",
 )
 ADMIN_PAGE = "/admin/database"
 
@@ -46,14 +51,24 @@ def admin_service_patches():
     """返回所有管理员只读服务的稳定测试替身。"""
     return (
         patch("app.admin.routes.get_db_health", return_value={"connections": {}, "tables": []}),
-        patch("app.admin.routes.get_database_overview", return_value={"status": "healthy"}),
-        patch("app.admin.routes.get_quick_integrity_report", return_value={"checks": []}),
+        patch("app.admin.routes.get_database_overview_snapshot", return_value={"status": "healthy"}),
         patch(
-            "app.admin.routes.get_slow_query_summary",
+            "app.admin.routes.get_dashboard_snapshots",
+            return_value={
+                "realtime": {},
+                "sql_performance": {},
+                "capacity": {},
+                "integrity": {},
+                "refresh_policy": {},
+            },
+        ),
+        patch("app.admin.routes.get_integrity_snapshot", return_value={"checks": []}),
+        patch(
+            "app.admin.routes.get_sql_performance_snapshot",
             return_value={"Slow_queries": 0, "top_statements": []},
         ),
         patch(
-            "app.admin.routes.get_worker_snapshot_report",
+            "app.admin.routes.get_worker_snapshot_from_cache",
             return_value={
                 "jobs": [],
                 "summary": {"queued": 0, "running": 0, "stale": 0, "max_attempts_running": 0},
@@ -63,6 +78,13 @@ def admin_service_patches():
                 "source_alias": "primary",
                 "is_estimate": False,
                 "warning": None,
+            },
+        ),
+        patch(
+            "app.admin.routes.request_snapshot_refresh",
+            return_value={
+                "groups": ["realtime"],
+                "requested_at": "2026-07-22T00:00:00.000Z",
             },
         ),
     )
@@ -76,8 +98,15 @@ class AdminAuthorizationTests(unittest.TestCase):
         app = build_app()
         with patch("app.auth.authorization.get_current_session_user", return_value=None):
             with app.test_client() as client:
-                for endpoint in (*ADMIN_ENDPOINTS, ADMIN_PAGE):
+                for endpoint in (*ADMIN_GET_ENDPOINTS, ADMIN_PAGE):
                     response = client.get(endpoint)
+                    self.assertEqual(response.status_code, 401, endpoint)
+                    self.assertEqual(
+                        response.get_json(),
+                        {"success": False, "error": "用户未登录或会话已过期"},
+                    )
+                for endpoint in ADMIN_POST_ENDPOINTS:
+                    response = client.post(endpoint)
                     self.assertEqual(response.status_code, 401, endpoint)
                     self.assertEqual(
                         response.get_json(),
@@ -90,8 +119,15 @@ class AdminAuthorizationTests(unittest.TestCase):
         user = {"id": 1, "username": "normal", "role": "user", "is_active": True}
         with patch("app.auth.authorization.get_current_session_user", return_value=user):
             with app.test_client() as client:
-                for endpoint in (*ADMIN_ENDPOINTS, ADMIN_PAGE):
+                for endpoint in (*ADMIN_GET_ENDPOINTS, ADMIN_PAGE):
                     response = client.get(endpoint)
+                    self.assertEqual(response.status_code, 403, endpoint)
+                    self.assertEqual(
+                        response.get_json(),
+                        {"success": False, "error": "需要管理员权限"},
+                    )
+                for endpoint in ADMIN_POST_ENDPOINTS:
+                    response = client.post(endpoint)
                     self.assertEqual(response.status_code, 403, endpoint)
                     self.assertEqual(
                         response.get_json(),
@@ -124,9 +160,14 @@ class AdminAuthorizationTests(unittest.TestCase):
             for service_patch in patches:
                 stack.enter_context(service_patch)
             with app.test_client() as client:
-                for endpoint in ADMIN_ENDPOINTS:
+                for endpoint in ADMIN_GET_ENDPOINTS:
                     response = client.get(endpoint)
                     self.assertEqual(response.status_code, 200, endpoint)
+                    self.assertTrue(response.get_json()["success"])
+
+                for endpoint in ADMIN_POST_ENDPOINTS:
+                    response = client.post(endpoint)
+                    self.assertEqual(response.status_code, 202, endpoint)
                     self.assertTrue(response.get_json()["success"])
 
                 page_response = client.get(ADMIN_PAGE)
@@ -159,6 +200,30 @@ class AdminAuthorizationTests(unittest.TestCase):
         self.assertIsInstance(workers["data"], list)
         self.assertIn("summary", workers)
         self.assertIn("meta", workers)
+
+    def test_refresh_posts_register_expected_shared_snapshot_groups(self):
+        """普通刷新与完整性审计使用互不耦合的共享请求分组。"""
+        app = build_app()
+        admin = {"id": 2, "username": "admin", "role": "admin", "is_active": True}
+        with (
+            patch("app.auth.authorization.get_current_session_user", return_value=admin),
+            patch(
+                "app.admin.routes.request_snapshot_refresh",
+                return_value={"groups": [], "requested_at": "2026-07-22T00:00:00.000Z"},
+            ) as request_refresh,
+        ):
+            with app.test_client() as client:
+                dashboard_refresh = client.post("/api/admin/db/refresh")
+                integrity_refresh = client.post("/api/admin/db/integrity/run")
+
+        self.assertEqual(dashboard_refresh.status_code, 202)
+        self.assertEqual(integrity_refresh.status_code, 202)
+        self.assertEqual(request_refresh.call_args_list[0].args[0], (
+            "realtime",
+            "sql_performance",
+            "capacity",
+        ))
+        self.assertEqual(request_refresh.call_args_list[1].args[0], ("integrity",))
 
     def test_read_only_query_parameters_are_bounded(self):
         """慢查询上限和完整性模式必须在服务端白名单范围内。"""
