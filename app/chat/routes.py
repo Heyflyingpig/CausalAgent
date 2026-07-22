@@ -237,6 +237,7 @@ def change_session():
 ## 删除会话
 @chat_bp.route('/delete_session', methods=['POST'])
 def delete_session():
+    """在同一事务中删除用户会话及其消息、附件和 MySQL checkpoint。"""
     import mysql.connector
     from app.db import get_write_connection
 
@@ -259,9 +260,11 @@ def delete_session():
             # 开启事务
             conn.start_transaction()
             
-            #  修改：处理延迟创建的session 
-            # 0. 检查session是否存在
-            cursor.execute("SELECT id FROM sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
+            # 锁定目标会话，阻止删除过程中并发创建引用该会话的新任务。
+            cursor.execute(
+                "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
+                (session_id, user_id),
+            )
             session_exists = cursor.fetchone()
             
             if not session_exists:
@@ -292,38 +295,45 @@ def delete_session():
                 logging.info(f"用户 {user_id} 尝试删除仍有 active job 的会话 {session_id}")
                 return jsonify({"success": False, "error": "当前会话仍有任务正在运行，请等待完成后再删除"}), 409
 
-            # 1. 删除与该会话相关的附件 (通过连接 chat_messages)
-            # 这是为了处理 chat_attachments 和 chat_messages 之间没有直接外键的情况
-            sql_delete_attachments = """
-                DELETE ca FROM chat_attachments ca
-                JOIN chat_messages cm ON ca.message_id = cm.id
-                WHERE cm.session_id = %s AND cm.user_id = %s
-            """
-            cursor.execute(sql_delete_attachments, (session_id, user_id))
-            deleted_attachments = cursor.rowcount
-            logging.info(f"为会话 {session_id} 删除了 {deleted_attachments} 个附件")
+            try:
+                # 1. 删除该会话对应的 LangGraph checkpoint。
+                # checkpoint_writes 通过 fk_checkpoint_writes_checkpoint 级联删除，
+                # 不能调用 MySQLSaver.delete_thread()，否则会脱离当前事务。
+                cursor.execute("DELETE FROM checkpoints WHERE thread_id = %s", (session_id,))
+                deleted_checkpoints = cursor.rowcount
+                logging.info(f"为会话 {session_id} 删除了 {deleted_checkpoints} 条 checkpoint")
 
-            # 2. 删除该会话的所有聊天记录
-            cursor.execute("DELETE FROM chat_messages WHERE session_id = %s AND user_id = %s", (session_id, user_id))
-            deleted_messages = cursor.rowcount
-            logging.info(f"为会话 {session_id} 删除了 {deleted_messages} 条聊天记录")
+                # 2. 删除与该会话相关的附件 (通过连接 chat_messages)
+                # 这是为了处理 chat_attachments 和 chat_messages 之间没有直接外键的情况
+                sql_delete_attachments = """
+                    DELETE ca FROM chat_attachments ca
+                    JOIN chat_messages cm ON ca.message_id = cm.id
+                    WHERE cm.session_id = %s AND cm.user_id = %s
+                """
+                cursor.execute(sql_delete_attachments, (session_id, user_id))
+                deleted_attachments = cursor.rowcount
+                logging.info(f"为会话 {session_id} 删除了 {deleted_attachments} 个附件")
 
-            # 3. 删除会话本身（如果存在）
-            if session_exists:
-                cursor.execute("DELETE FROM sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
-                logging.info(f"删除了会话记录 {session_id}")
-            
-            # 提交事务
-            conn.commit()
-            
-            logging.info(f"用户 {user_id} 成功删除了会话 {session_id} 及其所有数据")
-            return jsonify({"success": True, "message": "会话已成功删除"})
+                # 3. 删除该会话的所有聊天记录
+                cursor.execute("DELETE FROM chat_messages WHERE session_id = %s AND user_id = %s", (session_id, user_id))
+                deleted_messages = cursor.rowcount
+                logging.info(f"为会话 {session_id} 删除了 {deleted_messages} 条聊天记录")
+
+                # 4. 删除会话本身（如果存在）
+                if session_exists:
+                    cursor.execute("DELETE FROM sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
+                    logging.info(f"删除了会话记录 {session_id}")
+
+                conn.commit()
+                logging.info(f"用户 {user_id} 成功删除了会话 {session_id} 及其所有数据")
+                return jsonify({"success": True, "message": "会话已成功删除"})
+            except Exception:
+                conn.rollback()
+                raise
 
     except mysql.connector.Error as e:
-        conn.rollback() # 确保出错时回滚
         logging.error(f"删除会话 {session_id} (用户 {user_id}) 时数据库出错: {e}")
         return jsonify({"success": False, "error": "删除会话时数据库出错"}), 500
     except Exception as e:
-        conn.rollback() # 确保出错时回滚
         logging.error(f"删除会话 {session_id} (用户 {user_id}) 时发生未知错误: {e}")
         return jsonify({"success": False, "error": "删除会话时发生未知错误"}), 500
