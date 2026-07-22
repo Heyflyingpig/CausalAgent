@@ -238,6 +238,13 @@ MYSQL_QUERY_WARN_MS=500
 DB_INSPECTION_QUERY_TIMEOUT_MS=3000
 DB_DASHBOARD_CONNECTION_WARNING_PERCENT=70
 DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=85
+DB_MONITOR_AUTO_REFRESH_ENABLED=true
+DB_MONITOR_REALTIME_INTERVAL_SECONDS=10
+DB_MONITOR_SQL_INTERVAL_SECONDS=60
+DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS=900
+DB_MONITOR_SLOW_QUERY_WARNING_DELTA=1
+DB_MONITOR_INTEGRITY_ENABLED=false
+DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=86400
 
 # Web/后台任务并发配置
 WEB_WORKERS=1
@@ -267,7 +274,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/databa
 docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head
 ```
 
-如果是已有旧数据、准备做生产化升级，再额外先执行：
+全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 
 ```bash
 docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_before_db_upgrade.py
@@ -293,15 +300,22 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 
 管理接口：
 
+- `GET /api/admin/db/dashboard`
 - `GET /api/admin/db/health`
 - `GET /api/admin/db/overview`
 - `GET /api/admin/db/integrity?mode=quick`
 - `GET /api/admin/db/slow-queries`
 - `GET /api/admin/jobs/workers`
+- `POST /api/admin/db/refresh`
+- `POST /api/admin/db/integrity/run`
 
-以上接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问。未登录请求返回 `401`，普通登录用户返回 `403`；后端会在每次请求时从主库重新确认当前角色和启用状态，不信任浏览器 session 中的角色缓存。旧 `health`、`slow-queries` 和 `jobs/workers` 接口继续保留原有 `data` 类型及旧字段，新状态、来源和汇总信息均以新增字段提供。
+以上接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问。未登录请求返回 `401`，普通登录用户返回 `403`；后端会在每次请求时从主库重新确认当前角色和启用状态，不信任浏览器 session 中的角色缓存。`dashboard` 与兼容 GET 接口只读取 MySQL 中最近一次共享快照，不会随管理员页面数量重复执行完整采集；`refresh` 仅登记实时状态、SQL 性能和表容量的共享刷新请求，返回 `202`，完整性审计由独立的 `integrity/run` 接口触发。旧 `health`、`slow-queries` 和 `jobs/workers` 接口继续保留原有 `data` 类型及旧字段。
 
-管理员登录或恢复会话后只进入受保护的 `/admin/database` 后台，不进入聊天界面；普通用户继续进入原聊天界面。数据库看板使用原生 HTML/CSS/JavaScript 和左侧后台导航，只提供手动刷新、状态、容量、快速完整性、慢查询和 worker/job 只读信息，没有 SQL、修复、迁移或数据库写入入口。连接使用率默认在 `70%` 进入 warning、`85%` 进入 error，可通过上述环境变量调整；单条快速 SELECT 默认最多执行 `3000ms`。
+独立 monitor 进程通过 `python -m Database.monitor_worker` 启动，使用 MySQL 命名锁合并并发采集，并把 `realtime`、`sql_performance`、`capacity`、`integrity` 四类快照写入 `database_monitor_snapshots`。默认分层周期为：主从/连接/Worker/Job 实时状态 `10` 秒、SQL 性能 `60` 秒、表容量 `900` 秒；完整性定时审计默认关闭，启用后默认每天一次。关闭自动刷新不会影响页面首次读取和手动刷新，monitor 仍会处理手动请求。实时、SQL、容量周期分别只允许 `5～10`、`30～60`、`300～900` 秒，完整性周期至少 `3600` 秒，慢查询增量阈值必须大于 `0`；布尔配置严格使用 `true/false` 或 `1/0`。
+
+“SQL 性能摘要/高负载 SQL”中的 Performance Schema digest 按累计 `SUM_TIMER_WAIT` 排序，不表示单次执行时间超过 `long_query_time`；`slow_query_log`、`long_query_time` 和 `Slow_queries` 仍表示 MySQL 慢查询配置与状态。看板主要用采集窗口内 `Slow_queries` 增量告警，默认增量达到 `1` 进入 warning，启动以来累计值仅作辅助信息。
+
+管理员登录或恢复会话后只进入受保护的 `/admin/database` 后台，不进入聊天界面；普通用户继续进入原聊天界面。数据库看板使用原生 HTML/CSS/JavaScript 和左侧后台导航，只提供共享快照读取、手动刷新、独立完整性审计和只读信息，没有 SQL、修复、迁移或其他任意数据库写入入口。运行期审计不再重复扫描已经由外键保证的关系，只轻量确认关键约束仍存在，并保留当前没有外键保证的 checkpoint/session 关系检查；升级前审计则按现有 schema 和待执行迁移决定是否需要孤立数据 preflight。连接使用率默认在 `70%` 进入 warning、`85%` 进入 error；单条检查 SELECT 默认最多执行 `3000ms`。
 
 执行包含 `users.role` 的最新 Alembic migration 后，可以把一个已经注册且已启用的用户提升为初始管理员：
 
@@ -391,6 +405,18 @@ docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.adm
     MYSQL_REPLICATION_USER=replica
     MYSQL_REPLICATION_PASSWORD=
 
+    # 管理员数据库看板共享快照
+    DB_INSPECTION_QUERY_TIMEOUT_MS=3000
+    DB_DASHBOARD_CONNECTION_WARNING_PERCENT=70
+    DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=85
+    DB_MONITOR_AUTO_REFRESH_ENABLED=true
+    DB_MONITOR_REALTIME_INTERVAL_SECONDS=10
+    DB_MONITOR_SQL_INTERVAL_SECONDS=60
+    DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS=900
+    DB_MONITOR_SLOW_QUERY_WARNING_DELTA=1
+    DB_MONITOR_INTEGRITY_ENABLED=false
+    DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=86400
+
     # LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
     LANGCHAIN_API_KEY=
     LANGCHAIN_PROJECT=
@@ -404,7 +430,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.adm
 python Database/database_init.py
 alembic upgrade head
 ```
-`Database/database_init.py` 负责确保数据库存在和连接可用；业务表结构由 Alembic 迁移脚本维护。全新空库直接执行 `alembic upgrade head` 即可；已有历史数据的环境应先执行审计脚本，确认无孤立消息、孤立附件和非法附件类型后再升级。
+`Database/database_init.py` 负责确保数据库存在和连接可用；业务表结构由 Alembic 迁移脚本维护。全新空库直接执行 `alembic upgrade head`，不要先运行 preflight。旧库只有在目标外键尚未建立、且即将执行添加外键的迁移时，才先执行 `python Database/audit_before_db_upgrade.py`；审计会依据当前 schema 跳过尚不存在或已经受约束保护的关系。
 
 9. 启动后端服务
 
@@ -420,7 +446,13 @@ python Causalchat.py
 python -m app.agent.worker
 ```
 
-首次运行时，Web 层会检查数据库表结构。Agent/MCP 初始化只在 worker 中执行；如果没有 worker，前端可以创建任务但不会得到最终分析结果。请保持 Web 和 worker 两个终端窗口持续运行。
+再打开一个终端，运行数据库监控采集器：
+
+```bash
+python -m Database.monitor_worker
+```
+
+首次运行时，Web 层会检查数据库表结构。Agent/MCP 初始化只在 worker 中执行；如果没有 worker，前端可以创建任务但不会得到最终分析结果。数据库看板的共享快照只由 monitor 更新；如果没有 monitor，管理接口仍可读取已有快照并显示过期状态，但不会得到新的自动或手动采集结果。请保持 Web、worker 和 monitor 三个终端窗口持续运行。
 
 10. 启动前端应用
 
@@ -496,7 +528,8 @@ python Run_causal.py
 │   ├── database_init.py    # 数据库初始化引导脚本
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
 │   ├── inspection.py       # 管理员看板统一只读检查服务
-│   ├── monitoring.py       # 数据库轻量监控查询
+│   ├── monitoring.py       # 共享快照存取、调度与兼容接口
+│   ├── monitor_worker.py   # 数据库看板分层采集进程
 │   ├── agent_connect.py    # Langgraph checkpoint 相关数据库支持
 │   ├── mysql/              # MySQL 主从配置与初始化脚本
 │   └── migrations/         # Alembic 迁移脚本
