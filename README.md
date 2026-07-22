@@ -234,6 +234,11 @@ MYSQL_POOL_SIZE_READ=5
 MYSQL_REPLICA_MAX_LAG_SECONDS=2
 MYSQL_QUERY_WARN_MS=500
 
+# 管理员只读数据库看板
+DB_INSPECTION_QUERY_TIMEOUT_MS=3000
+DB_DASHBOARD_CONNECTION_WARNING_PERCENT=70
+DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=85
+
 # Web/后台任务并发配置
 WEB_WORKERS=1
 WEB_THREADS=12
@@ -289,10 +294,14 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 管理接口：
 
 - `GET /api/admin/db/health`
+- `GET /api/admin/db/overview`
+- `GET /api/admin/db/integrity?mode=quick`
 - `GET /api/admin/db/slow-queries`
 - `GET /api/admin/jobs/workers`
 
-以上接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问。未登录请求返回 `401`，普通登录用户返回 `403`；后端会在每次请求时从主库重新确认当前角色和启用状态，不信任浏览器 session 中的角色缓存。
+以上接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问。未登录请求返回 `401`，普通登录用户返回 `403`；后端会在每次请求时从主库重新确认当前角色和启用状态，不信任浏览器 session 中的角色缓存。旧 `health`、`slow-queries` 和 `jobs/workers` 接口继续保留原有 `data` 类型及旧字段，新状态、来源和汇总信息均以新增字段提供。
+
+管理员登录或恢复会话后只进入受保护的 `/admin/database` 后台，不进入聊天界面；普通用户继续进入原聊天界面。数据库看板使用原生 HTML/CSS/JavaScript 和左侧后台导航，只提供手动刷新、状态、容量、快速完整性、慢查询和 worker/job 只读信息，没有 SQL、修复、迁移或数据库写入入口。连接使用率默认在 `70%` 进入 warning、`85%` 进入 error，可通过上述环境变量调整；单条快速 SELECT 默认最多执行 `3000ms`。
 
 执行包含 `users.role` 的最新 Alembic migration 后，可以把一个已经注册且已启用的用户提升为初始管理员：
 
@@ -301,7 +310,7 @@ python -m app.auth.admin_cli promote <username> ----本地运行
 docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.admin_cli promote <username> ----docker运行
 ```
 
-该命令只支持幂等提升，不创建账号、不降级管理员，也不提供 Web 管理入口。目标用户不存在或已禁用时不会修改数据库。
+该命令只支持幂等提升，不创建账号、不降级管理员，也不提供 Web 角色修改入口。目标用户不存在或已禁用时不会修改数据库。
 
 
 
@@ -463,6 +472,7 @@ python Run_causal.py
 │   ├── db.py               # 数据库会话与连接封装
 │   ├── main/               # 通用页面相关路由
 │   ├── auth/               # 登录、注册等认证相关路由
+│   ├── admin/              # 管理 API 与受保护后台 HTML
 │   ├── chat/               # 聊天 & 会话相关路由与服务
 │   ├── files/              # 文件上传/管理相关路由
 │   └── static/             # 前端静态资源
@@ -485,6 +495,7 @@ python Run_causal.py
 ├── Database/               # 数据库初始化与迁移逻辑
 │   ├── database_init.py    # 数据库初始化引导脚本
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
+│   ├── inspection.py       # 管理员看板统一只读检查服务
 │   ├── monitoring.py       # 数据库轻量监控查询
 │   ├── agent_connect.py    # Langgraph checkpoint 相关数据库支持
 │   ├── mysql/              # MySQL 主从配置与初始化脚本

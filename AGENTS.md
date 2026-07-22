@@ -43,6 +43,7 @@
 │   ├── db.py               # 数据库会话与连接封装
 │   ├── main/               # 通用页面相关路由
 │   ├── auth/               # 登录、注册等认证相关路由
+│   ├── admin/              # 管理员 API、受保护后台页面路由与 HTML
 │   ├── chat/               # 聊天与会话相关路由和服务
 │   ├── files/              # 文件上传与管理相关路由
 │   └── static/             # 前端静态资源
@@ -64,6 +65,7 @@
 ├── Database/               # 数据库初始化与迁移逻辑
 │   ├── database_init.py
 │   ├── audit_before_db_upgrade.py
+│   ├── inspection.py       # 数据库看板统一只读检查服务
 │   ├── monitoring.py
 │   ├── mysql/              # MySQL 主从配置与初始化脚本
 │   ├── agent_connect.py
@@ -80,7 +82,7 @@
 - 桌面端入口是 `Run_causal.py`，它固定加载 `http://127.0.0.1:5001`；桌面模式本质上仍依赖先启动后端。
 - Web 后端入口是 `Causalchat.py`，它导入 `app/__init__.py` 中的 `create_app()` 生成 Flask app；本地直接运行时使用 `app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)`，Docker 镜像默认通过 `gunicorn ... Causalchat:app` 启动。
 - `create_app()` 会先执行 `app/db.py` 中的 `check_database_readiness()`，确认数据库和关键表已就绪，然后再注册蓝图。
-- 当前实际注册的蓝图有 6 个：`auth`、`chat`、`files`、`agent`、`main`、`admin`。
+- 当前实际注册的蓝图有 7 个：`auth`、`chat`、`files`、`agent`、`main`、`admin`、`admin_page`。
 - Web 进程只负责登录态校验、短请求、analysis job 入队和 SSE 推送；Agent/RAG/MCP 长任务不在 Web 进程内执行，而是由独立 worker 进程处理。
 - 后台 worker 入口是 `python -m app.agent.worker`；worker 启动流程是：数据库就绪检查 -> 初始化 LLM -> 检查 RAG 可用性 -> 按 `JOB_WORKERS` 启动多个 slot。
 - 每个 worker slot 会独占一组 MCP server process、一个通过 `MultiServerMCPClient.session("causal")` 打开的持久 `ClientSession`、一组由 `load_mcp_tools(session)` 生成的 LangChain tools，以及一个编译好的 Agent graph；真实执行单元是 slot，不是 Flask 请求线程。旧 `open_mcp_session()` / 手写 `list_tools()` 包装仅保留作历史兼容入口。
@@ -90,13 +92,19 @@
   - `app/static/chat.html`
   - `app/static/css/style.css`
   - `app/static/js/script.js`
+  - `app/admin/db_admin.html`（不经 `/static` 暴露，只由受保护路由返回）
+  - `app/static/css/db_admin.css`
+  - `app/static/js/db_admin.js`
 - `Database/database_init.py` 只负责加载环境变量、确保数据库存在并检查连接；业务表结构维护入口是 Alembic，而不是这个脚本。
 - Alembic 迁移目录由 `alembic.ini` 指向 `Database/migrations`；业务 schema 变更应以迁移脚本为准。
-- 数据库生产化升级前应先执行 `Database/audit_before_db_upgrade.py`；它是只读审计，不会修改数据，重点检查孤立消息、孤立附件、非法附件类型和分区状态。
-- `app/db.py` 提供写库连接、业务读连接、复制状态观测连接、慢查询计时和从库延迟回退能力；`get_db_connection()` 仅作为兼容旧代码的主库写入口。
+- 数据库生产化升级前应先执行 `Database/audit_before_db_upgrade.py`；它复用 `Database/inspection.py` 的快速只读检查，不会修改数据，覆盖孤立消息、附件、job、event、checkpoint、pending write、非法附件类型和分区状态。
+- `app/db.py` 提供写库连接、业务读连接、复制状态观测连接、慢查询计时、从库延迟回退和不暴露真实主机名的逻辑来源标记；`get_db_connection()` 仅作为兼容旧代码的主库写入口。
 - `get_read_connection(consistency='strong')` 固定读主库；`consistency='eventual'` 只会在从库复制状态正常且延迟不超过阈值时使用副本，否则安全回退主库。
 - 用户角色采用 `users.role` 的最小两级模型，只允许 `user` / `admin`；登录、会话恢复和管理员授权每次都通过主库强一致读确认 `role` 与 `is_active`，不把 session 中的角色值作为后端授权依据。
 - `/api/admin/*` 由统一管理员装饰器保护：无有效会话返回 `401`，普通登录用户返回 `403`；初始管理员只通过 `python -m app.auth.admin_cli promote <username>` 提升现有启用用户，不提供公开管理员注册接口。
+- 管理员登录或恢复会话后只进入 `/admin/database` 后台，普通用户继续进入聊天页；该后台 HTML 本身也复用 `admin_required`，不放在公开静态目录。后台为白色简约静态页面，左侧导航当前只开放数据库看板，不提供聊天、SQL、修复、迁移或其他写操作入口。
+- 管理看板 API 当前包括 `/api/admin/db/overview`、`/api/admin/db/integrity?mode=quick`、`/api/admin/db/slow-queries` 和 `/api/admin/jobs/workers`；旧 `/api/admin/db/health` 保持兼容。所有区块返回来源和采集时间，表容量明确标记估算值，单项失败只降级对应区块。
+- 看板连接使用率 warning/error 默认阈值为 `70%`/`85%`，由 `DB_DASHBOARD_CONNECTION_WARNING_PERCENT` 和 `DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT` 配置；快速 SELECT 超时由 `DB_INSPECTION_QUERY_TIMEOUT_MS` 配置，默认 `3000ms`。
 - `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoints`、`checkpoint_writes`、`analysis_jobs`、`analysis_job_events` 这些关键表以及 `users.role` 关键字段是否已存在。
 - 当前 LangGraph MySQL checkpointer 使用 `session_id` 作为 `thread_id`；删除已创建会话时必须在同一事务内先删除对应 `checkpoints`，并依赖 `checkpoint_writes → checkpoints` 的级联外键清理 writes，不能调用会自行开事务的 `MySQLSaver.delete_thread()`。
 - `analysis_jobs` 和 `analysis_job_events` 是当前长任务系统的真实持久化基础：前者是任务队列，后者是事件日志；job 创建、领取、状态更新、事件写入和 SSE 读取都必须走主库或强一致读。
