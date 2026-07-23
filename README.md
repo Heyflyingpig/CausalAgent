@@ -421,11 +421,17 @@ python Run_causal.py
 
 1. Fork 本项目
 
-2. 新建 Feat_xxx 分支
+2. 从 `develop` 新建工作分支，例如 `feat(rag)/cache`
 
-3. 提交代码
+3. 提交信息与 Pull Request 标题使用 `keyword(function):description` 格式
 
-4. 新建 Pull Request
+   支持的 keyword 包括 `feat`、`fix`、`docs`、`refactor`、`test`、`chore`、`ci`、`build`、`perf` 和 `revert`，例如 `fix(chat):修复会话删除异常`。
+
+4. 向 `develop` 新建 Pull Request；只有 `develop` 可以向 `main` 发起合并请求
+
+5. 等待 `Python syntax`、`Light tests` 和 `Pull request policy` 检查通过后再合并
+
+轻量 CI 不连接数据库、不加载知识库或模型，也不调用外部 API。GitHub 分支保护需要在仓库 `Settings -> Rules -> Rulesets` 中单独启用，并将上述三个检查设置为必需检查。
 
 ## Star 趋势
 
@@ -444,6 +450,7 @@ python Run_causal.py
 ├── docker-compose.yml
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
+├── .github/workflows/       # GitHub Actions 工作流
 ├── README.md               # 项目说明
 ├── README/                 # README 图片与更新日志
 ├── database_init.log       # 数据库初始化日志
