@@ -140,11 +140,16 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
 
 
 
-def create_graph_from_tools(llm: "ChatOpenAI", mcp_tools: list, checkpointer):
-    """使用已加载的 MCP tools 构建父图，返回可直接执行的 compiled graph。"""
+def create_graph_from_tools(
+    llm: "ChatOpenAI",
+    mcp_tools: list,
+    rag_service,
+    checkpointer,
+):
+    """使用已加载的 MCP tools、显式 RAG Service 和 checkpoint 构建父图。"""
     from Agent.tool_node.rag_tool_registry import build_rag_tools
     # graph 层不再关心 MCP session。
-    rag_tools = build_rag_tools()
+    rag_tools = build_rag_tools(rag_service)
     return build_graph(
         llm=llm,
         mcp_tools=mcp_tools,

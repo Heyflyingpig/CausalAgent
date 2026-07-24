@@ -1,23 +1,24 @@
 import hashlib
 import json
-import math
 import os
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
-from functools import lru_cache
+import threading
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import OpenAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from Agent.knowledge_base.embedding_runtime import resolve_embedding_runtime_config
+from Agent.knowledge_base.sparse_retriever import (
+    SparseRetriever,
+    bm25_score,
+    normalize_scores,
+    tokenize_text,
+)
 from Agent.llm_structured_output import with_compatible_structured_output
 from config.settings import settings
 
@@ -75,7 +76,11 @@ def get_production_rag_config_status() -> Dict[str, Any]:
 
 def _load_production_rag_config() -> Tuple[RagRetrievalConfig, str]:
     """加载正式 RAG 检索配置；没有发布配置时保持代码默认值。"""
-    path = PRODUCTION_RAG_CONFIG_PATH
+    return _load_rag_config(PRODUCTION_RAG_CONFIG_PATH)
+
+
+def _load_rag_config(path: str) -> Tuple[RagRetrievalConfig, str]:
+    """从指定路径加载检索配置，供生产 Service 每次问题动态调用。"""
     if not os.path.exists(path):
         return RagRetrievalConfig(), "code_default"
     try:
@@ -113,81 +118,55 @@ class RagAnswer(BaseModel):
     )
 
 
-@lru_cache(maxsize=1)
+_COMPATIBILITY_SERVICE = None
+_COMPATIBILITY_SERVICE_LOCK = threading.Lock()
+
+
+def _create_compatibility_service():
+    """严格创建供评测、CLI 和遗留调用使用的独立 compatibility Service。"""
+    from Agent.knowledge_base.rag_runtime import RagRuntimeConfig, create_rag_runtime
+    from Agent.knowledge_base.rag_service import CompatibilityRagService
+
+    def create_runtime():
+        """在 compatibility Service 首次需要资源时创建严格 Runtime。"""
+        answer_llm = ChatOpenAI(
+            api_key=settings.API_KEY,
+            base_url=settings.BASE_URL,
+            model=settings.MODEL,
+        )
+        return create_rag_runtime(RagRuntimeConfig.from_environment(), answer_llm)
+
+    return CompatibilityRagService(create_runtime)
+
+
+def _get_compatibility_service():
+    """延迟创建并复用唯一 compatibility Service。"""
+    global _COMPATIBILITY_SERVICE
+    if _COMPATIBILITY_SERVICE is None:
+        with _COMPATIBILITY_SERVICE_LOCK:
+            if _COMPATIBILITY_SERVICE is None:
+                _COMPATIBILITY_SERVICE = _create_compatibility_service()
+    return _COMPATIBILITY_SERVICE
+
+
 def _get_llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        api_key=settings.API_KEY,
-        base_url=settings.BASE_URL,
-        model=settings.MODEL,
-    )
+    """兼容入口：返回 compatibility Runtime 持有的回答 LLM。"""
+    return _get_compatibility_service().runtime.answer_llm
 
 
-@lru_cache(maxsize=1)
 def _get_embedding_function() -> Any:
-    """构造查询侧 embedding 函数，按 RAG_EMBEDDING_PROVIDER 选择本地或 API。"""
-    embedding_config = resolve_embedding_runtime_config()
-    if embedding_config["mode"] == "api":
-        if embedding_config["status"] != "ready":
-            raise ValueError(embedding_config["message"])
-        return OpenAIEmbeddings(
-            api_key=os.environ[embedding_config["api_key_env"]],
-            base_url=os.environ[embedding_config["base_url_env"]],
-            model=embedding_config["model"],
-            tiktoken_enabled=False,
-            check_embedding_ctx_length=False,
-        )
-    return HuggingFaceEmbeddings(
-        model_name=embedding_config["path"],
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    """兼容入口：返回 compatibility Runtime 持有的 embedding。"""
+    return _get_compatibility_service().runtime.embedding
 
 
-@lru_cache(maxsize=1)
-def _get_vector_db() -> Chroma:
-    if not os.path.exists(PERSIST_DIRECTORY):
-        raise FileNotFoundError(
-            f"知识库持久化目录不存在: {PERSIST_DIRECTORY}。请先运行 Agent/knowledge_base/build_knowledge.py 构建知识库。"
-        )
-
-    return Chroma(
-        persist_directory=PERSIST_DIRECTORY,
-        embedding_function=_get_embedding_function(),
-        collection_name=COLLECTION_NAME,
-    )
+def _get_vector_db() -> Any:
+    """兼容入口：返回 compatibility Runtime 持有的 Chroma。"""
+    return _get_compatibility_service().runtime.vector_db
 
 
 def get_vector_db_metadata_summary(limit: int = 10000) -> Dict[str, Any]:
-    """只读汇总当前 Chroma 向量库 metadata，用于评测前检查知识库和 benchmark 是否匹配。"""
-    if not os.path.exists(PERSIST_DIRECTORY):
-        return {
-            "exists": False,
-            "persist_directory": PERSIST_DIRECTORY,
-            "collection_name": COLLECTION_NAME,
-            "vector_count": 0,
-            "dataset_counts": {},
-            "doc_id_prefix_counts": {},
-            "sample_doc_ids": [],
-        }
-
-    db = Chroma(
-        persist_directory=PERSIST_DIRECTORY,
-        collection_name=COLLECTION_NAME,
-    )
-    raw = db.get(include=["metadatas"], limit=limit)
-    metadatas = raw.get("metadatas") or []
-    doc_ids = [str(metadata.get("doc_id", "")) for metadata in metadatas]
-    datasets = [str(metadata.get("dataset", "")) for metadata in metadatas]
-    prefixes = [doc_id.split("_", 1)[0] for doc_id in doc_ids if doc_id]
-    return {
-        "exists": True,
-        "persist_directory": PERSIST_DIRECTORY,
-        "collection_name": COLLECTION_NAME,
-        "vector_count": len(raw.get("ids") or []),
-        "dataset_counts": dict(Counter(datasets)),
-        "doc_id_prefix_counts": dict(Counter(prefixes)),
-        "sample_doc_ids": doc_ids[:5],
-    }
+    """兼容入口：通过 compatibility Service 汇总 metadata。"""
+    return _get_compatibility_service().get_vector_db_metadata_summary(limit=limit)
 
 
 def _slugify(value: str) -> str:
@@ -261,64 +240,27 @@ def _normalize_chunk_metadata(
 
 
 def _tokenize_text(text: str) -> List[str]:
-    text = text.lower()
-    segments = re.findall(r"[\u4e00-\u9fff]+|[a-z0-9_]+", text)
-    tokens: List[str] = []
-    for segment in segments:
-        if re.fullmatch(r"[\u4e00-\u9fff]+", segment):
-            tokens.extend(list(segment))
-            if len(segment) >= 2:
-                tokens.extend(segment[i : i + 2] for i in range(len(segment) - 1))
-        else:
-            tokens.extend(part for part in segment.split("_") if part)
-    return tokens[:512]
+    """兼容入口：使用独立 sparse 模块中的原 tokenizer。"""
+    return tokenize_text(text)
 
-### 注意这里用了iru
-# 第一次 sparse 检索时，会把当前向量库内容读出来并构造成 BM25 语料缓存
-# 之后都会复用这份缓存
-# 如果重建了知识库，这个 sparse 语料缓存不会自动刷新
 
-@lru_cache(maxsize=1)
 def _get_sparse_corpus() -> Dict[str, Any]:
-    raw = _get_vector_db().get(include=["documents", "metadatas"])
-    documents = raw.get("documents", [])
-    metadatas = raw.get("metadatas", [])
-    ids = raw.get("ids", [])
-
-    entries: List[Dict[str, Any]] = []
-    doc_freq: Counter = Counter()
-    total_length = 0
-
-    for index, page_content in enumerate(documents):
-        metadata = _normalize_chunk_metadata(
-            metadatas[index] if index < len(metadatas) else {},
-            page_content,
-            fallback_index=index,
-        )
-        metadata["vector_id"] = ids[index] if index < len(ids) else None
-
-        tokens = _tokenize_text(page_content)
-        term_freq = Counter(tokens)
-        total_length += len(tokens)
-
-        for token in term_freq:
-            doc_freq[token] += 1
-
-        entries.append(
-            {
-                "page_content": page_content,
-                "metadata": metadata,
-                "term_freq": term_freq,
-                "length": max(len(tokens), 1),
-            }
-        )
-
-    avg_length = total_length / len(entries) if entries else 1.0
+    """兼容入口：返回 Runtime sparse corpus 的隔离快照。"""
+    retriever = _get_compatibility_service().runtime.sparse_retriever
+    entries = [
+        {
+            "page_content": entry.page_content,
+            "metadata": dict(entry.metadata),
+            "term_freq": Counter(entry.term_freq),
+            "length": entry.length,
+        }
+        for entry in getattr(retriever, "entries", ())
+    ]
     return {
         "entries": entries,
-        "doc_freq": doc_freq,
-        "avg_length": avg_length,
-        "size": len(entries),
+        "doc_freq": Counter(getattr(retriever, "doc_freq", {})),
+        "avg_length": getattr(retriever, "avg_length", 1.0),
+        "size": getattr(retriever, "size", len(entries)),
     }
 
 
@@ -331,46 +273,24 @@ def _bm25_score(
     k1: float = 1.5,
     b: float = 0.75,
 ) -> float:
-    if not query_tokens or corpus_size == 0:
-        return 0.0
-
-    score = 0.0
-    length = entry["length"]
-    for token in query_tokens:
-        freq = entry["term_freq"].get(token, 0)
-        if not freq:
-            continue
-        df = doc_freq.get(token, 0)
-        idf = math.log(1 + (corpus_size - df + 0.5) / (df + 0.5))
-        denominator = freq + k1 * (1 - b + b * length / avg_length)
-        score += idf * (freq * (k1 + 1) / denominator)
-    return score
+    """兼容入口：使用独立 sparse 模块中的原 BM25 公式。"""
+    return bm25_score(query_tokens, entry, doc_freq, corpus_size, avg_length, k1=k1, b=b)
 
 
 def _normalize_scores(candidates: List[Dict[str, Any]], score_key: str, normalized_key: str) -> None:
-    scores = [float(candidate.get(score_key, 0.0)) for candidate in candidates]
-    if not scores:
-        return
-
-    min_score = min(scores)
-    max_score = max(scores)
-
-    if max_score == min_score:
-        default_value = 1.0 if max_score > 0 else 0.0
-        for candidate in candidates:
-            candidate[normalized_key] = default_value
-        return
-
-    for candidate in candidates:
-        candidate[normalized_key] = (float(candidate.get(score_key, 0.0)) - min_score) / (max_score - min_score)
+    """兼容入口：按旧规则归一化候选分数。"""
+    normalize_scores(candidates, score_key, normalized_key)
 
 
 def _dense_retrieve(
     question: str,
     fetch_k: int = DENSE_FETCH_K,
     score_threshold: float = DENSE_SCORE_THRESHOLD,
+    *,
+    vector_db: Any = None,
 ) -> List[Dict[str, Any]]:
-    dense_results = _get_vector_db().similarity_search_with_relevance_scores(question, k=fetch_k)
+    active_vector_db = vector_db if vector_db is not None else _get_vector_db()
+    dense_results = active_vector_db.similarity_search_with_relevance_scores(question, k=fetch_k)
     candidates: List[Dict[str, Any]] = []
 
     for index, (doc, score) in enumerate(dense_results):
@@ -396,15 +316,16 @@ def _select_mmr_candidates(
     candidates: List[Dict[str, Any]],
     top_k: int = DENSE_MMR_K,
     mmr_lambda: float = MMR_LAMBDA,
+    embedding_function: Any = None,
     ) -> List[Dict[str, Any]]:
     
     if len(candidates) <= top_k:
         return candidates
 
-    embedding_function = _get_embedding_function()
-    query_embedding = np.array(embedding_function.embed_query(question), dtype=np.float32)
+    active_embedding = embedding_function if embedding_function is not None else _get_embedding_function()
+    query_embedding = np.array(active_embedding.embed_query(question), dtype=np.float32)
     doc_embeddings = np.array(
-        embedding_function.embed_documents([candidate["page_content"] for candidate in candidates]),
+        active_embedding.embed_documents([candidate["page_content"] for candidate in candidates]),
         dtype=np.float32,
     )
 
@@ -434,37 +355,19 @@ def _select_mmr_candidates(
     return [candidates[index] for index in selected_indices]
 
 
-def _sparse_retrieve(question: str, fetch_k: int = SPARSE_FETCH_K) -> List[Dict[str, Any]]:
-    query_tokens = _tokenize_text(question)
-    corpus = _get_sparse_corpus()
-    if not query_tokens or not corpus["entries"]:
-        return []
-
-    scored_candidates: List[Dict[str, Any]] = []
-    for entry in corpus["entries"]:
-        score = _bm25_score(
-            query_tokens=query_tokens,
-            entry=entry,
-            doc_freq=corpus["doc_freq"],
-            corpus_size=corpus["size"],
-            avg_length=corpus["avg_length"],
-        )
-        if score <= 0:
-            continue
-        scored_candidates.append(
-            {
-                "page_content": entry["page_content"],
-                "metadata": entry["metadata"],
-                "dense_score": 0.0,
-                "sparse_score": float(score),
-                "retrieval_sources": {"sparse"},
-            }
-        )
-
-    scored_candidates.sort(key=lambda item: item["sparse_score"], reverse=True)
-    scored_candidates = scored_candidates[:fetch_k]
-    _normalize_scores(scored_candidates, "sparse_score", "sparse_score_norm")
-    return scored_candidates
+def _sparse_retrieve(
+    question: str,
+    fetch_k: int = SPARSE_FETCH_K,
+    *,
+    sparse_retriever: Optional[SparseRetriever] = None,
+) -> List[Dict[str, Any]]:
+    """通过显式或 compatibility Runtime 的只读 sparse 检索器查询。"""
+    active_retriever = (
+        sparse_retriever
+        if sparse_retriever is not None
+        else _get_compatibility_service().runtime.sparse_retriever
+    )
+    return active_retriever.search(question, fetch_k)
 
 
 def _merge_candidates(
@@ -627,10 +530,12 @@ def _invoke_answer_llm_fallback(
     question_payload: Dict[str, Any],
     evidence_blocks: str,
     answer_prompt: Optional[ChatPromptTemplate] = None,
+    answer_llm: Any = None,
 ) -> RagAnswer:
     """兼容不支持 response_format 的 OpenAI-compatible 模型。"""
     prompt = answer_prompt or _build_answer_prompt()
-    response = (prompt | _get_llm()).invoke(
+    active_llm = answer_llm or _get_llm()
+    response = (prompt | active_llm).invoke(
         {
             "question": question_payload.get("question", ""),
             "intent": question_payload.get("intent", ""),
@@ -693,6 +598,22 @@ def _answer_question(
     answer_prompt: Optional[ChatPromptTemplate] = None,
 ) -> Dict[str, Any]:
     """基于检索证据回答问题；可选 prompt 仅用于评测等特殊链路，默认业务行为不变。"""
+    answer_llm = _get_llm() if evidence_payloads else None
+    return _answer_question_with_llm(
+        question_payload,
+        evidence_payloads,
+        answer_llm=answer_llm,
+        answer_prompt=answer_prompt,
+    )
+
+
+def _answer_question_with_llm(
+    question_payload: Dict[str, Any],
+    evidence_payloads: List[Dict[str, Any]],
+    answer_llm: Any,
+    answer_prompt: Optional[ChatPromptTemplate] = None,
+) -> Dict[str, Any]:
+    """使用显式回答 LLM 基于检索证据生成兼容回答结构。"""
     question_text = question_payload.get("question", "")
     if not evidence_payloads:
         return {
@@ -709,8 +630,9 @@ def _answer_question(
 
     evidence_blocks = _format_evidence_blocks(evidence_payloads)
     prompt = answer_prompt or _build_answer_prompt()
+    active_llm = answer_llm
     try:
-        runnable = prompt | with_compatible_structured_output(_get_llm(), RagAnswer)
+        runnable = prompt | with_compatible_structured_output(active_llm, RagAnswer)
         answer = runnable.invoke(
             {
                 "question": question_text,
@@ -722,7 +644,12 @@ def _answer_question(
         )
     except Exception as exc:
         try:
-            answer = _invoke_answer_llm_fallback(question_payload, evidence_blocks, answer_prompt=prompt)
+            answer = _invoke_answer_llm_fallback(
+                question_payload,
+                evidence_blocks,
+                answer_prompt=prompt,
+                answer_llm=active_llm,
+            )
         except Exception as fallback_exc:
             return {
                 "question": question_text,
@@ -871,6 +798,18 @@ def build_retrieval_trace(
     question_text: str,
     config: Optional[RagRetrievalConfig] = None,
 ) -> Dict[str, Any]:
+    """兼容入口：通过唯一 compatibility Service 执行检索 trace。"""
+    return _get_compatibility_service().build_retrieval_trace(question_text, config=config)
+
+
+def _build_retrieval_trace_with_resources(
+    question_text: str,
+    config: RagRetrievalConfig,
+    *,
+    vector_db: Any,
+    embedding_function: Any,
+    sparse_retriever: SparseRetriever,
+) -> Dict[str, Any]:
     """
     执行完整 RAG 检索链路并返回分阶段 trace。
 
@@ -878,7 +817,7 @@ def build_retrieval_trace(
     dense_raw -> dense_thresholded -> dense_mmr -> sparse ->
     merged_before_rerank -> reranked -> final。
     """
-    active_config = config or RagRetrievalConfig()
+    active_config = config
     timings_ms: Dict[str, float] = {}
     total_start = time.perf_counter()
 
@@ -887,6 +826,7 @@ def build_retrieval_trace(
         question_text,
         fetch_k=active_config.dense_fetch_k,
         score_threshold=0.0,
+        vector_db=vector_db,
     )
     timings_ms["dense_raw"] = round((time.perf_counter() - started) * 1000, 3)
 
@@ -904,11 +844,16 @@ def build_retrieval_trace(
         dense_thresholded,
         top_k=active_config.dense_mmr_k,
         mmr_lambda=active_config.mmr_lambda,
+        embedding_function=embedding_function,
     )
     timings_ms["dense_mmr"] = round((time.perf_counter() - started) * 1000, 3)
 
     started = time.perf_counter()
-    sparse = _sparse_retrieve(question_text, fetch_k=active_config.sparse_fetch_k)
+    sparse = _sparse_retrieve(
+        question_text,
+        fetch_k=active_config.sparse_fetch_k,
+        sparse_retriever=sparse_retriever,
+    )
     timings_ms["sparse"] = round((time.perf_counter() - started) * 1000, 3)
 
     started = time.perf_counter()
@@ -963,43 +908,13 @@ def get_rag_response(questions: List[Union[str, Dict[str, Any]]]) -> Dict[str, A
     接收一个问题列表，对每个问题执行混合检索、证据重排和结构化回答。
     返回结构化的RAG结果，供报告与后处理模块使用。
     """
-    if not questions:
-        return {
-            "success": True,
-            "summary": "没有生成任何需要查询知识库的问题。",
-            "questions": [],
-            "evidence_count": 0,
-        }
-
-    question_results: List[Dict[str, Any]] = []
-    total_evidence_count = 0
-
-    for question in questions:
-        question_payload = _normalize_question_payload(question)
-        question_text = question_payload["question"].strip()
-        if not question_text:
-            continue
-
-        production_config = _load_production_rag_config()[0]
-        candidates = _retrieve_candidates(question_text, config=production_config)
-        evidence_payloads = _build_evidence_payloads(candidates, max_chars=production_config.max_evidence_chars)
-        total_evidence_count += len(evidence_payloads)
-
-        answer_result = _answer_question(question_payload, evidence_payloads)
-        question_results.append(answer_result)
-
-    summary = format_rag_summary_for_prompt(
-        {"success": True, "questions": question_results},
-        max_questions=len(question_results),
-        include_evidence=True,
+    return _get_compatibility_service().get_response(
+        questions,
+        retrieve_candidates=_retrieve_candidates,
+        answer_question=_answer_question,
+        summary_formatter=format_rag_summary_for_prompt,
+        config_loader=_load_production_rag_config,
     )
-
-    return {
-        "success": True,
-        "summary": summary,
-        "questions": question_results,
-        "evidence_count": total_evidence_count,
-    }
 
 
 def query(question: str) -> None:

@@ -3,7 +3,7 @@ app.agent.core - agent核心模块
 
 - 初始化llm
 - 初始化mcp
-- 启动期检查rag
+- 启动期初始化可选RAG Runtime
 - 初始化agent
 """
 import asyncio, threading, logging, sys, os, json, time
@@ -107,20 +107,25 @@ async def open_mcp_client_resources(process_stack: AsyncExitStack) -> McpClientR
 
 def initialize_rag_system():
     """
-    启动期仅做知识库可用性检查。
-    并在首次查询时延迟初始化 LLM、Embedding 和 Chroma。
+    兼容入口：使用已初始化的主 LLM 创建进程级 RAG Service。
     """
-    logging.info("正在检查 RAG 知识库目录...")
-    persist_directory = os.path.join(knowledge_base_dir, "db")
-    if not os.path.exists(persist_directory):
-        logging.warning(
-            "知识库持久化目录不存在。请先运行 Agent/knowledge_base/build_knowledge.py 构建知识库。",
-            persist_directory,
-        )
-        return False
+    return initialize_rag_service(llm)
 
-    logging.info("RAG 启动检查通过；向量库将在首次实际查询时由 query_rag.py 延迟初始化。")
-    return True
+
+def initialize_rag_service(answer_llm):
+    """严格初始化 Runtime；失败时返回本进程固定的不可用 Service。"""
+    from Agent.knowledge_base.rag_runtime import RagRuntimeConfig, create_rag_runtime
+    from Agent.knowledge_base.rag_service import RagService, UnavailableRagService
+
+    try:
+        runtime = create_rag_runtime(RagRuntimeConfig.from_environment(), answer_llm)
+    except Exception:
+        logging.error(
+            "RAG Runtime 初始化失败；当前 worker 进程将使用不可用 Service，修复后需重启 worker。",
+            exc_info=True,
+        )
+        return UnavailableRagService()
+    return RagService(runtime)
 
 
 async def ai_call_stream(text, user_id, username, session_id, graph=None):
