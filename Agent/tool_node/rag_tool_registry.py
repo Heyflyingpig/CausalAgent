@@ -1,21 +1,27 @@
 "注册rag工具节点"
 from __future__ import annotations
+import logging
 from typing import Any
 
 from langchain_core.tools import tool
+from Agent.knowledge_base.rag_service import UNAVAILABLE_RAG_RESULT
 from Agent.tool_node.rag_query_task import rag_query_task
 
-@tool
-async def rag_enrichment_search(
-    questions: list[Any],
-    max_results: int = 5,
-) -> dict[str, Any]:
-    """查询知识库Toolnode节点"""
-    
-    questions = questions[:max_results] if max_results > 0 else questions
-    return await rag_query_task(questions)
 
+def build_rag_tools(rag_service: Any) -> list[Any]:
+    """创建闭包绑定 Service、但 schema 只暴露查询参数的 RAG Tool。"""
 
-def build_rag_tools() -> list[Any]:
-    """Build LangChain tools for RAG enrichment."""
+    @tool("rag_enrichment_search")
+    async def rag_enrichment_search(
+        questions: list[Any],
+        max_results: int = 5,
+    ) -> dict[str, Any]:
+        """查询知识库以增强因果分析报告。"""
+        selected = questions[:max_results] if max_results > 0 else questions
+        try:
+            return await rag_query_task(selected, rag_service)
+        except Exception:
+            logging.error("RAG Tool 单次调用失败，本次结果降级。", exc_info=True)
+            return dict(UNAVAILABLE_RAG_RESULT)
+
     return [rag_enrichment_search]
