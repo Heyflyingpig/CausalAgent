@@ -199,10 +199,6 @@ Agent/knowledge_base/unfinish_source/
 # skils
 skills/
 
-# test
-tests/*
-!tests/rag_ingestion/
-!tests/rag_ingestion/**
 
 # study
 study/

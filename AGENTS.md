@@ -124,9 +124,9 @@
 - `create_app()` 会先执行 `app/db.py` 中的 `check_database_readiness()`，确认数据库和关键表已就绪，然后再注册蓝图。
 - 当前实际注册的蓝图有 7 个：`auth`、`chat`、`files`、`agent`、`main`、`admin`、`admin_page`。
 - Web 进程只负责登录态校验、短请求、analysis job 入队和 SSE 推送；Agent/RAG/MCP 长任务不在 Web 进程内执行，而是由独立 worker 进程处理。
-- 后台 worker 入口是 `python -m app.agent.worker`；worker 启动流程是：数据库就绪检查 -> 初始化 LLM -> 检查 RAG 可用性 -> 按 `JOB_WORKERS` 启动多个 slot。
-- 每个 worker slot 会独占一组 MCP server process、一个通过 `MultiServerMCPClient.session("causal")` 打开的持久 `ClientSession`、一组由 `load_mcp_tools(session)` 生成的 LangChain tools，以及一个编译好的 Agent graph；真实执行单元是 slot，不是 Flask 请求线程。旧 `open_mcp_session()` / 手写 `list_tools()` 包装仅保留作历史兼容入口。
-- 父图当前只暴露 `mcp`、`rag` 两个工具阶段节点：`mcp` 子图正常路径执行 `mcp_planner -> mcp_tool_node -> mcp_result_parser`，planner、ToolNode 和 parser 的失败路径会在子图内生成标准 `success=False` 结果并结束子图；`rag` 子图内部执行 `rag_question_planner -> rag_tool_node -> rag_result_parser`；worker 事件流仍沿用旧 `astream(stream_mode="updates")` 适配，不要求本轮输出 tool-level SSE 事件。
+- 后台 worker 入口是 `python -m app.agent.worker`；worker 启动流程是：数据库就绪检查 -> 初始化主 LLM -> 严格创建一次进程级 RAG Runtime/Service（失败则绑定不可用 Service）-> 按 `JOB_WORKERS` 启动多个 slot。
+- 每个 worker slot 会独占一组 MCP server process、一个通过 `MultiServerMCPClient.session("causal")` 打开的持久 `ClientSession`、一组由 `load_mcp_tools(session)` 生成的 LangChain tools、一个闭包绑定进程级 RagService 的 RAG Tool 实例，以及一个编译好的 Agent graph；同一 worker 进程的所有 slot 共享一个 RagService/Runtime，但不共享 Tool 或 Graph。真实执行单元是 slot，不是 Flask 请求线程。旧 `open_mcp_session()` / 手写 `list_tools()` 包装仅保留作历史兼容入口。
+- 父图当前只暴露 `mcp`、`rag` 两个工具阶段节点：`mcp` 子图内部执行 `mcp_planner -> mcp_tool_node -> mcp_result_parser`，`rag` 子图内部执行 `rag_question_planner -> rag_tool_node -> rag_result_parser`；worker 事件流仍沿用旧 `astream(stream_mode="updates")` 适配，不要求本轮输出 tool-level SSE 事件。
 - Pydantic 结构化输出统一通过 `Agent/llm_structured_output.py` 的同步/异步入口执行，固定使用普通 `function_calling`；调用器仅对结构化请求发送 `thinking.type=disabled`，避免 DeepSeek Thinking 与固定 `tool_choice` 冲突。MCP 继续使用原生 Tool Calls；只有 MCP planner 使用关闭 Thinking 的 LLM 副本和 `tool_choice="required"`，确保模型必须自行选择一个已加载工具。
 - `agent` 与 `fold` 的条件路由只读取 `route_decision`、`fold_decision` 显式 State 字段；展示消息仅用于用户可见内容和审计，不参与控制流。
 - 配置统一由 `config/settings.py` 从系统环境变量读取；若项目根目录存在 `.env`，会先通过 `python-dotenv` 加载到环境变量。
@@ -183,7 +183,8 @@
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
 - 后端单元测试使用独立 `docker-compose.test.yml`：`unit-test` 服务基于 Dockerfile 的 `test` 目标预装 `requirements-test.txt`，不依赖数据库，以 `tests/unit-test.env` 屏蔽项目 `.env` 并关闭 LangSmith 追踪，禁用网络，只读挂载当前仓库；通过 `docker compose ... run --rm` 按需创建和删除测试容器，测试镜像继续复用。
-- RAG 启动期只检查知识库目录是否可用，不会在启动时完整加载向量库；若 `Agent/knowledge_base/db` 不存在，worker 会记录 warning，并以“无知识库模式”继续运行。
+- 生产 RAG 在 worker 启动期通过 `RagRuntime` 依次初始化 embedding、已存在且非空的 Chroma collection 和只读 BM25 corpus；生产 Tool 不再在首次查询时初始化资源。初始化任一步失败都不会阻断 worker，所有 slot 会绑定 `UnavailableRagService` 并返回稳定脱敏降级结果；该进程不自动重试，修复知识库或配置后必须重启 worker 恢复。
+- `query_rag.py` 继续保留评测、CLI 和 Web 遗留导入接口，但这些入口统一使用独立、延迟创建且严格初始化的 compatibility RagService；生产 worker 不使用该 compatibility Service。正式生产检索配置仍在每个问题执行前读取，因此评测台发布新参数后不需要重启 worker。
 - `Agent/knowledge_base/build_knowledge.py` 当前支持 `--profile default` 和 `--profile medical`：
   - `default` 从 `Agent/knowledge_base/source/` 读取 Pearl/因果资料，并使用本地 `bge-small-zh-v1.5`。
   - `medical` 从 `rag_config.py` 的 `MEDICAL_KNOWLEDGE_BUILD_CONFIG["corpus_path"]` 读取当前 active 医疗语料；当前指向 PubMedQA processed corpus，embedding provider 由 `RAG_EMBEDDING_PROVIDER` 控制：`auto` 保持旧兼容行为（存在 `MEDICAL_EMBEDDING_API_KEY` 或 `KNOWLEDGE_BUILD_PROFILE=medical` 时使用 OpenAI-compatible API，否则使用本地模型），`openai_compatible` 强制使用 `MEDICAL_EMBEDDING_API_KEY`、`MEDICAL_EMBEDDING_BASE_URL`、`MEDICAL_EMBEDDING_MODEL`，`local` 强制使用 `RAG_LOCAL_EMBEDDING_MODEL_PATH` 或默认 `Agent/knowledge_base/models/bge-small-zh-v1.5`。

@@ -159,6 +159,9 @@ graph TD;
 - **典型能力**：
   - 在生成报告时，自动检索相关理论和方法描述，为结论补充严谨的文献背景；
   - 支持面向初学者的「概念解释」，例如“什么是混杂变量”“为什么需要随机试验”等。
+- **运行时生命周期**：worker 启动时严格创建一次进程级 `RagRuntime`，集中持有 embedding、Chroma、BM25 corpus 和回答 LLM；同一 worker 的所有 slot 共享该 Runtime，但各自拥有 RAG Tool 和 Agent Graph。生产 Tool 不会在首次查询时加载这些重资源。
+- **可选能力降级**：知识库目录、embedding、collection 或 sparse corpus 初始化失败时，worker 仍会领取和处理任务，RAG Tool 返回稳定的“知识库暂不可用”结果，报告继续基于因果分析结果生成。该 worker 进程不会自动重试，修复配置或知识库后需重启 worker。
+- **评测兼容**：`query_rag.py` 的既有评测、CLI 和 Web 导入入口仍然保留，并使用独立的 compatibility Service；生产 worker 不经过该兼容缓存。生产检索参数仍逐问题读取发布配置，参数热发布无需重启。
 
 ### 后处理
 *对因果图进行后处理，包括环路检测、边合理性评估等，提高因果结构的可解释性与可靠性*
@@ -431,7 +434,10 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 │   ├── Report/             # 报告生成逻辑
 │   ├── knowledge_base/     # RAG 知识库
 │   │   ├── build_knowledge.py # 知识库构建入口，支持 default / medical profile
-│   │   ├── query_rag.py    # RAG 查询、检索 trace 与证据生成入口
+│   │   ├── rag_runtime.py  # worker 进程级 RAG 重资源生命周期
+│   │   ├── rag_service.py  # 查询编排、兼容 Service 与可选能力降级
+│   │   ├── sparse_retriever.py # 一次构建、只读共享的 BM25 corpus
+│   │   ├── query_rag.py    # 评测/CLI/Web 兼容查询与算法入口
 │   │   ├── db/             # 当前运行时向量知识库存储；医疗库应使用 PubMedQA active corpus 重建
 │   │   ├── models/         # 本地嵌入模型，default profile 使用 bge-small-zh-v1.5
 │   │   └── rag/            # RAG 测评框架、数据集操作、报告和外部医疗数据
