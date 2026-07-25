@@ -183,7 +183,7 @@
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
 - 后端单元测试使用独立 `docker-compose.test.yml`：`unit-test` 服务基于 Dockerfile 的 `test` 目标预装 `requirements-test.txt`，不依赖数据库，以 `tests/unit-test.env` 屏蔽项目 `.env` 并关闭 LangSmith 追踪，禁用网络，只读挂载当前仓库；通过 `docker compose ... run --rm` 按需创建和删除测试容器，测试镜像继续复用。
-- 生产 RAG 在 worker 启动期通过 `RagRuntime` 依次初始化 embedding、已存在且非空的 Chroma collection 和只读 BM25 corpus；生产 Tool 不再在首次查询时初始化资源。初始化任一步失败都不会阻断 worker，所有 slot 会绑定 `UnavailableRagService` 并返回稳定脱敏降级结果；该进程不自动重试，修复知识库或配置后必须重启 worker 恢复。
+ - 生产 RAG 在 worker 启动期通过 `RagRuntime` 依次初始化 embedding、已存在且非空的 Chroma collection，以及由 Chroma 文档通过 `bm25s==0.3.10` 构建的只读内存稀疏索引；生产 Tool 不再在首次查询时初始化资源。初始化任一步失败都不会阻断 worker，所有 slot 会绑定 `UnavailableRagService` 并返回稳定脱敏降级结果；该进程不自动重试，修复知识库或配置后必须重启 worker 恢复。
 - `query_rag.py` 继续保留评测、CLI 和 Web 遗留导入接口，但这些入口统一使用独立、延迟创建且严格初始化的 compatibility RagService；生产 worker 不使用该 compatibility Service。正式生产检索配置仍在每个问题执行前读取，因此评测台发布新参数后不需要重启 worker。
 - `Agent/knowledge_base/build_knowledge.py` 当前支持 `--profile default` 和 `--profile medical`：
   - `default` 从 `Agent/knowledge_base/source/` 读取 Pearl/因果资料，并使用本地 `bge-small-zh-v1.5`。

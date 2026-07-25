@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-import math
+import logging
 import re
-from collections import Counter
+import time
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Protocol, Tuple
+
+LOGGER = logging.getLogger(__name__)
+BM25_K1 = 1.5
+BM25_B = 0.75
+LEGACY_RAW_SCORE_SCALE = BM25_K1 + 1.0
 
 
 class SparseRetriever(Protocol):
@@ -30,32 +35,6 @@ def tokenize_text(text: str) -> List[str]:
         else:
             tokens.extend(part for part in segment.split("_") if part)
     return tokens[:512]
-
-
-def bm25_score(
-    query_tokens: List[str],
-    entry: Mapping[str, Any],
-    doc_freq: Mapping[str, int],
-    corpus_size: int,
-    avg_length: float,
-    k1: float = 1.5,
-    b: float = 0.75,
-) -> float:
-    """使用旧查询链参数计算单个文档的 BM25 分数。"""
-    if not query_tokens or corpus_size == 0:
-        return 0.0
-
-    score = 0.0
-    length = entry["length"]
-    for token in query_tokens:
-        freq = entry["term_freq"].get(token, 0)
-        if not freq:
-            continue
-        df = doc_freq.get(token, 0)
-        idf = math.log(1 + (corpus_size - df + 0.5) / (df + 0.5))
-        denominator = freq + k1 * (1 - b + b * length / avg_length)
-        score += idf * (freq * (k1 + 1) / denominator)
-    return score
 
 
 def normalize_scores(
@@ -83,35 +62,34 @@ def normalize_scores(
 
 
 @dataclass(frozen=True)
-class _SparseEntry:
-    """Runtime 内部持有的不可替换语料条目。"""
+class _SparseDocument:
+    """Runtime 内部持有的不可替换文档与 metadata。"""
 
     page_content: str
     metadata: Mapping[str, Any]
-    term_freq: Mapping[str, int]
-    length: int
 
 
 @dataclass(frozen=True)
-class InMemoryBm25Retriever:
-    """从 Chroma 一次构建、随后只读共享的 BM25 检索器。"""
+class Bm25sSparseRetriever:
+    """从 Chroma 一次构建、随后只读共享的 BM25s 检索器。"""
 
-    entries: Tuple[_SparseEntry, ...]
-    doc_freq: Mapping[str, int]
-    avg_length: float
+    entries: Tuple[_SparseDocument, ...]
+    _index: Any
 
     @classmethod
-    def from_vector_db(cls, vector_db: Any) -> "InMemoryBm25Retriever":
-        """一次读取完整 Chroma collection 并构建 sparse corpus。"""
+    def from_vector_db(cls, vector_db: Any) -> "Bm25sSparseRetriever":
+        """一次读取完整 Chroma collection 并构建 BM25s 内存索引。"""
+        import bm25s
+
         from Agent.knowledge_base.query_rag import _normalize_chunk_metadata
 
+        started = time.perf_counter()
         raw = vector_db.get(include=["documents", "metadatas"])
         documents = raw.get("documents", [])
         metadatas = raw.get("metadatas", [])
         ids = raw.get("ids", [])
-        entries: List[_SparseEntry] = []
-        doc_freq: Counter = Counter()
-        total_length = 0
+        entries: List[_SparseDocument] = []
+        corpus_tokens: List[List[str]] = []
 
         for index, page_content in enumerate(documents):
             metadata = _normalize_chunk_metadata(
@@ -120,64 +98,75 @@ class InMemoryBm25Retriever:
                 fallback_index=index,
             )
             metadata["vector_id"] = ids[index] if index < len(ids) else None
-            tokens = tokenize_text(page_content)
-            term_freq = Counter(tokens)
-            total_length += len(tokens)
-            for token in term_freq:
-                doc_freq[token] += 1
+            corpus_tokens.append(tokenize_text(page_content))
             entries.append(
-                _SparseEntry(
+                _SparseDocument(
                     page_content=page_content,
                     metadata=MappingProxyType(dict(metadata)),
-                    term_freq=MappingProxyType(dict(term_freq)),
-                    length=max(len(tokens), 1),
                 )
             )
 
-        avg_length = total_length / len(entries) if entries else 1.0
-        return cls(
-            entries=tuple(entries),
-            doc_freq=MappingProxyType(dict(doc_freq)),
-            avg_length=avg_length,
+        bm25_index = bm25s.BM25(
+            k1=BM25_K1,
+            b=BM25_B,
+            method="lucene",
+            dtype="float64",
+            backend="numpy",
+            csc_backend="numpy",
         )
+        bm25_index.index(
+            corpus_tokens,
+            create_empty_token=True,
+            show_progress=False,
+            leave_progress=False,
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+        LOGGER.info(
+            "BM25s 索引构建完成 version=%s documents=%s vocabulary=%s backend=%s elapsed_ms=%s",
+            bm25s.__version__,
+            len(entries),
+            len(bm25_index.vocab_dict),
+            bm25_index.backend,
+            elapsed_ms,
+        )
+        return cls(entries=tuple(entries), _index=bm25_index)
 
     @property
     def size(self) -> int:
-        """返回 sparse corpus 条目数量。"""
+        """返回 BM25s 索引对应的文档数量。"""
         return len(self.entries)
 
     def search(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """检索并返回全新的候选、metadata 和来源集合。"""
+        """查询 BM25s 索引并返回全新的候选、metadata 和来源集合。"""
         query_tokens = tokenize_text(query)
-        if not query_tokens or not self.entries:
+        if not query_tokens or not self.entries or top_k <= 0:
             return []
 
+        document_indices, scores = self._index.retrieve(
+            [query_tokens],
+            k=min(top_k, self.size),
+            sorted=True,
+            show_progress=False,
+            leave_progress=False,
+            n_threads=0,
+            backend_selection="numpy",
+        )
         scored_candidates: List[Dict[str, Any]] = []
-        for sparse_entry in self.entries:
-            entry = {
-                "term_freq": sparse_entry.term_freq,
-                "length": sparse_entry.length,
-            }
-            score = bm25_score(
-                query_tokens=query_tokens,
-                entry=entry,
-                doc_freq=self.doc_freq,
-                corpus_size=self.size,
-                avg_length=self.avg_length,
-            )
+        for document_index, raw_score in zip(document_indices[0], scores[0]):
+            # BM25s Lucene 省略不影响排序的 (k1 + 1)，这里恢复旧接口的原始分数尺度。
+            score = float(raw_score) * LEGACY_RAW_SCORE_SCALE
             if score <= 0:
                 continue
+            sparse_document = self.entries[int(document_index)]
             scored_candidates.append(
                 {
-                    "page_content": sparse_entry.page_content,
-                    "metadata": dict(sparse_entry.metadata),
+                    "page_content": sparse_document.page_content,
+                    "metadata": dict(sparse_document.metadata),
                     "dense_score": 0.0,
-                    "sparse_score": float(score),
+                    "sparse_score": score,
                     "retrieval_sources": {"sparse"},
                 }
             )
 
-        scored_candidates.sort(key=lambda item: item["sparse_score"], reverse=True)
-        selected = scored_candidates[:top_k]
-        normalize_scores(selected, "sparse_score", "sparse_score_norm")
-        return selected
+        normalize_scores(scored_candidates, "sparse_score", "sparse_score_norm")
+        return scored_candidates

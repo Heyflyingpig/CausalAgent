@@ -11,7 +11,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from Agent.knowledge_base.embedding_runtime import resolve_embedding_runtime_config
-from Agent.knowledge_base.sparse_retriever import InMemoryBm25Retriever, SparseRetriever
+from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever, SparseRetriever
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -183,7 +183,7 @@ def create_rag_runtime(config: RagRuntimeConfig, answer_llm: Any) -> RagRuntime:
     except Exception as exc:
         raise RagRuntimeInitializationError("chunk_count", exc) from exc
     try:
-        sparse_retriever = InMemoryBm25Retriever.from_vector_db(vector_db)
+        sparse_retriever = Bm25sSparseRetriever.from_vector_db(vector_db)
     except Exception as exc:
         raise RagRuntimeInitializationError("sparse_corpus", exc) from exc
 

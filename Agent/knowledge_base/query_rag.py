@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 import re
-from collections import Counter
 from dataclasses import asdict, dataclass
 import threading
 import time
@@ -15,7 +14,6 @@ from pydantic import BaseModel, Field
 
 from Agent.knowledge_base.sparse_retriever import (
     SparseRetriever,
-    bm25_score,
     normalize_scores,
     tokenize_text,
 )
@@ -242,39 +240,6 @@ def _normalize_chunk_metadata(
 def _tokenize_text(text: str) -> List[str]:
     """兼容入口：使用独立 sparse 模块中的原 tokenizer。"""
     return tokenize_text(text)
-
-
-def _get_sparse_corpus() -> Dict[str, Any]:
-    """兼容入口：返回 Runtime sparse corpus 的隔离快照。"""
-    retriever = _get_compatibility_service().runtime.sparse_retriever
-    entries = [
-        {
-            "page_content": entry.page_content,
-            "metadata": dict(entry.metadata),
-            "term_freq": Counter(entry.term_freq),
-            "length": entry.length,
-        }
-        for entry in getattr(retriever, "entries", ())
-    ]
-    return {
-        "entries": entries,
-        "doc_freq": Counter(getattr(retriever, "doc_freq", {})),
-        "avg_length": getattr(retriever, "avg_length", 1.0),
-        "size": getattr(retriever, "size", len(entries)),
-    }
-
-
-def _bm25_score(
-    query_tokens: List[str],
-    entry: Dict[str, Any],
-    doc_freq: Counter,
-    corpus_size: int,
-    avg_length: float,
-    k1: float = 1.5,
-    b: float = 0.75,
-) -> float:
-    """兼容入口：使用独立 sparse 模块中的原 BM25 公式。"""
-    return bm25_score(query_tokens, entry, doc_freq, corpus_size, avg_length, k1=k1, b=b)
 
 
 def _normalize_scores(candidates: List[Dict[str, Any]], score_key: str, normalized_key: str) -> None:

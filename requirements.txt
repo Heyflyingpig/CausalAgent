@@ -81,6 +81,7 @@ seaborn>=0.12.0
 
 # 因果分析和图处理相关
 numpy>=1.24.0
+bm25s==0.3.10
 pandas>=2.0.0
 networkx>=3.0
 causal-learn>=0.1.3.3
