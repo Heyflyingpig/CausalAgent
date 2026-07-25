@@ -1,13 +1,13 @@
 import dataclasses
 import logging
-import math
 import sys
 import types
 import unittest
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from types import MappingProxyType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+import bm25s
 
 from Agent.knowledge_base.rag_runtime import (
     RagRuntimeConfig,
@@ -15,9 +15,7 @@ from Agent.knowledge_base.rag_runtime import (
     create_rag_runtime,
 )
 from Agent.knowledge_base.sparse_retriever import (
-    InMemoryBm25Retriever,
-    _SparseEntry,
-    bm25_score,
+    Bm25sSparseRetriever,
     tokenize_text,
 )
 
@@ -72,7 +70,7 @@ class RagRuntimeLifecycleTests(unittest.TestCase):
             "Agent.knowledge_base.rag_runtime._count_chunks",
             side_effect=lambda _db: order.append("count") or 3,
         ) as count_chunks, patch(
-            "Agent.knowledge_base.rag_runtime.InMemoryBm25Retriever.from_vector_db",
+            "Agent.knowledge_base.rag_runtime.Bm25sSparseRetriever.from_vector_db",
             side_effect=lambda _db: order.append("sparse") or sparse,
         ) as build_sparse:
             runtime = create_rag_runtime(_runtime_config(), answer_llm="llm")
@@ -149,49 +147,58 @@ class RagRuntimeLifecycleTests(unittest.TestCase):
         ), patch(
             "Agent.knowledge_base.rag_runtime._count_chunks", return_value=1
         ), patch(
-            "Agent.knowledge_base.rag_runtime.InMemoryBm25Retriever.from_vector_db",
+            "Agent.knowledge_base.rag_runtime.Bm25sSparseRetriever.from_vector_db",
             return_value=object(),
         ), self.assertLogs(level=logging.INFO) as captured:
             create_rag_runtime(config, answer_llm="llm")
 
         self.assertNotIn(secret, "\n".join(captured.output))
 
+    def test_sparse_index_failure_keeps_runtime_failure_stage(self):
+        """确认 BM25s 索引构建异常仍归类为 sparse_corpus。"""
+        vector_db = object()
+        with patch("Agent.knowledge_base.rag_runtime._validate_vector_db_directory"), patch(
+            "Agent.knowledge_base.rag_runtime._validate_embedding_config"
+        ), patch(
+            "Agent.knowledge_base.rag_runtime._create_embedding_function", return_value=object()
+        ), patch(
+            "Agent.knowledge_base.rag_runtime._open_existing_vector_db", return_value=vector_db
+        ), patch(
+            "Agent.knowledge_base.rag_runtime._count_chunks", return_value=1
+        ), patch(
+            "Agent.knowledge_base.rag_runtime.Bm25sSparseRetriever.from_vector_db",
+            side_effect=RuntimeError("bm25s failed"),
+        ):
+            with self.assertRaises(RagRuntimeInitializationError) as raised:
+                create_rag_runtime(_runtime_config(), answer_llm="llm")
 
-class SparseRetrieverParityTests(unittest.TestCase):
+        self.assertEqual(raised.exception.stage, "sparse_corpus")
+
+
+class SparseRetrieverBehaviorTests(unittest.TestCase):
     def _retriever(self):
-        """构造固定语料的只读检索器。"""
+        """通过伪 Chroma collection 构造固定语料的 BM25s 检索器。"""
         texts = ["因果 推断 treatment_effect", "相关性不是因果", "unrelated"]
-        entries = []
-        doc_freq = Counter()
-        total_length = 0
-        for index, text in enumerate(texts):
-            tokens = tokenize_text(text)
-            term_freq = Counter(tokens)
-            doc_freq.update(term_freq.keys())
-            total_length += len(tokens)
-            entries.append(
-                _SparseEntry(
-                    page_content=text,
-                    metadata={"chunk_id": f"c{index}"},
-                    term_freq=MappingProxyType(dict(term_freq)),
-                    length=max(len(tokens), 1),
-                )
-            )
-        return InMemoryBm25Retriever(
-            entries=tuple(entries),
-            doc_freq=MappingProxyType(dict(doc_freq)),
-            avg_length=total_length / len(entries),
+        fake_query_rag = types.ModuleType("Agent.knowledge_base.query_rag")
+        fake_query_rag._normalize_chunk_metadata = (
+            lambda metadata, _content, fallback_index=0: {
+                **metadata,
+                "chunk_id": metadata.get("chunk_id", f"c{fallback_index}"),
+            }
         )
+        vector_db = Mock()
+        vector_db.get.return_value = {
+            "documents": texts,
+            "metadatas": [{"chunk_id": f"c{index}"} for index in range(len(texts))],
+            "ids": [f"v{index}" for index in range(len(texts))],
+        }
+        with patch.dict(sys.modules, {"Agent.knowledge_base.query_rag": fake_query_rag}):
+            return Bm25sSparseRetriever.from_vector_db(vector_db)
 
-    def test_tokenizer_truncation_and_bm25_formula_match_legacy(self):
+    def test_tokenizer_truncation_is_preserved(self):
+        """确认迁移后继续使用项目原有中英文分词和长度上限。"""
         self.assertEqual(tokenize_text("因果_test"), ["因", "果", "因果", "test"])
         self.assertEqual(len(tokenize_text("因" * 600)), 512)
-
-        query_tokens = ["a"]
-        entry = {"term_freq": {"a": 2}, "length": 4}
-        expected_idf = math.log(1 + (3 - 1 + 0.5) / (1 + 0.5))
-        expected = expected_idf * (2 * 2.5 / (2 + 1.5 * (1 - 0.75 + 0.75 * 4 / 3)))
-        self.assertAlmostEqual(bm25_score(query_tokens, entry, {"a": 1}, 3, 3), expected)
 
     def test_from_vector_db_reads_once_and_freezes_internal_corpus(self):
         fake_query_rag = types.ModuleType("Agent.knowledge_base.query_rag")
@@ -208,11 +215,26 @@ class SparseRetrieverParityTests(unittest.TestCase):
             "ids": ["v0", "v1"],
         }
 
-        with patch.dict(sys.modules, {"Agent.knowledge_base.query_rag": fake_query_rag}):
-            retriever = InMemoryBm25Retriever.from_vector_db(vector_db)
+        with patch.dict(
+            sys.modules, {"Agent.knowledge_base.query_rag": fake_query_rag}
+        ), self.assertLogs(
+            "Agent.knowledge_base.sparse_retriever", level="INFO"
+        ) as captured:
+            retriever = Bm25sSparseRetriever.from_vector_db(vector_db)
 
         vector_db.get.assert_called_once_with(include=["documents", "metadatas"])
         self.assertEqual(retriever.size, 2)
+        self.assertEqual(retriever._index.k1, 1.5)
+        self.assertEqual(retriever._index.b, 0.75)
+        self.assertEqual(retriever._index.method, "lucene")
+        self.assertEqual(retriever._index.dtype, "float64")
+        self.assertEqual(retriever._index.backend, "numpy")
+        self.assertEqual(retriever._index.csc_backend, "numpy")
+        log_output = "\n".join(captured.output)
+        self.assertIn(f"version={bm25s.__version__}", log_output)
+        self.assertIn("documents=2", log_output)
+        self.assertIn("backend=numpy", log_output)
+        self.assertNotIn("因果推断", log_output)
         with self.assertRaises(TypeError):
             retriever.entries[0].metadata["changed"] = True
         result = retriever.search("因果", 1)
@@ -230,6 +252,36 @@ class SparseRetrieverParityTests(unittest.TestCase):
         first[0]["retrieval_sources"].add("dense")
         self.assertNotIn("changed", second[0]["metadata"])
         self.assertEqual(second[0]["retrieval_sources"], {"sparse"})
+
+    def test_search_restores_legacy_raw_score_scale(self):
+        """确认适配层恢复 BM25s Lucene 省略的旧分数常数。"""
+        retriever = self._retriever()
+        query_tokens = tokenize_text("因果")
+        _, raw_scores = retriever._index.retrieve(
+            [query_tokens],
+            k=1,
+            sorted=True,
+            show_progress=False,
+            n_threads=0,
+            backend_selection="numpy",
+        )
+
+        result = retriever.search("因果", top_k=1)
+
+        self.assertAlmostEqual(result[0]["sparse_score"], float(raw_scores[0][0]) * 2.5)
+
+    def test_search_handles_empty_no_match_and_top_k_boundaries(self):
+        """确认空查询、零分补位和 top_k 边界遵循现有接口合同。"""
+        retriever = self._retriever()
+
+        self.assertEqual(retriever.search("", top_k=2), [])
+        self.assertEqual(retriever.search("zzznomatch", top_k=2), [])
+        self.assertEqual(retriever.search("因果", top_k=0), [])
+        self.assertEqual(retriever.search("因果", top_k=-1), [])
+        oversized = retriever.search("因果", top_k=99)
+        self.assertEqual([item["metadata"]["chunk_id"] for item in oversized], ["c0", "c1"])
+        self.assertTrue(all(item["sparse_score"] > 0 for item in oversized))
+        self.assertTrue(all("sparse_score_norm" in item for item in oversized))
 
     def test_concurrent_searches_return_independent_candidates(self):
         retriever = self._retriever()
