@@ -1,0 +1,53 @@
+"""基于 Flask Cookie Session 的同步 CSRF 令牌。"""
+
+from __future__ import annotations
+
+from functools import wraps
+import secrets
+
+from flask import jsonify, request, session
+
+from app.auth.authorization import admin_required
+from app.request_context import get_request_id
+
+
+CSRF_SESSION_KEY = "csrf_token"
+CSRF_HEADER = "X-CSRF-Token"
+
+
+def ensure_csrf_token() -> str:
+    """返回当前会话令牌，不存在时生成不可预测的新值。"""
+    token = session.get(CSRF_SESSION_KEY)
+    if not isinstance(token, str) or not token:
+        token = secrets.token_urlsafe(32)
+        session[CSRF_SESSION_KEY] = token
+    return token
+
+
+def csrf_token_is_valid() -> bool:
+    """使用常量时间比较校验请求头和当前 Session 令牌。"""
+    expected = session.get(CSRF_SESSION_KEY)
+    supplied = request.headers.get(CSRF_HEADER)
+    return (
+        isinstance(expected, str)
+        and isinstance(supplied, str)
+        and secrets.compare_digest(expected, supplied)
+    )
+
+
+def admin_write_required(view_func):
+    """组合管理员强一致授权与 Session CSRF 校验。"""
+
+    @wraps(view_func)
+    def csrf_checked(*args, **kwargs):
+        """拒绝缺失或无效 CSRF 请求头的管理员写请求。"""
+        if not csrf_token_is_valid():
+            return jsonify({
+                "success": False,
+                "error": "CSRF 令牌无效或已过期",
+                "code": "csrf_invalid",
+                "request_id": get_request_id(),
+            }), 403
+        return view_func(*args, **kwargs)
+
+    return admin_required(csrf_checked)

@@ -9,7 +9,9 @@
 - 读取 `MYSQL_REPLICATION_PASSWORD`
 - 在 primary 上创建应用写账号、应用读账号、复制状态检查账号和复制通道账号
 - 写账号授予业务库上的增删改查、`REFERENCES` 和迁移所需 DDL 权限
-- 读账号授予业务库上的 `SELECT`
+- 读账号授予业务库上的 `SELECT`，并仅授予
+  `performance_schema.events_statements_summary_by_digest` 的表级 `SELECT`，
+  用于管理员看板的高负载 SQL digest 摘要
 - 状态账号只授予 `REPLICATION CLIENT`
 - 复制通道账号授予 `REPLICATION SLAVE` 和 `REPLICATION CLIENT`
 

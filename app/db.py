@@ -253,6 +253,8 @@ def check_database_readiness():
                 "analysis_jobs",
                 "analysis_job_events",
                 "database_monitor_snapshots",
+                "database_monitor_settings",
+                "admin_audit_events",
             ]
             cursor.execute(
                 """

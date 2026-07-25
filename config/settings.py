@@ -163,6 +163,16 @@ class AppConfig:
             "DB_MONITOR_INTEGRITY_INTERVAL_SECONDS",
             default=86400,
         )
+        self.ADMIN_VITE_DEV_SERVER_URL = self._get_config(
+            "ADMIN_VITE_DEV_SERVER_URL",
+            required=False,
+            default="",
+        ).rstrip("/")
+        self.ADMIN_FRONTEND_DIST_DIR = self._get_config(
+            "ADMIN_FRONTEND_DIST_DIR",
+            required=False,
+            default="",
+        )
         if self.DB_INSPECTION_QUERY_TIMEOUT_MS <= 0:
             raise ValueError("配置错误: DB_INSPECTION_QUERY_TIMEOUT_MS 必须大于 0。")
         if not (
@@ -295,12 +305,12 @@ class AppConfig:
         if value in (None, ""):
             return default
         normalized = value.strip().lower()
-        if normalized in {"true", "1"}:
+        if normalized == "true":
             return True
-        if normalized in {"false", "0"}:
+        if normalized == "false":
             return False
         raise ValueError(
-            f"配置错误: 环境变量 '{key}' 只能是 true、false、1 或 0，当前值为 '{value}'。"
+            f"配置错误: 环境变量 '{key}' 只能是 true 或 false，当前值为 '{value}'。"
         )
 
     @staticmethod
