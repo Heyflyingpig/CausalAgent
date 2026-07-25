@@ -174,7 +174,7 @@ graph TD;
 
 ## 快速开始 | Quick Start
 ### Docker部署
-当前项目已经提供了完整的 `Dockerfile`，支持通过 Docker 运行后端服务，但暂未在公网镜像仓库发布官方镜像。
+当前项目已经提供了完整的多阶段 `Dockerfile`，会先用 Node 24 构建管理员 Vue，再生成仅包含 Python 运行时与静态产物的应用镜像；暂未在公网镜像仓库发布官方镜像。
 如果你已安装 Docker，可以在本地根据下面的步骤自行构建并运行镜像。
 
 
@@ -213,7 +213,7 @@ MYSQL_DATABASE=
 MYSQL_WRITE_USER=pyramid_writer
 MYSQL_WRITE_PASSWORD=
 
-# 应用读账号：用于主库/从库业务查询，建议只授予业务库 SELECT。
+# 应用读账号：用于业务查询，并只额外读取 Performance Schema digest 摘要。
 MYSQL_READ_USER=pyramid_reader
 MYSQL_READ_PASSWORD=
 
@@ -245,6 +245,9 @@ DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS=900
 DB_MONITOR_SLOW_QUERY_WARNING_DELTA=1
 DB_MONITOR_INTEGRITY_ENABLED=false
 DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=86400
+
+# 可选，仅本地管理员 Vue 开发使用；生产环境留空。
+ADMIN_VITE_DEV_SERVER_URL=
 
 # Web/后台任务并发配置
 WEB_WORKERS=1
@@ -292,7 +295,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 主从模式下数据库账号按职责拆分：
 
 - 写账号：`MYSQL_WRITE_USER` / `MYSQL_WRITE_PASSWORD`，用于应用写主库、Alembic 迁移和启动就绪检查；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
-- 读账号：`MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`，用于 `get_read_connection()` 的主库强一致读和从库弱一致读；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
+- 读账号：`MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`，用于 `get_read_connection()` 的主库强一致读和从库弱一致读；除业务库 `SELECT` 外，仅额外授予 `performance_schema.events_statements_summary_by_digest` 的表级 `SELECT`，供高负载 SQL digest 摘要使用；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
 - 复制状态检查账号：`MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`，只用于读取 `SHOW REPLICA STATUS`；缺失或不可用时，`eventual` 读安全回退主库读连接。
 - 复制通道账号：`MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`，只用于 MySQL 主从复制链路，不参与应用业务查询。
 
@@ -308,14 +311,41 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 - `GET /api/admin/jobs/workers`
 - `POST /api/admin/db/refresh`
 - `POST /api/admin/db/integrity/run`
+- `GET /api/admin/db/settings`
+- `PUT /api/admin/db/settings`
+- `POST /api/admin/db/settings/reset`
+- `GET /api/admin/db/settings/history?limit=&before_id=`
 
-以上接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问。未登录请求返回 `401`，普通登录用户返回 `403`；后端会在每次请求时从主库重新确认当前角色和启用状态，不信任浏览器 session 中的角色缓存。`dashboard` 与兼容 GET 接口只读取 MySQL 中最近一次共享快照，不会随管理员页面数量重复执行完整采集；`refresh` 仅登记实时状态、SQL 性能和表容量的共享刷新请求，返回 `202`，完整性审计由独立的 `integrity/run` 接口触发。旧 `health`、`slow-queries` 和 `jobs/workers` 接口继续保留原有 `data` 类型及旧字段。
+以上接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问。未登录 API 请求返回 `401`，未登录管理员页面回到统一登录入口，普通登录用户返回 `403`；后端会在每次请求时从主库重新确认当前角色和启用状态，不信任浏览器 session 中的角色缓存。登录和 `check_auth` 会增量返回 Session 绑定的 CSRF token，管理员刷新、完整性审计、配置保存和重置必须通过 `X-CSRF-Token` 回传。所有响应都有 `X-Request-ID`；格式合法的上游 ID 会被沿用，否则服务端生成新 ID。
 
-独立 monitor 进程通过 `python -m Database.monitor_worker` 启动，使用 MySQL 命名锁合并并发采集，并把 `realtime`、`sql_performance`、`capacity`、`integrity` 四类快照写入 `database_monitor_snapshots`。默认分层周期为：主从/连接/Worker/Job 实时状态 `10` 秒、SQL 性能 `60` 秒、表容量 `900` 秒；完整性定时审计默认关闭，启用后默认每天一次。关闭自动刷新不会影响页面首次读取和手动刷新，monitor 仍会处理手动请求。实时、SQL、容量周期分别只允许 `5～10`、`30～60`、`300～900` 秒，完整性周期至少 `3600` 秒，慢查询增量阈值必须大于 `0`；布尔配置严格使用 `true/false` 或 `1/0`。
+`dashboard` 与兼容 GET 接口只读取 MySQL 中最近一次共享快照，不会随管理员页面数量重复执行完整采集；`refresh` 仅登记实时状态、SQL 性能和表容量的共享刷新请求，返回 `202`，完整性审计由独立的 `integrity/run` 接口触发。旧 `health`、`slow-queries` 和 `jobs/workers` 接口继续保留原有 `data` 类型及旧字段。
+
+独立 monitor 进程通过 `python -m Database.monitor_worker` 启动，使用 MySQL 命名锁合并并发采集，并把 `realtime`、`sql_performance`、`capacity`、`integrity` 四类快照写入 `database_monitor_snapshots`。默认分层周期为：主从/连接/Worker/Job 实时状态 `10` 秒、SQL 性能 `60` 秒、表容量 `900` 秒；完整性定时审计默认关闭，启用后默认每天一次。关闭自动刷新不会影响页面首次读取和手动刷新，monitor 仍会处理手动请求。实时、SQL、容量周期分别只允许 `5～10`、`30～60`、`300～900` 秒，完整性周期至少 `3600` 秒，慢查询增量阈值必须大于 `0`；布尔配置严格使用 `true/false`。
+
+七项采集参数的有效值统一按“`database_monitor_settings` 数据库覆盖 > 环境变量 > 代码默认值”解析，`NULL` 表示继承。Web、dashboard、monitor 和慢查询采集共享同一解析服务，每个进程最多缓存 5 秒；配置保存后当前进程立即失效缓存，其他进程最多 5 秒热加载。数据库读取失败时继续使用最后有效值，没有最后有效值时回退环境变量/默认值并在看板显示降级状态。配置写入使用乐观版本锁，成功、拒绝和失败事件写入 `admin_audit_events`；删除管理员用户不会删除历史审计快照。
 
 “SQL 性能摘要/高负载 SQL”中的 Performance Schema digest 按累计 `SUM_TIMER_WAIT` 排序，不表示单次执行时间超过 `long_query_time`；`slow_query_log`、`long_query_time` 和 `Slow_queries` 仍表示 MySQL 慢查询配置与状态。看板主要用采集窗口内 `Slow_queries` 增量告警，默认增量达到 `1` 进入 warning，启动以来累计值仅作辅助信息。
 
-管理员登录或恢复会话后只进入受保护的 `/admin/database` 后台，不进入聊天界面；普通用户继续进入原聊天界面。数据库看板使用原生 HTML/CSS/JavaScript 和左侧后台导航，只提供共享快照读取、手动刷新、独立完整性审计和只读信息，没有 SQL、修复、迁移或其他任意数据库写入入口。运行期审计不再重复扫描已经由外键保证的关系，只轻量确认关键约束仍存在，并保留当前没有外键保证的 checkpoint/session 关系检查；升级前审计则按现有 schema 和待执行迁移决定是否需要孤立数据 preflight。连接使用率默认在 `70%` 进入 warning、`85%` 进入 error；单条检查 SELECT 默认最多执行 `3000ms`。
+管理员登录或恢复会话后只进入受保护的 `/admin/database` 后台，不进入聊天界面；普通用户继续进入原聊天界面。管理员后台已经迁移到独立 `admin-frontend/` 的 Vue 3 + TypeScript + Element Plus 应用，提供 `/admin/database` 看板和 `/admin/database/settings` 配置页；普通用户的 Flask 静态 HTML/CSS/JavaScript 与聊天 API/SSE 协议保持不变。后台仍只提供共享快照、手动刷新、独立完整性审计和七项采集参数配置，没有 SQL、修复、迁移、用户管理或任意业务数据写入入口。运行期审计不再重复扫描已经由外键保证的关系，只轻量确认关键约束仍存在，并保留当前没有外键保证的 checkpoint/session 关系检查；升级前审计则按现有 schema 和待执行迁移决定是否需要孤立数据 preflight。连接使用率默认在 `70%` 进入 warning、`85%` 进入 error；单条检查 SELECT 默认最多执行 `3000ms`。
+
+管理员前端开发与验证：
+
+```bash
+cd admin-frontend
+npm ci
+npm run typecheck
+npm run test:unit
+npm run test:e2e:mock
+npm run build
+```
+
+真实 Flask + monitor + 隔离 MySQL 的 Playwright 流程需要提供
+`PLAYWRIGHT_BASE_URL`、`PLAYWRIGHT_ADMIN_USERNAME`、`PLAYWRIGHT_ADMIN_PASSWORD`、
+`PLAYWRIGHT_USER_USERNAME` 和 `PLAYWRIGHT_USER_PASSWORD` 后执行
+`npm run test:e2e`。本机没有当前 Playwright Chromium 构件时，可显式设置
+`PLAYWRIGHT_CHANNEL=msedge` 复用已安装的 Edge；CI 未设置时仍使用标准 Chromium。
+
+Vite 固定使用 `/admin/` base，并只在开发模式代理 `/api` 到 Flask。只有显式设置 `ADMIN_VITE_DEV_SERVER_URL=http://127.0.0.1:5173` 时，Flask 完成页面鉴权后才跳转到 Vite；未配置时 Flask 托管生产构建。Dockerfile 使用 Node 24 构建阶段生成 Vue 产物，并把产物复制到最终 Python 镜像的 `/opt/causalchat-admin`；最终镜像不包含 Node 运行时、不启动 Vite，也不开放 Node 端口。发布回滚以迁移前基线提交或上一版镜像为单位，不提供长期 legacy 管理路由。
 
 执行包含 `users.role` 的最新 Alembic migration 后，可以把一个已经注册且已启用的用户提升为初始管理员：
 
@@ -332,7 +362,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.adm
 
 **不推荐使用windows部署，会有意想不到的问题**
 
-项目采用前后端分离的设计，需要同时运行后端服务和前端应用。
+普通用户前端仍由 Flask 直接托管；管理员 Vue 在开发时可单独运行 Vite，生产时由 Flask 托管预构建产物。长任务仍需要独立 worker，数据库看板仍需要独立 monitor。
 
 首先推荐创建一个环境，具体创建方式请自行查阅
 
@@ -356,6 +386,15 @@ docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.adm
     克隆项目后，在项目根目录运行以下命令：
     ```bash
     pip install -r requirements.txt
+    ```
+
+   管理员 Vue 需要 Node 24；首次或锁文件变化后构建一次：
+
+    ```bash
+    cd admin-frontend
+    npm ci
+    npm run build
+    cd ..
     ```
 7. 项目配置
 
@@ -416,6 +455,9 @@ docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.adm
     DB_MONITOR_SLOW_QUERY_WARNING_DELTA=1
     DB_MONITOR_INTEGRITY_ENABLED=false
     DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=86400
+
+    # 可选，仅本地管理员 Vue 开发使用；生产环境留空。
+    ADMIN_VITE_DEV_SERVER_URL=
 
     # LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
     LANGCHAIN_API_KEY=
@@ -498,13 +540,18 @@ python Run_causal.py
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
 ├── README.md               # 项目说明
 ├── README/                 # README 图片与更新日志
+├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
+│   ├── src/
+│   ├── tests/
+│   ├── package.json
+│   └── package-lock.json
 ├── database_init.log       # 数据库初始化日志
 ├── app/                    # Flask 应用主目录（Blueprint 结构）
 │   ├── __init__.py         # 创建 Flask app，注册蓝图
 │   ├── db.py               # 数据库会话与连接封装
 │   ├── main/               # 通用页面相关路由
 │   ├── auth/               # 登录、注册等认证相关路由
-│   ├── admin/              # 管理 API 与受保护后台 HTML
+│   ├── admin/              # 管理 API、审计服务与受保护 Vue 入口
 │   ├── chat/               # 聊天 & 会话相关路由与服务
 │   ├── files/              # 文件上传/管理相关路由
 │   └── static/             # 前端静态资源
@@ -529,6 +576,7 @@ python Run_causal.py
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
 │   ├── inspection.py       # 管理员看板统一只读检查服务
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口
+│   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
 │   ├── monitor_worker.py   # 数据库看板分层采集进程
 │   ├── agent_connect.py    # Langgraph checkpoint 相关数据库支持
 │   ├── mysql/              # MySQL 主从配置与初始化脚本

@@ -37,13 +37,18 @@
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
 ├── README.md               # 项目说明
+├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
+│   ├── src/
+│   ├── tests/
+│   ├── package.json
+│   └── package-lock.json
 ├── database_init.log       # 数据库初始化日志
 ├── app/                    # Flask 应用主目录（Blueprint 结构）
 │   ├── __init__.py         # 创建 Flask app，注册蓝图
 │   ├── db.py               # 数据库会话与连接封装
 │   ├── main/               # 通用页面相关路由
 │   ├── auth/               # 登录、注册等认证相关路由
-│   ├── admin/              # 管理员 API、受保护后台页面路由与 HTML
+│   ├── admin/              # 管理员 API、审计服务与受保护 Vue 入口
 │   ├── chat/               # 聊天与会话相关路由和服务
 │   ├── files/              # 文件上传与管理相关路由
 │   └── static/             # 前端静态资源
@@ -68,6 +73,7 @@
 │   ├── inspection.py       # 数据库看板统一只读检查服务
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口
 │   ├── monitor_worker.py   # 数据库看板分层采集进程
+│   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
 │   ├── mysql/              # MySQL 主从配置与初始化脚本
 │   ├── agent_connect.py
 │   └── migrations/
@@ -89,34 +95,36 @@
 - 每个 worker slot 会独占一组 MCP server process、一个通过 `MultiServerMCPClient.session("causal")` 打开的持久 `ClientSession`、一组由 `load_mcp_tools(session)` 生成的 LangChain tools，以及一个编译好的 Agent graph；真实执行单元是 slot，不是 Flask 请求线程。旧 `open_mcp_session()` / 手写 `list_tools()` 包装仅保留作历史兼容入口。
 - 父图当前只暴露 `mcp`、`rag` 两个工具阶段节点：`mcp` 子图内部执行 `mcp_planner -> mcp_tool_node -> mcp_result_parser`，`rag` 子图内部执行 `rag_question_planner -> rag_tool_node -> rag_result_parser`；worker 事件流仍沿用旧 `astream(stream_mode="updates")` 适配，不要求本轮输出 tool-level SSE 事件。
 - 配置统一由 `config/settings.py` 从系统环境变量读取；若项目根目录存在 `.env`，会先通过 `python-dotenv` 加载到环境变量。
-- 前端当前仍是 Flask 静态资源方案，不是 Node/Vite/React 工程；关键文件是：
+- 普通用户前端仍是 Flask 静态资源方案，聊天 API/SSE 契约不变；关键文件是：
   - `app/static/chat.html`
   - `app/static/css/style.css`
   - `app/static/js/script.js`
-  - `app/admin/db_admin.html`（不经 `/static` 暴露，只由受保护路由返回）
-  - `app/static/css/db_admin.css`
-  - `app/static/js/db_admin.js`
+- 管理员前端独立位于 `admin-frontend/`，使用 Vue 3、严格 TypeScript、Vue Router、Element Plus、Vite、Vitest 和 Playwright；路由为 `/admin/database` 与 `/admin/database/settings`，Vite base 固定为 `/admin/`。
+- 管理员 Vue 生产构建默认从 `admin-frontend/dist` 读取；Docker 镜像使用 Node 24 构建阶段，并把产物复制到 `/opt/causalchat-admin`。最终 Python 运行镜像不包含 Node、不启动 Vite、不开放 Node 端口。开发期只有显式设置 `ADMIN_VITE_DEV_SERVER_URL` 时，Flask 在完成页面鉴权后才跳转到 Vite。
+- 旧管理员 `db_admin.html`、`db_admin.css`、`db_admin.js` 已在等价测试、真实快照和整版回滚演练通过后移除；管理员页面只使用 Vue 生产构建或显式启用的 Vite 开发服务器，普通用户静态前端不受影响。
 - `Database/database_init.py` 只负责加载环境变量、确保数据库存在并检查连接；业务表结构维护入口是 Alembic，而不是这个脚本。
 - Alembic 迁移目录由 `alembic.ini` 指向 `Database/migrations`；业务 schema 变更应以迁移脚本为准。
 - `Database/audit_before_db_upgrade.py` 是旧库添加外键前的 schema-aware preflight，不是新库初始化步骤：仅当相关表已存在、目标外键尚未建立且待执行迁移需要该约束时才做孤立数据扫描；全新空库直接执行 Alembic。
 - `app/db.py` 提供写库连接、业务读连接、复制状态观测连接、慢查询计时、从库延迟回退和不暴露真实主机名的逻辑来源标记；`get_db_connection()` 仅作为兼容旧代码的主库写入口。
 - `get_read_connection(consistency='strong')` 固定读主库；`consistency='eventual'` 只会在从库复制状态正常且延迟不超过阈值时使用副本，否则安全回退主库。
 - 用户角色采用 `users.role` 的最小两级模型，只允许 `user` / `admin`；登录、会话恢复和管理员授权每次都通过主库强一致读确认 `role` 与 `is_active`，不把 session 中的角色值作为后端授权依据。
-- `/api/admin/*` 由统一管理员装饰器保护：无有效会话返回 `401`，普通登录用户返回 `403`；初始管理员只通过 `python -m app.auth.admin_cli promote <username>` 提升现有启用用户，不提供公开管理员注册接口。
-- 管理员登录或恢复会话后只进入 `/admin/database` 后台，普通用户继续进入聊天页；该后台 HTML 本身也复用 `admin_required`，不放在公开静态目录。后台为白色简约静态页面，左侧导航当前只开放数据库看板，不提供聊天、SQL、修复、迁移或业务数据写操作入口；手动刷新只会登记共享监控快照请求。
+- `/api/admin/*` 由统一管理员装饰器保护：无有效会话返回 `401`，普通登录用户返回 `403`；管理员页面未登录时回到统一登录入口，普通用户直访页面保持 `403`。初始管理员只通过 `python -m app.auth.admin_cli promote <username>` 提升现有启用用户，不提供公开管理员注册接口。
+- 登录成功和有效 `check_auth` 会返回 Session 绑定的 CSRF token；管理员刷新、完整性审计、配置保存和重置必须提供匹配的 `X-CSRF-Token`。所有响应都有 `X-Request-ID`，格式合法的上游 request ID 会被沿用。
+- 管理员登录或恢复会话后只进入 `/admin/database` 后台，普通用户继续进入聊天页。后台为白色简约 Vue 页面，左侧导航当前只开放数据库看板和采集配置，不提供聊天、SQL、修复、迁移、用户管理或业务数据写操作入口；手动刷新只会登记共享监控快照请求。
 - 管理看板新增聚合读取接口 `GET /api/admin/db/dashboard`，以及只登记共享刷新请求的 `POST /api/admin/db/refresh` 和 `POST /api/admin/db/integrity/run`；`/db/health`、`/db/overview`、`/db/integrity`、`/db/slow-queries`、`/jobs/workers` 继续兼容，但所有 GET 都只读取最近快照，不现场执行完整数据库采集。
+- 在线配置接口为 `GET/PUT /api/admin/db/settings`、`POST /api/admin/db/settings/reset` 和 `GET /api/admin/db/settings/history`。七项有效值固定按“数据库覆盖 > 环境变量 > 代码默认值”解析，`NULL` 表示继承；每个进程最多缓存 5 秒，读取失败时先使用最后有效值、再回退环境/默认值并标记降级。保存使用乐观版本锁，成功、拒绝和失败结果写入 `admin_audit_events`。
 - 独立 monitor 入口是 `python -m Database.monitor_worker`；它按 `realtime`、`sql_performance`、`capacity`、`integrity` 四类周期生成 MySQL 共享快照，并通过命名锁避免多个 monitor 或并发手动请求重复采集。默认周期分别为 `10s`、`60s`、`900s`，完整性定时审计默认关闭，启用后默认 `86400s`。
 - 看板连接使用率 warning/error 默认阈值为 `70%`/`85%`，由 `DB_DASHBOARD_CONNECTION_WARNING_PERCENT` 和 `DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT` 配置；快速 SELECT 超时由 `DB_INSPECTION_QUERY_TIMEOUT_MS` 配置，默认 `3000ms`。刷新和采集配置统一由 `DB_MONITOR_AUTO_REFRESH_ENABLED`、`DB_MONITOR_REALTIME_INTERVAL_SECONDS`、`DB_MONITOR_SQL_INTERVAL_SECONDS`、`DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS`、`DB_MONITOR_SLOW_QUERY_WARNING_DELTA`、`DB_MONITOR_INTEGRITY_ENABLED`、`DB_MONITOR_INTEGRITY_INTERVAL_SECONDS` 控制，不得在路由、SQL 或前端硬编码。
 - SQL digest 区块语义是“SQL 性能摘要/高负载 SQL”，按累计 `SUM_TIMER_WAIT` 排序，不等价于超过 `long_query_time` 的单次慢查询；慢查询告警优先使用采集窗口内 `Slow_queries` 增量，累计值仅作兼容和辅助展示。
 - 运行期完整性审计不再对已有外键保证的 message、attachment、job、event 和 checkpoint write 关系执行 `COUNT(*) + LEFT JOIN` 全表扫描，而是轻量确认关键约束存在；仍保留当前没有外键保证的 `checkpoints.thread_id → sessions.id` 检查，也不再要求 `chat_messages` 必须存在分区。
-- `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoints`、`checkpoint_writes`、`analysis_jobs`、`analysis_job_events`、`database_monitor_snapshots` 这些关键表以及 `users.role` 关键字段是否已存在。
+- `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoints`、`checkpoint_writes`、`analysis_jobs`、`analysis_job_events`、`database_monitor_snapshots`、`database_monitor_settings`、`admin_audit_events` 这些关键表以及 `users.role` 关键字段是否已存在。
 - 当前 LangGraph MySQL checkpointer 使用 `session_id` 作为 `thread_id`；删除已创建会话时必须在同一事务内先删除对应 `checkpoints`，并依赖 `checkpoint_writes → checkpoints` 的级联外键清理 writes，不能调用会自行开事务的 `MySQLSaver.delete_thread()`。
 - `analysis_jobs` 和 `analysis_job_events` 是当前长任务系统的真实持久化基础：前者是任务队列，后者是事件日志；job 创建、领取、状态更新、事件写入和 SSE 读取都必须走主库或强一致读。
 - 同一 `user_id + session_id` 同时只允许一个 `queued/running` job；当前实现不是 generated column，而是把 `active_session_key` 作为可空普通列，并通过唯一键 `uq_analysis_jobs_active_session` 兜底并发竞态。
 - 旧 `/api/send_stream` 只保留为迁移提示接口，返回 `410`；前端真实路径应使用 `POST /api/agent/jobs` 创建任务，再用 `GET /api/agent/jobs/<job_id>/events` 订阅 SSE，断线续传依赖 `Last-Event-ID`。
 - 数据库账号按职责拆分：
   - `MYSQL_WRITE_USER` / `MYSQL_WRITE_PASSWORD`：应用写主库、迁移、启动检查用。
-  - `MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`：业务读主库/从库数据用。
+  - `MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`：业务读主库/从库数据用；除业务库 `SELECT` 外，只额外读取 `performance_schema.events_statements_summary_by_digest`，不得扩大为全局 `SELECT`。
   - `MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`：只用于执行 `SHOW REPLICA STATUS`。
   - `MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`：只给 MySQL 从库复制通道拉 binlog 用。
   - `MYSQL_USER` / `MYSQL_PASSWORD`：仅作为写/读账号兼容兜底，不承担复制状态检查职责。
@@ -152,6 +160,21 @@ python -m app.agent.worker
 ```bash
 python -m Database.monitor_worker
 ```
+
+管理员 Vue 本地验证：
+
+```bash
+cd admin-frontend
+npm ci
+npm run typecheck
+npm run test:unit
+npm run test:e2e:mock
+npm run build
+```
+
+真实隔离环境 E2E 还需提供 `PLAYWRIGHT_BASE_URL`、管理员/普通用户测试凭据后运行
+`npm run test:e2e`；本机仅有 Edge 时可显式设置 `PLAYWRIGHT_CHANNEL=msedge`，
+未设置时仍使用 Playwright 标准 Chromium。
 
 本地启动桌面端：
 
@@ -277,11 +300,13 @@ python Causalchat.py
 
 ### 6.3 前端改动
 
-前端为静态资源方案，没有现成的 Node 构建流程。改动后至少要：
+普通用户前端仍为 Flask 静态资源；管理员前端有独立 Node 构建流程。改动后至少要：
 
 - 检查 `chat.html`、`style.css`、`script.js` 的引用关系
 - 检查接口路径是否仍与后端一致
 - 检查加载态、空态、失败态是否受影响
+- 在 `admin-frontend/` 执行 `npm ci`、`npm run typecheck`、`npm run test:unit` 和 `npm run build`
+- 管理员看板变更必须通过等价矩阵测试；真实数据库写流程只允许在隔离环境提供 Playwright 凭据后执行
 - 如条件允许，启动后端并在浏览器中做一次最小交互验证
 
 ### 6.4 RAG / MCP / Agent 图改动
