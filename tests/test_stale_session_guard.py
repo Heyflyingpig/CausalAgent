@@ -90,16 +90,15 @@ class SessionGuardTests(unittest.TestCase):
 
                 response = client.get("/api/check_auth")
 
-                self.assertEqual(
-                    response.get_json(),
-                    {
-                        "isLoggedIn": True,
-                        "username": "active-admin",
-                        "role": "admin",
-                    },
-                )
+                payload = response.get_json()
+                self.assertEqual(payload["isLoggedIn"], True)
+                self.assertEqual(payload["username"], "active-admin")
+                self.assertEqual(payload["role"], "admin")
+                self.assertIsInstance(payload["csrf_token"], str)
+                self.assertGreaterEqual(len(payload["csrf_token"]), 32)
                 with client.session_transaction() as flask_session:
                     self.assertNotIn("role", flask_session)
+                    self.assertEqual(flask_session["csrf_token"], payload["csrf_token"])
 
     def test_disabled_user_cannot_login(self):
         """认证路由必须在密码校验前拒绝已禁用账号。"""
@@ -144,10 +143,12 @@ class SessionGuardTests(unittest.TestCase):
                 )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.get_json(),
-            {"success": True, "username": "admin-login", "role": "admin"},
-        )
+        payload = response.get_json()
+        self.assertEqual(payload["success"], True)
+        self.assertEqual(payload["username"], "admin-login")
+        self.assertEqual(payload["role"], "admin")
+        self.assertIsInstance(payload["csrf_token"], str)
+        self.assertGreaterEqual(len(payload["csrf_token"]), 32)
 
 
 if __name__ == "__main__":

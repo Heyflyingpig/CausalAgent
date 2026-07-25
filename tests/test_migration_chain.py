@@ -69,5 +69,47 @@ class DatabaseMonitorSnapshotMigrationTests(unittest.TestCase):
         self.assertIn('"database_monitor_snapshots"', text)
 
 
+class DatabaseMonitorSettingsMigrationTests(unittest.TestCase):
+    """静态验证在线配置与管理员审计 migration。"""
+
+    def test_settings_migration_extends_snapshot_head_and_seeds_singleton(self):
+        """新 revision 必须承接快照 head 并创建全空覆盖单例。"""
+        path = Path(
+            "Database/migrations/versions/c2d3e4f5a6b7_add_monitor_settings_and_admin_audit.py"
+        )
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn('revision: str = "c2d3e4f5a6b7"', text)
+        self.assertIn('down_revision: Union[str, Sequence[str], None] = "b1c2d3e4f5a6"', text)
+        self.assertIn("CREATE TABLE database_monitor_settings", text)
+        self.assertIn("INSERT INTO database_monitor_settings (id)", text)
+        self.assertIn("VALUES (1)", text)
+        self.assertIn("realtime_interval_seconds BETWEEN 5 AND 10", text)
+        self.assertIn("sql_interval_seconds BETWEEN 30 AND 60", text)
+        self.assertIn("table_capacity_interval_seconds BETWEEN 300 AND 900", text)
+        self.assertIn("integrity_interval_seconds >= 3600", text)
+
+    def test_audit_survives_user_deletion_and_keeps_request_id(self):
+        """用户删除应保留审计快照，并支持 request ID 检索。"""
+        path = Path(
+            "Database/migrations/versions/c2d3e4f5a6b7_add_monitor_settings_and_admin_audit.py"
+        )
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE admin_audit_events", text)
+        self.assertIn("actor_username VARCHAR(255) NOT NULL", text)
+        self.assertIn("ON DELETE SET NULL", text)
+        self.assertIn("request_id VARCHAR(64) NOT NULL", text)
+        self.assertIn("CHECK (result IN ('success', 'rejected', 'failed'))", text)
+        self.assertIn("idx_admin_audit_request", text)
+
+    def test_readiness_requires_both_new_tables(self):
+        """Web、worker 与 monitor 启动检查必须发现未升级结构。"""
+        text = Path("app/db.py").read_text(encoding="utf-8")
+
+        self.assertIn('"database_monitor_settings"', text)
+        self.assertIn('"admin_audit_events"', text)
+
+
 if __name__ == "__main__":
     unittest.main()
