@@ -105,6 +105,51 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
 .section-state.error { color: var(--ca-red); }
 .section-state.warning { color: var(--ca-amber); }
 .digest-cell { color: #344054; line-height: 1.5; overflow-wrap: anywhere; }
+.sql-business-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 22px 0 10px;
+}
+.sql-business-heading span { color: var(--ca-muted); font-size: 12px; text-align: right; }
+.sql-business-table .el-table__cell { vertical-align: top; }
+.sql-business-action { color: var(--ca-text); line-height: 1.5; }
+.sql-business-description { display: block; color: var(--ca-muted); line-height: 1.65; }
+.sql-detail-drawer .el-drawer__header { margin-bottom: 0; padding-bottom: 18px; border-bottom: 1px solid var(--ca-line); }
+.sql-detail-drawer .el-drawer__body { padding-top: 20px; }
+.sql-detail-drawer h3 { margin: 4px 0 0; color: var(--ca-text); font-size: 22px; }
+.sql-detail-eyebrow { color: var(--ca-blue); font-size: 12px; font-weight: 700; }
+.sql-detail-content { display: grid; gap: 20px; }
+.sql-detail-business { padding: 18px; border: 1px solid #bfdbfe; border-radius: 10px; background: var(--ca-blue-soft); }
+.sql-detail-business strong { display: block; margin-top: 14px; font-size: 18px; }
+.sql-detail-business p { margin: 8px 0 0; color: var(--ca-muted); font-size: 13px; line-height: 1.7; }
+.sql-detail-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.sql-detail-evidence { display: grid; gap: 6px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #bfdbfe; }
+.sql-detail-evidence span { color: var(--ca-muted); font-size: 12px; font-weight: 700; }
+.sql-detail-evidence code { color: #1e3a8a; font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.sql-detail-notice { align-items: flex-start; }
+.sql-detail-section h4 { margin: 0 0 10px; font-size: 15px; }
+.sql-detail-digest {
+  min-height: 92px;
+  margin: 0;
+  padding: 16px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  border: 1px solid var(--ca-line);
+  border-radius: 8px;
+  color: #344054;
+  background: #f8fafc;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.75;
+  user-select: text;
+}
+.sql-raw-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.sql-raw-metrics > div { padding: 14px; border: 1px solid var(--ca-line); border-radius: 8px; }
+.sql-raw-metrics dt { color: var(--ca-muted); font-size: 12px; line-height: 1.55; }
+.sql-raw-metrics dd { margin: 8px 0 0; color: var(--ca-text); font-size: 18px; font-weight: 700; }
+.sql-detail-actions { display: flex; justify-content: flex-end; padding-top: 4px; }
 
 .inline-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .inline-metrics.four-columns { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -151,6 +196,11 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
   .source-meta { display: block; margin-top: 10px; text-align: left; }
   .panel-actions { margin-top: 12px; align-items: flex-start; flex-direction: column; }
   .inline-metrics, .inline-metrics.four-columns, .inline-metrics.five-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sql-business-heading { display: block; }
+  .sql-business-heading span { display: block; margin-top: 6px; text-align: left; line-height: 1.6; }
+  .sql-detail-drawer { width: 100vw !important; }
+  .sql-detail-drawer .el-drawer__header, .sql-detail-drawer .el-drawer__body { padding-right: 16px; padding-left: 16px; }
+  .sql-raw-metrics { grid-template-columns: 1fr; }
   .setting-row { grid-template-columns: 1fr; gap: 14px; }
   .setting-control { justify-content: flex-start; flex-wrap: wrap; }
 }

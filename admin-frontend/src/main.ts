@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import {
   ElAlert,
   ElButton,
+  ElDrawer,
   ElInputNumber,
   ElLoading,
   ElOption,
@@ -21,6 +22,7 @@ const app = createApp(App)
 for (const plugin of [
   ElAlert,
   ElButton,
+  ElDrawer,
   ElInputNumber,
   ElLoading,
   ElOption,

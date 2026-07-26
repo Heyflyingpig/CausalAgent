@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { adminApi } from '../api'
+import SqlDigestTable from '../components/SqlDigestTable.vue'
 import StatusCard from '../components/StatusCard.vue'
 import {
   MANUAL_POLL_INTERVAL_MS,
@@ -453,14 +454,13 @@ onBeforeUnmount(() => {
       <div><span>累计 Slow_queries</span><strong>{{ formatNumber(sqlPerformance.slow_queries_total ?? sqlPerformance.Slow_queries) }}</strong></div>
     </div>
     <div v-if="sqlState().message" class="section-state" :class="sqlState().tone">{{ sqlState().message }}</div>
-    <el-table v-if="statements.length" :data="statements" table-layout="auto">
-      <el-table-column label="高负载 SQL（Digest）" min-width="340"><template #default="{ row }"><span class="digest-cell">{{ row.digest_text || row.digest }}</span></template></el-table-column>
-      <el-table-column label="次数" min-width="90"><template #default="{ row }">{{ formatNumber(row.count_star ?? row.execution_count) }}</template></el-table-column>
-      <el-table-column label="累计总耗时" min-width="120"><template #default="{ row }">{{ displayValue(row.total_seconds) }} 秒</template></el-table-column>
-      <el-table-column label="平均耗时" min-width="110"><template #default="{ row }">{{ displayValue(row.avg_seconds) }} 秒</template></el-table-column>
-      <el-table-column label="扫描行" min-width="100"><template #default="{ row }">{{ formatNumber(row.rows_examined) }}</template></el-table-column>
-      <el-table-column label="返回行" min-width="100"><template #default="{ row }">{{ formatNumber(row.rows_sent) }}</template></el-table-column>
-    </el-table>
+    <template v-if="statements.length">
+      <div class="sql-business-heading">
+        <strong>高负载 SQL（Digest）</strong>
+        <span>默认展示业务语义；点击“查看详情”可核对完整原始摘要字段。</span>
+      </div>
+      <SqlDigestTable :statements="statements" />
+    </template>
   </section>
 
   <section class="panel">
