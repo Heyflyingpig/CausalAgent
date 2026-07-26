@@ -191,8 +191,6 @@ SECRET_KEY=
 # API 基础URL（OpenAI官方或第三方兼容接口）
 BASE_URL=
 MODEL=
-# 可选：第三方 OpenAI 兼容接口通常使用 json_mode。
-LLM_STRUCTURED_OUTPUT_METHOD=json_mode
 
 # OpenAI API 密钥或兼容 API 的密钥
 API_KEY=
@@ -251,6 +249,9 @@ LANGCHAIN_API_KEY=
 LANGCHAIN_PROJECT=
 
 ```
+
+结构化输出固定通过 DeepSeek/OpenAI 兼容的普通 Tool Calls（`tools/tool_calls`）完成，不提供 JSON mode 或 `/beta` strict 模式开关。由于 DeepSeek Thinking 默认开启、且固定或必选 `tool_choice` 与 Thinking 不兼容，Pydantic 结构化输出和 MCP planner 都使用关闭 Thinking 的 LLM 副本；自然语言节点与基础 LLM 不受影响。Pydantic 结构化输出由 Schema 固定工具，MCP planner 则通过 `tool_choice="required"` 强制模型从已加载工具中自行选择，绝不使用“选择第一个工具”的兜底。参见 [DeepSeek Thinking Mode 官方文档](https://api-docs.deepseek.com/guides/thinking_mode)。
+
 3. 在项目根目录运行docker-compose
 ```bash
 docker-compose -f docker-compose.replica.yml up -d
@@ -337,8 +338,6 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
     # API 基础URL（OpenAI官方或第三方兼容接口）
     BASE_URL=
     MODEL=
-    # 可选：第三方 OpenAI 兼容接口通常使用 json_mode。
-    LLM_STRUCTURED_OUTPUT_METHOD=json_mode
 
     # OpenAI API 密钥或兼容 API 的密钥
     API_KEY=

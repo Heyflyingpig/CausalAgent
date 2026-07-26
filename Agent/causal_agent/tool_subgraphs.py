@@ -16,6 +16,13 @@ from Agent.causal_agent.graph_utils import bind_node
 from Agent.causal_agent.state import CausalChatState
 
 
+def route_rag_planner(state: CausalChatState) -> str:
+    """仅在 RAG planner 产生标准 tool_calls 时进入 ToolNode。当失败时，跳过子图"""
+    messages = state.get("messages", [])
+    latest_message = messages[-1] if messages else None
+    return "tool" if getattr(latest_message, "tool_calls", None) else "skip"
+
+
 def build_mcp_subgraph(llm, mcp_tools):
     """Build the MCP tool-calling subgraph used as one parent-graph stage."""
     graph = StateGraph(CausalChatState)
@@ -56,7 +63,11 @@ def build_rag_subgraph(llm, rag_tools):
     graph.add_node("rag_result_parser", nodes.rag_result_parser_node)
     graph.set_entry_point("rag_question_planner")
     
-    graph.add_edge("rag_question_planner", "rag_tool_node")
+    graph.add_conditional_edges(
+        "rag_question_planner",
+        route_rag_planner,
+        {"tool": "rag_tool_node", "skip": END},
+    )
     graph.add_edge("rag_tool_node", "rag_result_parser")
     graph.add_edge("rag_result_parser", END)
     return graph.compile(name="rag")

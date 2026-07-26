@@ -14,7 +14,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from Agent.llm_structured_output import with_compatible_structured_output
+from Agent.llm_structured_output import invoke_structured
 from config.settings import settings
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -500,23 +500,26 @@ def _answer_question(question_payload: Dict[str, Any], evidence_payloads: List[D
 
     evidence_blocks = _format_evidence_blocks(evidence_payloads)
     try:
-        runnable = _build_answer_prompt() | with_compatible_structured_output(_get_llm(), RagAnswer)
-        answer = runnable.invoke(
-            {
+        answer = invoke_structured(
+            llm=_get_llm(),
+            schema=RagAnswer,
+            prompt=_build_answer_prompt(),
+            inputs={
                 "question": question_text,
                 "intent": question_payload.get("intent", ""),
                 "why_needed": question_payload.get("why_needed", ""),
                 "evidence_blocks": evidence_blocks,
-            }
+            },
+            node_name="rag_evidence_answer",
         )
-    except Exception as exc:
+    except Exception:
         return {
             "question": question_text,
             "intent": question_payload.get("intent", ""),
             "priority": question_payload.get("priority", "medium"),
             "why_needed": question_payload.get("why_needed", ""),
             "status": "insufficient_evidence",
-            "answer": f"证据已检索，但回答生成失败：{exc}",
+            "answer": "根据当前检索到的证据，无法可靠回答该问题。",
             "confidence": "low",
             "citations": [],
             "retrieved_docs": evidence_payloads,

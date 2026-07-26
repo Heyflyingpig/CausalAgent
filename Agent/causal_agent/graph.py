@@ -8,7 +8,8 @@ from .fault_tolerance import (
     recover_report,
     recover_terminal_message,
     recover_tools_to_agent,
-    recover_to_agent,
+    recover_fold_to_agent,
+    recover_preprocess_to_agent,
     route_to_normal_chat,
     short_retry,
     timeout,
@@ -82,14 +83,14 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
         fold_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=120, idle_timeout=45),
-        error_handler=recover_to_agent,
+        error_handler=recover_fold_to_agent,
     )
     workflow.add_node(
         "preprocess",
         preprocess_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=recover_to_agent,
+        error_handler=recover_preprocess_to_agent,
     )
     workflow.add_node("mcp", mcp_subgraph)
     workflow.add_node("rag", rag_subgraph)

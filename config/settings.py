@@ -46,16 +46,6 @@ class AppConfig:
         self.API_KEY = self._get_config("API_KEY")
         self.BASE_URL = self._get_config("BASE_URL")
         self.MODEL = self._get_config("MODEL")
-        self.LLM_STRUCTURED_OUTPUT_METHOD = self._get_config(
-            "LLM_STRUCTURED_OUTPUT_METHOD",
-            required=False,
-            default="json_mode",
-        )
-        if self.LLM_STRUCTURED_OUTPUT_METHOD not in {"json_mode", "json_schema", "function_calling"}:
-            raise ValueError(
-                "配置错误: 环境变量 'LLM_STRUCTURED_OUTPUT_METHOD' "
-                "只能是 json_mode、json_schema 或 function_calling。"
-            )
 
         # 数据库配置。MYSQL_HOST 作为历史兼容项，默认等价于写库地址。
         self.MYSQL_HOST = self._get_config("MYSQL_HOST", required=False)

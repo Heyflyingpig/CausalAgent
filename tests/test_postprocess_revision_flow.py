@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import types
@@ -45,6 +46,8 @@ from Agent.Postprocessing.evaluate_edge.evaluate_edge_llm import (
     EdgeEvaluationResult,
     _apply_edge_decisions,
 )
+from Agent.Postprocessing.evaluate_edge import evaluate_edge_llm
+from Agent.llm_structured_output import StructuredOutputError
 from Agent.causal_agent import nodes
 
 
@@ -117,12 +120,21 @@ def test_fix_cycles_returns_only_edges_actually_removed(
     """环路修复必须返回真实置零成功的边，而不是仅记录 LLM 文本。"""
 
     class FakeLLM:
+        extra_body = None
+
+        def model_copy(self, *, update):
+            self.extra_body = update["extra_body"]
+            return self
+
         def with_structured_output(self, *args, **kwargs):
             return object()
 
     class FakeRunnable:
         def invoke(self, payload):
-            return types.SimpleNamespace(remove_edge=["A", "B"], reason="break cycle")
+            return fix_cycles.CycleFixDecision(
+                remove_edge=["A", "B"],
+                reason="break cycle",
+            )
 
     class FakePrompt:
         def __or__(self, other):
@@ -172,12 +184,21 @@ def test_fix_cycles_rejects_edges_outside_cycle_or_not_directed(
     """LLM 只能删除当前环路内且矩阵值明确为 1 的有向边。"""
 
     class FakeLLM:
+        extra_body = None
+
+        def model_copy(self, *, update):
+            self.extra_body = update["extra_body"]
+            return self
+
         def with_structured_output(self, *args, **kwargs):
             return object()
 
     class FakeRunnable:
         def invoke(self, payload):
-            return types.SimpleNamespace(remove_edge=decision_edge, reason="invalid choice")
+            return fix_cycles.CycleFixDecision(
+                remove_edge=decision_edge,
+                reason="invalid choice",
+            )
 
     class FakePrompt:
         def __or__(self, other):
@@ -237,7 +258,6 @@ def _keep_all(edges, *_args):
     }
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("matrix", "olc", "expected_convention", "removed_cell"),
     [
@@ -245,7 +265,7 @@ def _keep_all(edges, *_args):
         (OLC_CYCLE_MATRIX, True, "olc", (2, 0)),
     ],
 )
-async def test_postprocess_revised_graph_excludes_cycle_removed_edge(
+def test_postprocess_revised_graph_excludes_cycle_removed_edge(
     monkeypatch,
     matrix,
     olc,
@@ -270,7 +290,9 @@ async def test_postprocess_revised_graph_excludes_cycle_removed_edge(
     monkeypatch.setattr(nodes, "fix_cycles_with_llm", fake_fix)
     monkeypatch.setattr(nodes, "evaluate_edges_with_llm", fake_evaluate)
 
-    result = await nodes.postprocess_node(_analysis_state(matrix, olc=olc), object())
+    result = asyncio.run(
+        nodes.postprocess_node(_analysis_state(matrix, olc=olc), object())
+    )
 
     revised = result["postprocess_result"]["revised_graph"]
     assert observed["matrix_convention"] == expected_convention
@@ -285,8 +307,7 @@ async def test_postprocess_revised_graph_excludes_cycle_removed_edge(
     ]
 
 
-@pytest.mark.asyncio
-async def test_postprocess_marks_invalid_candidate_edges_as_error(monkeypatch):
+def test_postprocess_marks_invalid_candidate_edges_as_error(monkeypatch):
     """非空候选边无法完整规范化时必须失败，避免输出静默丢边的修订图。"""
     state = {
         "causal_analysis_result": {
@@ -309,7 +330,7 @@ async def test_postprocess_marks_invalid_candidate_edges_as_error(monkeypatch):
         lambda *args: pytest.fail("结构非法时不应调用 LLM 边评估"),
     )
 
-    result = await nodes.postprocess_node(state, object())
+    result = asyncio.run(nodes.postprocess_node(state, object()))
 
     assert "error" in result["postprocess_result"]
     assert "revised_graph" not in result["postprocess_result"]
@@ -361,3 +382,28 @@ def test_edge_decisions_keep_reverse_remove_and_uncertain():
         ("D", "E", "undirected"),
     ]
     assert result["revised_edges"][1]["label"] == ""
+
+
+def test_edge_evaluation_structured_failure_keeps_all_original_edges(monkeypatch):
+    """边评估 Schema 失败时保留全部原边并标记低置信度。"""
+    candidates = [
+        {"id": "1", "source": "A", "target": "B", "edge_type": "directed"},
+        {"id": "2", "source": "B", "target": "C", "edge_type": "directed"},
+    ]
+
+    def fail_structured(**kwargs):
+        raise StructuredOutputError(
+            node_name="postprocess_edge_evaluation",
+            schema_name="EdgeEvaluationResult",
+            cause=ValueError("approximate edges payload rejected"),
+        )
+
+    monkeypatch.setattr(evaluate_edge_llm, "invoke_structured", fail_structured)
+    result = evaluate_edge_llm.evaluate_edges_with_llm(candidates, {}, object())
+
+    assert result["confidence"] == "low"
+    assert [(edge["source"], edge["target"]) for edge in result["revised_edges"]] == [
+        ("A", "B"),
+        ("B", "C"),
+    ]
+    assert all(decision["action"] == "keep" for decision in result["decisions"])

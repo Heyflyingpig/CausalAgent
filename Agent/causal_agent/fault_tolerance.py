@@ -74,19 +74,37 @@ def route_to_normal_chat(state: CausalChatState, error: NodeError) -> Command:
                     content=f"决策：普通问答。路由节点降级原因：{_error_message(error)}",
                     name=error.node,
                 )
-            ]
+            ],
+            "route_decision": "normal_chat",
         },
         goto="normal_chat",
     )
 
 
-def recover_to_agent(state: CausalChatState, error: NodeError) -> Command:
-    """中间节点失败后的恢复：记录失败消息并回到 agent 重新决策。"""
+def recover_fold_to_agent(state: CausalChatState, error: NodeError) -> Command:
+    """Fold 节点失败后的恢复：记录审计决策并回到 agent。"""
     return Command(
         update={
             "messages": [
                 AIMessage(
                     content=f"决策：节点失败，返回 agent 重新判断。{_error_message(error)}",
+                    name=error.node,
+                )
+            ],
+            "tool_call_request": False,
+            "fold_decision": "agent",
+        },
+        goto="agent",
+    )
+
+
+def recover_preprocess_to_agent(state: CausalChatState, error: NodeError) -> Command:
+    """Preprocess 节点失败后的恢复：回到 agent，但不伪造 fold 决策。"""
+    return Command(
+        update={
+            "messages": [
+                AIMessage(
+                    content=f"决策：预处理失败，返回 agent 重新判断。{_error_message(error)}",
                     name=error.node,
                 )
             ],

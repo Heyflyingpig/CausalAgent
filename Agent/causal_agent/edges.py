@@ -1,49 +1,33 @@
-from langchain_core.messages import AIMessage
 import logging
 from .state import CausalChatState
 
+
+ROUTE_DECISIONS = {"fold", "postprocess", "normal_chat", "inquiry_answer"}
+FOLD_DECISIONS = {"preprocess", "agent"}
+
 def decision_router(state: CausalChatState) -> str:
     """
-    这是图中的主要“决策”边。
-    它检查来自代理的最新消息以决定下一步行动。
+    只读取 agent 写入的显式 route_decision，不从展示消息推断控制流。
     """
     logging.info("路由: 主决策")
-    agent_decision = state["messages"][-1].content
-    
-    if "信息完备" in agent_decision:
-        logging.info("路由决策 -> 前往[后处理]")
-        return "postprocess"
-    elif "信息不全" in agent_decision:
-        logging.info("路由决策 -> 前往[文件加载]")
-        return "fold"
-    elif "报告" in agent_decision:
-        logging.info("路由决策 -> 前往[追问模块]")
-        return "inquiry_answer"
-    else: 
-        logging.info("路由决策 -> 前往[普通问答]")
+    decision = state.get("route_decision")
+    if decision not in ROUTE_DECISIONS:
+        logging.warning("route_decision 缺失或非法: %r；降级到 normal_chat", decision)
         return "normal_chat"
+    logging.info("路由决策 -> %s", decision)
+    return decision
 
 def fold_router(state: CausalChatState) -> str:
     """
-    这是图中的文件加载"决策"边。
-    它检查来自代理的最新消息以决定下一步行动。
-    
-    - 如果信息完备，前往 preprocess
-    - 如果收到用户输入，返回 agent 重新判断
+    只读取 fold 写入的显式 fold_decision，不从展示消息推断控制流。
     """
     logging.info("--- 路由: 文件加载决策 ---")
-    fold_process_decision = state["messages"][-1].content
-    
-    if "信息完备" in fold_process_decision:
-        logging.info("路由决策 -> 前往[执行预处理]")
-        return "preprocess"
-    elif "返回 agent" in fold_process_decision or "用户输入" in fold_process_decision:
-        logging.info("路由决策 -> 收到用户输入，返回[agent]重新判断")
+    decision = state.get("fold_decision")
+    if decision not in FOLD_DECISIONS:
+        logging.warning("fold_decision 缺失或非法: %r；降级到 agent", decision)
         return "agent"
-    else:
-        # 默认情况：返回 agent
-        logging.info("路由决策 -> 默认返回[agent]")
-        return "agent"
+    logging.info("路由决策 -> %s", decision)
+    return decision
 
 def preprocess_router(state: CausalChatState) -> str:
     """

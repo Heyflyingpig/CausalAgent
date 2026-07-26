@@ -3,7 +3,7 @@ from typing import List, Tuple
 import numpy as np
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from Agent.llm_structured_output import with_compatible_structured_output
+from Agent.llm_structured_output import invoke_structured
 from Agent.causal_agent.state import CausalChatState
 from Agent.knowledge_base.query_rag import get_rag_excerpt
 import json
@@ -103,13 +103,17 @@ def fix_cycles_with_llm(
         只返回一个 JSON 对象，不要输出 Markdown、代码块或额外解释。"""),
             ])
             
-            runnable = prompt | with_compatible_structured_output(llm, CycleFixDecision)
-            
-            decision = runnable.invoke({
-                "cycle_description": cycle_description,
-                "data_summary": json.dumps(analysis_parameters, ensure_ascii=False, indent=2),
-                "knowledge_excerpt": knowledge_excerpt
-            })
+            decision = invoke_structured(
+                llm=llm,
+                schema=CycleFixDecision,
+                prompt=prompt,
+                inputs={
+                    "cycle_description": cycle_description,
+                    "data_summary": json.dumps(analysis_parameters, ensure_ascii=False, indent=2),
+                    "knowledge_excerpt": knowledge_excerpt,
+                },
+                node_name="postprocess_cycle_fix",
+            )
             
             # 解析LLM的决策
             edge_to_remove = decision.remove_edge

@@ -1,16 +1,16 @@
 import json
 import logging
-from typing import Any, Dict, List, Literal
+from typing import Dict, List, Literal
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
 from langgraph.func import task
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
+from Agent.llm_structured_output import ainvoke_structured
 from Agent.causal_agent.back_prompt import causal_rag_prompt
 from Agent.causal_agent.state import CausalChatState
-from Agent.tool_node.structured_output import ainvoke_json_output
 
 
 class RagQuestionItem(BaseModel):
@@ -18,7 +18,6 @@ class RagQuestionItem(BaseModel):
 
     question: str = Field(
         ...,
-        validation_alias=AliasChoices("question", "query"),
         description="面向知识库的具体查询问题。",
     )
     intent: str = Field(..., description="这个问题服务的分析意图。")
@@ -28,7 +27,6 @@ class RagQuestionItem(BaseModel):
     )
     why_needed: str = Field(
         ...,
-        validation_alias=AliasChoices("why_needed", "reason"),
         description="为什么需要查询这个问题。",
     )
 
@@ -39,28 +37,14 @@ class RagQuestionBundle(BaseModel):
 
     questions: List[RagQuestionItem] = Field(
         default_factory=list,
+        min_length=1,
         description="根据对话历史和数据摘要生成的结构化知识库查询问题列表。",
     )
 
 
-def normalize_rag_question_output(llm_output: Any, max_questions: int) -> List[Dict]:
-    """把 LLM 输出规范化为 rag_enrichment_search 可接收的问题 dict 列表。"""
-    if isinstance(llm_output, dict) and "questions" in llm_output:
-        raw_questions = llm_output["questions"]
-    elif isinstance(llm_output, list):
-        raw_questions = llm_output
-    elif isinstance(llm_output, dict) and "question" in llm_output:
-        raw_questions = [llm_output]
-    else:
-        raise ValueError("RAG question output must be a questions object, question list, or single question object.")
-
-    if not isinstance(raw_questions, list):
-        raise ValueError("RAG question output field 'questions' must be a list.")
-
-    questions = [
-        RagQuestionItem.model_validate(question).model_dump()
-        for question in raw_questions
-    ][:max_questions]
+def normalize_rag_question_output(bundle: RagQuestionBundle, max_questions: int) -> List[Dict]:
+    """把已校验的 Schema 实例转换为 RAG 工具输入。"""
+    questions = [question.model_dump() for question in bundle.questions[:max_questions]]
     if not questions:
         raise ValueError("RAG question output must contain at least one question.")
     return questions
@@ -154,10 +138,11 @@ async def get_rag_questions(
     )
 
     logging.info("正在调用LLM生成结构化RAG查询问题...")
-    llm_output = await ainvoke_json_output(
-        rag_prompt,
-        llm,
-        {
+    bundle = await ainvoke_structured(
+        llm=llm,
+        schema=RagQuestionBundle,
+        prompt=rag_prompt,
+        inputs={
             "messages": _format_messages(state["messages"]),
             "data_summary": json.dumps(state.get("analysis_parameters", {}), indent=2, ensure_ascii=False),
             "preprocess_summary": state.get("preprocess_summary", ""),
@@ -165,8 +150,9 @@ async def get_rag_questions(
             "system_role": causal_rag_prompt(),
             "max_questions": max_questions,
         },
+        node_name="rag_question_planner",
     )
 
-    questions = normalize_rag_question_output(llm_output, max_questions=max_questions)
+    questions = normalize_rag_question_output(bundle, max_questions=max_questions)
     logging.info(f"LLM生成的RAG问题列表: {questions}")
     return questions
