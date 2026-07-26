@@ -48,7 +48,7 @@ class RagQuestionBundle(BaseModel):
 
 
 def normalize_rag_question_output(llm_output: Any, max_questions: int) -> List[Dict]:
-    """把 LLM 输出规范化为 rag_enrichment_search 可接收的问题 dict 列表。"""
+    """把 LLM 输出规范化为 RagService 可接收的问题 dict 列表。"""
     if isinstance(llm_output, dict) and "questions" in llm_output:
         raw_questions = llm_output["questions"]
     elif isinstance(llm_output, list):

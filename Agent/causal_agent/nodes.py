@@ -476,11 +476,11 @@ async def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
 
 from Agent.knowledge_base.query_rag import format_rag_summary_for_prompt
+from Agent.tool_node.rag_query_task import rag_query_task
 from Agent.tool_node.rag_questions import get_rag_questions
 from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
 from Agent.tool_node.tool_message_adapter import (
     attach_tool_call_metadata,
-    latest_ai_tool_call_ids,
     latest_matching_tool_result,
     parse_tool_message_json,
 )
@@ -541,79 +541,12 @@ async def mcp_result_parser_node(state: CausalChatState) -> dict:
     }
 
 
-async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag_tools: list) -> dict:
-    """子节点：获取rag问题"""
-    logging.info("正在启动 RAG 问题生成任务...")
-
-    max_questions = 3
-    rag_questions = await get_rag_questions(state, llm, max_questions=max_questions)
-    tool_name = _select_rag_tool_name(rag_questions, rag_tools)
-
-    ai_message = AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "name": tool_name,
-                "args": {
-                    "questions": rag_questions,
-                    "max_results": 5,
-                },
-                "id": "rag_enrichment_search_1",
-            }
-        ],
-    )
-    return {"messages": [ai_message]}
-
-
-def _select_rag_tool_name(rag_questions: list[dict], rag_tools: list) -> str:
-    """选择沿用原名称的默认多模态 RAG 工具。"""
-    names = {getattr(tool, "name", "") for tool in rag_tools}
-    if "rag_enrichment_search" in names:
-        return "rag_enrichment_search"
-    raise ValueError("rag_enrichment_search tool is unavailable")
-
-
-async def rag_result_parser_node(state: CausalChatState) -> dict:
-    """子节点：获取rag返回内容，注入state当中"""
-    messages = state.get("messages", [])
-    latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
-    if latest_tool_message is None:
-        if latest_ai_tool_call_ids(messages):
-            return {
-                "knowledge_base_result": {
-                    "success": False,
-                    "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
-                    "questions": [],
-                    "evidence_count": 0,
-                    "error": "No RAG tool result was produced.",
-                }
-            }
-        existing_result = state.get("knowledge_base_result")
-        if isinstance(existing_result, dict):
-            return {"knowledge_base_result": existing_result}
-        return {
-            "knowledge_base_result": {
-                "success": False,
-                "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
-                "questions": [],
-                "evidence_count": 0,
-                "error": "No RAG tool result was produced.",
-            }
-        }
-
-    parsed = parse_tool_message_json(latest_tool_message)
-    if not parsed.get("success"):
-        parsed.setdefault("summary", "知识库增强暂不可用，报告将仅基于因果分析结果生成。")
-        parsed.setdefault("questions", [])
-        parsed.setdefault("evidence_count", 0)
-    result = attach_tool_call_metadata(
-        parsed,
-        latest_tool_message,
-        latest_tool_call,
-    )
-    return {
-        "knowledge_base_result": result,
-    }
+async def rag_node(state: CausalChatState, llm: ChatOpenAI, rag_service: Any) -> dict:
+    """生成多模态检索问题，调用共享 RagService 并写回结构化结果。"""
+    logging.info("正在执行默认多模态 RAG 增强...")
+    questions = await get_rag_questions(state, llm, max_questions=3)
+    result = await rag_query_task(questions, rag_service)
+    return {"knowledge_base_result": result}
 
 
 # 环路检测模块

@@ -46,10 +46,7 @@ NODE_DESCRIPTIONS = {
     "fold": "Load file and validate data",
     "preprocess": "Data preprocessing - generate summary and visualization",
     "mcp": "Run causal analysis through MCP ToolNode subgraph",
-    "rag": "Run knowledge-base enrichment through RAG ToolNode subgraph",
-    "rag_question_planner": "Plan questions for the default knowledge corpus",
-    "rag_tool_node": "Query the default knowledge corpus",
-    "rag_result_parser": "Normalize knowledge-base evidence into agent state",
+    "rag": "Run knowledge-base enrichment through the shared RagService",
     "postprocess": "Postprocessing - loop detection and edge evaluation",
     "report": "Generate report - integrate analysis results",
     "normal_chat": "Normal chat",
@@ -196,13 +193,7 @@ async def ai_call_stream(text, user_id, username, session_id, graph=None):
             
             # chunk的格式: {node_name: node_output}
             for node_name, node_output in updates.items():
-                if node_name == "rag_tool_node" and isinstance(node_output, dict):
-                    for message in node_output.get("messages", []):
-                        tool_name = getattr(message, "name", None)
-                        if tool_name:
-                            event_data = {"type": "rag_tool_call", "node_name": node_name, "tool_name": tool_name}
-                            yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
-                if node_name == "rag_result_parser" and isinstance(node_output, dict):
+                if node_name == "rag" and isinstance(node_output, dict):
                     knowledge_result = node_output.get("knowledge_base_result")
                     if isinstance(knowledge_result, dict):
                         event_data = {"type": "rag_result", "node_name": node_name, "data": knowledge_result}
