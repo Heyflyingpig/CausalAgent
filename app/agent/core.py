@@ -48,11 +48,21 @@ NODE_DESCRIPTIONS = {
     "preprocess": "Data preprocessing - generate summary and visualization",
     "mcp": "Run causal analysis through MCP ToolNode subgraph",
     "rag": "Run knowledge-base enrichment through RAG ToolNode subgraph",
+    "rag_question_planner": "Plan questions for the selected knowledge corpus",
+    "rag_tool_node": "Query the selected knowledge corpus",
+    "rag_result_parser": "Normalize knowledge-base evidence into agent state",
     "postprocess": "Postprocessing - loop detection and edge evaluation",
     "report": "Generate report - integrate analysis results",
     "normal_chat": "Normal chat",
     "inquiry_answer": "Answer questions based on the report"
 }
+
+
+def _stream_update_payload(chunk: Any) -> dict[str, Any]:
+    """兼容 LangGraph 父图与 subgraph updates 两种流式载荷形状。"""
+    if isinstance(chunk, tuple) and len(chunk) == 2 and isinstance(chunk[1], dict):
+        return chunk[1]
+    return chunk if isinstance(chunk, dict) else {}
 
 def initialize_llm():
     """在应用启动时初始化全局LLM实例。"""
@@ -176,11 +186,23 @@ async def ai_call_stream(text, user_id, username, session_id, graph=None):
     try:
         # 使用 astream 流式执行，捕获节点更新
         # stream_mode="updates" 会在每个节点执行后返回更新
-        async for chunk in target_graph.astream(input_data, config, stream_mode="updates"):
-            logging.info(f"[SSE] 收到更新: {list(chunk.keys())}")
+        async for chunk in target_graph.astream(input_data, config, stream_mode="updates", subgraphs=True):
+            updates = _stream_update_payload(chunk)
+            logging.info(f"[SSE] 收到更新: {list(updates.keys())}")
             
             # chunk的格式: {node_name: node_output}
-            for node_name, node_output in chunk.items():
+            for node_name, node_output in updates.items():
+                if node_name == "rag_tool_node" and isinstance(node_output, dict):
+                    for message in node_output.get("messages", []):
+                        tool_name = getattr(message, "name", None)
+                        if tool_name:
+                            event_data = {"type": "rag_tool_call", "node_name": node_name, "tool_name": tool_name}
+                            yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                if node_name == "rag_result_parser" and isinstance(node_output, dict):
+                    knowledge_result = node_output.get("knowledge_base_result")
+                    if isinstance(knowledge_result, dict):
+                        event_data = {"type": "rag_result", "node_name": node_name, "data": knowledge_result}
+                        yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
                 if node_name in NODE_DESCRIPTIONS:
 
                     # 如果有上一个节点，且当前节点与上一个不同，先发送上一个节点的结束事件
