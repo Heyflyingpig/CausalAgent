@@ -534,9 +534,43 @@ async def mcp_result_parser_node(state: CausalChatState) -> dict:
     messages = state.get("messages", [])
     latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
     if latest_tool_message is None:
-        raise ValueError("MCP result parser expected a matching ToolMessage.")
+        existing_result = state.get("causal_analysis_result")
+        if isinstance(existing_result, dict) and existing_result.get("success") is False:
+            return {
+                "causal_analysis_result": existing_result,
+                "tool_call_request": False,
+            }
+        return {
+            "causal_analysis_result": {
+                "success": False,
+                "error": "MCP 工具没有返回与本次调用匹配的 ToolMessage。",
+                "error_type": "MCPProtocolError",
+            },
+            "tool_call_request": False,
+        }
 
     parsed = parse_tool_message_json(latest_tool_message)
+    if type(parsed.get("success")) is not bool:
+        logging.warning(
+            "MCP 返回结果缺少布尔型 success 字段: keys=%s",
+            sorted(str(key) for key in parsed),
+        )
+        parsed = {
+            "success": False,
+            "error": "MCP 返回结果不符合协议：缺少布尔型 success 字段。",
+            "error_type": "MCPProtocolError",
+        }
+    elif parsed.get("success") is True and set(parsed) == {"success", "data"}:
+        logging.warning(
+            "MCP 返回结果不是结构化因果分析结果: data_type=%s",
+            type(parsed.get("data")).__name__,
+        )
+        parsed = {
+            "success": False,
+            "error": "MCP 返回结果不符合协议：未返回结构化因果分析结果。",
+            "error_type": "MCPProtocolError",
+        }
+
     result = attach_tool_call_metadata(
         parsed,
         latest_tool_message,

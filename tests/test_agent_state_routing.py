@@ -4,7 +4,7 @@ import sys
 import types
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
 for key, value in {
@@ -46,7 +46,11 @@ from Agent.causal_agent.fault_tolerance import (
     recover_preprocess_to_agent,
     route_to_normal_chat,
 )
-from Agent.causal_agent.tool_subgraphs import route_rag_planner
+from Agent.causal_agent.tool_subgraphs import (
+    route_mcp_planner,
+    route_mcp_tool_result,
+    route_rag_planner,
+)
 from Agent.llm_structured_output import StructuredOutputError
 from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
 
@@ -120,6 +124,28 @@ def test_agent_deterministic_and_failure_routes_overwrite_old_state(monkeypatch)
     assert structured_failure["route_decision"] == "normal_chat"
 
 
+def test_mcp_protocol_failure_returns_to_agent_without_restarting_fold():
+    """MCP 协议失败必须成为显式失败，使 Agent 结束本轮分析而不是重新加载文件。"""
+    tool_call = AIMessage(
+        content="",
+        tool_calls=[{"name": "causal_pc", "args": {}, "id": "call-1"}],
+    )
+    tool_result = ToolMessage(
+        content='{"result": {"unexpected": true}}',
+        tool_call_id="call-1",
+    )
+    state = _state("请使用 data.csv 立即执行因果分析")
+    state["messages"].extend([tool_call, tool_result])
+
+    parsed = asyncio.run(nodes.mcp_result_parser_node(state))
+    state.update(parsed)
+    decision = asyncio.run(nodes.agent_node(state, object()))
+
+    assert parsed["causal_analysis_result"]["success"] is False
+    assert parsed["causal_analysis_result"]["error_type"] == "MCPProtocolError"
+    assert decision["route_decision"] == "normal_chat"
+
+
 def test_fold_extraction_failure_uses_recent_file_and_can_validate(monkeypatch):
     """参数提取失败视为空值，仍继续最近文件与确定性校验。"""
     async def fail_structured(**kwargs):
@@ -187,6 +213,51 @@ def test_routers_use_safe_defaults_for_missing_or_invalid_state():
     assert edges.decision_router({"route_decision": "invalid", "messages": []}) == "normal_chat"
     assert edges.fold_router({"messages": [AIMessage(content="信息完备")]}) == "agent"
     assert edges.fold_router({"fold_decision": "invalid", "messages": []}) == "agent"
+
+
+def test_mcp_subgraph_routes_only_valid_tool_calls_and_results():
+    """MCP 子图仅执行有效调用，并在异常恢复结果出现后直接结束。"""
+    planner_call = AIMessage(
+        content="",
+        tool_calls=[{"name": "causal_pc", "args": {}, "id": "call-1"}],
+    )
+    tool_result = ToolMessage(content='{"success": true}', tool_call_id="call-1")
+
+    assert route_mcp_planner({"messages": [planner_call]}) == "tool"
+    assert route_mcp_planner({"messages": [AIMessage(content="planner failed")]}) == "failed"
+    assert route_mcp_tool_result(
+        {
+            "messages": [planner_call, tool_result],
+            "causal_analysis_result": {"success": False},
+        }
+    ) == "parse"
+    assert route_mcp_tool_result(
+        {
+            "messages": [planner_call, AIMessage(content="tool failed")],
+            "causal_analysis_result": {"success": False},
+        }
+    ) == "failed"
+
+
+def test_mcp_parser_preserves_subgraph_failure_without_tool_message():
+    """ToolNode 异常恢复已生成的失败结果不能被 parser 的二次错误覆盖。"""
+    failure = {
+        "success": False,
+        "error": "connection closed",
+        "error_type": "ConnectionError",
+    }
+
+    result = asyncio.run(
+        nodes.mcp_result_parser_node(
+            {
+                "messages": [AIMessage(content="MCP tool failed")],
+                "causal_analysis_result": failure,
+            }
+        )
+    )
+
+    assert result["causal_analysis_result"] == failure
+    assert result["tool_call_request"] is False
 
 
 def test_recovery_handlers_keep_route_audit_fields_separate():

@@ -8,10 +8,23 @@ from langchain_core.messages import ToolMessage
 
 
 def _normalize_payload(payload: Any) -> dict[str, Any]:
-    """把 adapter 或手写工具返回载荷统一成业务 dict。"""
-    if isinstance(payload, dict):
-        return payload
-    return {"success": True, "data": payload}
+    """把 MCP 常见包装和 JSON 字符串解包成业务 dict。"""
+    value = payload
+    for _ in range(3):
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                return {"success": True, "data": value}
+            continue
+        if isinstance(value, dict) and set(value) == {"result"}:
+            value = value["result"]
+            continue
+        break
+
+    if isinstance(value, dict):
+        return value
+    return {"success": True, "data": value}
 
 
 def _json_object_from_text(text: str) -> dict[str, Any] | None:
@@ -72,7 +85,7 @@ def parse_tool_message_json(tool_message: ToolMessage) -> dict[str, Any]:
             "error": f"ToolMessage content is not valid JSON: {exc}",
             "raw_content": content,
         }
-    return parsed if isinstance(parsed, dict) else {"success": True, "data": parsed}
+    return _normalize_payload(parsed)
 
 
 def _latest_tool_message(messages: list) -> ToolMessage | None:

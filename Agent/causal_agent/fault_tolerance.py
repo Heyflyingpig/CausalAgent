@@ -137,7 +137,7 @@ def recover_tools_to_agent(state: CausalChatState, error: NodeError) -> Command:
 
 
 def recover_mcp_tool_failure(state: CausalChatState, error: NodeError) -> dict:
-    """MCP ToolNode 失败后的恢复：写入因果分析失败结构，由父图决定后续路由。"""
+    """MCP 子图节点失败后的恢复：写入标准失败结构，由父图决定后续路由。"""
     message = sanitize_error(error.error)
     return {
         "messages": [AIMessage(content=f"决策：MCP 工具执行失败：{message}", name=error.node)],
