@@ -2,7 +2,15 @@
 
 from pathlib import Path
 
-from flask import Blueprint, g, jsonify, redirect, request, send_from_directory
+from flask import (
+    Blueprint,
+    g,
+    jsonify,
+    redirect,
+    request,
+    send_file,
+    send_from_directory,
+)
 import logging
 
 from Database.inspection import MAX_SLOW_QUERY_LIMIT
@@ -17,6 +25,7 @@ from Database.monitoring import (
     DEFAULT_REFRESH_GROUPS,
     get_dashboard_snapshots,
     get_database_overview_snapshot,
+    get_deep_audit_snapshot,
     get_db_health,
     get_integrity_snapshot,
     get_sql_performance_snapshot,
@@ -26,6 +35,34 @@ from Database.monitoring import (
 from app.admin.audit_service import (
     list_monitor_setting_events,
     record_admin_audit_event,
+)
+from app.admin.business_service import (
+    download_file,
+    get_attachment_content,
+    get_business_overview,
+    get_file_detail,
+    get_job_content,
+    get_job_detail,
+    get_message_content,
+    get_session_detail,
+    get_user_detail,
+    list_files,
+    list_job_events,
+    list_jobs,
+    list_message_attachments,
+    list_session_messages,
+    list_sessions,
+    list_users,
+    preview_file_csv,
+)
+from app.admin.contracts import (
+    AdminApiError,
+    admin_api_endpoint,
+    api_success,
+    audited_access,
+    content_chunk_limit,
+    parse_limit,
+    parse_non_negative_int,
 )
 from app.auth.authorization import admin_required
 from app.auth.csrf import admin_write_required
@@ -60,11 +97,17 @@ def _serve_admin_index():
     return send_from_directory(dist_dir, "index.html")
 
 
+@admin_page_bp.route("/overview")
+@admin_page_bp.route("/users")
+@admin_page_bp.route("/sessions")
+@admin_page_bp.route("/jobs")
+@admin_page_bp.route("/files")
 @admin_page_bp.route("/database")
 @admin_page_bp.route("/database/settings")
+@admin_page_bp.route("/database/audit")
 @admin_required(page=True)
 def database_dashboard_page():
-    """仅向实时校验通过的管理员返回 Vue 管理端入口。"""
+    """仅向实时校验通过的管理员返回任一 Vue 管理端页面。"""
     return _serve_admin_index()
 
 
@@ -73,6 +116,21 @@ def database_dashboard_page():
 def admin_asset(filename: str):
     """仅向实时校验通过的管理员返回 Vue 哈希静态资源。"""
     return send_from_directory(_admin_dist_dir() / "assets", filename)
+
+
+@admin_bp.route("/brand/logo")
+@admin_required
+def admin_brand_logo():
+    """从仓库唯一品牌原图返回管理员侧栏 Logo。"""
+    response = send_file(
+        PROJECT_ROOT / "README" / "CausalAgent.png",
+        mimetype="image/png",
+        conditional=True,
+        max_age=86400,
+    )
+    response.headers["Cache-Control"] = "private, max-age=86400"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @admin_bp.route("/db/health")
@@ -357,3 +415,329 @@ def db_settings_history():
             code="settings_history_failed",
             status=500,
         )
+
+
+@admin_bp.route("/business/overview")
+@admin_api_endpoint
+@admin_required
+def business_overview():
+    """返回业务表估算数量和共享监控快照摘要。"""
+    return api_success(get_business_overview())
+
+
+@admin_bp.route("/business/users")
+@admin_api_endpoint
+@admin_required
+def business_users():
+    """分页、搜索并筛选脱敏用户记录。"""
+    data = list_users(
+        limit=parse_limit(request.args.get("limit")),
+        cursor=request.args.get("cursor"),
+        q=request.args.get("q"),
+        role=request.args.get("role"),
+        is_active=request.args.get("is_active"),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/users/<int:user_id>")
+@admin_api_endpoint
+@audited_access(
+    action="business.user.detail.view",
+    target_type="user",
+    target_id=lambda values: str(values["user_id"]),
+)
+@admin_required
+def business_user_detail(user_id: int):
+    """返回单个用户的只读详情并记录敏感访问。"""
+    return api_success(get_user_detail(user_id))
+
+
+@admin_bp.route("/business/sessions")
+@admin_api_endpoint
+@admin_required
+def business_sessions():
+    """分页、搜索并筛选会话摘要。"""
+    data = list_sessions(
+        limit=parse_limit(request.args.get("limit")),
+        cursor=request.args.get("cursor"),
+        q=request.args.get("q"),
+        user_id=request.args.get("user_id"),
+        is_archived=request.args.get("is_archived"),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/sessions/<session_id>")
+@admin_api_endpoint
+@audited_access(
+    action="business.session.detail.view",
+    target_type="session",
+    target_id=lambda values: str(values["session_id"]),
+)
+@admin_required
+def business_session_detail(session_id: str):
+    """返回会话元数据且不夹带消息正文。"""
+    return api_success(get_session_detail(session_id))
+
+
+@admin_bp.route("/business/sessions/<session_id>/messages")
+@admin_api_endpoint
+@audited_access(
+    action="business.session.messages.list",
+    target_type="session",
+    target_id=lambda values: str(values["session_id"]),
+)
+@admin_required
+def business_session_messages(session_id: str):
+    """返回指定会话的有界消息摘要列表。"""
+    data = list_session_messages(
+        session_id=session_id,
+        limit=parse_limit(request.args.get("limit")),
+        cursor=request.args.get("cursor"),
+        message_type=request.args.get("message_type"),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/messages/<int:message_id>/attachments")
+@admin_api_endpoint
+@audited_access(
+    action="business.message.attachments.list",
+    target_type="chat_message",
+    target_id=lambda values: str(values["message_id"]),
+)
+@admin_required
+def business_message_attachments(message_id: int):
+    """返回消息附件元数据，附件正文继续延迟读取。"""
+    return api_success({"items": list_message_attachments(message_id)})
+
+
+@admin_bp.route("/business/messages/<int:message_id>/content")
+@admin_api_endpoint
+@audited_access(
+    action="business.message.content.view",
+    target_type="chat_message",
+    target_id=lambda values: str(values["message_id"]),
+)
+@admin_required
+def business_message_content(message_id: int):
+    """按 64 KiB 上限读取一段聊天正文。"""
+    data = get_message_content(
+        message_id,
+        offset=parse_non_negative_int(
+            request.args.get("offset"),
+            field="offset",
+        ),
+        limit=content_chunk_limit(request.args.get("limit")),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/attachments/<int:attachment_id>/content")
+@admin_api_endpoint
+@audited_access(
+    action="business.attachment.content.view",
+    target_type="chat_attachment",
+    target_id=lambda values: str(values["attachment_id"]),
+)
+@admin_required
+def business_attachment_content(attachment_id: int):
+    """按 64 KiB 上限读取一段聊天附件正文。"""
+    data = get_attachment_content(
+        attachment_id,
+        offset=parse_non_negative_int(
+            request.args.get("offset"),
+            field="offset",
+        ),
+        limit=content_chunk_limit(request.args.get("limit")),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/jobs")
+@admin_api_endpoint
+@admin_required
+def business_jobs():
+    """分页、搜索并筛选分析任务摘要。"""
+    data = list_jobs(
+        limit=parse_limit(request.args.get("limit")),
+        cursor=request.args.get("cursor"),
+        q=request.args.get("q"),
+        status=request.args.get("status"),
+        user_id=request.args.get("user_id"),
+        session_id=request.args.get("session_id"),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/jobs/<job_id>")
+@admin_api_endpoint
+@audited_access(
+    action="business.job.detail.view",
+    target_type="analysis_job",
+    target_id=lambda values: str(values["job_id"]),
+)
+@admin_required
+def business_job_detail(job_id: str):
+    """返回任务元数据且不夹带输入、结果和错误正文。"""
+    return api_success(get_job_detail(job_id))
+
+
+@admin_bp.route("/business/jobs/<job_id>/events")
+@admin_api_endpoint
+@audited_access(
+    action="business.job.events.list",
+    target_type="analysis_job",
+    target_id=lambda values: str(values["job_id"]),
+)
+@admin_required
+def business_job_events(job_id: str):
+    """返回指定任务的有界事件时间线。"""
+    data = list_job_events(
+        job_id=job_id,
+        limit=parse_limit(request.args.get("limit")),
+        cursor=request.args.get("cursor"),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/jobs/<job_id>/content")
+@admin_api_endpoint
+@audited_access(
+    action=lambda _values: (
+        f"business.job.{request.args.get('kind') or 'unknown'}.view"
+    ),
+    target_type="analysis_job",
+    target_id=lambda values: str(values["job_id"]),
+)
+@admin_required
+def business_job_content(job_id: str):
+    """按类别和 64 KiB 上限读取任务敏感正文。"""
+    data = get_job_content(
+        job_id,
+        kind=request.args.get("kind"),
+        offset=parse_non_negative_int(
+            request.args.get("offset"),
+            field="offset",
+        ),
+        limit=content_chunk_limit(request.args.get("limit")),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/files")
+@admin_api_endpoint
+@admin_required
+def business_files():
+    """分页、搜索并筛选文件元数据。"""
+    data = list_files(
+        limit=parse_limit(request.args.get("limit")),
+        cursor=request.args.get("cursor"),
+        q=request.args.get("q"),
+        user_id=request.args.get("user_id"),
+        mime_type=request.args.get("mime_type"),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/files/<int:file_id>")
+@admin_api_endpoint
+@audited_access(
+    action="business.file.detail.view",
+    target_type="uploaded_file",
+    target_id=lambda values: str(values["file_id"]),
+)
+@admin_required
+def business_file_detail(file_id: int):
+    """返回文件元数据且不夹带 BLOB 或哈希。"""
+    return api_success(get_file_detail(file_id))
+
+
+@admin_bp.route("/business/files/<int:file_id>/preview")
+@admin_api_endpoint
+@audited_access(
+    action="business.file.preview",
+    target_type="uploaded_file",
+    target_id=lambda values: str(values["file_id"]),
+    audit_success=False,
+)
+@admin_required
+def business_file_preview(file_id: int):
+    """安全预览 CSV，并原子更新访问计数和审计。"""
+    return api_success(preview_file_csv(file_id, actor=g.current_user))
+
+
+@admin_bp.route("/business/files/<int:file_id>/download")
+@admin_api_endpoint
+@audited_access(
+    action="business.file.download",
+    target_type="uploaded_file",
+    target_id=lambda values: str(values["file_id"]),
+    audit_success=False,
+)
+@admin_required
+def business_file_download(file_id: int):
+    """以附件方式下载文件，并在返回前原子记录访问。"""
+    content, metadata = download_file(file_id, actor=g.current_user)
+    response = send_file(
+        content,
+        mimetype=metadata.get("mime_type") or "application/octet-stream",
+        as_attachment=True,
+        download_name=Path(str(metadata.get("original_filename") or "download")).name,
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@admin_bp.route("/db/audit")
+@admin_api_endpoint
+@audited_access(
+    action=lambda _values: (
+        f"database.audit.{request.args.get('mode', 'quick')}.view"
+    ),
+    target_type="database_audit",
+    target_id=lambda _values: request.args.get("mode", "quick"),
+)
+@admin_required
+def db_audit():
+    """返回 quick 或最近一次 deep 共享审计快照。"""
+    mode = request.args.get("mode", "quick")
+    if mode == "quick":
+        return api_success(get_integrity_snapshot())
+    if mode == "deep":
+        return api_success(get_deep_audit_snapshot())
+    raise AdminApiError(
+        code="invalid_query",
+        message="mode 仅支持 quick/deep",
+        fields={"mode": "仅支持 quick/deep"},
+    )
+
+
+@admin_bp.route("/db/audit/run", methods=["POST"])
+@admin_api_endpoint
+@audited_access(
+    action="database.audit.run",
+    target_type="database_audit",
+    target_id=lambda _values: str(
+        (request.get_json(silent=True) or {}).get("mode", "deep")
+    ),
+)
+@admin_write_required
+def db_audit_run():
+    """登记 quick 或 deep 共享审计请求，真正执行仍由 monitor 完成。"""
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode", "deep")
+    groups = {
+        "quick": ("integrity",),
+        "deep": ("deep_audit",),
+    }.get(mode)
+    if groups is None:
+        raise AdminApiError(
+            code="invalid_body",
+            message="mode 仅支持 quick/deep",
+            fields={"mode": "仅支持 quick/deep"},
+        )
+    return api_success(request_snapshot_refresh(groups), status=202)
