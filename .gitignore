@@ -182,9 +182,6 @@ config.json
 项目规划/
 Document/
 
-# test
-test.py
-
 # AI
 .cursor/
 .augment/
@@ -200,9 +197,6 @@ Agent/knowledge_base/unfinish_source/
 
 # skils
 skills/
-
-# test
-tests/
 
 # study
 study/

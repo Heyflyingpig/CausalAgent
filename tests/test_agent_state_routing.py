@@ -1,0 +1,348 @@
+import asyncio
+import os
+import sys
+import types
+
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage
+
+
+for key, value in {
+    "SECRET_KEY": "test-secret",
+    "API_KEY": "test-api-key",
+    "BASE_URL": "https://example.test",
+    "MODEL": "test-model",
+    "MYSQL_HOST": "mysql",
+    "MYSQL_USER": "app",
+    "MYSQL_PASSWORD": "password",
+    "MYSQL_DATABASE": "causalchat",
+}.items():
+    os.environ.setdefault(key, value)
+
+
+def _install_import_stubs():
+    """隔离路由测试不需要的数据库、绘图和向量库依赖。"""
+    agent_connect = types.ModuleType("Database.agent_connect")
+    agent_connect.get_file_content = lambda *args, **kwargs: None
+    agent_connect.get_recent_file = lambda *args, **kwargs: None
+    sys.modules.setdefault("Database.agent_connect", agent_connect)
+
+    data_visualize = types.ModuleType("Agent.Processing.data_visualize")
+    data_visualize.generate_visualizations = lambda *args, **kwargs: {}
+    sys.modules.setdefault("Agent.Processing.data_visualize", data_visualize)
+
+    query_rag = types.ModuleType("Agent.knowledge_base.query_rag")
+    query_rag.get_rag_excerpt = lambda *args, **kwargs: ""
+    query_rag.format_rag_summary_for_prompt = lambda *args, **kwargs: ""
+    query_rag.get_rag_response = lambda *args, **kwargs: {}
+    sys.modules.setdefault("Agent.knowledge_base.query_rag", query_rag)
+
+
+_install_import_stubs()
+
+from Agent.causal_agent import edges, nodes
+from Agent.causal_agent.fault_tolerance import (
+    recover_fold_to_agent,
+    recover_preprocess_to_agent,
+    route_to_normal_chat,
+)
+from Agent.causal_agent.tool_subgraphs import route_rag_planner
+from Agent.llm_structured_output import StructuredOutputError
+from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
+
+
+def _state(message="普通问题", **updates):
+    """构造 Agent/Fold 路由所需的最小状态。"""
+    state = {
+        "messages": [HumanMessage(content=message)],
+        "user_id": 1,
+        "fold_name": "",
+    }
+    state.update(updates)
+    return state
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["fold", "postprocess", "normal_chat", "inquiry_answer"],
+)
+def test_agent_writes_every_legal_structured_route(monkeypatch, route):
+    """LLM 四种合法路由都必须覆盖 checkpoint 中的旧决策值。"""
+    async def fake_invoke(**kwargs):
+        return nodes.RouteQuery(route=route)
+
+    monkeypatch.setattr(nodes, "ainvoke_structured", fake_invoke)
+    result = asyncio.run(
+        nodes.agent_node(
+            _state(route_decision="postprocess"),
+            object(),
+        )
+    )
+
+    assert result["route_decision"] == route
+
+
+def test_agent_deterministic_and_failure_routes_overwrite_old_state(monkeypatch):
+    """明确因果请求、工具失败和结构化失败都显式写入保守路由。"""
+    explicit = asyncio.run(
+        nodes.agent_node(
+            _state("请使用 data.csv 立即执行因果分析", route_decision="postprocess"),
+            object(),
+        )
+    )
+    tool_failure = asyncio.run(
+        nodes.agent_node(
+            _state(
+                route_decision="fold",
+                causal_analysis_result={"success": False, "error": "tool failed"},
+            ),
+            object(),
+        )
+    )
+
+    async def fail_structured(**kwargs):
+        raise StructuredOutputError(
+            node_name="agent",
+            schema_name="RouteQuery",
+            cause=ValueError("invalid tool arguments"),
+        )
+
+    monkeypatch.setattr(nodes, "ainvoke_structured", fail_structured)
+    structured_failure = asyncio.run(
+        nodes.agent_node(
+            _state(route_decision="fold"),
+            object(),
+        )
+    )
+
+    assert explicit["route_decision"] == "fold"
+    assert tool_failure["route_decision"] == "normal_chat"
+    assert structured_failure["route_decision"] == "normal_chat"
+
+
+def test_fold_extraction_failure_uses_recent_file_and_can_validate(monkeypatch):
+    """参数提取失败视为空值，仍继续最近文件与确定性校验。"""
+    async def fail_structured(**kwargs):
+        raise StructuredOutputError(
+            node_name="fold",
+            schema_name="foldQuery",
+            cause=ValueError("invalid"),
+        )
+
+    monkeypatch.setattr(nodes, "ainvoke_structured", fail_structured)
+    monkeypatch.setattr(nodes, "get_recent_file", lambda user_id: (b"A,B\n1,2\n", "latest.csv"))
+    monkeypatch.setattr(nodes, "get_data_summary", lambda df: {"columns": ["A", "B"]})
+    monkeypatch.setattr(nodes, "validate_analysis", lambda *args, **kwargs: (1, [], []))
+
+    result = asyncio.run(nodes.fold_node(_state(), object()))
+
+    assert result["fold_decision"] == "preprocess"
+    assert result["fold_name"] == "latest.csv"
+    assert result["analysis_parameters"]["target"] is None
+    assert result["analysis_parameters"]["treatment"] is None
+
+
+@pytest.mark.parametrize("failure_stage", ["file", "validation"])
+def test_fold_resume_paths_return_to_agent(monkeypatch, failure_stage):
+    """文件错误恢复与参数补充恢复都写 fold_decision=agent。"""
+    async def extracted(**kwargs):
+        return nodes.foldQuery(filename="data.csv", target=None, treatment=None)
+
+    monkeypatch.setattr(nodes, "ainvoke_structured", extracted)
+    monkeypatch.setattr(nodes, "interrupt", lambda question: "用户补充信息")
+    if failure_stage == "file":
+        monkeypatch.setattr(nodes, "get_file_content", lambda *args: (_ for _ in ()).throw(FileNotFoundError("missing")))
+    else:
+        monkeypatch.setattr(nodes, "get_file_content", lambda *args: b"A,B\n1,2\n")
+        monkeypatch.setattr(nodes, "get_data_summary", lambda df: {"columns": ["A", "B"]})
+        monkeypatch.setattr(
+            nodes,
+            "validate_analysis",
+            lambda *args, **kwargs: (2, ["目标变量缺失"], []),
+        )
+
+    result = asyncio.run(nodes.fold_node(_state(), object()))
+
+    assert result["fold_decision"] == "agent"
+    assert "awaiting_input" not in result
+
+
+@pytest.mark.parametrize("route", ["fold", "postprocess", "normal_chat", "inquiry_answer"])
+def test_decision_router_reads_only_explicit_state(route):
+    """中文展示消息不能覆盖显式 agent 路由。"""
+    state = {"route_decision": route, "messages": [AIMessage(content="决策：信息不全，报告已获取")]}
+    assert edges.decision_router(state) == route
+
+
+@pytest.mark.parametrize("route", ["preprocess", "agent"])
+def test_fold_router_reads_only_explicit_state(route):
+    """中文展示消息不能覆盖显式 fold 路由。"""
+    state = {"fold_decision": route, "messages": [AIMessage(content="信息完备，返回 agent")]}
+    assert edges.fold_router(state) == route
+
+
+def test_routers_use_safe_defaults_for_missing_or_invalid_state():
+    """缺失或非法 checkpoint 字段走稳定保守分支。"""
+    assert edges.decision_router({"messages": [AIMessage(content="信息完备")]}) == "normal_chat"
+    assert edges.decision_router({"route_decision": "invalid", "messages": []}) == "normal_chat"
+    assert edges.fold_router({"messages": [AIMessage(content="信息完备")]}) == "agent"
+    assert edges.fold_router({"fold_decision": "invalid", "messages": []}) == "agent"
+
+
+def test_recovery_handlers_keep_route_audit_fields_separate():
+    """Agent、Fold、Preprocess 恢复只写各自拥有的路由审计字段。"""
+    error = types.SimpleNamespace(node="test_node", error=RuntimeError("failed"))
+
+    agent_command = route_to_normal_chat({}, error)
+    fold_command = recover_fold_to_agent({}, error)
+    preprocess_command = recover_preprocess_to_agent({}, error)
+
+    assert agent_command.goto == "normal_chat"
+    assert agent_command.update["route_decision"] == "normal_chat"
+    assert fold_command.goto == "agent"
+    assert fold_command.update["fold_decision"] == "agent"
+    assert preprocess_command.goto == "agent"
+    assert "fold_decision" not in preprocess_command.update
+
+
+def test_rag_question_failure_skips_tool_node_with_stable_result(monkeypatch):
+    """RAG 问题结构化失败不产生 tool_calls，并让报告流程可继续。"""
+    async def fail_questions(*args, **kwargs):
+        raise StructuredOutputError(
+            node_name="rag_question_planner",
+            schema_name="RagQuestionBundle",
+            cause=ValueError("invalid"),
+        )
+
+    monkeypatch.setattr(nodes, "get_rag_questions", fail_questions)
+    state = _state()
+    result = asyncio.run(nodes.rag_question_planner_node(state, object(), []))
+    routed_state = {**state, "messages": state["messages"] + result["messages"]}
+
+    assert result["knowledge_base_result"]["success"] is False
+    assert result["knowledge_base_result"]["questions"] == []
+    assert route_rag_planner(routed_state) == "skip"
+
+
+def test_mcp_adapter_preserves_standard_tool_calls_and_injects_runtime_data():
+    """MCP planner 的标准 AIMessage.tool_calls 可被 ToolNode 消费并补充运行时 CSV。"""
+    tool = types.SimpleNamespace(name="causal_pc", args={"csv_data": {}, "target": {}})
+    message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "causal_pc",
+                "args": {"target": "Y"},
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    normalized = normalize_mcp_tool_call_message(
+        message,
+        {"file_content": "A,Y\n1,2\n"},
+        [tool],
+    )
+
+    assert isinstance(normalized, AIMessage)
+    assert normalized.tool_calls[0]["name"] == "causal_pc"
+    assert normalized.tool_calls[0]["args"]["csv_data"] == "A,Y\n1,2\n"
+
+
+def test_mcp_planner_disables_thinking_and_requires_a_tool_choice():
+    """MCP planner 必须在协议层要求模型选择工具，而不是只依赖 Prompt。"""
+    observed = {}
+
+    class FakeBoundLLM:
+        """返回可由 ToolNode 消费的标准工具调用消息。"""
+
+        async def ainvoke(self, messages):
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "causal_pc",
+                        "args": {"target": "Y"},
+                        "id": "planner-call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+    class FakeLLM:
+        """记录 MCP planner 对模型副本和 bind_tools 的配置。"""
+
+        extra_body = {"existing": "value"}
+
+        def model_copy(self, *, update):
+            observed["copy_update"] = update
+            self.extra_body = update["extra_body"]
+            return self
+
+        def bind_tools(self, tools, **kwargs):
+            observed["tools"] = tools
+            observed["bind_kwargs"] = kwargs
+            return FakeBoundLLM()
+
+    tool = types.SimpleNamespace(name="causal_pc", args={"csv_data": {}, "target": {}})
+    result = asyncio.run(
+        nodes.mcp_planner_node(
+            _state(
+                file_content="A,Y\n1,2\n",
+                analysis_parameters={"target": "Y"},
+                preprocess_summary="数据已就绪",
+            ),
+            FakeLLM(),
+            [tool],
+        )
+    )
+
+    assert observed["copy_update"] == {
+        "extra_body": {
+            "existing": "value",
+            "thinking": {"type": "disabled"},
+        }
+    }
+    assert observed["bind_kwargs"] == {
+        "tool_choice": "required",
+        "parallel_tool_calls": False,
+    }
+    assert result["messages"][0].tool_calls[0]["name"] == "causal_pc"
+    assert result["messages"][0].tool_calls[0]["args"]["csv_data"] == "A,Y\n1,2\n"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        AIMessage(content="no tool"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "unknown_tool",
+                    "args": {},
+                    "id": "call-2",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        AIMessage(
+            content="",
+            invalid_tool_calls=[
+                {
+                    "name": "causal_pc",
+                    "args": "{invalid-json",
+                    "id": "call-3",
+                    "error": "invalid arguments",
+                    "type": "invalid_tool_call",
+                }
+            ],
+        ),
+    ],
+)
+def test_mcp_adapter_rejects_missing_unknown_or_invalid_calls_without_fallback(message):
+    """无调用、未知工具或非法参数必须明确失败，不能兜底选择第一项。"""
+    tool = types.SimpleNamespace(name="causal_pc", args={})
+    with pytest.raises(ValueError):
+        normalize_mcp_tool_call_message(message, {}, [tool])
