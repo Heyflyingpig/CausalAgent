@@ -1,0 +1,27 @@
+"""远程视觉资料范围与固定抽样策略。"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+class RemoteSamplePolicy:
+    """只允许已记录的页面或公开数据集固定文件进入远程视觉调用。"""
+
+    def __init__(self, manifest_path: Path | None = None) -> None:
+        """加载仓库内不可变的抽样清单。"""
+        self.manifest_path = manifest_path or Path(__file__).with_name("remote_samples.json")
+        self.payload = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+
+    def allows_pearl_page(self, filename: str, page_number: int | None) -> bool:
+        """仅允许清单中精确指定的 Pearl 页码。"""
+        return page_number is not None and page_number in self.payload["pearl_pdf_pages"].get(filename, [])
+
+    def allows_omnidocbench_path(self, root: Path, path: Path) -> bool:
+        """仅允许清单中精确指定的 OmniDocBench 相对路径。"""
+        try:
+            relative = path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            return False
+        return relative in self.payload["omnidocbench_relative_paths"]
