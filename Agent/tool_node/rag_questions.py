@@ -29,6 +29,10 @@ class RagQuestionItem(BaseModel):
         ...,
         description="为什么需要查询这个问题。",
     )
+    corpus: Literal["medical", "multimodal"] = Field(
+        default="medical",
+        description="查询目标语料范围；medical 为既有 PubMedQA，multimodal 为独立公共资料索引。",
+    )
 
 
 
@@ -47,6 +51,8 @@ def normalize_rag_question_output(bundle: RagQuestionBundle, max_questions: int)
     questions = [question.model_dump() for question in bundle.questions[:max_questions]]
     if not questions:
         raise ValueError("RAG question output must contain at least one question.")
+    if len({question["corpus"] for question in questions}) != 1:
+        raise ValueError("a RAG question batch must target exactly one corpus")
     return questions
 
 
@@ -108,11 +114,12 @@ async def get_rag_questions(
                 2. 问题要能直接帮助解释方法假设、风险来源、算法局限或因果推断陷阱。
                 3. 由你根据任务复杂度决定问题数量，但最多只能生成 {max_questions} 个。
                 4. 如果一个问题已经足够，就只生成一个；不要为了凑数量而重复提问。
-                5. 每个问题都必须说明意图、优先级和为什么需要查询。
+                5. 每个问题都必须说明意图、优先级、为什么需要查询和 corpus。
+                6. corpus 只能是 medical 或 multimodal；若问题依赖 PDF、图片、表格、公式或页面证据，选择 multimodal，否则选择 medical。同一批问题只能使用一个 corpus。
 
                 # 输出格式
                 必须只返回一个 JSON object，根对象必须包含 questions 字段，不允许直接返回数组。
-                questions 必须是数组，每个元素必须包含 question、intent、priority、why_needed。
+                questions 必须是数组，每个元素必须包含 question、intent、priority、why_needed、corpus。
                 priority 只能是 high、medium 或 low。
 
                 示例：
@@ -122,7 +129,8 @@ async def get_rag_questions(
                       "question": "PC算法在隐藏混杂变量存在时有哪些主要风险？",
                       "intent": "评估因果发现结果的可信度",
                       "priority": "high",
-                      "why_needed": "帮助报告说明算法假设和结果解释边界"
+                      "why_needed": "帮助报告说明算法假设和结果解释边界",
+                      "corpus": "medical"
                     }}
                   ]
                 }}
