@@ -14,10 +14,10 @@ import {
 } from '../src/lib/dashboard'
 import type { SnapshotMeta } from '../src/types'
 
-const dashboardSource = readFileSync(
-  resolve(process.cwd(), 'src/views/DatabaseDashboardView.vue'),
-  'utf8',
-)
+const dashboardSource = [
+  'src/views/DatabaseDashboardView.vue',
+  'src/components/SqlDigestTable.vue',
+].map(path => readFileSync(resolve(process.cwd(), path), 'utf8')).join('\n')
 
 const equivalenceMatrix = {
   core: ['Revision', '主库', '第一从库', '阻塞项', '连接使用率'],
@@ -36,6 +36,20 @@ const equivalenceMatrix = {
     '扫描行',
     '返回行',
     '增量告警阈值',
+    '业务模块',
+    '这条 SQL 是做什么的',
+    '业务说明',
+    '识别方式',
+    '代码确认',
+    '判断依据',
+    '查看详情',
+    'Digest 模板（digest_text / digest）',
+    '执行次数（count_star / execution_count）',
+    '累计总耗时（total_seconds）',
+    '平均耗时（avg_seconds）',
+    '扫描行（rows_examined）',
+    '返回行（rows_sent）',
+    '无法从该页面恢复',
   ],
   jobs: [
     'Worker / Job 快照',

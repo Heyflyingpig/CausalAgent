@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test'
 
 const observedAt = '2026-07-25T12:00:01.000Z'
+const mappedDigestText = 'SELECT * FROM users WHERE id = ?'
+const inferredDigestText = 'SELECT id, payload FROM custom_table WHERE tenant_id = ? AND archived_at IS NULL ORDER BY created_at DESC LIMIT ?'
 const overrides = {
   auto_refresh_enabled: null,
   realtime_interval_seconds: null,
@@ -126,14 +128,24 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
           window_seconds: 60,
           slow_queries_total: 20,
           slow_query_warning_threshold: 1,
-          high_load_statements: [{
-            digest_text: 'SELECT * FROM users WHERE id = ?',
-            count_star: 10,
-            total_seconds: 1.2,
-            avg_seconds: 0.12,
-            rows_examined: 10,
-            rows_sent: 10,
-          }],
+          high_load_statements: [
+            {
+              digest_text: mappedDigestText,
+              count_star: 10,
+              total_seconds: 1.2,
+              avg_seconds: 0.12,
+              rows_examined: 10,
+              rows_sent: 10,
+            },
+            {
+              digest: inferredDigestText,
+              execution_count: 3,
+              total_seconds: 0.75,
+              avg_seconds: 0.25,
+              rows_examined: 30,
+              rows_sent: 3,
+            },
+          ],
         },
         refresh_policy: {
           ...effective,
@@ -204,6 +216,42 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
   await expect(
     page.locator('.status-card').filter({ hasText: 'Revision' }).first().locator('.card-meta'),
   ).toHaveAttribute('title', /2026/)
+
+  await expect(page.getByText('读取用户身份或权限', { exact: true })).toBeVisible()
+  await expect(page.getByText('推断：查询 custom_table 数据', { exact: true })).toBeVisible()
+  await expect(page.getByText(mappedDigestText, { exact: true })).toHaveCount(0)
+
+  await page.setViewportSize({ width: 1180, height: 900 })
+  await page.locator('.sql-business-table').getByRole('button', { name: '查看详情' }).first().click()
+  await expect(page.getByRole('heading', { name: 'SQL 原始详情' })).toBeVisible()
+  await expect(page.locator('.sql-detail-drawer').getByText('代码确认', { exact: true })).toBeVisible()
+  await expect(page.getByText('判断依据', { exact: true })).toBeVisible()
+  await expect(page.getByText(/app\/auth\/service\.py/)).toBeVisible()
+  await expect(page.getByText(mappedDigestText, { exact: true })).toBeVisible()
+  for (const label of [
+    'Digest 模板（digest_text / digest）',
+    '执行次数（count_star / execution_count）',
+    '累计总耗时（total_seconds）',
+    '平均耗时（avg_seconds）',
+    '扫描行（rows_examined）',
+    '返回行（rows_sent）',
+  ]) {
+    await expect(page.getByText(label, { exact: true })).toBeVisible()
+  }
+  await expect(page.getByText(/真实参数不会被 Performance Schema Digest 保存/)).toBeVisible()
+  await page.getByRole('button', { name: '关闭详情' }).click()
+  await expect(page.getByText(mappedDigestText, { exact: true })).toBeHidden()
+
+  await page.setViewportSize({ width: 740, height: 900 })
+  await page.locator('.sql-business-table').getByRole('button', { name: '查看详情' }).nth(1).click()
+  const mobileDrawer = page.locator('.sql-detail-drawer')
+  await expect(mobileDrawer).toBeVisible()
+  await expect(mobileDrawer.getByText('推断', { exact: true })).toBeVisible()
+  await expect(mobileDrawer.getByText(inferredDigestText, { exact: true })).toBeVisible()
+  const drawerBox = await mobileDrawer.boundingBox()
+  expect(drawerBox?.width).toBeGreaterThanOrEqual(739)
+  expect(drawerBox?.width).toBeLessThanOrEqual(741)
+  await page.getByRole('button', { name: '关闭详情' }).click()
 
   await page.getByRole('button', { name: '手动刷新' }).click()
   await expect(page.getByText('共享监控快照已刷新。')).toBeVisible()
