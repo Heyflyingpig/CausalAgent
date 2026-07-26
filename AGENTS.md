@@ -114,6 +114,7 @@
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
 - RAG 启动期只检查知识库目录是否可用，不会在启动时完整加载向量库；若 `Agent/knowledge_base/db` 不存在，worker 会记录 warning，并以“无知识库模式”继续运行。
+- 多模态公共知识库维护模块位于 `Agent/knowledge_base/multimodal/`，其 assets、暂存索引、active pointer 和 OmniDocBench 下载资料分别使用独立目录，严禁写入或清理 `Agent/knowledge_base/db/` 与 PubMedQA collection。PDF 当前默认 Docling；manifest 必须保存 source、parser 原始产物、标准化单元与资源的 URI/内容哈希关联，发布门禁必须回读校验。WCode 仅可接收 `remote_samples.json` 中固定 Pearl 页或 OmniDocBench 精确文件路径，模型固定 `qwen/qwen3-vl-flash`、域名必须为 `wcode.net`，默认预算不超过 100 且 smoke 应显式限制；审计日志不得记录图片、提示词、响应正文或密钥。
 - `Agent/knowledge_base/build_knowledge.py` 当前支持 `--profile default` 和 `--profile medical`：
   - `default` 从 `Agent/knowledge_base/source/` 读取 Pearl/因果资料，并使用本地 `bge-small-zh-v1.5`。
   - `medical` 从 `rag_config.py` 的 `MEDICAL_KNOWLEDGE_BUILD_CONFIG["corpus_path"]` 读取当前 active 医疗语料；当前指向 PubMedQA processed corpus，embedding provider 由 `RAG_EMBEDDING_PROVIDER` 控制：`auto` 保持旧兼容行为（存在 `MEDICAL_EMBEDDING_API_KEY` 或 `KNOWLEDGE_BUILD_PROFILE=medical` 时使用 OpenAI-compatible API，否则使用本地模型），`openai_compatible` 强制使用 `MEDICAL_EMBEDDING_API_KEY`、`MEDICAL_EMBEDDING_BASE_URL`、`MEDICAL_EMBEDDING_MODEL`，`local` 强制使用 `RAG_LOCAL_EMBEDDING_MODEL_PATH` 或默认 `Agent/knowledge_base/models/bge-small-zh-v1.5`。

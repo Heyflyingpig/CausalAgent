@@ -205,12 +205,19 @@ skills/
 tests/*
 !tests/rag_ingestion/
 !tests/rag_ingestion/**
+!tests/test_multimodal_*.py
 
 # study
 study/
 
 # local-only documents
 /docs/
+!/docs/
+!docs/难题.md
 Agent/knowledge_base/rag/docs/
 Agent/knowledge_base/rag/output/reports/
+Agent/knowledge_base/multimodal_assets/
+Agent/knowledge_base/multimodal_indexes/
+Agent/knowledge_base/multimodal_runtime/
+Agent/knowledge_base/multimodal_benchmarks/
 app/DESIGN.md
