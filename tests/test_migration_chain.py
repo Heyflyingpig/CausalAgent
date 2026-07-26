@@ -111,5 +111,45 @@ class DatabaseMonitorSettingsMigrationTests(unittest.TestCase):
         self.assertIn('"admin_audit_events"', text)
 
 
+class AdminReadIndexMigrationTests(unittest.TestCase):
+    """静态验证 3.1 只读后台索引 migration 的链路与最小回滚范围。"""
+
+    def test_read_index_migration_extends_current_head(self):
+        """3.1 revision 必须直接承接监控配置与审计表 migration。"""
+        path = Path(
+            "Database/migrations/versions/d3e4f5a6b7c8_add_admin_read_indexes.py"
+        )
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn('revision: str = "d3e4f5a6b7c8"', text)
+        self.assertIn('down_revision: Union[str, Sequence[str], None] = "c2d3e4f5a6b7"', text)
+
+    def test_read_index_migration_contains_all_bounded_query_indexes(self):
+        """列表页需要的五组筛选/排序索引必须一次性存在。"""
+        text = Path(
+            "Database/migrations/versions/d3e4f5a6b7c8_add_admin_read_indexes.py"
+        ).read_text(encoding="utf-8")
+
+        for index_name in (
+            "idx_users_admin_role_active",
+            "idx_sessions_admin_activity",
+            "idx_analysis_jobs_admin_created",
+            "idx_uploaded_files_admin_uploaded",
+            "idx_admin_audit_target_created",
+        ):
+            self.assertIn(index_name, text)
+
+    def test_downgrade_only_drops_new_indexes(self):
+        """回滚只能移除本 revision 新增的索引，不得删除业务表或字段。"""
+        text = Path(
+            "Database/migrations/versions/d3e4f5a6b7c8_add_admin_read_indexes.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("DROP INDEX idx_users_admin_role_active", text)
+        self.assertIn("DROP INDEX idx_admin_audit_target_created", text)
+        self.assertNotIn("DROP TABLE", text)
+        self.assertNotIn("DROP COLUMN", text)
+
+
 if __name__ == "__main__":
     unittest.main()

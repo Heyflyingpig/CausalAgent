@@ -123,20 +123,22 @@ class AdminAuthorizationTests(unittest.TestCase):
                 for endpoint in ADMIN_GET_ENDPOINTS:
                     response = client.get(endpoint)
                     self.assertEqual(response.status_code, 401, endpoint)
-                    self.assertEqual(
-                        response.get_json(),
-                        {"success": False, "error": "用户未登录或会话已过期"},
-                    )
+                    payload = response.get_json()
+                    self.assertFalse(payload["success"])
+                    self.assertEqual(payload["error"], "用户未登录或会话已过期")
+                    self.assertEqual(payload["code"], "auth_required")
+                    self.assertTrue(payload["request_id"])
                 page_response = client.get(ADMIN_PAGE)
                 self.assertEqual(page_response.status_code, 302)
                 self.assertEqual(page_response.headers["Location"], "/")
                 for endpoint in ADMIN_POST_ENDPOINTS:
                     response = client.post(endpoint)
                     self.assertEqual(response.status_code, 401, endpoint)
-                    self.assertEqual(
-                        response.get_json(),
-                        {"success": False, "error": "用户未登录或会话已过期"},
-                    )
+                    payload = response.get_json()
+                    self.assertFalse(payload["success"])
+                    self.assertEqual(payload["error"], "用户未登录或会话已过期")
+                    self.assertEqual(payload["code"], "auth_required")
+                    self.assertTrue(payload["request_id"])
 
     def test_normal_user_returns_403_for_all_admin_surfaces(self):
         """普通用户登录后仍不能读取管理接口或后台 HTML。"""
@@ -147,17 +149,19 @@ class AdminAuthorizationTests(unittest.TestCase):
                 for endpoint in (*ADMIN_GET_ENDPOINTS, ADMIN_PAGE):
                     response = client.get(endpoint)
                     self.assertEqual(response.status_code, 403, endpoint)
-                    self.assertEqual(
-                        response.get_json(),
-                        {"success": False, "error": "需要管理员权限"},
-                    )
+                    payload = response.get_json()
+                    self.assertFalse(payload["success"])
+                    self.assertEqual(payload["error"], "需要管理员权限")
+                    self.assertEqual(payload["code"], "admin_required")
+                    self.assertTrue(payload["request_id"])
                 for endpoint in ADMIN_POST_ENDPOINTS:
                     response = client.post(endpoint)
                     self.assertEqual(response.status_code, 403, endpoint)
-                    self.assertEqual(
-                        response.get_json(),
-                        {"success": False, "error": "需要管理员权限"},
-                    )
+                    payload = response.get_json()
+                    self.assertFalse(payload["success"])
+                    self.assertEqual(payload["error"], "需要管理员权限")
+                    self.assertEqual(payload["code"], "admin_required")
+                    self.assertTrue(payload["request_id"])
 
     def test_disabled_admin_is_not_accepted(self):
         """防御性校验不得放行未启用的管理员对象。"""
@@ -168,10 +172,11 @@ class AdminAuthorizationTests(unittest.TestCase):
                 response = client.get("/api/admin/db/health")
 
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(
-            response.get_json(),
-            {"success": False, "error": "用户未登录或会话已过期"},
-        )
+        payload = response.get_json()
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error"], "用户未登录或会话已过期")
+        self.assertEqual(payload["code"], "auth_required")
+        self.assertTrue(payload["request_id"])
 
     def test_active_admin_can_access_all_admin_surfaces(self):
         """已启用管理员应访问全部只读接口和受保护后台 HTML。"""

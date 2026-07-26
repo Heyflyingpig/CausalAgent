@@ -1,0 +1,24 @@
+# 3.1 管理员只读后台的隔离主从验收覆盖。
+# 仅与 docker-compose.replica.yml 叠加使用，不复用开发库端口、容器或数据卷。
+
+services:
+  mysql-primary:
+    container_name: causalchat31e2e_mysql_primary
+    ports: !override
+      - "127.0.0.1:13317:3306"
+
+  mysql-replica:
+    container_name: causalchat31e2e_mysql_replica
+    ports: !override
+      - "127.0.0.2:13317:3306"
+
+  app:
+    container_name: causalchat31e2e_app
+    ports: !override
+      - "127.0.0.1:15011:5001"
+
+  worker:
+    container_name: causalchat31e2e_worker
+
+  monitor:
+    container_name: causalchat31e2e_monitor
