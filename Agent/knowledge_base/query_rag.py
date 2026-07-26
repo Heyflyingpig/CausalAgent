@@ -194,15 +194,26 @@ def _normalize_chunk_metadata(
     fallback_index: int = 0,
 ) -> Dict[str, Any]:
     normalized = dict(metadata or {})
-    source = normalized.get("source") or normalized.get("file_path") or "unknown_source"
-    source_name = os.path.basename(source) if os.path.isabs(source) else source
+    source = (
+        normalized.get("source")
+        or normalized.get("file_path")
+        or normalized.get("asset_uri")
+        or "unknown_source"
+    )
+    source_name = (
+        os.path.basename(source.replace("/", os.sep))
+        if normalized.get("asset_uri") or os.path.isabs(source)
+        else source
+    )
     title = normalized.get("title") or os.path.splitext(source_name)[0]
     page = _safe_int(normalized.get("page"))
+    if page is None:
+        page = _safe_int(normalized.get("page_number"))
     chunk_index = _safe_int(normalized.get("chunk_index"))
     if chunk_index is None:
         chunk_index = fallback_index
 
-    doc_type = normalized.get("doc_type")
+    doc_type = normalized.get("doc_type") or normalized.get("content_kind")
     if not doc_type:
         if source_name.lower().endswith(".pdf"):
             doc_type = "reference_pdf"
@@ -213,12 +224,21 @@ def _normalize_chunk_metadata(
 
     corpus = normalized.get("corpus")
     if not corpus:
-        corpus = "test" if "test" in source_name.lower() else "official"
+        corpus = (
+            "multimodal"
+            if normalized.get("document_id") or normalized.get("modality")
+            else "test" if "test" in source_name.lower() else "official"
+        )
 
-    doc_id = normalized.get("doc_id") or _slugify(title or source_name)
+    doc_id = normalized.get("doc_id") or normalized.get("document_id") or _slugify(title or source_name)
     chunk_hash = hashlib.md5(page_content.encode("utf-8")).hexdigest()[:8]
     page_fragment = page if page is not None else "na"
-    chunk_id = normalized.get("chunk_id") or f"{doc_id}#p{page_fragment}#c{chunk_index}_{chunk_hash}"
+    chunk_id = (
+        normalized.get("chunk_id")
+        or normalized.get("unit_id")
+        or normalized.get("content_hash")
+        or f"{doc_id}#p{page_fragment}#c{chunk_index}_{chunk_hash}"
+    )
 
     normalized.update(
         {
@@ -422,6 +442,10 @@ def _build_evidence_payloads(
                 "rerank_score": round(float(candidate.get("rerank_score", 0.0)), 4),
                 "retrieval_source": candidate.get("retrieval_source", ""),
                 "content": _truncate_text(candidate["page_content"], max_chars=max_chars),
+                "modality": metadata.get("modality", "text"),
+                "content_kind": metadata.get("content_kind", ""),
+                "asset_uri": metadata.get("asset_uri", ""),
+                "locator_json": metadata.get("locator_json", ""),
             }
         )
     return evidence_payloads

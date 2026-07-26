@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import time
@@ -16,6 +18,8 @@ from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever, SparseRe
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_VECTOR_DB_DIR = BASE_DIR / "db"
+DEFAULT_MULTIMODAL_INDEX_ROOT = BASE_DIR / "multimodal_indexes"
+DEFAULT_MULTIMODAL_ACTIVE_INDEX_CONFIG = BASE_DIR / "multimodal_runtime" / "active_index.json"
 DEFAULT_PRODUCTION_CONFIG_PATH = BASE_DIR / "rag" / "runtime" / "production_rag_config.json"
 SAFE_EMBEDDING_CONFIG_KEYS = {
     "status",
@@ -56,22 +60,72 @@ class RagRuntimeConfig:
 
     @classmethod
     def from_environment(cls) -> "RagRuntimeConfig":
-        """从现有环境变量创建配置，不读取或保存密钥值。"""
+        """从已发布的多模态 active index 创建配置，不读取或保存密钥值。"""
         resolved = resolve_embedding_runtime_config()
         safe_embedding_config = {
             key: resolved[key] for key in SAFE_EMBEDDING_CONFIG_KEYS if key in resolved
         }
         if "missing" in safe_embedding_config:
             safe_embedding_config["missing"] = tuple(safe_embedding_config["missing"])
+        release = _resolve_multimodal_release(resolved)
         return cls(
-            vector_db_dir=os.environ.get("RAG_VECTOR_DB_DIR", str(DEFAULT_VECTOR_DB_DIR)),
-            collection_name=os.environ.get("RAG_COLLECTION_NAME", "pubmedqa_clean"),
+            vector_db_dir=str(release["vector_db_dir"]),
+            collection_name=str(release["collection_name"]),
             production_config_path=os.environ.get(
                 "RAG_PRODUCTION_CONFIG_PATH",
                 str(DEFAULT_PRODUCTION_CONFIG_PATH),
             ),
             embedding_config=MappingProxyType(safe_embedding_config),
+            release_id=str(release["index_version"]),
         )
+
+
+def _resolve_multimodal_release(embedding_config: Mapping[str, Any]) -> dict[str, Any]:
+    """校验 active pointer、manifest 和 embedding 指纹并解析索引位置。"""
+    active_path = Path(
+        os.environ.get("MULTIMODAL_ACTIVE_INDEX_CONFIG", str(DEFAULT_MULTIMODAL_ACTIVE_INDEX_CONFIG))
+    )
+    if not active_path.is_file():
+        raise FileNotFoundError(f"多模态 active pointer 不存在: {active_path}")
+    active = json.loads(active_path.read_text(encoding="utf-8"))
+
+    index_root = Path(
+        os.environ.get("MULTIMODAL_INDEX_ROOT", str(DEFAULT_MULTIMODAL_INDEX_ROOT))
+    ).resolve()
+    index_path = Path(str(active.get("index_path", "")))
+    if not index_path.parts or index_path.is_absolute():
+        raise ValueError("多模态 active index_path 必须是相对路径")
+    vector_db_dir = (index_root / index_path).resolve()
+    try:
+        vector_db_dir.relative_to(index_root)
+    except ValueError as exc:
+        raise ValueError("多模态 active index_path 越界") from exc
+
+    manifest_path = vector_db_dir.parent / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"多模态 manifest 不存在: {manifest_path}")
+    manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    if manifest_hash != active.get("manifest_sha256"):
+        raise ValueError("多模态 active index manifest 哈希不匹配")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    runtime_fingerprint = {
+        "provider": embedding_config.get("provider"),
+        "model": embedding_config.get("model"),
+        "mode": embedding_config.get("mode"),
+        "normalized": embedding_config.get("mode") == "local",
+    }
+    if active.get("embedding") != manifest.get("embedding") or manifest.get("embedding") != runtime_fingerprint:
+        raise ValueError("多模态 embedding 指纹不匹配")
+    if manifest.get("index_version") != active.get("index_version"):
+        raise ValueError("多模态 index version 不匹配")
+    collection_name = str(active.get("collection_name", "")).strip()
+    if not collection_name:
+        raise ValueError("多模态 active collection_name 为空")
+    return {
+        "vector_db_dir": vector_db_dir,
+        "collection_name": collection_name,
+        "index_version": active["index_version"],
+    }
 
 
 @dataclass(frozen=True)

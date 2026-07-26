@@ -118,7 +118,7 @@ async def _run_job(job: dict[str, Any], graph, worker_id: str) -> None:
 
 
 async def _run_slot(slot_index: int, rag_service) -> None:
-    """启动 slot；独占 MCP/Graph，并共享进程级 RAG Service。"""
+    """启动 slot；独占 MCP/Graph，并共享进程级多模态 RagService。"""
     worker_id = f"{socket.gethostname()}:{slot_index}"
     stack = AsyncExitStack()
     try:
@@ -146,12 +146,11 @@ async def _run_slot(slot_index: int, rag_service) -> None:
 
 
 async def _main_async() -> None:
-    """初始化配置、数据库、LLM/RAG，然后启动固定数量的 worker slots。"""
+    """初始化数据库、LLM 和多模态 RAG，然后启动固定数量的 worker slots。"""
     check_database_readiness()
     if not agent_core.initialize_llm():
         raise RuntimeError("LLM 初始化失败")
     rag_service = agent_core.initialize_rag_service(agent_core.llm)
-
     slot_count = max(1, settings.JOB_WORKERS)
     logging.info("[worker] starting slot_count=%s", slot_count)
     # 获取_run_slot所有返回，并解包,单并不结束

@@ -566,12 +566,11 @@ async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag
 
 
 def _select_rag_tool_name(rag_questions: list[dict], rag_tools: list) -> str:
-    """根据问题显式声明的语料范围选择独立 RAG 工具。"""
+    """选择沿用原名称的默认多模态 RAG 工具。"""
     names = {getattr(tool, "name", "") for tool in rag_tools}
-    corpora = {str(question.get("corpus", "medical")) for question in rag_questions}
-    if corpora == {"multimodal"} and "multimodal_rag_search" in names:
-        return "multimodal_rag_search"
-    return "rag_enrichment_search" if "rag_enrichment_search" in names or not names else next(iter(names))
+    if "rag_enrichment_search" in names:
+        return "rag_enrichment_search"
+    raise ValueError("rag_enrichment_search tool is unavailable")
 
 
 async def rag_result_parser_node(state: CausalChatState) -> dict:

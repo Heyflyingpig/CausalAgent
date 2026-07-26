@@ -31,9 +31,9 @@ class RagQuestionItem(BaseModel):
         validation_alias=AliasChoices("why_needed", "reason"),
         description="为什么需要查询这个问题。",
     )
-    corpus: Literal["medical", "multimodal"] = Field(
-        default="medical",
-        description="查询目标语料范围；medical 为既有 PubMedQA，multimodal 为独立公共资料索引。",
+    corpus: Literal["multimodal"] = Field(
+        default="multimodal",
+        description="查询目标语料范围；当前默认且唯一支持多模态公共资料索引。",
     )
 
 
@@ -67,8 +67,6 @@ def normalize_rag_question_output(llm_output: Any, max_questions: int) -> List[D
     ][:max_questions]
     if not questions:
         raise ValueError("RAG question output must contain at least one question.")
-    if len({question["corpus"] for question in questions}) != 1:
-        raise ValueError("a RAG question batch must target exactly one corpus")
     return questions
 
 
@@ -131,7 +129,7 @@ async def get_rag_questions(
                 3. 由你根据任务复杂度决定问题数量，但最多只能生成 {max_questions} 个。
                 4. 如果一个问题已经足够，就只生成一个；不要为了凑数量而重复提问。
                 5. 每个问题都必须说明意图、优先级、为什么需要查询和 corpus。
-                6. corpus 只能是 medical 或 multimodal；若问题依赖 PDF、图片、表格、公式或页面证据，选择 multimodal，否则选择 medical。同一批问题只能使用一个 corpus。
+                6. corpus 固定为 multimodal；所有问题都查询已发布的多模态公共资料索引。
 
                 # 输出格式
                 必须只返回一个 JSON object，根对象必须包含 questions 字段，不允许直接返回数组。
@@ -146,7 +144,7 @@ async def get_rag_questions(
                       "intent": "评估因果发现结果的可信度",
                       "priority": "high",
                       "why_needed": "帮助报告说明算法假设和结果解释边界",
-                      "corpus": "medical"
+                      "corpus": "multimodal"
                     }}
                   ]
                 }}

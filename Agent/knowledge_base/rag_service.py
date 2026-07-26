@@ -61,7 +61,10 @@ class RagService:
 
         raw = self.runtime.vector_db.get(include=["metadatas"], limit=limit)
         metadatas = raw.get("metadatas") or []
-        doc_ids = [str(metadata.get("doc_id", "")) for metadata in metadatas]
+        doc_ids = [
+            str(metadata.get("doc_id") or metadata.get("document_id") or "")
+            for metadata in metadatas
+        ]
         datasets = [str(metadata.get("dataset", "")) for metadata in metadatas]
         prefixes = [doc_id.split("_", 1)[0] for doc_id in doc_ids if doc_id]
         return {
