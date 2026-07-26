@@ -36,6 +36,7 @@
 ├── docker-compose.yml
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
+├── docker-compose.admin-e2e.yml # 3.1 独立主从验收覆盖
 ├── README.md               # 项目说明
 ├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
 │   ├── src/
@@ -71,6 +72,7 @@
 │   ├── database_init.py
 │   ├── audit_before_db_upgrade.py
 │   ├── inspection.py       # 数据库看板统一只读检查服务
+│   ├── deep_audit.py       # 手动 deep 数据库事实审计
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口
 │   ├── monitor_worker.py   # 数据库看板分层采集进程
 │   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
@@ -110,10 +112,13 @@
 - 用户角色采用 `users.role` 的最小两级模型，只允许 `user` / `admin`；登录、会话恢复和管理员授权每次都通过主库强一致读确认 `role` 与 `is_active`，不把 session 中的角色值作为后端授权依据。
 - `/api/admin/*` 由统一管理员装饰器保护：无有效会话返回 `401`，普通登录用户返回 `403`；管理员页面未登录时回到统一登录入口，普通用户直访页面保持 `403`。初始管理员只通过 `python -m app.auth.admin_cli promote <username>` 提升现有启用用户，不提供公开管理员注册接口。
 - 登录成功和有效 `check_auth` 会返回 Session 绑定的 CSRF token；管理员刷新、完整性审计、配置保存和重置必须提供匹配的 `X-CSRF-Token`。所有响应都有 `X-Request-ID`，格式合法的上游 request ID 会被沿用。
-- 管理员登录或恢复会话后只进入 `/admin/database` 后台，普通用户继续进入聊天页。后台为白色简约 Vue 页面，左侧导航当前只开放数据库看板和采集配置，不提供聊天、SQL、修复、迁移、用户管理或业务数据写操作入口；手动刷新只会登记共享监控快照请求。
+- 管理员登录或恢复会话后仍以 `/admin/database` 为落点，普通用户继续进入聊天页。后台为白色简约 Vue 页面，现开放业务概览、用户、会话、任务、文件、数据库看板、采集配置和 Schema/deep 审计；全部业务能力只读，不提供聊天、SQL、修复、迁移、用户写操作或任务控制。桌面左侧导航可在 248px/约 76px 间收缩并持久化，移动端为可关闭抽屉，Logo 通过受保护接口复用 `README/CausalAgent.png`。
+- 3.1 管理列表默认 20、最多 50 条并使用不透明游标；消息/附件正文和任务输入/结果/错误只允许管理员明确点击后按最多 64 KiB 源字节分块读取。成功敏感访问要求审计可写；审计只保存管理员、动作、目标、结果、错误码和 request ID，不保存正文。
+- CSV 预览最多读取 256 KiB、100 行、50 列、单元格 1000 字符且只按文本渲染；文件预览/下载成功会在同一事务原子更新 `last_accessed_at`、`access_count` 并写审计，这是 3.1 唯一新增业务记录副作用。
 - 管理看板新增聚合读取接口 `GET /api/admin/db/dashboard`，以及只登记共享刷新请求的 `POST /api/admin/db/refresh` 和 `POST /api/admin/db/integrity/run`；`/db/health`、`/db/overview`、`/db/integrity`、`/db/slow-queries`、`/jobs/workers` 继续兼容，但所有 GET 都只读取最近快照，不现场执行完整数据库采集。
 - 在线配置接口为 `GET/PUT /api/admin/db/settings`、`POST /api/admin/db/settings/reset` 和 `GET /api/admin/db/settings/history`。七项有效值固定按“数据库覆盖 > 环境变量 > 代码默认值”解析，`NULL` 表示继承；每个进程最多缓存 5 秒，读取失败时先使用最后有效值、再回退环境/默认值并标记降级。保存使用乐观版本锁，成功、拒绝和失败结果写入 `admin_audit_events`。
 - 独立 monitor 入口是 `python -m Database.monitor_worker`；它按 `realtime`、`sql_performance`、`capacity`、`integrity` 四类周期生成 MySQL 共享快照，并通过命名锁避免多个 monitor 或并发手动请求重复采集。默认周期分别为 `10s`、`60s`、`900s`，完整性定时审计默认关闭，启用后默认 `86400s`。
+- monitor 还接受仅手动请求的 `deep_audit` 快照：它永不定时调度，覆盖 revision、关键 schema、字符集/UTC/隔离级别、账号职责结论、Job/Event、checkpoint/pending writes、归档关系、`active_session_key` 和逐从库状态；每项有查询超时和异常样本上限，不自动修复，也不返回账号、host 或 grants。
 - 看板连接使用率 warning/error 默认阈值为 `70%`/`85%`，由 `DB_DASHBOARD_CONNECTION_WARNING_PERCENT` 和 `DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT` 配置；快速 SELECT 超时由 `DB_INSPECTION_QUERY_TIMEOUT_MS` 配置，默认 `3000ms`。刷新和采集配置统一由 `DB_MONITOR_AUTO_REFRESH_ENABLED`、`DB_MONITOR_REALTIME_INTERVAL_SECONDS`、`DB_MONITOR_SQL_INTERVAL_SECONDS`、`DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS`、`DB_MONITOR_SLOW_QUERY_WARNING_DELTA`、`DB_MONITOR_INTEGRITY_ENABLED`、`DB_MONITOR_INTEGRITY_INTERVAL_SECONDS` 控制，不得在路由、SQL 或前端硬编码。
 - SQL digest 区块语义是“SQL 性能摘要/高负载 SQL”，按累计 `SUM_TIMER_WAIT` 排序，不等价于超过 `long_query_time` 的单次慢查询；慢查询告警优先使用采集窗口内 `Slow_queries` 增量，累计值仅作兼容和辅助展示。
 - 运行期完整性审计不再对已有外键保证的 message、attachment、job、event 和 checkpoint write 关系执行 `COUNT(*) + LEFT JOIN` 全表扫描，而是轻量确认关键约束存在；仍保留当前没有外键保证的 `checkpoints.thread_id → sessions.id` 检查，也不再要求 `chat_messages` 必须存在分区。
@@ -175,6 +180,14 @@ npm run build
 真实隔离环境 E2E 还需提供 `PLAYWRIGHT_BASE_URL`、管理员/普通用户测试凭据后运行
 `npm run test:e2e`；本机仅有 Edge 时可显式设置 `PLAYWRIGHT_CHANNEL=msedge`，
 未设置时仍使用 Playwright 标准 Chromium。
+
+3.1 完整隔离主从验收在管理员生产构建完成后运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests/run_admin_31_e2e.ps1
+```
+
+该脚本不会触碰当前开发库，也不会自动删除隔离容器和卷；清理仍需单独明确确认。
 
 本地启动桌面端：
 
