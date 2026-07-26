@@ -476,7 +476,6 @@ async def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
 
 from Agent.knowledge_base.query_rag import format_rag_summary_for_prompt
-from Agent.tool_node.rag_query_task import rag_query_task
 from Agent.tool_node.rag_questions import get_rag_questions
 from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
 from Agent.tool_node.tool_message_adapter import (

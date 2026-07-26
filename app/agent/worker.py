@@ -117,14 +117,14 @@ async def _run_job(job: dict[str, Any], graph, worker_id: str) -> None:
         await heartbeat_task
 
 
-async def _run_slot(slot_index: int) -> None:
-    """启动一个 worker slot，并让它独占一组 MCP session/process 和 graph。"""
+async def _run_slot(slot_index: int, rag_service) -> None:
+    """启动 slot；独占 MCP/Graph，并共享进程级 RAG Service。"""
     worker_id = f"{socket.gethostname()}:{slot_index}"
     stack = AsyncExitStack()
     try:
         # 独占session和graph
         mcp_resources = await agent_core.open_mcp_client_resources(stack)
-        graph = create_graph_from_tools(agent_core.llm, mcp_resources.tools)
+        graph = create_graph_from_tools(agent_core.llm, mcp_resources.tools, rag_service)
         logging.info(
             "[worker] slot ready worker=%s tools=%s",
             worker_id,
@@ -150,13 +150,12 @@ async def _main_async() -> None:
     check_database_readiness()
     if not agent_core.initialize_llm():
         raise RuntimeError("LLM 初始化失败")
-    if not agent_core.initialize_rag_system():
-        logging.warning("RAG 系统初始化失败，worker 将以无知识库模式运行。")
+    rag_service = agent_core.initialize_rag_service(agent_core.llm)
 
     slot_count = max(1, settings.JOB_WORKERS)
     logging.info("[worker] starting slot_count=%s", slot_count)
     # 获取_run_slot所有返回，并解包,单并不结束
-    await asyncio.gather(*[_run_slot(i + 1) for i in range(slot_count)])
+    await asyncio.gather(*[_run_slot(i + 1, rag_service) for i in range(slot_count)])
 
 
 def main() -> None:
