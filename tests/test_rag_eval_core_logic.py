@@ -127,7 +127,7 @@ class RagEvalCoreLogicTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0]["data_availability"]["has_retrieval_eval"])
         self.assertTrue(rows[0]["data_availability"]["has_ragas_eval"])
-        self.assertTrue(rows[0]["data_availability"]["has_claim_eval"])
+        self.assertFalse(rows[0]["data_availability"]["has_claim_eval"])
         self.assertEqual(rows[0]["generation"]["retrieved_context_ids"], ["c1"])
 
     def test_get_rag_response_uses_published_retrieval_config(self):

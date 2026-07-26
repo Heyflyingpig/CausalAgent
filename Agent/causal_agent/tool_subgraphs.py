@@ -36,7 +36,7 @@ def build_mcp_subgraph(llm, mcp_tools):
     return graph.compile(name="mcp")
 
 
-def build_rag_subgraph(llm, rag_tools):
+def build_rag_subgraph(llm, rag_tools, checkpointer=None):
     """Build the RAG enrichment subgraph used as one parent-graph stage."""
     graph = StateGraph(CausalChatState)
     graph.add_node(
@@ -59,4 +59,4 @@ def build_rag_subgraph(llm, rag_tools):
     graph.add_edge("rag_question_planner", "rag_tool_node")
     graph.add_edge("rag_tool_node", "rag_result_parser")
     graph.add_edge("rag_result_parser", END)
-    return graph.compile(name="rag")
+    return graph.compile(name="rag", checkpointer=checkpointer)

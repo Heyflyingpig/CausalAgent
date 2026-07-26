@@ -547,9 +547,7 @@ async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag
 
     max_questions = 3
     rag_questions = await get_rag_questions(state, llm, max_questions=max_questions)
-    tool_name = "rag_enrichment_search"
-    if rag_tools:
-        tool_name = getattr(rag_tools[0], "name", tool_name)
+    tool_name = _select_rag_tool_name(rag_questions, rag_tools)
 
     ai_message = AIMessage(
         content="",
@@ -565,6 +563,15 @@ async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag
         ],
     )
     return {"messages": [ai_message]}
+
+
+def _select_rag_tool_name(rag_questions: list[dict], rag_tools: list) -> str:
+    """根据问题显式声明的语料范围选择独立 RAG 工具。"""
+    names = {getattr(tool, "name", "") for tool in rag_tools}
+    corpora = {str(question.get("corpus", "medical")) for question in rag_questions}
+    if corpora == {"multimodal"} and "multimodal_rag_search" in names:
+        return "multimodal_rag_search"
+    return "rag_enrichment_search" if "rag_enrichment_search" in names or not names else next(iter(names))
 
 
 async def rag_result_parser_node(state: CausalChatState) -> dict:

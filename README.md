@@ -160,6 +160,21 @@ graph TD;
 - **运行时生命周期**：worker 启动时严格创建一次进程级 `RagRuntime`，集中持有 embedding、Chroma、由 Chroma 文档构建的 BM25s 内存稀疏索引和回答 LLM；同一 worker 的所有 slot 共享该 Runtime，但各自拥有 RAG Tool 和 Agent Graph。生产 Tool 不会在首次查询时加载这些重资源。
 - **可选能力降级**：知识库目录、embedding、collection 或 sparse corpus 初始化失败时，worker 仍会领取和处理任务，RAG Tool 返回稳定的“知识库暂不可用”结果，报告继续基于因果分析结果生成。该 worker 进程不会自动重试，修复配置或知识库后需重启 worker。
 - **评测兼容**：`query_rag.py` 的既有评测、CLI 和 Web 导入入口仍然保留，并使用独立的 compatibility Service；生产 worker 不经过该兼容缓存。生产检索参数仍逐问题读取发布配置，参数热发布无需重启。
+- **多模态公共知识库**：维护者可通过 `python -m Agent.knowledge_base.multimodal.cli` 对离线公共 TXT、Markdown、图片和已配置解析器支持的 PDF 创建隔离暂存索引。它不接入用户上传文件、不修改 PubMedQA；版本只会在完整性与显式质量门禁均通过后切换独立的多模态 active pointer。查询还会校验 active pointer、manifest 与运行期 embedding 指纹，漂移时拒绝检索而不回退到 PubMedQA。
+- PDF 当前默认使用已通过本地 smoke 的 Docling；MinerU 仅保留为显式选择时的兼容回退。原始资料、Docling 原始输出、标准化单元与本地资源 URI/内容哈希都写入版本 manifest，并在发布门禁中回读核验。远程视觉仅接受 `wcode.net` 的 `qwen/qwen3-vl-flash` 配置和固定 allowlist 资料。
+
+```bash
+python -m Agent.knowledge_base.multimodal.cli inspect --source <path>
+python -m Agent.knowledge_base.multimodal.cli ingest --source <path> --allow-remote-data
+python -m Agent.knowledge_base.multimodal.cli run --source <path> --allow-remote-data --timeout-seconds 600
+python -m Agent.knowledge_base.multimodal.cli evaluate --index-version <version>
+python -m Agent.knowledge_base.multimodal.cli publish --index-version <version>
+python -m Agent.knowledge_base.multimodal.cli omnidocbench-audit --root Agent/knowledge_base/multimodal_benchmarks/omnidocbench
+python -m Agent.knowledge_base.multimodal.omnidocbench_export --root Agent/knowledge_base/multimodal_benchmarks/omnidocbench --output-dir Agent/knowledge_base/multimodal_benchmarks/omnidocbench/official_export
+python -m Agent.knowledge_base.multimodal.cli omnidocbench-export-official --root Agent/knowledge_base/multimodal_benchmarks/omnidocbench --selection-manifest Agent/knowledge_base/multimodal_benchmarks/omnidocbench/production_100/production_100_manifest.json --output-dir Agent/knowledge_base/multimodal_benchmarks/omnidocbench/production_100/official_export_docling
+```
+
+OmniDocBench 本地固定子集只用于研究验证，当前覆盖 6 页代表样本；生产抽样的 100 页由 `production_100_manifest.json` 固定版本、页面哈希与标注属性。`omnidocbench_export` 可生成官方 end-to-end 所需的 GT JSON、同名页面 Markdown 和哈希 manifest；传入 `--selection-manifest` 时按生产清单导出。100 页 Docling Markdown 已在官方 Docker 运行时完成 end-to-end 评测（文本 Edit Distance、表格 TEDS、公式 CDM、阅读顺序）；该证据只衡量解析器，不证明知识库索引已通过发布门禁。布局 mAP 尚未运行，当前 active 索引仍是旧 manifest，不能发布。完整开发依赖通过 `requirements.txt` 引入 `requirements-multimodal.txt`；基础生产镜像仍不安装多模态解析与测试依赖。详细开发记录见 `README/开发日志.md`。
 
 ### 后处理
 *对因果图进行后处理，包括环路检测、边合理性评估等，提高因果结构的可解释性与可靠性*
@@ -473,16 +488,15 @@ python Run_causal.py
 │   ├── Report/             # 报告生成逻辑
 │   ├── knowledge_base/     # RAG 知识库
 │   │   ├── build_knowledge.py # 知识库构建入口，支持 default / medical profile
-│   │   ├── rag_runtime.py  # worker 进程级 RAG 重资源生命周期
-│   │   ├── rag_service.py  # 查询编排、兼容 Service 与可选能力降级
-│   │   ├── sparse_retriever.py # 一次构建、只读共享的 BM25s 内存稀疏索引
-│   │   ├── query_rag.py    # 评测/CLI/Web 兼容查询与算法入口
-│   │   ├── ingestion/      # 来源发现、P05/P06 adapter 与不写索引的 execute_ingest 编排
+│   │   ├── rag_runtime.py      # worker 进程级 RAG 重资源初始化与生命周期管理
+│   │   ├── rag_service.py      # RAG 查询编排、兼容入口与不可用降级服务
+│   │   ├── sparse_retriever.py # 基于 BM25s 的只读内存稀疏检索索引
+│   │   ├── query_rag.py    # RAG 查询、检索 trace 与证据生成入口
+│   │   ├── multimodal/     # 隔离的资料检查、摄取、索引、发布与检索模块
 │   │   ├── db/             # 当前运行时向量知识库存储；医疗库应使用 PubMedQA active corpus 重建
 │   │   ├── models/         # 本地嵌入模型，default profile 使用 bge-small-zh-v1.5
 │   │   └── rag/            # RAG 测评框架、数据集操作、报告和外部医疗数据
 │   │       ├── rag_config.py
-│   │       ├── RAG测评框架开发.md
 │   │       ├── data/
 │   │       │   └── external/pubmedqa/
 │   │       │       └── processed/
