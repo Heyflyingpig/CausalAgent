@@ -1,6 +1,6 @@
 import asyncio
 from .state import CausalChatState
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
@@ -15,7 +15,7 @@ import networkx as nx
 from mcp import ClientSession
 from langgraph.func import task
 from langgraph.types import interrupt
-from Agent.llm_structured_output import with_compatible_structured_output
+from Agent.llm_structured_output import StructuredOutputError, ainvoke_structured
 
 ## 基本配置
 from config.settings import settings
@@ -100,7 +100,7 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
             content=f"决策：普通问答。工具执行失败：{error_message}",
             name="agent"
         )
-        return {"messages": [response_message]}
+        return {"messages": [response_message], "route_decision": "normal_chat"}
 
     # 检查生成报告所需的有效分析结果是否已存在。
     has_tool_results = causal_analysis_result.get("success") is True
@@ -109,7 +109,7 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     if not has_tool_results and _is_explicit_causal_analysis_request(latest_human_text):
         logging.info("检测到明确因果分析请求，绕过LLM路由并进入文件加载模块。")
         response_message = AIMessage(content="决策：信息不全，启动文件加载模块。", name="agent")
-        return {"messages": [response_message]}
+        return {"messages": [response_message], "route_decision": "fold"}
     agent_prompt = """
             你是一个专业的AI助手路由中枢。你的任务是根据用户的对话历史和当前状态，决定下一步的最佳路径。
             
@@ -140,24 +140,24 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         ]
     )
     
-    # 通过共享适配器统一选择 json_mode/json_schema/function_calling。
-    runnable = prompt | with_compatible_structured_output(llm, RouteQuery)
-    
     logging.info("正在调用LLM进行路由决策...")
     try:
-        structured_response = await runnable.ainvoke(
-            {
+        structured_response = await ainvoke_structured(
+            llm=llm,
+            schema=RouteQuery,
+            prompt=prompt,
+            inputs={
                 "messages": state["messages"][-1],
                 "has_tool_results": has_tool_results,
                 "final_report": state.get("final_report", None)
-            }
+            },
+            node_name="agent",
         )
         route_decision = structured_response.route
 
-    except Exception as e:
-        # 这里的异常可能来自JSON解析，也可能来自Pydantic验证
+    except StructuredOutputError as e:
         logging.warning(f"无法从LLM响应中解析或验证路由决策: {e}。将回退到 normal_chat。")
-        route_decision = "normal_chat"  # 设置默认值
+        route_decision = "normal_chat"
 
     logging.info(f"LLM决策结果: {route_decision}")
 
@@ -172,7 +172,7 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         response_message = AIMessage(content="决策：普通问答。", name="agent")
 
     # 只返回新消息，不修改 state["messages"]
-    return {"messages": [response_message]}
+    return {"messages": [response_message], "route_decision": route_decision}
 
 class foldQuery(BaseModel):
     """从用户对话中提取文件名及因果分析所需的关键参数。"""
@@ -249,24 +249,19 @@ async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
             MessagesPlaceholder(variable_name="messages"),
         ])
     try:
-        runnable = prompt | llm | JsonOutputParser()
-        response = await runnable.ainvoke({"messages": llm_prompt_messages(state["messages"])})
-
-        structured_response = foldQuery.model_validate(response)
+        structured_response = await ainvoke_structured(
+            llm=llm,
+            schema=foldQuery,
+            prompt=prompt,
+            inputs={"messages": llm_prompt_messages(state["messages"])},
+            node_name="fold",
+        )
 
         filename = structured_response.filename
         target = structured_response.target
         treatment = structured_response.treatment
         
-        # 转换结构
-        if filename == "None":
-            filename = None
-        if target == "None":
-            target = None
-        if treatment == "None":
-            treatment = None
-            
-    except Exception as e:
+    except StructuredOutputError as e:
         logging.error(f"无法从LLM响应中解析或验证提取信息: {e}。将返回错误值")
         filename = None
         target = None
@@ -305,7 +300,7 @@ async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         user_response = interrupt(error_msg)
         new_message = HumanMessage(content=user_response)
         
-        return {"messages": [new_message]}
+        return {"messages": [new_message], "fold_decision": "agent"}
 
     ## 优化：只保存 file_content 和摘要，不保存 DataFrame
     # 原因：DataFrame 序列化体积大，file_content 可随时重新生成 DataFrame
@@ -340,7 +335,8 @@ async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
                 "analysis_parameters": state['analysis_parameters'], 
                 "fold_name": state['fold_name'], 
                 "file_content": state['file_content'],
-                "tool_call_request": False
+                "tool_call_request": False,
+                "fold_decision": "preprocess",
                 }
     
     else:
@@ -379,7 +375,8 @@ async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
             ],
             "fold_name": state['fold_name'],
             "file_content": state['file_content'],
-            "analysis_parameters": state['analysis_parameters']
+            "analysis_parameters": state['analysis_parameters'],
+            "fold_decision": "agent",
         }
 
 
@@ -488,12 +485,21 @@ from Agent.tool_node.tool_message_adapter import (
 
 
 async def mcp_planner_node(state: CausalChatState, llm: ChatOpenAI, mcp_tools: list) -> dict:
-    """获取MCP tool call"""
+    """强制模型从可用 MCP tools 中选择一个，并返回标准 Tool Call。"""
     if not mcp_tools:
         raise RuntimeError("No MCP tools are available for causal analysis.")
-    ## 使用bind_tools 方法，返回标准化toolcall
-    mcp_llm = llm.bind_tools(
+    # 固定 tool_choice 的请求使用关闭 Thinking 的隔离副本。
+    planner_llm = llm.model_copy(
+        update={
+            "extra_body": {
+                **(llm.extra_body or {}),
+                "thinking": {"type": "disabled"},
+            }
+        }
+    )
+    mcp_llm = planner_llm.bind_tools(
         mcp_tools,
+        tool_choice="required",
         parallel_tool_calls=False,
     )
     logging.info("正在启动 MCP 查询生成任务...")
@@ -543,11 +549,29 @@ async def mcp_result_parser_node(state: CausalChatState) -> dict:
 
 
 async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag_tools: list) -> dict:
-    """子节点：获取rag问题"""
+    """生成 RAG 问题；结构化失败时写入稳定降级结果并跳过工具调用。"""
     logging.info("正在启动 RAG 问题生成任务...")
 
     max_questions = 3
-    rag_questions = await get_rag_questions(state, llm, max_questions=max_questions)
+    try:
+        rag_questions = await get_rag_questions(state, llm, max_questions=max_questions)
+    except StructuredOutputError as exc:
+        logging.warning("RAG 问题生成失败，将跳过知识库工具: %s", exc)
+        return {
+            "messages": [
+                AIMessage(
+                    content="知识库问题生成失败，已跳过知识库增强。",
+                    name="rag_question_planner",
+                )
+            ],
+            "knowledge_base_result": {
+                "success": False,
+                "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
+                "questions": [],
+                "evidence_count": 0,
+                "error": str(exc),
+            },
+        }
     tool_name = "rag_enrichment_search"
     if rag_tools:
         tool_name = getattr(rag_tools[0], "name", tool_name)

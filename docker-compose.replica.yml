@@ -91,7 +91,6 @@ services:
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
-      - LLM_STRUCTURED_OUTPUT_METHOD=${LLM_STRUCTURED_OUTPUT_METHOD:-json_mode}
       - SECRET_KEY=${SECRET_KEY}
       - FLASK_ENV=development
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
@@ -144,7 +143,6 @@ services:
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
-      - LLM_STRUCTURED_OUTPUT_METHOD=${LLM_STRUCTURED_OUTPUT_METHOD:-json_mode}
       - SECRET_KEY=${SECRET_KEY}
       - FLASK_ENV=development
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}

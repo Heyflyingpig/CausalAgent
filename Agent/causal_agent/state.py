@@ -1,5 +1,5 @@
 from operator import add
-from typing import Annotated, Any, Dict, List, Optional, TypedDict
+from typing import Annotated, Any, Dict, List, Literal, NotRequired, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage
 
@@ -32,6 +32,11 @@ class CausalChatState(TypedDict):
     user_id: int
     session_id: str
     fold_name: str
+
+    route_decision: NotRequired[
+        Literal["fold", "postprocess", "normal_chat", "inquiry_answer"]
+    ]
+    fold_decision: NotRequired[Literal["preprocess", "agent"]]
 
     tool_call_request: Optional[bool]
 
