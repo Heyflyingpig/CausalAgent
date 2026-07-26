@@ -4,6 +4,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# 容忍部署网络的短时抖动
+ENV PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=5
+
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -15,9 +19,13 @@ RUN apt-get update && apt-get install -y \
 COPY requirements-base.txt .
 RUN pip install --no-cache-dir -r requirements-base.txt
 
-# 再安装所有依赖（包括新增的）
+# 先安装 CPU 版 PyTorch，避免从 PyPI 拉取包含 CUDA 组件的超大 wheel
+RUN pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.7.1+cpu
+
+# 再安装所有依赖
 COPY requirements.txt .
-# 使用官方PyPI源避免哈希验证问题（torch等大包从官方源下载更可靠）
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
