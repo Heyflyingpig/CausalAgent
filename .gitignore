@@ -199,14 +199,19 @@ Agent/knowledge_base/unfinish_source/
 # skils
 skills/
 
-
 # study
 study/
 
 # local-only documents
 /docs/
+!/docs/
+!docs/难题.md
 Agent/knowledge_base/rag/docs/
 Agent/knowledge_base/rag/output/reports/
+Agent/knowledge_base/multimodal_assets/
+Agent/knowledge_base/multimodal_indexes/
+Agent/knowledge_base/multimodal_runtime/
+Agent/knowledge_base/multimodal_benchmarks/
 app/DESIGN.md
 
 # Admin Vue

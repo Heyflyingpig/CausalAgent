@@ -75,6 +75,15 @@ pymupdf==1.24.7
 unstructured==0.14.9
 langchain-huggingface==1.2.2
 
+# 多模态公共知识库解析与契约测试依赖
+# 多模态公共知识库依赖；由完整 requirements.txt 引入，不并入基础生产镜像。
+docling==2.115.0
+openpyxl==3.1.5
+
+# 契约测试用于生成最小 PDF fixture。
+reportlab==5.0.0
+
+
 # 数据可视化依赖
 matplotlib>=3.5.0
 seaborn>=0.12.0
