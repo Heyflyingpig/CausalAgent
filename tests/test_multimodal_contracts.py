@@ -20,8 +20,10 @@ from Agent.knowledge_base.multimodal.pipeline import MultimodalKnowledgeBaseMain
 from Agent.knowledge_base.multimodal.parsers import parse_document
 from Agent.knowledge_base.multimodal.retrieval import _parent_context
 from Agent.knowledge_base.multimodal.retrieval import multimodal_rag_search
+from Agent.knowledge_base.rag_runtime import RagRuntimeConfig
 from Agent.knowledge_base.multimodal.vision import VisionAnalyzer
 from Agent.tool_node.rag_questions import normalize_rag_question_output
+from Agent.tool_node.rag_tool_registry import build_rag_tools
 from Agent.causal_agent.nodes import _select_rag_tool_name
 
 
@@ -441,21 +443,69 @@ class MultimodalContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "legacy manifest"):
                 service.publish(version)
 
-    def test_explicit_multimodal_corpus_selects_multimodal_tool(self) -> None:
-        """RAG 工具选择必须基于显式 corpus，而不是问题关键词。"""
-        questions = normalize_rag_question_output({"questions": [{"question": "解释文档", "intent": "证据", "priority": "high", "why_needed": "需要页面", "corpus": "multimodal"}]}, 3)
-        tools = [type("Tool", (), {"name": "rag_enrichment_search"})(), type("Tool", (), {"name": "multimodal_rag_search"})()]
-        self.assertEqual(_select_rag_tool_name(questions, tools), "multimodal_rag_search")
+    def test_multimodal_is_the_default_and_only_rag_corpus(self) -> None:
+        """未声明 corpus 时必须默认多模态，旧 medical 输入必须显式失败。"""
+        payload = {"questions": [{"question": "解释文档", "intent": "证据", "priority": "high", "why_needed": "需要页面"}]}
+        questions = normalize_rag_question_output(payload, 3)
+        self.assertEqual(questions[0]["corpus"], "multimodal")
 
-    def test_mixed_corpora_are_rejected(self) -> None:
-        """单次 ToolNode 调用不得静默混合两套独立语料。"""
-        payload = {"questions": [
-            {"question": "医学", "intent": "证据", "priority": "high", "why_needed": "需要", "corpus": "medical"},
-            {"question": "页面", "intent": "证据", "priority": "high", "why_needed": "需要", "corpus": "multimodal"},
-        ]}
-        with self.assertRaisesRegex(ValueError, "exactly one corpus"):
+        payload["questions"][0]["corpus"] = "medical"
+        with self.assertRaises(ValueError):
             normalize_rag_question_output(payload, 3)
 
+    def test_default_rag_registry_keeps_original_tool_name(self) -> None:
+        """默认 RAG 继续使用原工具名，但底层只绑定多模态 Service。"""
+        self.assertEqual([tool.name for tool in build_rag_tools(MagicMock())], ["rag_enrichment_search"])
+
+    def test_multimodal_corpus_selects_original_rag_tool(self) -> None:
+        """多模态默认语料仍使用原 RAG 工具名。"""
+        questions = normalize_rag_question_output({"questions": [{"question": "解释文档", "intent": "证据", "priority": "high", "why_needed": "需要页面"}]}, 3)
+        tools = [type("Tool", (), {"name": "rag_enrichment_search"})()]
+        self.assertEqual(_select_rag_tool_name(questions, tools), "rag_enrichment_search")
+
+    def test_rag_runtime_defaults_to_published_multimodal_index(self) -> None:
+        """原 RagRuntime 必须从多模态 active pointer 解析默认 collection。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            version = "mm_test"
+            version_dir = root / "indexes" / version
+            (version_dir / "chroma").mkdir(parents=True)
+            manifest = {"index_version": version, "embedding": {"provider": "local", "model": "model", "mode": "local", "normalized": True}}
+            manifest_path = version_dir / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            active_path = root / "runtime" / "active.json"
+            active_path.parent.mkdir()
+            active_path.write_text(json.dumps({
+                "index_version": version,
+                "index_path": f"{version}/chroma",
+                "collection_name": "causal_multimodal_mm_test",
+                "manifest_sha256": __import__("hashlib").sha256(manifest_path.read_bytes()).hexdigest(),
+                "embedding": manifest["embedding"],
+            }), encoding="utf-8")
+            embedding_config = {"status": "ready", "mode": "local", "provider": "local", "model": "model", "path": "model"}
+            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path)}), patch("Agent.knowledge_base.rag_runtime.resolve_embedding_runtime_config", return_value=embedding_config):
+                config = RagRuntimeConfig.from_environment()
+            self.assertEqual(Path(config.vector_db_dir), version_dir / "chroma")
+            self.assertEqual(config.collection_name, "causal_multimodal_mm_test")
+            self.assertEqual(config.release_id, version)
+
+    def test_original_rag_metadata_normalizer_preserves_multimodal_identity(self) -> None:
+        """原检索链必须识别多模态 document、page、asset 和内容类型字段。"""
+        from Agent.knowledge_base.query_rag import _normalize_chunk_metadata
+
+        metadata = _normalize_chunk_metadata({
+            "document_id": "doc_1",
+            "page_number": 3,
+            "asset_uri": "doc_1/images/chart.png",
+            "modality": "image",
+            "content_kind": "chart",
+            "content_hash": "abc",
+        }, "图表检索文本")
+        self.assertEqual(metadata["doc_id"], "doc_1")
+        self.assertEqual(metadata["page"], 3)
+        self.assertEqual(metadata["source_name"], "chart.png")
+        self.assertEqual(metadata["doc_type"], "chart")
+        self.assertEqual(metadata["corpus"], "multimodal")
 
 if __name__ == "__main__":
     unittest.main()

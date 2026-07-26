@@ -123,7 +123,7 @@ async def _run_job(job: dict[str, Any], graph, worker_id: str) -> None:
 
 
 async def _run_slot(slot_index: int, rag_service, checkpoint_pool) -> None:
-    """启动 slot；独占 MCP/Graph，共享进程级 RAG Service 和 checkpoint pool。"""
+    """启动 slot；独占 MCP/Graph，共享进程级多模态 RagService 和 checkpoint pool。"""
     worker_id = f"{socket.gethostname()}:{slot_index}"
     stack = AsyncExitStack()
     try:
@@ -157,7 +157,7 @@ async def _run_slot(slot_index: int, rag_service, checkpoint_pool) -> None:
 
 
 async def _main_async() -> None:
-    """初始化配置、数据库、LLM/RAG，然后启动固定数量的 worker slots。"""
+    """初始化数据库、LLM 和多模态 RAG，然后启动固定数量的 worker slots。"""
     check_database_readiness()
     async with open_checkpoint_pool() as checkpoint_pool:
         await verify_checkpoint_schema(checkpoint_pool)

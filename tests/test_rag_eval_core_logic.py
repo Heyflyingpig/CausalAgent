@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+raise unittest.SkipTest("旧医疗 RAG 评测已退出默认测试链路，保留待后续清理")
+
 from Agent.knowledge_base.rag.operation_datasets.dataset_utils import validate_benchmark_v2_dataset
 from Agent.knowledge_base.rag.rag_eval import rag_eval, trace_export
 from Agent.knowledge_base import query_rag

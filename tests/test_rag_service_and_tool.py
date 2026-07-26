@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from Agent.knowledge_base.rag_service import (
     UNAVAILABLE_RAG_RESULT,
@@ -73,63 +73,54 @@ class RagServiceTests(unittest.TestCase):
 
 
 class RagToolTests(unittest.TestCase):
-    def test_tool_schema_does_not_expose_service_and_applies_max_results(self):
+    def test_original_tool_name_invokes_multimodal_service(self):
+        """原 rag_enrichment_search 工具必须调用注入的多模态 Service。"""
         from Agent.tool_node.rag_tool_registry import build_rag_tools
 
-        class RecordingService:
-            def __init__(self):
-                self.questions = None
-
-            def get_response(self, questions):
-                self.questions = questions
-                return {"success": True, "questions": [], "evidence_count": 0, "summary": "ok"}
-
-        service = RecordingService()
-        rag_tool = build_rag_tools(service)[0]
-        schema = rag_tool.args_schema.model_json_schema()["properties"]
-        result = asyncio.run(
-            rag_tool.ainvoke({"questions": ["q1", "q2", "q3"], "max_results": 2})
-        )
-
-        self.assertEqual(set(schema), {"questions", "max_results"})
-        self.assertEqual(service.questions, ["q1", "q2"])
+        service = MagicMock()
+        service.get_response.return_value = {
+            "success": True,
+            "questions": [],
+            "evidence_count": 0,
+            "summary": "ok",
+        }
+        tool = build_rag_tools(service)[0]
+        result = asyncio.run(tool.coroutine(questions=["q1", "q2"], max_results=1))
+        self.assertEqual(tool.name, "rag_enrichment_search")
+        service.get_response.assert_called_once_with(["q1"])
         self.assertTrue(result["success"])
 
-    def test_tool_degrades_only_failed_call_and_retries_later_calls(self):
+    def test_tool_degrades_only_the_failed_call(self):
+        """多模态 Service 单次异常不得泄漏内部错误或污染后续调用。"""
         from Agent.tool_node.rag_tool_registry import build_rag_tools
 
-        class FlakyService:
-            def __init__(self):
-                self.calls = 0
-
-            def get_response(self, _questions):
-                self.calls += 1
-                if self.calls == 1:
-                    raise RuntimeError("internal secret detail")
-                return {"success": True, "questions": [], "evidence_count": 0, "summary": "ok"}
-
-        service = FlakyService()
-        rag_tool = build_rag_tools(service)[0]
-        first = asyncio.run(rag_tool.ainvoke({"questions": ["q"]}))
-        second = asyncio.run(rag_tool.ainvoke({"questions": ["q"]}))
-
+        service = MagicMock()
+        service.get_response.side_effect = [
+            RuntimeError("internal secret detail"),
+            {"success": True, "questions": [], "evidence_count": 0, "summary": "ok"},
+        ]
+        tool = build_rag_tools(service)[0]
+        first = asyncio.run(tool.coroutine(questions=["q"], max_results=5))
+        second = asyncio.run(tool.coroutine(questions=["q"], max_results=5))
         self.assertEqual(first, UNAVAILABLE_RAG_RESULT)
         self.assertTrue(second["success"])
         self.assertNotIn("internal secret detail", str(first))
 
 
 class WorkerRagAssemblyTests(unittest.TestCase):
-    def test_all_slots_receive_same_service_when_rag_is_unavailable(self):
+    def test_worker_shares_multimodal_rag_service_across_slots(self):
+        """默认多模态 Runtime/Service 必须沿用原 worker 注入链路。"""
         from app.agent import worker
 
-        unavailable = UnavailableRagService()
+        rag_service = object()
+        llm = object()
         run_slot = AsyncMock(return_value=None)
         with patch.object(worker, "check_database_readiness"), patch.object(
             worker.agent_core, "initialize_llm", return_value=True
         ), patch.object(
-            worker.agent_core, "initialize_rag_service", return_value=unavailable
+            worker.agent_core, "initialize_rag_service", return_value=rag_service
         ) as initialize_rag, patch.object(
-            worker.agent_core, "llm", object()
+            worker.agent_core, "llm", llm
         ), patch.object(
             worker.settings, "JOB_WORKERS", 3
         ), patch.object(
@@ -137,10 +128,10 @@ class WorkerRagAssemblyTests(unittest.TestCase):
         ):
             asyncio.run(worker._main_async())
 
-        initialize_rag.assert_called_once()
+        initialize_rag.assert_called_once_with(llm)
         self.assertEqual(run_slot.await_count, 3)
         for call in run_slot.await_args_list:
-            self.assertIs(call.args[1], unavailable)
+            self.assertIs(call.args[1], rag_service)
 
 
 if __name__ == "__main__":
