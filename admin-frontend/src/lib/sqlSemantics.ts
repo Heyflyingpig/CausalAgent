@@ -1,3 +1,5 @@
+import { meaningForRepositoryQuery } from './sqlRepositoryEvidence'
+
 export type SqlSemanticConfidence = 'confirmed' | 'inferred'
 
 export interface SqlBusinessMeaning {
@@ -385,6 +387,9 @@ export function mapSqlBusinessMeaning(value: unknown): SqlBusinessMeaning {
   }
 
   const operation = sqlOperation(normalizedSql)
+  const repositoryMeaning = meaningForRepositoryQuery(normalizedSql)
+  if (repositoryMeaning) return repositoryMeaning
+
   const jobMeaning = meaningForAgentJobs(normalizedSql, operation)
   if (jobMeaning) return jobMeaning
 
