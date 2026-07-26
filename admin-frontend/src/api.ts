@@ -1,9 +1,21 @@
 import type {
+  AdminAttachment,
+  AdminFile,
+  AdminJob,
+  AdminJobEvent,
+  AdminMessage,
+  AdminSession,
+  AdminUser,
   AuditEvent,
+  BusinessOverview,
+  CsvPreview,
+  CursorPage,
   DashboardData,
+  DeepAuditSnapshot,
   Identity,
   MonitorOverrideMap,
   MonitorSettings,
+  SensitiveContentChunk,
 } from './types'
 
 interface ApiEnvelope<T> {
@@ -115,6 +127,69 @@ async function apiRequest<T>(
   return payload.data as T
 }
 
+type QueryValue = string | number | boolean | null | undefined
+
+/** 把有值的筛选参数编码到管理员 API URL。 */
+function withQuery(path: string, values: Record<string, QueryValue>): string {
+  const params = new URLSearchParams()
+  Object.entries(values).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      params.set(key, String(value))
+    }
+  })
+  const query = params.toString()
+  return query ? `${path}?${query}` : path
+}
+
+/** 读取受保护下载并使用服务端安全文件名触发浏览器保存。 */
+async function downloadRequest(url: string): Promise<void> {
+  const response = await fetch(url, {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/octet-stream' },
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    let payload: Partial<ApiEnvelope<unknown>> = {}
+    try {
+      payload = (await response.json()) as Partial<ApiEnvelope<unknown>>
+    } catch {
+      // 非 JSON 下载错误由统一状态文案兜底。
+    }
+    const error = new ApiError(
+      payload.error || `下载失败 (${response.status})`,
+      response.status,
+      payload,
+      response.headers.get('X-Request-ID'),
+    )
+    if (
+      response.status === 401 ||
+      (response.status === 403 && payload.code !== 'csrf_invalid')
+    ) {
+      redirectToLogin()
+    }
+    throw error
+  }
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') || ''
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  const plainMatch = disposition.match(/filename="?([^";]+)"?/i)
+  let filename = 'download'
+  try {
+    filename = decodeURIComponent(utf8Match?.[1] || plainMatch?.[1] || filename)
+  } catch {
+    filename = plainMatch?.[1] || filename
+  }
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filename
+  link.hidden = true
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(objectUrl)
+}
+
 export const adminApi = {
   /** 读取一次完整聚合看板。 */
   dashboard: () => apiRequest<DashboardData>('/api/admin/db/dashboard', { cache: 'no-store' }),
@@ -151,6 +226,150 @@ export const adminApi = {
       { cache: 'no-store' },
     )
   },
+  /** 读取 3.1 业务概览和共享快照摘要。 */
+  businessOverview: () => apiRequest<BusinessOverview>(
+    '/api/admin/business/overview',
+    { cache: 'no-store' },
+  ),
+  /** 分页读取脱敏用户。 */
+  users: (filters: {
+    limit?: number
+    cursor?: string
+    q?: string
+    role?: string
+    is_active?: boolean
+  } = {}) => apiRequest<CursorPage<AdminUser>>(
+    withQuery('/api/admin/business/users', filters),
+    { cache: 'no-store' },
+  ),
+  /** 读取单个用户详情并触发敏感访问审计。 */
+  user: (userId: number) => apiRequest<AdminUser>(
+    `/api/admin/business/users/${userId}`,
+    { cache: 'no-store' },
+  ),
+  /** 分页读取会话摘要。 */
+  sessions: (filters: {
+    limit?: number
+    cursor?: string
+    q?: string
+    user_id?: number
+    is_archived?: boolean
+  } = {}) => apiRequest<CursorPage<AdminSession>>(
+    withQuery('/api/admin/business/sessions', filters),
+    { cache: 'no-store' },
+  ),
+  /** 读取会话元数据。 */
+  session: (sessionId: string) => apiRequest<AdminSession>(
+    `/api/admin/business/sessions/${encodeURIComponent(sessionId)}`,
+    { cache: 'no-store' },
+  ),
+  /** 分页读取会话消息摘要。 */
+  sessionMessages: (
+    sessionId: string,
+    filters: { limit?: number; cursor?: string; message_type?: string } = {},
+  ) => apiRequest<CursorPage<AdminMessage>>(
+    withQuery(
+      `/api/admin/business/sessions/${encodeURIComponent(sessionId)}/messages`,
+      filters,
+    ),
+    { cache: 'no-store' },
+  ),
+  /** 读取消息附件元数据。 */
+  messageAttachments: (messageId: number) => apiRequest<{ items: AdminAttachment[] }>(
+    `/api/admin/business/messages/${messageId}/attachments`,
+    { cache: 'no-store' },
+  ),
+  /** 点击后分块读取消息正文。 */
+  messageContent: (messageId: number, offset = 0) =>
+    apiRequest<SensitiveContentChunk>(
+      withQuery(`/api/admin/business/messages/${messageId}/content`, { offset }),
+      { cache: 'no-store' },
+    ),
+  /** 点击后分块读取附件正文。 */
+  attachmentContent: (attachmentId: number, offset = 0) =>
+    apiRequest<SensitiveContentChunk>(
+      withQuery(`/api/admin/business/attachments/${attachmentId}/content`, { offset }),
+      { cache: 'no-store' },
+    ),
+  /** 分页读取分析任务摘要。 */
+  jobs: (filters: {
+    limit?: number
+    cursor?: string
+    q?: string
+    status?: string
+    user_id?: number
+    session_id?: string
+  } = {}) => apiRequest<CursorPage<AdminJob>>(
+    withQuery('/api/admin/business/jobs', filters),
+    { cache: 'no-store' },
+  ),
+  /** 读取任务元数据。 */
+  job: (jobId: string) => apiRequest<AdminJob>(
+    `/api/admin/business/jobs/${encodeURIComponent(jobId)}`,
+    { cache: 'no-store' },
+  ),
+  /** 分页读取任务事件时间线。 */
+  jobEvents: (
+    jobId: string,
+    filters: { limit?: number; cursor?: string } = {},
+  ) => apiRequest<CursorPage<AdminJobEvent>>(
+    withQuery(`/api/admin/business/jobs/${encodeURIComponent(jobId)}/events`, filters),
+    { cache: 'no-store' },
+  ),
+  /** 点击后分块读取任务输入、结果或错误正文。 */
+  jobContent: (
+    jobId: string,
+    kind: 'input' | 'result' | 'error',
+    offset = 0,
+  ) => apiRequest<SensitiveContentChunk>(
+    withQuery(`/api/admin/business/jobs/${encodeURIComponent(jobId)}/content`, {
+      kind,
+      offset,
+    }),
+    { cache: 'no-store' },
+  ),
+  /** 分页读取文件元数据。 */
+  files: (filters: {
+    limit?: number
+    cursor?: string
+    q?: string
+    user_id?: number
+    mime_type?: string
+  } = {}) => apiRequest<CursorPage<AdminFile>>(
+    withQuery('/api/admin/business/files', filters),
+    { cache: 'no-store' },
+  ),
+  /** 读取文件元数据。 */
+  file: (fileId: number) => apiRequest<AdminFile>(
+    `/api/admin/business/files/${fileId}`,
+    { cache: 'no-store' },
+  ),
+  /** 安全预览 CSV，并由后端原子记录访问。 */
+  previewFile: (fileId: number) => apiRequest<CsvPreview>(
+    `/api/admin/business/files/${fileId}/preview`,
+    { cache: 'no-store' },
+  ),
+  /** 受控下载文件，并由后端原子记录访问。 */
+  downloadFile: (fileId: number) =>
+    downloadRequest(`/api/admin/business/files/${fileId}/download`),
+  /** 读取现有 quick 完整性共享快照。 */
+  quickAudit: () => apiRequest<Record<string, unknown>>(
+    '/api/admin/db/audit?mode=quick',
+    { cache: 'no-store' },
+  ),
+  /** 读取最近一次手动 deep 审计共享快照。 */
+  deepAudit: () => apiRequest<DeepAuditSnapshot>(
+    '/api/admin/db/audit?mode=deep',
+    { cache: 'no-store' },
+  ),
+  /** 登记 deep 审计请求，真正采集由 monitor 执行。 */
+  runDeepAudit: () => apiRequest<{ groups: string[]; requested_at: string }>(
+    '/api/admin/db/audit/run',
+    {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'deep' }),
+    },
+  ),
   /** 清空后端 Session 并回到统一登录入口。 */
   logout: async () => {
     await fetch('/api/logout', {

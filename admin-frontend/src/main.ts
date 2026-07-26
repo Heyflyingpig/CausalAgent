@@ -2,7 +2,14 @@ import { createApp } from 'vue'
 import {
   ElAlert,
   ElButton,
+  ElCollapse,
+  ElCollapseItem,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElDialog,
   ElDrawer,
+  ElEmpty,
+  ElInput,
   ElInputNumber,
   ElLoading,
   ElOption,
@@ -12,6 +19,9 @@ import {
   ElTable,
   ElTableColumn,
   ElTag,
+  ElTimeline,
+  ElTimelineItem,
+  ElTooltip,
 } from 'element-plus'
 import 'element-plus/dist/index.css'
 import App from './App.vue'
@@ -22,7 +32,14 @@ const app = createApp(App)
 for (const plugin of [
   ElAlert,
   ElButton,
+  ElCollapse,
+  ElCollapseItem,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElDialog,
   ElDrawer,
+  ElEmpty,
+  ElInput,
   ElInputNumber,
   ElLoading,
   ElOption,
@@ -32,6 +49,9 @@ for (const plugin of [
   ElTable,
   ElTableColumn,
   ElTag,
+  ElTimeline,
+  ElTimelineItem,
+  ElTooltip,
 ]) {
   app.use(plugin)
 }
