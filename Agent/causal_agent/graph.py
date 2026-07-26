@@ -2,8 +2,9 @@ from langgraph.graph import StateGraph, END
 from .state import CausalAgentState
 from . import nodes, edges
 from .graph_utils import bind_node
-from .tool_subgraphs import build_mcp_subgraph, build_rag_subgraph
+from .tool_subgraphs import build_mcp_subgraph
 from .fault_tolerance import (
+    degrade_rag_tool_result,
     recover_postprocess_to_report,
     recover_report,
     recover_terminal_message,
@@ -20,11 +21,11 @@ import logging
 
 
 
-def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointer):
+def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_service, checkpointer):
     """
     构建父图。
 
-    父图只表达业务阶段顺序，MCP/RAG 的 tool-calling 细节封装在各自子图内。
+    父图保留 MCP 工具子图；默认多模态 RAG 作为单一普通节点执行。
     """
     workflow = StateGraph(CausalAgentState)
 
@@ -32,7 +33,7 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
     fold_node_with_llm = bind_node(nodes.fold_node, llm=llm)
     preprocess_node_with_llm = bind_node(nodes.preprocess_node, llm=llm)
     mcp_subgraph = build_mcp_subgraph(llm=llm, mcp_tools=mcp_tools)
-    rag_subgraph = build_rag_subgraph(llm=llm, rag_tools=rag_tools)
+    rag_node_with_resources = bind_node(nodes.rag_node, llm=llm, rag_service=rag_service)
     postprocess_node_with_llm = bind_node(nodes.postprocess_node, llm=llm)
     inquiry_answer_node_with_llm = bind_node(nodes.inquiry_answer_node, llm=llm)
     report_node_with_llm = bind_node(nodes.report_node, llm=llm)
@@ -60,7 +61,13 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
         error_handler=recover_preprocess_to_agent,
     )
     workflow.add_node("mcp", mcp_subgraph)
-    workflow.add_node("rag", rag_subgraph)
+    workflow.add_node(
+        "rag",
+        rag_node_with_resources,
+        retry_policy=tool_retry(max_attempts=2),
+        timeout=timeout(run_timeout=180, idle_timeout=60),
+        error_handler=degrade_rag_tool_result,
+    )
     workflow.add_node(
         "postprocess",
         postprocess_node_with_llm,
@@ -147,13 +154,10 @@ def create_graph_from_tools(
     checkpointer,
 ):
     """使用已加载的 MCP tools、显式 RAG Service 和 checkpoint 构建父图。"""
-    from Agent.tool_node.rag_tool_registry import build_rag_tools
-    # graph 层不再关心 MCP session。
-    rag_tools = build_rag_tools(rag_service)
     return build_graph(
         llm=llm,
         mcp_tools=mcp_tools,
-        rag_tools=rag_tools,
+        rag_service=rag_service,
         checkpointer=checkpointer,
     )
 

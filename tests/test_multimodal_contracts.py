@@ -24,7 +24,6 @@ from Agent.knowledge_base.rag_runtime import RagRuntimeConfig
 from Agent.knowledge_base.multimodal.vision import VisionAnalyzer
 from Agent.tool_node.rag_questions import normalize_rag_question_output
 from Agent.tool_node.rag_tool_registry import build_rag_tools
-from Agent.causal_agent.nodes import _select_rag_tool_name
 
 
 class MultimodalContractTests(unittest.TestCase):
@@ -456,12 +455,6 @@ class MultimodalContractTests(unittest.TestCase):
     def test_default_rag_registry_keeps_original_tool_name(self) -> None:
         """默认 RAG 继续使用原工具名，但底层只绑定多模态 Service。"""
         self.assertEqual([tool.name for tool in build_rag_tools(MagicMock())], ["rag_enrichment_search"])
-
-    def test_multimodal_corpus_selects_original_rag_tool(self) -> None:
-        """多模态默认语料仍使用原 RAG 工具名。"""
-        questions = normalize_rag_question_output({"questions": [{"question": "解释文档", "intent": "证据", "priority": "high", "why_needed": "需要页面"}]}, 3)
-        tools = [type("Tool", (), {"name": "rag_enrichment_search"})()]
-        self.assertEqual(_select_rag_tool_name(questions, tools), "rag_enrichment_search")
 
     def test_rag_runtime_defaults_to_published_multimodal_index(self) -> None:
         """原 RagRuntime 必须从多模态 active pointer 解析默认 collection。"""

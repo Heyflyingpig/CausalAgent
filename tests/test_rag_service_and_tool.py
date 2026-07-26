@@ -107,6 +107,28 @@ class RagToolTests(unittest.TestCase):
         self.assertNotIn("internal secret detail", str(first))
 
 
+class RagNodeTests(unittest.TestCase):
+    def test_direct_rag_node_generates_questions_and_calls_service(self):
+        """单一 RAG 节点必须直接生成问题、调用 Service 并写回结果。"""
+        from Agent.causal_agent import nodes
+
+        questions = [{"question": "解释图表", "corpus": "multimodal"}]
+        expected = {"success": True, "questions": [], "evidence_count": 0, "summary": "ok"}
+        service = MagicMock()
+        service.get_response.return_value = expected
+        with patch.object(nodes, "get_rag_questions", AsyncMock(return_value=questions)):
+            result = asyncio.run(nodes.rag_node({"messages": []}, object(), service))
+        service.get_response.assert_called_once_with(questions)
+        self.assertEqual(result, {"knowledge_base_result": expected})
+
+    def test_parent_graph_has_no_rag_subgraph(self):
+        """父图只保留 MCP 子图，rag 必须是普通节点。"""
+        from Agent.causal_agent.graph import build_graph
+
+        graph = build_graph(MagicMock(), [], MagicMock(), checkpointer=False)
+        self.assertEqual([name for name, _graph in graph.get_subgraphs()], ["mcp"])
+
+
 class WorkerRagAssemblyTests(unittest.TestCase):
     def test_worker_shares_multimodal_rag_service_across_slots(self):
         """默认多模态 Runtime/Service 必须沿用原 worker 注入链路。"""
