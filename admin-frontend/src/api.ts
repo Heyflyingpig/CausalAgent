@@ -4,6 +4,7 @@ import type {
   AdminJob,
   AdminJobEvent,
   AdminMessage,
+  AdminOperationResult,
   AdminSession,
   AdminUser,
   AuditEvent,
@@ -12,10 +13,14 @@ import type {
   CursorPage,
   DashboardData,
   DeepAuditSnapshot,
+  FileDeleteImpact,
   Identity,
   MonitorOverrideMap,
   MonitorSettings,
   SensitiveContentChunk,
+  UserDeleteImpact,
+  UserOperationAction,
+  UserOperationPreview,
 } from './types'
 
 interface ApiEnvelope<T> {
@@ -62,6 +67,14 @@ function loginUrl(): string {
 /** 把失效或越权的管理员会话送回统一登录入口。 */
 function redirectToLogin(): void {
   window.location.assign(loginUrl())
+}
+
+/** 只把真实 Session 失效或管理员权限失效视为需要离开当前管理页面。 */
+export function shouldRedirectForApiError(status: number, code?: string): boolean {
+  return (
+    (status === 401 && code === 'auth_required') ||
+    (status === 403 && code === 'admin_required')
+  )
 }
 
 /** 强制从后端恢复实时身份，并缓存 Session 绑定的 CSRF token。 */
@@ -116,10 +129,7 @@ async function apiRequest<T>(
       payload,
       response.headers.get('X-Request-ID'),
     )
-    if (
-      response.status === 401 ||
-      (response.status === 403 && payload.code !== 'csrf_invalid')
-    ) {
+    if (shouldRedirectForApiError(response.status, payload.code)) {
       redirectToLogin()
     }
     throw error
@@ -161,10 +171,7 @@ async function downloadRequest(url: string): Promise<void> {
       payload,
       response.headers.get('X-Request-ID'),
     )
-    if (
-      response.status === 401 ||
-      (response.status === 403 && payload.code !== 'csrf_invalid')
-    ) {
+    if (shouldRedirectForApiError(response.status, payload.code)) {
       redirectToLogin()
     }
     throw error
@@ -246,6 +253,59 @@ export const adminApi = {
   user: (userId: number) => apiRequest<AdminUser>(
     `/api/admin/business/users/${userId}`,
     { cache: 'no-store' },
+  ),
+  /** 预览单个或批量用户启停、角色和改密影响。 */
+  previewUserOperation: (
+    action: UserOperationAction,
+    targetIds: number[],
+    value?: boolean | 'user' | 'admin',
+  ) => apiRequest<UserOperationPreview>(
+    '/api/admin/business/users/operations/preview',
+    {
+      method: 'POST',
+      body: JSON.stringify({ action, target_ids: targetIds, value }),
+    },
+  ),
+  /** 执行带重新认证和幂等键的用户写操作。 */
+  executeUserOperation: (
+    body: {
+      action: UserOperationAction
+      target_ids: number[]
+      value?: boolean | 'user' | 'admin'
+      new_password?: string
+      reauth_password: string
+      confirmed: true
+    },
+    idempotencyKey: string,
+  ) => apiRequest<AdminOperationResult>(
+    '/api/admin/business/users/operations',
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(body),
+    },
+  ),
+  /** 读取用户物理删除的完整生命周期影响。 */
+  userDeleteImpact: (userId: number) => apiRequest<UserDeleteImpact>(
+    `/api/admin/business/users/${userId}/delete-impact`,
+    { cache: 'no-store' },
+  ),
+  /** 物理删除用户及其受管生命周期数据。 */
+  deleteUser: (
+    userId: number,
+    body: {
+      confirm_username: string
+      reauth_password: string
+      confirmed: true
+    },
+    idempotencyKey: string,
+  ) => apiRequest<AdminOperationResult>(
+    `/api/admin/business/users/${userId}`,
+    {
+      method: 'DELETE',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(body),
+    },
   ),
   /** 分页读取会话摘要。 */
   sessions: (filters: {
@@ -352,6 +412,28 @@ export const adminApi = {
   /** 受控下载文件，并由后端原子记录访问。 */
   downloadFile: (fileId: number) =>
     downloadRequest(`/api/admin/business/files/${fileId}/download`),
+  /** 读取文件行、BLOB 和活动任务阻断预览。 */
+  fileDeleteImpact: (fileId: number) => apiRequest<FileDeleteImpact>(
+    `/api/admin/business/files/${fileId}/delete-impact`,
+    { cache: 'no-store' },
+  ),
+  /** 物理删除文件行和 BLOB，不提供回收站。 */
+  deleteFile: (
+    fileId: number,
+    body: {
+      confirm_filename: string
+      reauth_password: string
+      confirmed: true
+    },
+    idempotencyKey: string,
+  ) => apiRequest<AdminOperationResult>(
+    `/api/admin/business/files/${fileId}`,
+    {
+      method: 'DELETE',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(body),
+    },
+  ),
   /** 读取现有 quick 完整性共享快照。 */
   quickAudit: () => apiRequest<Record<string, unknown>>(
     '/api/admin/db/audit?mode=quick',

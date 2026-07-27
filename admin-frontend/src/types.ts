@@ -111,6 +111,62 @@ export interface AdminUser {
   is_active: boolean
   created_at: string
   last_login_at: string | null
+  auth_version?: number
+  password_changed_at?: string | null
+}
+
+export type UserOperationAction = 'set_active' | 'set_role' | 'set_password'
+
+export interface UserOperationPreviewItem {
+  id: number
+  username: string
+  current: { role: 'user' | 'admin'; is_active: boolean }
+  next: Partial<{
+    role: 'user' | 'admin'
+    is_active: boolean
+    password_changed: boolean
+  }>
+  blockers: string[]
+}
+
+export interface UserOperationPreview {
+  action: UserOperationAction
+  target_count: number
+  items: UserOperationPreviewItem[]
+  can_execute: boolean
+  requires_reauthentication: boolean
+  batch_limit: number
+}
+
+export interface AdminOperationResult {
+  operation_id: string
+  operation_type: string
+  target_count: number
+  replayed: boolean
+  items?: Array<{
+    id: number
+    username: string
+    changed: boolean
+    role: 'user' | 'admin'
+    is_active: boolean
+    auth_version: number
+  }>
+  deleted?: boolean
+  user_id?: number
+  username?: string
+  file_id?: number
+  filename?: string
+  blob_deleted?: boolean
+}
+
+export interface UserDeleteImpact {
+  user: AdminUser
+  impact: Record<string, number>
+  can_delete: boolean
+  blockers: string[]
+  requires_confirmation: string
+  requires_reauthentication: boolean
+  synchronous_delete_limit: number
 }
 
 export interface AdminSession {
@@ -187,6 +243,20 @@ export interface AdminFile {
   upload_timestamp: string
   last_accessed_at: string
   access_count: number
+}
+
+export interface FileDeleteImpact {
+  file: AdminFile
+  impact: {
+    database_rows: number
+    blob_bytes: number
+    owner_active_jobs: number
+  }
+  can_delete: boolean
+  blockers: string[]
+  requires_confirmation: string
+  requires_reauthentication: boolean
+  recycle_bin: false
 }
 
 export interface SensitiveContentChunk {

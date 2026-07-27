@@ -140,7 +140,7 @@ watch(
             </router-link>
           </el-tooltip>
         </section>
-        <p class="nav-note">3.1 仅开放真实业务数据读取、敏感访问审计和手动 deep 审计。</p>
+        <p class="nav-note">3.2 开放受控用户/文件写入；任务控制、任意 SQL、迁移与复制操作仍永久禁止。</p>
       </nav>
 
       <div class="sidebar-footer">
