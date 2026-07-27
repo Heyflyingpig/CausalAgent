@@ -69,7 +69,7 @@ button, a { font: inherit; }
 .brand-image-wrap.cropped img {
   position: absolute;
   top: -12px;
-  left: -30px;
+  left: -35px;
   width: 112px;
   max-width: none;
 }
@@ -403,7 +403,7 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
   .mobile-brand-icon img {
     position: absolute;
     top: -10px;
-    left: -24px;
+    left: -29px;
     width: 91px;
     max-width: none;
   }
