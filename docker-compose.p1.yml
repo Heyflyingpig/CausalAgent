@@ -1,0 +1,24 @@
+# P1 构建前只读门禁：复用 replica worker 镜像，但不启动数据库或常驻 worker。
+services:
+  p1-gate:
+    image: ${P1_WORKER_IMAGE:-causalagent-demopaper-worker}
+    profiles: ["p1"]
+    working_dir: /app
+    network_mode: "none"
+    restart: "no"
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      MULTIMODAL_DOCLING_ARTIFACTS_DIR: /opt/docling-models
+    volumes:
+      # 代码、冻结 embedding 和 active pointer 均不可写。
+      - .:/app:ro
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ${MULTIMODAL_DOCLING_HOST_DIR:?set by scripts/run-p1-prebuild-gate.ps1}:/opt/docling-models:ro
+      - ./Agent/knowledge_base/multimodal_runtime/active_index.json:/app/Agent/knowledge_base/multimodal_runtime/active_index.json:ro
+      # 未来 ingest 的目标目录保持可写；P1 只检查权限，不写入文件。
+      - ./Agent/knowledge_base/multimodal_assets:/app/Agent/knowledge_base/multimodal_assets
+      - ./Agent/knowledge_base/multimodal_indexes:/app/Agent/knowledge_base/multimodal_indexes
