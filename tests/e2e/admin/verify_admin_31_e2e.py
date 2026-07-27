@@ -11,7 +11,7 @@ import mysql.connector
 
 from app.db import get_read_connection, get_replica_status
 
-from tests.seed_admin_31_e2e import (
+from tests.e2e.admin.seed_admin_31_e2e import (
     ATTACHMENT_ID,
     CONTROL_FILE_ID,
     CONTROL_USER_A_ID,

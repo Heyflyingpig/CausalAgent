@@ -133,7 +133,7 @@ FLUSH PRIVILEGES;
     Assert-Admin31Exit "3.2 existing structure preflight"
     alembic upgrade head
     Assert-Admin31Exit "3.2 existing structure upgrade"
-    python -m tests.seed_admin_31_e2e
+    python -m tests.e2e.admin.seed_admin_31_e2e
     Assert-Admin31Exit "seed isolated 3.1/3.2 fixtures"
 
     $monitorProcess = Start-Process `
@@ -172,7 +172,7 @@ FLUSH PRIVILEGES;
     } finally {
         Pop-Location
     }
-    python -m tests.verify_admin_31_e2e
+    python -m tests.e2e.admin.verify_admin_31_e2e
     Assert-Admin31Exit "database verification"
 } finally {
     if ($flaskProcess -and -not $flaskProcess.HasExited) {
