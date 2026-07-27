@@ -12,7 +12,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from Agent.knowledge_base.embedding_runtime import resolve_embedding_runtime_config
+from Agent.knowledge_base.multimodal.defaults import resolve_production_embedding_config as resolve_embedding_runtime_config
+from Agent.knowledge_base.multimodal.production import is_production_manifest
 from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever, SparseRetriever
 
 
@@ -27,6 +28,8 @@ SAFE_EMBEDDING_CONFIG_KEYS = {
     "provider",
     "provider_setting",
     "model",
+    "dimension",
+    "normalized",
     "path",
     "path_exists",
     "api_key_env",
@@ -108,12 +111,16 @@ def _resolve_multimodal_release(embedding_config: Mapping[str, Any]) -> dict[str
     if manifest_hash != active.get("manifest_sha256"):
         raise ValueError("多模态 active index manifest 哈希不匹配")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if os.environ.get("MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE", "").lower() != "true" and not is_production_manifest(manifest):
+        raise ValueError("多模态 active index 不是冻结的正式知识源")
     runtime_fingerprint = {
         "provider": embedding_config.get("provider"),
         "model": embedding_config.get("model"),
         "mode": embedding_config.get("mode"),
-        "normalized": embedding_config.get("mode") == "local",
+        "normalized": embedding_config.get("normalized", embedding_config.get("mode") == "local"),
     }
+    if "dimension" in embedding_config:
+        runtime_fingerprint["dimension"] = embedding_config["dimension"]
     if active.get("embedding") != manifest.get("embedding") or manifest.get("embedding") != runtime_fingerprint:
         raise ValueError("多模态 embedding 指纹不匹配")
     if manifest.get("index_version") != active.get("index_version"):

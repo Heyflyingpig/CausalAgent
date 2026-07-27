@@ -9,32 +9,28 @@ from typing import Any
 
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import OpenAIEmbeddings
-
-from Agent.knowledge_base.embedding_runtime import resolve_embedding_runtime_config
+from .defaults import resolve_production_embedding_config
 
 from .contracts import KnowledgeUnit, canonical_json
 
 
 def embedding_fingerprint() -> dict[str, Any]:
     """从现有 provider resolver 派生且不暴露密钥的嵌入指纹。"""
-    config = resolve_embedding_runtime_config()
+    config = resolve_production_embedding_config()
     return {
         "provider": config["provider"],
         "model": config["model"],
         "mode": config["mode"],
-        "normalized": config["mode"] == "local",
+        "dimension": config.get("dimension"),
+        "normalized": config["normalized"],
     }
 
 
 def _embeddings() -> Any:
     """复用现有项目 embedding 配置创建 Chroma 所需函数。"""
-    config = resolve_embedding_runtime_config()
+    config = resolve_production_embedding_config()
     if config["status"] != "ready":
         raise RuntimeError(config["message"])
-    if config["mode"] == "api":
-        import os
-        return OpenAIEmbeddings(api_key=os.environ[config["api_key_env"]], base_url=os.environ[config["base_url_env"]], model=config["model"], tiktoken_enabled=False, check_embedding_ctx_length=False)
     return HuggingFaceEmbeddings(model_name=config["path"], model_kwargs={"device": "cpu"}, encode_kwargs={"normalize_embeddings": True})
 
 

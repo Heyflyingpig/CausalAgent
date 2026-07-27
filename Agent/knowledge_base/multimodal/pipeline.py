@@ -141,7 +141,7 @@ class MultimodalKnowledgeBaseMaintenance:
             raise TimeoutError("multimodal maintenance run timed out")
 
     def evaluate(self, index_version: str) -> dict[str, Any]:
-        """执行不依赖人工 gold 的发布前完整性门禁。"""
+        """执行完整性门禁，并对正式资料执行冻结人工 gold 检索门禁。"""
         directory = self._version_dir(index_version)
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
         units = [KnowledgeUnit.model_validate_json(line) for line in (directory / "units.jsonl").read_text(encoding="utf-8").splitlines() if line]
@@ -162,7 +162,15 @@ class MultimodalKnowledgeBaseMaintenance:
         quality = self._quality_evaluation(manifest, directory)
         if not quality["passed"]:
             failures.append("quality_gate_failed")
-        result = {"index_version": index_version, "passed": not failures, "failures": failures, "manifest_sha256": file_sha256(directory / "manifest.json"), "quality": quality, "evaluated_at": datetime.now(timezone.utc).isoformat()}
+        production_evaluation = None
+        from .production import evaluate_staged_index, is_production_manifest, validate_production_manifest
+        if is_production_manifest(manifest):
+            failures.extend(validate_production_manifest(manifest))
+            if not failures:
+                production_evaluation = evaluate_staged_index(directory, collection)
+                if not production_evaluation["gate"]["passed"]:
+                    failures.append("production_retrieval_gate_failed")
+        result = {"index_version": index_version, "passed": not failures, "failures": failures, "manifest_sha256": file_sha256(directory / "manifest.json"), "quality": quality, "production_evaluation": production_evaluation, "evaluated_at": datetime.now(timezone.utc).isoformat()}
         (directory / "evaluation.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
 
@@ -174,6 +182,11 @@ class MultimodalKnowledgeBaseMaintenance:
         evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
         if not evaluation.get("passed"): raise ValueError("blocking evaluation failures prevent publication")
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        from .production import is_production_manifest
+        if is_production_manifest(manifest):
+            production_evaluation = directory / "production_evaluation.json"
+            if not production_evaluation.exists() or not json.loads(production_evaluation.read_text(encoding="utf-8")).get("gate", {}).get("passed"):
+                raise ValueError("production retrieval evaluation must pass before publication")
         if "build_configuration" not in manifest or "quality_policy" not in manifest or "quality_observations" not in manifest:
             raise ValueError("legacy manifest is not eligible for publication under P0 gates")
         self.registry.publish(index_root=self.index_root, index_version=index_version, collection_name=f"{self.collection_prefix}_{index_version}", manifest_sha256=file_sha256(directory / "manifest.json"), embedding=manifest["embedding"])
@@ -206,11 +219,12 @@ class MultimodalKnowledgeBaseMaintenance:
         """构造不包含宿主绝对路径的来源清单。"""
         public = [{"relative_path": entry["relative_path"], "content_hash": entry["content_hash"]} for entry in entries]
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "sources": public,
             "parser": os.getenv("MULTIMODAL_PARSER", "docling"),
             "build_configuration": {
                 "embedding": embedding_fingerprint(),
+                "pdf_parser": {"page_range_mode": "single_page", "converter_restart_interval": int(os.getenv("MULTIMODAL_DOCLING_RESTART_INTERVAL", "20"))},
                 "vision": {"enabled": allow_remote_data, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "max_images": min(max_images, 100), "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "retry_failed": retry_failed, "retry_generation": retry_generation},
             },
         }

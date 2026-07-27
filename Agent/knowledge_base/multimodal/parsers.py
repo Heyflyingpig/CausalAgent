@@ -147,7 +147,7 @@ def _parse_pdf(path: Path, preferred_parser: str) -> ParsedDocument:
 
 
 def _parse_pdf_with_docling(path: Path, preferred_parser: str) -> ParsedDocument:
-    """使用 Docling 导出确定性 Markdown，作为 MinerU 不可用时唯一的明确 fallback。"""
+    """逐页调用 Docling，避免大 PDF 的批量预处理内存峰值。"""
     try:
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions
@@ -155,10 +155,30 @@ def _parse_pdf_with_docling(path: Path, preferred_parser: str) -> ParsedDocument
 
         artifacts_path = Path(os.getenv("MULTIMODAL_DOCLING_ARTIFACTS_DIR", Path.home() / ".cache" / "docling" / "models"))
         options = PdfPipelineOptions(artifacts_path=artifacts_path)
-        converter = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)})
-        result = converter.convert(path)
-        items = _docling_items(result.document)
-        raw_artifacts = (("docling_document.json", json.dumps(result.document.export_to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8")),)
+        from pypdf import PdfReader
+
+        items: list[ParsedItem] = []
+        raw_artifacts: list[tuple[str, bytes]] = []
+        restart_interval = int(os.getenv("MULTIMODAL_DOCLING_RESTART_INTERVAL", "20"))
+        if restart_interval < 1:
+            raise ValueError("MULTIMODAL_DOCLING_RESTART_INTERVAL must be positive")
+        converter = None
+        for page_number in range(1, len(PdfReader(path).pages) + 1):
+            if converter is None or (page_number - 1) % restart_interval == 0:
+                converter = DocumentConverter(
+                    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+                )
+            result = converter.convert(path, page_range=(page_number, page_number))
+            page_items = _docling_items(result.document)
+            if not page_items:
+                raise ValueError(f"Docling did not return page {page_number}")
+            items.extend(page_items)
+            raw_artifacts.append(
+                (
+                    f"docling_page_{page_number:04d}.json",
+                    json.dumps(result.document.export_to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8"),
+                )
+            )
     except Exception as exc:
         return ParsedDocument(
             "docling", "2.115.0",
@@ -172,7 +192,7 @@ def _parse_pdf_with_docling(path: Path, preferred_parser: str) -> ParsedDocument
     issues: tuple[IngestionIssue, ...] = ()
     if preferred_parser == "mineru":
         issues = (IngestionIssue(code="mineru_fallback_docling", message="MinerU 未配置为可运行解析路径，已使用 Docling fallback", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)),)
-    return ParsedDocument("docling", "2.115.0", tuple(items), issues, raw_artifacts)
+    return ParsedDocument("docling", "2.115.0", tuple(items), issues, tuple(raw_artifacts))
 
 
 def _docling_items(document: object) -> list[ParsedItem]:

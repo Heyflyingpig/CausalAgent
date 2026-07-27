@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from .benchmark import audit_omnidocbench_subset, evaluate_omnidocbench_staged_index
 from .omnidocbench_export import export_omnidocbench_official_inputs
 from .pipeline import MultimodalKnowledgeBaseMaintenance
+from .production import production_source_paths
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="multimodal-knowledge-base")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("inspect", "ingest", "run"):
-        sub = commands.add_parser(name); sub.add_argument("--source", action="append", required=True)
+        sub = commands.add_parser(name); sub.add_argument("--source", action="append")
     for name in ("ingest", "run"):
         commands.choices[name].add_argument("--allow-remote-data", action="store_true")
         commands.choices[name].add_argument("--max-images", type=int, default=12)
@@ -47,9 +48,9 @@ def main() -> int:
     elif args.command == "omnidocbench-evaluate":
         result = evaluate_omnidocbench_staged_index(Path(args.root), Path(args.index_root), args.index_version, Path(args.asset_root), Path(args.output_dir))
         (Path(args.index_root) / args.index_version / "omnidocbench_eval.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    elif args.command == "inspect": result = service.inspect(args.source)
-    elif args.command == "ingest": result = service.ingest(args.source, allow_remote_data=args.allow_remote_data, max_images=args.max_images, retry_failed=args.retry_failed, retry_generation=args.retry_generation)
-    elif args.command == "run": result = service.run(args.source, allow_remote_data=args.allow_remote_data, max_images=args.max_images, retry_failed=args.retry_failed, retry_generation=args.retry_generation, timeout_seconds=args.timeout_seconds, cancel_check=(lambda: Path(args.cancel_file).exists()) if args.cancel_file else None)
+    elif args.command == "inspect": result = service.inspect(args.source or [str(path) for path in production_source_paths()])
+    elif args.command == "ingest": result = service.ingest(args.source or [str(path) for path in production_source_paths()], allow_remote_data=args.allow_remote_data, max_images=args.max_images, retry_failed=args.retry_failed, retry_generation=args.retry_generation)
+    elif args.command == "run": result = service.run(args.source or [str(path) for path in production_source_paths()], allow_remote_data=args.allow_remote_data, max_images=args.max_images, retry_failed=args.retry_failed, retry_generation=args.retry_generation, timeout_seconds=args.timeout_seconds, cancel_check=(lambda: Path(args.cancel_file).exists()) if args.cancel_file else None)
     elif args.command == "evaluate": result = service.evaluate(args.index_version)
     elif args.command == "publish": result = service.publish(args.index_version)
     elif args.command == "rollback": result = service.rollback(args.index_version)
