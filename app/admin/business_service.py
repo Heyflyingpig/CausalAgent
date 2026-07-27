@@ -240,7 +240,8 @@ def list_users(
         db_cursor = conn.cursor(dictionary=True)
         db_cursor.execute(
             f"""
-            SELECT id, username, role, is_active, created_at, last_login_at
+            SELECT id, username, role, is_active, created_at, last_login_at,
+                   auth_version, password_changed_at
             FROM users
             WHERE {' AND '.join(clauses)}
             ORDER BY id DESC
@@ -260,7 +261,8 @@ def get_user_detail(user_id: int) -> dict[str, Any]:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             """
-            SELECT id, username, role, is_active, created_at, last_login_at
+            SELECT id, username, role, is_active, created_at, last_login_at,
+                   auth_version, password_changed_at
             FROM users
             WHERE id = %s
             """,

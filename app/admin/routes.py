@@ -64,6 +64,14 @@ from app.admin.contracts import (
     parse_limit,
     parse_non_negative_int,
 )
+from app.admin.write_service import (
+    delete_file as delete_managed_file,
+    delete_user as delete_managed_user,
+    execute_user_operation,
+    get_file_delete_impact,
+    get_user_delete_impact,
+    preview_user_operation,
+)
 from app.auth.authorization import admin_required
 from app.auth.csrf import admin_write_required
 from app.request_context import get_request_id
@@ -440,6 +448,88 @@ def business_users():
     return api_success(data)
 
 
+def _user_operation_action(_values: dict) -> str:
+    """为统一用户写接口生成不含秘密的审计动作名。"""
+    body = request.get_json(silent=True)
+    action = body.get("action", "unknown") if isinstance(body, dict) else "invalid"
+    return f"business.user.{action}"
+
+
+def _user_operation_targets(_values: dict) -> str:
+    """为批量写接口生成有界用户 ID 审计目标。"""
+    body = request.get_json(silent=True)
+    raw_ids = body.get("target_ids") if isinstance(body, dict) else None
+    if not isinstance(raw_ids, list):
+        return "invalid"
+    return ",".join(str(value) for value in raw_ids[:50])
+
+
+@admin_bp.route("/business/users/operations/preview", methods=["POST"])
+@admin_api_endpoint
+@audited_access(
+    action=lambda values: f"{_user_operation_action(values)}.preview",
+    target_type="user_batch",
+    target_id=_user_operation_targets,
+)
+@admin_write_required
+def business_user_operation_preview():
+    """返回用户批量操作的主库强一致预览，不执行变更。"""
+    return api_success(preview_user_operation(
+        request.get_json(silent=True),
+        actor=g.current_user,
+    ))
+
+
+@admin_bp.route("/business/users/operations", methods=["POST"])
+@admin_api_endpoint
+@audited_access(
+    action=_user_operation_action,
+    target_type="user_batch",
+    target_id=_user_operation_targets,
+    audit_success=False,
+)
+@admin_write_required
+def business_user_operation():
+    """执行带重新认证、幂等和逐目标审计的用户批量操作。"""
+    return api_success(execute_user_operation(
+        request.get_json(silent=True),
+        actor=g.current_user,
+        idempotency_key=request.headers.get("Idempotency-Key"),
+    ))
+
+
+@admin_bp.route("/business/users/<int:user_id>/delete-impact")
+@admin_api_endpoint
+@audited_access(
+    action="business.user.delete.preview",
+    target_type="user",
+    target_id=lambda values: str(values["user_id"]),
+)
+@admin_required
+def business_user_delete_impact(user_id: int):
+    """返回用户物理删除的完整影响计数与阻断原因。"""
+    return api_success(get_user_delete_impact(user_id, actor=g.current_user))
+
+
+@admin_bp.route("/business/users/<int:user_id>", methods=["DELETE"])
+@admin_api_endpoint
+@audited_access(
+    action="business.user.delete",
+    target_type="user",
+    target_id=lambda values: str(values["user_id"]),
+    audit_success=False,
+)
+@admin_write_required
+def business_user_delete(user_id: int):
+    """在主库事务中执行用户及其生命周期数据的物理删除。"""
+    return api_success(delete_managed_user(
+        user_id,
+        request.get_json(silent=True),
+        actor=g.current_user,
+        idempotency_key=request.headers.get("Idempotency-Key"),
+    ))
+
+
 @admin_bp.route("/business/users/<int:user_id>")
 @admin_api_endpoint
 @audited_access(
@@ -690,6 +780,38 @@ def business_file_download(file_id: int):
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+@admin_bp.route("/business/files/<int:file_id>/delete-impact")
+@admin_api_endpoint
+@audited_access(
+    action="business.file.delete.preview",
+    target_type="uploaded_file",
+    target_id=lambda values: str(values["file_id"]),
+)
+@admin_required
+def business_file_delete_impact(file_id: int):
+    """返回文件行、BLOB 和活动任务保护的删除预览。"""
+    return api_success(get_file_delete_impact(file_id))
+
+
+@admin_bp.route("/business/files/<int:file_id>", methods=["DELETE"])
+@admin_api_endpoint
+@audited_access(
+    action="business.file.delete",
+    target_type="uploaded_file",
+    target_id=lambda values: str(values["file_id"]),
+    audit_success=False,
+)
+@admin_write_required
+def business_file_delete(file_id: int):
+    """物理删除 uploaded_files 记录和 BLOB，不提供回收站。"""
+    return api_success(delete_managed_file(
+        file_id,
+        request.get_json(silent=True),
+        actor=g.current_user,
+        idempotency_key=request.headers.get("Idempotency-Key"),
+    ))
 
 
 @admin_bp.route("/db/audit")

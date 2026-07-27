@@ -79,6 +79,7 @@ def handle_login():
         session.clear() # 先清除旧的会话数据
         session['user_id'] = user_data['id']
         session['username'] = user_data['username']
+        session['auth_version'] = int(user_data.get('auth_version') or 1)
         csrf_token = ensure_csrf_token()
         # Session 会自动通过浏览器 cookie 维护状态，不再需要文件
         

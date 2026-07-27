@@ -98,7 +98,32 @@ class SessionGuardTests(unittest.TestCase):
                 self.assertGreaterEqual(len(payload["csrf_token"]), 32)
                 with client.session_transaction() as flask_session:
                     self.assertNotIn("role", flask_session)
+                    self.assertEqual(flask_session["auth_version"], 1)
                     self.assertEqual(flask_session["csrf_token"], payload["csrf_token"])
+
+    def test_changed_auth_version_invalidates_old_session(self):
+        """角色、状态或密码变更递增认证版本后，旧 Cookie 必须立即失效。"""
+        app = build_app()
+        changed_user = {
+            "id": 6,
+            "username": "changed-user",
+            "role": "user",
+            "is_active": True,
+            "auth_version": 2,
+        }
+        with patch("app.auth.session_guard.find_user_by_id", return_value=changed_user):
+            with app.test_client() as client:
+                with client.session_transaction() as flask_session:
+                    flask_session["user_id"] = 6
+                    flask_session["username"] = "changed-user"
+                    flask_session["auth_version"] = 1
+
+                response = client.get("/api/check_auth")
+
+                self.assertEqual(response.get_json(), {"isLoggedIn": False})
+                with client.session_transaction() as flask_session:
+                    self.assertNotIn("user_id", flask_session)
+                    self.assertNotIn("auth_version", flask_session)
 
     def test_disabled_user_cannot_login(self):
         """认证路由必须在密码校验前拒绝已禁用账号。"""
