@@ -357,7 +357,7 @@ powershell -ExecutionPolicy Bypass -File tests/run_admin_31_e2e.ps1
 `npm run test:e2e`。本机没有当前 Playwright Chromium 构件时，可显式设置
 `PLAYWRIGHT_CHANNEL=msedge` 复用已安装的 Edge；CI 未设置时仍使用标准 Chromium。
 
-Vite 固定使用 `/admin/` base，并只在开发模式代理 `/api` 到 Flask。只有显式设置 `ADMIN_VITE_DEV_SERVER_URL=http://127.0.0.1:5173` 时，Flask 完成页面鉴权后才跳转到 Vite；未配置时 Flask 托管生产构建。Dockerfile 使用 Node 24 构建阶段生成 Vue 产物，并把产物复制到最终 Python 镜像的 `/opt/causalchat-admin`；最终镜像不包含 Node 运行时、不启动 Vite，也不开放 Node 端口。发布回滚以迁移前基线提交或上一版镜像为单位，不提供长期 legacy 管理路由。
+Vite 固定使用 `/admin/` base，并只在开发模式代理 `/api` 到 Flask。只有显式设置 `ADMIN_VITE_DEV_SERVER_URL=http://127.0.0.1:5173` 时，Flask 完成页面鉴权后才跳转到 Vite；未配置时 Flask 托管生产构建。`admin-frontend/dist/` 作为发布产物随源码同步构建并纳入 Git；根 `.gitignore` 中的 `/dist/` 只忽略仓库根目录的 Python 打包产物。Dockerfile 使用 Node 24 构建阶段从当前源码重新生成 Vue 产物，并把产物复制到最终 Python 镜像的 `/opt/causalchat-admin`；因此 `.dockerignore` 仍排除本地 `admin-frontend/dist/`。最终镜像不包含 Node 运行时、不启动 Vite，也不开放 Node 端口。发布回滚以迁移前基线提交或上一版镜像为单位，不提供长期 legacy 管理路由。
 
 执行包含 `users.role` 的最新 Alembic migration 后，可以把一个已经注册且已启用的用户提升为初始管理员：
 
