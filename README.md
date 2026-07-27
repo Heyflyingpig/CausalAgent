@@ -60,7 +60,7 @@ CausalAgent
 - [贡献](#贡献)
 - [Star 趋势](#star-趋势)
 - [项目结构](#项目结构)
-- [更新日志](./README/CHANGELOG.md)
+- [更新日志](./README/开发日志.md)
 
 
 
@@ -310,82 +310,24 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 
 删除已经创建的会话时，应用会在同一个主库事务内删除会话、聊天消息、附件和同一 `session_id` 对应的 LangGraph MySQL checkpoint；`checkpoint_writes` 由其到 `checkpoints` 的外键级联删除。当前 `thread_id` 使用会话 ID，但不额外建立 `checkpoints.thread_id → sessions.id` 外键。
 
-管理接口：
+#### 管理员后台
 
-- `GET /api/admin/db/dashboard`
-- `GET /api/admin/db/health`
-- `GET /api/admin/db/overview`
-- `GET /api/admin/db/integrity?mode=quick`
-- `GET /api/admin/db/slow-queries`
-- `GET /api/admin/jobs/workers`
-- `POST /api/admin/db/refresh`
-- `POST /api/admin/db/integrity/run`
-- `GET /api/admin/db/settings`
-- `PUT /api/admin/db/settings`
-- `POST /api/admin/db/settings/reset`
-- `GET /api/admin/db/settings/history?limit=&before_id=`
-- `POST /api/admin/business/users/operations/preview`
-- `POST /api/admin/business/users/operations`
-- `GET /api/admin/business/users/<id>/delete-impact`
-- `DELETE /api/admin/business/users/<id>`
-- `GET /api/admin/business/files/<id>/delete-impact`
-- `DELETE /api/admin/business/files/<id>`
+管理员后台提供业务概览、用户、会话、任务、文件、数据库看板、采集配置和数据库审计。普通用户仍进入聊天页面，已启用的管理员登录后进入 `/admin/database`。
 
-以上接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问。未登录 API 请求返回 `401`，未登录管理员页面回到统一登录入口，普通登录用户返回 `403`；后端会在每次请求时从主库重新确认当前角色和启用状态，不信任浏览器 session 中的角色缓存。登录和 `check_auth` 会增量返回 Session 绑定的 CSRF token，管理员刷新、完整性审计、配置保存和重置必须通过 `X-CSRF-Token` 回传。所有响应都有 `X-Request-ID`；格式合法的上游 ID 会被沿用，否则服务端生成新 ID。
-
-`dashboard` 与兼容 GET 接口只读取 MySQL 中最近一次共享快照，不会随管理员页面数量重复执行完整采集；`refresh` 仅登记实时状态、SQL 性能和表容量的共享刷新请求，返回 `202`，完整性审计由独立的 `integrity/run` 接口触发。旧 `health`、`slow-queries` 和 `jobs/workers` 接口继续保留原有 `data` 类型及旧字段。
-
-独立 monitor 进程通过 `python -m Database.monitor_worker` 启动，使用 MySQL 命名锁合并并发采集，并把 `realtime`、`sql_performance`、`capacity`、`integrity` 四类快照写入 `database_monitor_snapshots`。默认分层周期为：主从/连接/Worker/Job 实时状态 `10` 秒、SQL 性能 `60` 秒、表容量 `900` 秒；完整性定时审计默认关闭，启用后默认每天一次。关闭自动刷新不会影响页面首次读取和手动刷新，monitor 仍会处理手动请求。实时、SQL、容量周期分别只允许 `5～10`、`30～60`、`300～900` 秒，完整性周期至少 `3600` 秒，慢查询增量阈值必须大于 `0`；布尔配置严格使用 `true/false`。
-
-七项采集参数的有效值统一按“`database_monitor_settings` 数据库覆盖 > 环境变量 > 代码默认值”解析，`NULL` 表示继承。Web、dashboard、monitor 和慢查询采集共享同一解析服务，每个进程最多缓存 5 秒；配置保存后当前进程立即失效缓存，其他进程最多 5 秒热加载。数据库读取失败时继续使用最后有效值，没有最后有效值时回退环境变量/默认值并在看板显示降级状态。配置写入使用乐观版本锁，成功、拒绝和失败事件写入 `admin_audit_events`；删除管理员用户不会删除历史审计快照。
-
-“SQL 性能摘要/高负载 SQL”中的 Performance Schema digest 按累计 `SUM_TIMER_WAIT` 排序，不表示单次执行时间超过 `long_query_time`；`slow_query_log`、`long_query_time` 和 `Slow_queries` 仍表示 MySQL 慢查询配置与状态。看板主要用采集窗口内 `Slow_queries` 增量告警，默认增量达到 `1` 进入 warning，启动以来累计值仅作辅助信息。
-
-管理员登录或恢复会话后仍以 `/admin/database` 为落点，不进入聊天界面；普通用户继续进入原聊天界面。管理员后台位于独立的 `admin-frontend/` Vue 3 + TypeScript + Element Plus 应用，现提供业务概览、用户、会话/消息、任务/事件、文件资产、数据库看板、采集配置与 Schema/deep 审计页面。左侧导航在桌面端可在 `248px` 和约 `76px` 间收缩并保存浏览器偏好，移动端使用可关闭抽屉；展开和折叠状态均复用受保护接口返回的 `README/CausalAgent.png` 原图。
-
-3.1 建立的业务读取页面仍采用有界、主库强一致读取。列表默认 20 条、最多 50 条，使用不透明游标；密码哈希、正文、文件 BLOB/哈希、Cookie、Token、账号 host 和 grants 不进入列表 DTO。消息、附件以及任务输入/结果/错误只在管理员明确点击后通过最多 `64 KiB` 的分块接口读取，成功敏感读取需要审计可写，否则失败关闭。CSV 预览只以文本展示，最多读取 `256 KiB`、100 行、50 列、单元格 1000 字符；预览或下载成功会在同一事务中增加 `access_count`、更新 `last_accessed_at` 并写入不含正文的访问审计。
-
-3.2 只在同一业务命名空间增加受控用户和文件写入：单个/批量启停、`user`/`admin` 角色切换、单个/批量同密码设置，以及用户/文件物理删除。所有执行接口都要求 CSRF、当前管理员密码重新认证、`Idempotency-Key`、明确确认和主库事务；批量默认最多 20 个目标，同密码会为每个用户生成独立 bcrypt 哈希。操作者不能禁用、降级或删除自己，也不能移除最后一个启用管理员；角色、状态或密码变化通过 `auth_version` 使旧 Session 失效。物理删除前展示生命周期影响，文件行与 BLOB 同时删除且没有回收站。后台仍不提供任务控制、任意 SQL、迁移、账号授权或复制控制。
-
-受控写入、删除/保留矩阵、强一致/可延迟读/主库写矩阵、锁顺序、连接容量和恢复流程见 [`setting/database_governance.md`](setting/database_governance.md)。历史孤立关系由 `python -m Database.lifecycle_repair` 默认 dry-run 生成有限清单，migration 不会静默删除数据。阶段三并发设计只记录在 [`setting/phase3_concurrency_handoff.md`](setting/phase3_concurrency_handoff.md)，本阶段没有提前启用 fencing token 或新任务协议。
-
-数据库审计提供 quick 和 deep 两种共享快照。deep 只能手动登记，由独立 monitor 执行 revision、关键 schema、运行时、账号职责、Job/Event、checkpoint/pending writes、归档关系、`active_session_key` 和逐从库状态检查；它永不定时调度、不自动修复，也不返回真实账号、host 或 grants。普通用户的 Flask 静态 HTML/CSS/JavaScript 与聊天 API、Job/Event 和 SSE 契约保持不变。连接使用率默认在 `70%` 进入 warning、`85%` 进入 error；单条检查 SELECT 默认最多执行 `3000ms`。
-
-管理员前端开发与验证：
+首次使用前，先完成数据库迁移和管理员前端构建，然后把一个已经注册且已启用的用户提升为管理员：
 
 ```bash
-cd admin-frontend
-npm ci
-npm run typecheck
-npm run test:unit
-npm run test:e2e:mock
-npm run build
+# Docker 运行
+docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.admin_cli promote <username>
 ```
 
-3.2 的真实写副作用、生命周期清理与 migration 往返只在独立临时主从中验收。先完成上述生产构建，再从仓库根目录运行：
+管理员系统的部署、开发、API、安全边界和测试说明统一放在 [`Document/admin/`](Document/admin/README.md)。其中：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File tests/run_admin_32_e2e.ps1
-```
+- [API 契约](Document/admin/api.md)
+- [开发与部署](Document/admin/development.md)
+- [测试说明](Document/admin/testing.md)
 
-脚本使用 `docker-compose.replica.yml` 与 `docker-compose.admin-e2e.yml`，生成仅存在于进程环境中的临时凭据，并使用 `127.0.0.1:13317` / `127.0.0.2:13317` 和 Web `15011`，不会迁移或写入当前开发库。它验证空库升级、3.2 downgrade/重新升级、受控用户/文件写入、逐目标审计、主从追平和普通用户回归。为遵守清理门禁，脚本只停止自己启动的 Flask/monitor 进程，结束后会保留历史兼容命名的 `causalchat31e2e_*` 数据库容器和项目卷；确认后再单独清理。物理删除用例会改变隔离种子，因此不能用 `KeepSeededData` 重放。
-
-真实 Flask + monitor + 隔离 MySQL 的 Playwright 流程需要提供
-`PLAYWRIGHT_BASE_URL`、`PLAYWRIGHT_ADMIN_USERNAME`、`PLAYWRIGHT_ADMIN_PASSWORD`、
-`PLAYWRIGHT_USER_USERNAME` 和 `PLAYWRIGHT_USER_PASSWORD` 后执行
-`npm run test:e2e`。本机没有当前 Playwright Chromium 构件时，可显式设置
-`PLAYWRIGHT_CHANNEL=msedge` 复用已安装的 Edge；CI 未设置时仍使用标准 Chromium。
-
-Vite 固定使用 `/admin/` base，并只在开发模式代理 `/api` 到 Flask。只有显式设置 `ADMIN_VITE_DEV_SERVER_URL=http://127.0.0.1:5173` 时，Flask 完成页面鉴权后才跳转到 Vite；未配置时 Flask 托管生产构建。`admin-frontend/dist/` 作为发布产物随源码同步构建并纳入 Git；根 `.gitignore` 中的 `/dist/` 只忽略仓库根目录的 Python 打包产物。Dockerfile 使用 Node 24 构建阶段从当前源码重新生成 Vue 产物，并把产物复制到最终 Python 镜像的 `/opt/causalchat-admin`；因此 `.dockerignore` 仍排除本地 `admin-frontend/dist/`。最终镜像不包含 Node 运行时、不启动 Vite，也不开放 Node 端口。发布回滚以迁移前基线提交或上一版镜像为单位，不提供长期 legacy 管理路由。
-
-执行包含 `users.role` 的最新 Alembic migration 后，可以把一个已经注册且已启用的用户提升为初始管理员：
-
-```bash
-python -m app.auth.admin_cli promote <username> ----本地运行
-docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.admin_cli promote <username> ----docker运行
-```
-
-该命令只支持幂等提升，不创建账号、不降级管理员。完成 3.2 migration 后，受保护 Web 后台可以在重新认证、幂等和审计约束下修改其他用户角色；目标用户不存在或已禁用时，CLI 仍不会修改数据库。
+更深入的数据库治理、读写一致性和恢复规则见 [`setting/database_governance.md`](setting/database_governance.md)。
 
 
 
@@ -572,6 +514,8 @@ python Run_causal.py
 ├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收端口/容器覆盖
 ├── README.md               # 项目说明
 ├── README/                 # README 图片与更新日志
+├── Document/
+│   └── admin/              # 管理员 API、开发部署与测试文档
 ├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
 │   ├── src/
 │   ├── tests/
@@ -620,5 +564,9 @@ python Run_causal.py
 ├── setting/                # 用户可见文档
 │   ├── manual.md           # 用户手册
 │   └── Userprivacy.md      # 用户隐私协议
+├── tests/                  # 后端测试：unit、integration、e2e
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
 ├── openspec/               # 项目规范与变更说明（内部开发用）
 ```

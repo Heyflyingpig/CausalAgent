@@ -38,6 +38,8 @@
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
 ├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收覆盖
 ├── README.md               # 项目说明
+├── Document/
+│   └── admin/              # 管理员 API、开发部署与测试文档
 ├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
 │   ├── src/
 │   ├── tests/
@@ -82,6 +84,12 @@
 │   └── migrations/
 ├── config/
 │   └── settings.py
+├── tests/                  # 后端测试：先按层级、再按业务分类
+│   ├── unit/
+│   ├── integration/
+│   ├── e2e/
+│   ├── run_admin_31_e2e.ps1
+│   └── run_admin_32_e2e.ps1
 └── setting/
     ├── manual.md
     └── Userprivacy.md
@@ -183,6 +191,15 @@ npm run test:unit
 npm run test:e2e:mock
 npm run build
 ```
+
+后端快速测试按层级执行：
+
+```bash
+python -m pytest tests/unit
+python -m pytest tests/integration
+```
+
+完整分类与执行顺序见 `tests/README.md`。
 
 真实隔离环境 E2E 还需提供 `PLAYWRIGHT_BASE_URL`、管理员/普通用户测试凭据后运行
 `npm run test:e2e`；本机仅有 Edge 时可显式设置 `PLAYWRIGHT_CHANNEL=msedge`，
