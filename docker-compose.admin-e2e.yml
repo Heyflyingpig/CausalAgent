@@ -1,4 +1,4 @@
-# 3.1 管理员只读后台的隔离主从验收覆盖。
+# 3.1/3.2 管理员后台的隔离主从验收覆盖。
 # 仅与 docker-compose.replica.yml 叠加使用，不复用开发库端口、容器或数据卷。
 
 services:
@@ -14,6 +14,9 @@ services:
 
   app:
     container_name: causalchat31e2e_app
+    environment:
+      ADMIN_FRONTEND_DIST_DIR: /app/admin-frontend/dist
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     ports: !override
       - "127.0.0.1:15011:5001"
 

@@ -1,4 +1,4 @@
-"""管理员 3.1 手动 deep 数据库事实审计。
+"""管理员 3.1/3.2 手动 deep 数据库事实审计。
 
 该模块只执行有超时、结果有上限的只读查询；返回值仅包含逻辑结论，
 不返回真实数据库账号、host、grants、连接串或业务正文。
@@ -19,7 +19,10 @@ LOGGER = logging.getLogger(__name__)
 ANOMALY_SAMPLE_LIMIT = 20
 
 EXPECTED_COLUMNS = {
-    "users": {"id", "username", "role", "is_active", "created_at", "last_login_at"},
+    "users": {
+        "id", "username", "role", "is_active", "created_at", "last_login_at",
+        "auth_version", "password_changed_at",
+    },
     "sessions": {
         "id", "user_id", "title", "created_at", "last_activity_at",
         "message_count", "is_archived", "archived_at",
@@ -46,7 +49,7 @@ EXPECTED_COLUMNS = {
     },
     "checkpoint_writes": {
         "id", "thread_id", "checkpoint_ns", "checkpoint_id", "task_id",
-        "idx", "channel", "value", "created_at",
+        "idx", "channel", "value", "created_at", "write_identity_hash",
     },
     "analysis_jobs": {
         "id", "job_id", "user_id", "session_id", "status", "worker_id",
@@ -62,6 +65,17 @@ EXPECTED_COLUMNS = {
         "id", "actor_user_id", "actor_username", "action", "target_type",
         "target_id", "result", "request_id", "created_at",
     },
+    "admin_operations": {
+        "id", "operation_id", "actor_user_id", "actor_username",
+        "operation_type", "idempotency_key", "request_fingerprint", "status",
+        "target_count", "succeeded_count", "failed_count", "result_json",
+        "request_id", "created_at", "completed_at",
+    },
+    "admin_operation_items": {
+        "id", "operation_id", "target_type", "target_id", "target_label",
+        "result", "error_code", "old_values_json", "new_values_json",
+        "created_at",
+    },
 }
 
 EXPECTED_INDEXES = {
@@ -70,6 +84,14 @@ EXPECTED_INDEXES = {
     "analysis_jobs": {"PRIMARY", "idx_analysis_jobs_admin_created"},
     "uploaded_files": {"PRIMARY", "idx_uploaded_files_admin_uploaded"},
     "admin_audit_events": {"PRIMARY", "idx_admin_audit_target_created"},
+    "checkpoints": {"PRIMARY", "idx_checkpoints_thread_ns_created_id"},
+    "checkpoint_writes": {"PRIMARY", "uq_checkpoint_writes_task_idx"},
+    "admin_operations": {
+        "PRIMARY",
+        "uq_admin_operations_operation_id",
+        "uq_admin_operations_actor_idempotency",
+    },
+    "admin_operation_items": {"PRIMARY", "uq_admin_operation_items_target"},
 }
 
 EXPECTED_FOREIGN_KEYS = {
@@ -82,6 +104,8 @@ EXPECTED_FOREIGN_KEYS = {
     "fk_analysis_jobs_session",
     "fk_analysis_job_events_job",
     "fk_checkpoint_writes_checkpoint",
+    "fk_admin_operations_actor",
+    "fk_admin_operation_items_operation",
 }
 
 
@@ -345,6 +369,13 @@ def _relationship_check() -> dict[str, Any]:
              AND c.checkpoint_ns = w.checkpoint_ns
              AND c.checkpoint_id = w.checkpoint_id
             WHERE c.thread_id IS NULL
+            LIMIT %s
+        """,
+        "duplicate_checkpoint_write_key": """
+            SELECT MIN(id) AS sample_id
+            FROM checkpoint_writes
+            GROUP BY thread_id, checkpoint_ns, checkpoint_id, task_id, idx
+            HAVING COUNT(*) > 1
             LIMIT %s
         """,
         "archived_session_without_user": """

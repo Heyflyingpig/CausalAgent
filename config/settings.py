@@ -118,6 +118,22 @@ class AppConfig:
         self.MYSQL_DATABASE = self._get_config("MYSQL_DATABASE")
         self.MYSQL_POOL_SIZE_WRITE = self._get_int_config("MYSQL_POOL_SIZE_WRITE", default=5)
         self.MYSQL_POOL_SIZE_READ = self._get_int_config("MYSQL_POOL_SIZE_READ", default=5)
+        self.MYSQL_CONNECT_TIMEOUT_SECONDS = self._get_int_config(
+            "MYSQL_CONNECT_TIMEOUT_SECONDS",
+            default=5,
+        )
+        self.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS = self._get_float_config(
+            "MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS",
+            default=3.0,
+        )
+        self.MYSQL_POOL_ACQUIRE_RETRY_MS = self._get_int_config(
+            "MYSQL_POOL_ACQUIRE_RETRY_MS",
+            default=50,
+        )
+        self.MYSQL_REPLICA_STATUS_CACHE_SECONDS = self._get_float_config(
+            "MYSQL_REPLICA_STATUS_CACHE_SECONDS",
+            default=2.0,
+        )
         self.MYSQL_REPLICA_MAX_LAG_SECONDS = self._get_int_config(
             "MYSQL_REPLICA_MAX_LAG_SECONDS",
             default=2
@@ -173,6 +189,38 @@ class AppConfig:
             required=False,
             default="",
         )
+        self.ADMIN_BATCH_MAX_TARGETS = self._get_int_config(
+            "ADMIN_BATCH_MAX_TARGETS",
+            default=20,
+        )
+        self.ADMIN_DELETE_MAX_RELATED_ROWS = self._get_int_config(
+            "ADMIN_DELETE_MAX_RELATED_ROWS",
+            default=10000,
+        )
+        self.ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS = self._get_int_config(
+            "ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS",
+            default=5,
+        )
+        positive_database_values = {
+            "MYSQL_POOL_SIZE_WRITE": self.MYSQL_POOL_SIZE_WRITE,
+            "MYSQL_POOL_SIZE_READ": self.MYSQL_POOL_SIZE_READ,
+            "MYSQL_CONNECT_TIMEOUT_SECONDS": self.MYSQL_CONNECT_TIMEOUT_SECONDS,
+            "MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS": self.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS,
+            "MYSQL_POOL_ACQUIRE_RETRY_MS": self.MYSQL_POOL_ACQUIRE_RETRY_MS,
+            "MYSQL_REPLICA_STATUS_CACHE_SECONDS": self.MYSQL_REPLICA_STATUS_CACHE_SECONDS,
+            "ADMIN_BATCH_MAX_TARGETS": self.ADMIN_BATCH_MAX_TARGETS,
+            "ADMIN_DELETE_MAX_RELATED_ROWS": self.ADMIN_DELETE_MAX_RELATED_ROWS,
+            "ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS": self.ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS,
+        }
+        for name, value in positive_database_values.items():
+            if value <= 0:
+                raise ValueError(f"配置错误: {name} 必须大于 0。")
+        if self.ADMIN_BATCH_MAX_TARGETS > 50:
+            raise ValueError("配置错误: ADMIN_BATCH_MAX_TARGETS 不能超过 50。")
+        if self.MYSQL_POOL_SIZE_WRITE > 32 or self.MYSQL_POOL_SIZE_READ > 32:
+            raise ValueError(
+                "配置错误: MySQL Connector/Python 单连接池大小不能超过 32。"
+            )
         if self.DB_INSPECTION_QUERY_TIMEOUT_MS <= 0:
             raise ValueError("配置错误: DB_INSPECTION_QUERY_TIMEOUT_MS 必须大于 0。")
         if not (
