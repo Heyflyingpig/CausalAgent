@@ -1,3 +1,4 @@
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -17,10 +18,29 @@ class AdminFrontendDeploymentTests(unittest.TestCase):
             "COPY --from=admin-builder /frontend/dist /opt/causalchat-admin",
             text,
         )
+        self.assertIn(
+            "ENV ADMIN_FRONTEND_DIST_DIR=/opt/causalchat-admin",
+            text,
+        )
         final_stage = text.split("FROM python:3.11-slim AS runtime", 1)[1]
         self.assertNotIn("npm ", final_stage)
         self.assertNotIn("vite", final_stage.lower())
         self.assertIn("gunicorn", final_stage)
+
+    def test_admin_production_build_is_present_and_not_gitignored(self):
+        """管理员生产入口必须存在，且不能再被根 Git 忽略规则排除。"""
+        index_path = Path("admin-frontend/dist/index.html")
+
+        self.assertTrue(index_path.is_file())
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", str(index_path)],
+            check=False,
+        )
+        self.assertEqual(
+            result.returncode,
+            1,
+            "admin-frontend/dist/index.html must be tracked as a release artifact",
+        )
 
     def test_compose_files_add_no_node_service_or_port(self):
         """三套 Compose 不得启动 Vite/Node 服务或开放 5173。"""
