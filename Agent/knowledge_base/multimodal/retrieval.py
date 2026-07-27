@@ -10,6 +10,7 @@ from langchain_chroma import Chroma
 
 from .assets import AssetStore
 from .index import ActiveIndexRegistry, _embeddings, embedding_fingerprint, file_sha256
+from .production import is_production_manifest
 
 
 def multimodal_rag_search(questions: list[Any], max_results: int = 5) -> dict[str, Any]:
@@ -25,6 +26,8 @@ def multimodal_rag_search(questions: list[Any], max_results: int = 5) -> dict[st
     if not manifest_path.exists() or file_sha256(manifest_path) != active.get("manifest_sha256"):
         return {"success": False, "summary": "多模态 active index 完整性校验失败", "questions": [], "evidence_count": 0, "evidence": []}
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if __import__("os").getenv("MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE", "").lower() != "true" and not is_production_manifest(manifest):
+        return {"success": False, "summary": "多模态 active index 不是冻结的正式知识源", "error_code": "production_source_mismatch", "questions": [], "evidence_count": 0, "evidence": []}
     runtime_embedding = embedding_fingerprint()
     if active.get("embedding") != manifest.get("embedding") or manifest.get("embedding") != runtime_embedding:
         return {"success": False, "summary": "多模态 embedding 指纹不匹配，索引不可用", "error_code": "embedding_fingerprint_mismatch", "questions": [], "evidence_count": 0, "evidence": []}

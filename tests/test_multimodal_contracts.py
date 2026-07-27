@@ -359,7 +359,7 @@ class MultimodalContractTests(unittest.TestCase):
             active_path = root / "runtime" / "active.json"; active_path.parent.mkdir(); active_path.write_text(json.dumps(active), encoding="utf-8")
             document = type("Document", (), {"metadata": {"unit_id": unit["unit_id"], "source_name": "样本"}, "page_content": "证据"})()
             database = MagicMock(); database.similarity_search_with_relevance_scores.return_value = [(document, 0.9)]
-            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ASSET_DIR": str(root / "assets")}), patch("Agent.knowledge_base.multimodal.retrieval._embeddings", return_value=MagicMock()), patch("Agent.knowledge_base.multimodal.retrieval.Chroma", return_value=database):
+            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ASSET_DIR": str(root / "assets"), "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "true"}), patch("Agent.knowledge_base.multimodal.retrieval._embeddings", return_value=MagicMock()), patch("Agent.knowledge_base.multimodal.retrieval.Chroma", return_value=database):
                 result = multimodal_rag_search(["测试"])
             self.assertTrue(result["success"])
             self.assertFalse(result["evidence"][0]["asset_available"])
@@ -376,7 +376,7 @@ class MultimodalContractTests(unittest.TestCase):
             active_path = root / "runtime" / "active.json"; active_path.parent.mkdir(); active_path.write_text(json.dumps({"index_version": version, "collection_name": "collection", "manifest_sha256": __import__("hashlib").sha256((index_dir / "manifest.json").read_bytes()).hexdigest(), "embedding": embedding}), encoding="utf-8")
             title_document = type("Document", (), {"metadata": {"unit_id": title_only["unit_id"]}, "page_content": "标题"})(); enriched_document = type("Document", (), {"metadata": {"unit_id": enriched["unit_id"]}, "page_content": "增强"})()
             database = MagicMock(); database.similarity_search_with_relevance_scores.return_value = [(title_document, 0.9), (enriched_document, 0.8)]
-            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ASSET_DIR": str(root / "assets")}), patch("Agent.knowledge_base.multimodal.retrieval._embeddings", return_value=MagicMock()), patch("Agent.knowledge_base.multimodal.retrieval.Chroma", return_value=database):
+            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ASSET_DIR": str(root / "assets"), "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "true"}), patch("Agent.knowledge_base.multimodal.retrieval._embeddings", return_value=MagicMock()), patch("Agent.knowledge_base.multimodal.retrieval.Chroma", return_value=database):
                 result = multimodal_rag_search(["测试"], max_results=1)
             self.assertEqual([item["unit_id"] for item in result["evidence"]], [enriched["unit_id"]])
 
@@ -388,7 +388,7 @@ class MultimodalContractTests(unittest.TestCase):
             manifest = {"index_version": version, "embedding": current}; (index_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             (index_dir / "units.jsonl").write_text("", encoding="utf-8")
             active_path = root / "runtime" / "active.json"; active_path.parent.mkdir(); active_path.write_text(json.dumps({"index_version": version, "collection_name": "collection", "manifest_sha256": __import__("hashlib").sha256((index_dir / "manifest.json").read_bytes()).hexdigest(), "embedding": current | {"model": "drifted"}}), encoding="utf-8")
-            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path)}), patch("Agent.knowledge_base.multimodal.retrieval.Chroma") as chroma:
+            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "true"}), patch("Agent.knowledge_base.multimodal.retrieval.Chroma") as chroma:
                 result = multimodal_rag_search(["测试"])
             self.assertFalse(result["success"]); self.assertEqual(result["error_code"], "embedding_fingerprint_mismatch"); chroma.assert_not_called()
 
@@ -476,7 +476,7 @@ class MultimodalContractTests(unittest.TestCase):
                 "embedding": manifest["embedding"],
             }), encoding="utf-8")
             embedding_config = {"status": "ready", "mode": "local", "provider": "local", "model": "model", "path": "model"}
-            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path)}), patch("Agent.knowledge_base.rag_runtime.resolve_embedding_runtime_config", return_value=embedding_config):
+            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "true"}), patch("Agent.knowledge_base.rag_runtime.resolve_embedding_runtime_config", return_value=embedding_config):
                 config = RagRuntimeConfig.from_environment()
             self.assertEqual(Path(config.vector_db_dir), version_dir / "chroma")
             self.assertEqual(config.collection_name, "causal_multimodal_mm_test")

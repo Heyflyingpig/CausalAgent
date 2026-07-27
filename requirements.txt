@@ -72,6 +72,7 @@ ragas==0.4.3
 torch==2.7.1 
 sentence-transformers==3.0.1
 pymupdf==1.24.7
+pypdf==6.11.0
 unstructured==0.14.9
 langchain-huggingface==1.2.2
 

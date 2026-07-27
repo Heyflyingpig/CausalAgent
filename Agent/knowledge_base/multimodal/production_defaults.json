@@ -1,0 +1,39 @@
+{
+  "schema_version": "multimodal_production_defaults_v1",
+  "embedding": {
+    "provider": "huggingface",
+    "model": "bge-small-zh-v1.5",
+    "dimension": 512,
+    "normalized": true
+  },
+  "parser": "docling",
+  "pdf_parser": {
+    "page_range_mode": "single_page",
+    "converter_restart_interval": 20
+  },
+  "vision": {
+    "remote_enabled": false,
+    "local_ocr_enabled": true
+  },
+  "sources": [
+    {
+      "path": "Agent/knowledge_base/source/Pearl_2009_Causality-mono(1).pdf",
+      "sha256": "13b947cd4597aea6b59c52e8f63503943ee475f36543e7e76cbb09b1ec1e0a25",
+      "required": true
+    },
+    {
+      "path": "Agent/knowledge_base/source/Pearl_Mackenzie_2018_The_Book_of_Why-mono(1).pdf",
+      "sha256": "dbc004c038a10cf213bd81f685ffe0ea934bb1494a52ecc889b9a03ea3f8babd",
+      "required": true
+    }
+  ],
+  "evaluation": {
+    "dataset_path": "Agent/knowledge_base/multimodal/production_eval_v1.json",
+    "thresholds": {
+      "min_hit_at_5": 0.70,
+      "min_mrr": 0.50,
+      "min_citation_location_accuracy": 0.60,
+      "max_empty_result_rate": 0.10
+    }
+  }
+}
