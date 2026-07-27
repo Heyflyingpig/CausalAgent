@@ -36,7 +36,7 @@
 ├── docker-compose.yml
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
-├── docker-compose.admin-e2e.yml # 3.1 独立主从验收覆盖
+├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收覆盖
 ├── README.md               # 项目说明
 ├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
 │   ├── src/
@@ -76,6 +76,7 @@
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口
 │   ├── monitor_worker.py   # 数据库看板分层采集进程
 │   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
+│   ├── lifecycle_repair.py # 3.2 孤立关系有限 dry-run/人工确认修复 CLI
 │   ├── mysql/              # MySQL 主从配置与初始化脚本
 │   ├── agent_connect.py
 │   └── migrations/
@@ -112,10 +113,12 @@
 - `get_read_connection(consistency='strong')` 固定读主库；`consistency='eventual'` 只会在从库复制状态正常且延迟不超过阈值时使用副本，否则安全回退主库。
 - 用户角色采用 `users.role` 的最小两级模型，只允许 `user` / `admin`；登录、会话恢复和管理员授权每次都通过主库强一致读确认 `role` 与 `is_active`，不把 session 中的角色值作为后端授权依据。
 - `/api/admin/*` 由统一管理员装饰器保护：无有效会话返回 `401`，普通登录用户返回 `403`；管理员页面未登录时回到统一登录入口，普通用户直访页面保持 `403`。初始管理员只通过 `python -m app.auth.admin_cli promote <username>` 提升现有启用用户，不提供公开管理员注册接口。
-- 登录成功和有效 `check_auth` 会返回 Session 绑定的 CSRF token；管理员刷新、完整性审计、配置保存和重置必须提供匹配的 `X-CSRF-Token`。所有响应都有 `X-Request-ID`，格式合法的上游 request ID 会被沿用。
-- 管理员登录或恢复会话后仍以 `/admin/database` 为落点，普通用户继续进入聊天页。后台为白色简约 Vue 页面，现开放业务概览、用户、会话、任务、文件、数据库看板、采集配置和 Schema/deep 审计；全部业务能力只读，不提供聊天、SQL、修复、迁移、用户写操作或任务控制。桌面左侧导航可在 248px/约 76px 间收缩并持久化，移动端为可关闭抽屉，Logo 通过受保护接口复用 `README/CausalAgent.png`。
+- 登录成功和有效 `check_auth` 会返回 Session 绑定的 CSRF token；管理员刷新、完整性审计、配置保存/重置和全部 3.2 受控写入必须提供匹配的 `X-CSRF-Token`。所有响应都有 `X-Request-ID`，格式合法的上游 request ID 会被沿用。
+- 管理员登录或恢复会话后仍以 `/admin/database` 为落点，普通用户继续进入聊天页。后台为白色简约 Vue 页面，现开放业务概览、用户、会话、任务、文件、数据库看板、采集配置和 Schema/deep 审计；3.2 只增加受控用户启停/角色/改密以及用户/文件物理删除，不提供聊天、任意 SQL、修复、迁移、账号授权、复制控制或任务控制。桌面左侧导航可在 248px/约 76px 间收缩并持久化，移动端为可关闭抽屉，Logo 通过受保护接口复用 `README/CausalAgent.png`。
 - 3.1 管理列表默认 20、最多 50 条并使用不透明游标；消息/附件正文和任务输入/结果/错误只允许管理员明确点击后按最多 64 KiB 源字节分块读取。成功敏感访问要求审计可写；审计只保存管理员、动作、目标、结果、错误码和 request ID，不保存正文。
-- CSV 预览最多读取 256 KiB、100 行、50 列、单元格 1000 字符且只按文本渲染；文件预览/下载成功会在同一事务原子更新 `last_accessed_at`、`access_count` 并写审计，这是 3.1 唯一新增业务记录副作用。
+- 3.2 用户/文件写接口固定在 `/api/admin/business/*`：执行前必须主库预览、CSRF、当前管理员密码重新认证、明确确认和 `Idempotency-Key`；批量默认 20、硬上限 50，成功变更与 `admin_operations`、`admin_operation_items` 和逐目标 `admin_audit_events` 同事务提交。操作者不能禁用、降级或删除自己，事务锁保护最后一个启用管理员；角色、状态和密码实际变化通过 `users.auth_version` 使旧 Session 失效。
+- 3.2 文件物理删除同时删除 `uploaded_files` 行与 BLOB，不提供回收站；因文件与 job 没有稳定直接关系，归属用户存在 queued/running job 时保守阻断。用户物理删除显式处理 archived session 和 session checkpoint，其余依赖现有外键级联，并受同步关联行阈值保护。
+- CSV 预览最多读取 256 KiB、100 行、50 列、单元格 1000 字符且只按文本渲染；管理员预览/下载以及 Agent 真正读取文件内容会在同一主库事务原子更新 `last_accessed_at`、`access_count`，重复上传命中已有文件不计为访问。
 - 管理看板新增聚合读取接口 `GET /api/admin/db/dashboard`，以及只登记共享刷新请求的 `POST /api/admin/db/refresh` 和 `POST /api/admin/db/integrity/run`；`/db/health`、`/db/overview`、`/db/integrity`、`/db/slow-queries`、`/jobs/workers` 继续兼容，但所有 GET 都只读取最近快照，不现场执行完整数据库采集。
 - 在线配置接口为 `GET/PUT /api/admin/db/settings`、`POST /api/admin/db/settings/reset` 和 `GET /api/admin/db/settings/history`。七项有效值固定按“数据库覆盖 > 环境变量 > 代码默认值”解析，`NULL` 表示继承；每个进程最多缓存 5 秒，读取失败时先使用最后有效值、再回退环境/默认值并标记降级。保存使用乐观版本锁，成功、拒绝和失败结果写入 `admin_audit_events`。
 - 独立 monitor 入口是 `python -m Database.monitor_worker`；它按 `realtime`、`sql_performance`、`capacity`、`integrity` 四类周期生成 MySQL 共享快照，并通过命名锁避免多个 monitor 或并发手动请求重复采集。默认周期分别为 `10s`、`60s`、`900s`，完整性定时审计默认关闭，启用后默认 `86400s`。
@@ -123,8 +126,10 @@
 - 看板连接使用率 warning/error 默认阈值为 `70%`/`85%`，由 `DB_DASHBOARD_CONNECTION_WARNING_PERCENT` 和 `DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT` 配置；快速 SELECT 超时由 `DB_INSPECTION_QUERY_TIMEOUT_MS` 配置，默认 `3000ms`。刷新和采集配置统一由 `DB_MONITOR_AUTO_REFRESH_ENABLED`、`DB_MONITOR_REALTIME_INTERVAL_SECONDS`、`DB_MONITOR_SQL_INTERVAL_SECONDS`、`DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS`、`DB_MONITOR_SLOW_QUERY_WARNING_DELTA`、`DB_MONITOR_INTEGRITY_ENABLED`、`DB_MONITOR_INTEGRITY_INTERVAL_SECONDS` 控制，不得在路由、SQL 或前端硬编码。
 - SQL digest 区块语义是“SQL 性能摘要/高负载 SQL”，按累计 `SUM_TIMER_WAIT` 排序，不等价于超过 `long_query_time` 的单次慢查询；慢查询告警优先使用采集窗口内 `Slow_queries` 增量，累计值仅作兼容和辅助展示。
 - 运行期完整性审计不再对已有外键保证的 message、attachment、job、event 和 checkpoint write 关系执行 `COUNT(*) + LEFT JOIN` 全表扫描，而是轻量确认关键约束存在；仍保留当前没有外键保证的 `checkpoints.thread_id → sessions.id` 检查，也不再要求 `chat_messages` 必须存在分区。
-- `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoints`、`checkpoint_writes`、`analysis_jobs`、`analysis_job_events`、`database_monitor_snapshots`、`database_monitor_settings`、`admin_audit_events` 这些关键表以及 `users.role` 关键字段是否已存在。
+- `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoints`、`checkpoint_writes`、`analysis_jobs`、`analysis_job_events`、`database_monitor_snapshots`、`database_monitor_settings`、`admin_audit_events`、`admin_operations`、`admin_operation_items` 这些关键表，以及 `users.role`、`users.auth_version`、`users.password_changed_at`、`checkpoint_writes.write_identity_hash` 和 3.2 三个关键索引是否已存在。
 - 当前 LangGraph MySQL checkpointer 使用 `session_id` 作为 `thread_id`；删除已创建会话时必须在同一事务内先删除对应 `checkpoints`，并依赖 `checkpoint_writes → checkpoints` 的级联外键清理 writes，不能调用会自行开事务的 `MySQLSaver.delete_thread()`。
+- `checkpoint_writes` 的幂等业务键是 `(thread_id, checkpoint_ns, checkpoint_id, task_id, idx)`；由于完整 utf8mb4 联合索引超长，应用写入并由 3.2 migration 回填长度前缀编码的 SHA-256 `BINARY(32)` 摘要，再建立唯一索引，不截断 LangGraph 标识。该列不能使用 generated column，因为其基列属于带 `ON DELETE CASCADE` 的复合外键。特殊 writes 走 upsert，普通 writes 忽略重复；最新 checkpoint 按 `created_at DESC, checkpoint_id DESC` 稳定排序。
+- `Database/lifecycle_repair.py` 默认只列出有限孤立 archived session/checkpoint/pending writes 主键；只有 `--apply --confirm-database <精确库名>` 才执行，migration 不得调用它或静默删除历史数据。
 - `analysis_jobs` 和 `analysis_job_events` 是当前长任务系统的真实持久化基础：前者是任务队列，后者是事件日志；job 创建、领取、状态更新、事件写入和 SSE 读取都必须走主库或强一致读。
 - 同一 `user_id + session_id` 同时只允许一个 `queued/running` job；当前实现不是 generated column，而是把 `active_session_key` 作为可空普通列，并通过唯一键 `uq_analysis_jobs_active_session` 兜底并发竞态。
 - 旧 `/api/send_stream` 只保留为迁移提示接口，返回 `410`；前端真实路径应使用 `POST /api/agent/jobs` 创建任务，再用 `GET /api/agent/jobs/<job_id>/events` 订阅 SSE，断线续传依赖 `Last-Event-ID`。
@@ -135,13 +140,14 @@
   - `MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`：只给 MySQL 从库复制通道拉 binlog 用。
   - `MYSQL_USER` / `MYSQL_PASSWORD`：仅作为写/读账号兼容兜底，不承担复制状态检查职责。
 - `docker-compose.replica.yml` 是本地主从开发拓扑，当前包含 `mysql-primary`、`mysql-replica`、`app`、`worker`、`monitor` 五个服务；本轮仍不提供自动故障切换。
+- 连接池按 OS 进程计算：`write_pool + read_pool * (1 + replica_count)`，worker slot 共享所在进程的池。默认建连/获取池/管理员锁等待/从库状态缓存分别为 5s/3s/5s/2s；复制状态失效或异常只回退主库，不自动切主。真实容量依据和读写矩阵记录在 `setting/database_governance.md`。
 - Docker 是当前首选开发方式；`docker-compose.replica.yml` 中 `app` 和 `worker` 都会挂载以下知识库目录：
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
 - RAG 启动期只检查知识库目录是否可用，不会在启动时完整加载向量库；若 `Agent/knowledge_base/db` 不存在，worker 会记录 warning，并以“无知识库模式”继续运行。
 
 
-### 3.1 常用命令
+### 3.2 常用命令
 
 激活本地 conda 环境（仅在不用 Docker 时）：
 
@@ -182,13 +188,13 @@ npm run build
 `npm run test:e2e`；本机仅有 Edge 时可显式设置 `PLAYWRIGHT_CHANNEL=msedge`，
 未设置时仍使用 Playwright 标准 Chromium。
 
-3.1 完整隔离主从验收在管理员生产构建完成后运行：
+3.2 完整隔离主从验收在管理员生产构建完成后运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tests/run_admin_31_e2e.ps1
+powershell -ExecutionPolicy Bypass -File tests/run_admin_32_e2e.ps1
 ```
 
-该脚本不会触碰当前开发库，也不会自动删除隔离容器和卷；清理仍需单独明确确认。
+该脚本不会触碰当前开发库，覆盖空库升级、3.2 migration 往返、受控写入/删除、主从追平和普通用户回归；不会自动删除隔离容器和卷，清理仍需单独明确确认。物理删除种子不能通过 `KeepSeededData` 重放。
 
 本地启动桌面端：
 
