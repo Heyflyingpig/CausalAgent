@@ -22,6 +22,14 @@ from Database.mysql_checkpointer import MySQLSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 
+def _mcp_parent_update(result: dict) -> dict:
+    """将 MCP 子图终态投影为父图所需的两个业务字段。"""
+    return {
+        "causal_analysis_result": result.get("causal_analysis_result"),
+        "tool_call_request": result.get("tool_call_request"),
+    }
+
+
 def _build_default_checkpointer():
     """Create the default MySQL checkpointer when configuration allows it."""
     try:
@@ -65,6 +73,11 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_service, checkpointer=No
     fold_node_with_llm = bind_node(nodes.fold_node, llm=llm)
     preprocess_node_with_llm = bind_node(nodes.preprocess_node, llm=llm)
     mcp_subgraph = build_mcp_subgraph(llm=llm, mcp_tools=mcp_tools)
+
+    async def run_mcp_subgraph(state: CausalChatState) -> dict:
+        """执行 MCP 子图，并仅回写父图需要的稳定业务输出。"""
+        result = await mcp_subgraph.ainvoke(state)
+        return _mcp_parent_update(result)
     rag_node_with_resources = bind_node(nodes.rag_node, llm=llm, rag_service=rag_service)
     postprocess_node_with_llm = bind_node(nodes.postprocess_node, llm=llm)
     inquiry_answer_node_with_llm = bind_node(nodes.inquiry_answer_node, llm=llm)
@@ -92,7 +105,7 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_service, checkpointer=No
         timeout=timeout(run_timeout=180, idle_timeout=60),
         error_handler=recover_to_agent,
     )
-    workflow.add_node("mcp", mcp_subgraph)
+    workflow.add_node("mcp", run_mcp_subgraph)
     workflow.add_node(
         "rag",
         rag_node_with_resources,
@@ -153,12 +166,13 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_service, checkpointer=No
         edges.mcp_router, 
         {
             "rag": "rag", 
-            "agent": "agent"
+            "agent": "agent",
+            "normal_chat": "normal_chat"
         }
     )
     workflow.add_edge(
         "rag", 
-        "agent"
+        "postprocess"
     )
     workflow.add_conditional_edges(
         "postprocess", 

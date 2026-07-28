@@ -71,6 +71,55 @@ class RagServiceTests(unittest.TestCase):
         ):
             self.assertTrue(hasattr(query_rag, name), name)
 
+    def test_runtime_prioritizes_an_explicit_table_request_without_false_positives(self):
+        """显式图表请求走同模态 dense，普通“表达式”问题不得误触发。"""
+        from Agent.knowledge_base import query_rag
+
+        general = {
+            "page_content": "正文",
+            "metadata": {
+                "unit_id": "text", "chunk_id": "text", "doc_id": "doc",
+                "source_name": "source.pdf", "modality": "text",
+            },
+            "rerank_score": 1.0,
+        }
+        table = {
+            "page_content": "表格",
+            "metadata": {
+                "unit_id": "table", "chunk_id": "table", "doc_id": "doc",
+                "source_name": "source.pdf", "modality": "table",
+            },
+            "rerank_score": 0.5,
+        }
+
+        def fake_dense(_question, *args, **kwargs):
+            return [table] if kwargs.get("metadata_filter") == {"modality": "table"} else [general]
+
+        config = query_rag.RagRetrievalConfig()
+        with patch.object(query_rag, "_dense_retrieve", side_effect=fake_dense), patch.object(
+            query_rag, "_select_mmr_candidates", return_value=[general]
+        ), patch.object(query_rag, "_sparse_retrieve", return_value=[]), patch.object(
+            query_rag, "_merge_candidates", return_value=[general]
+        ):
+            explicit = query_rag._build_retrieval_trace_with_resources(
+                "表 6.1 中的恢复率是什么？",
+                config,
+                vector_db=object(),
+                embedding_function=object(),
+                sparse_retriever=object(),
+            )
+            ordinary = query_rag._build_retrieval_trace_with_resources(
+                "这个表达式是什么意思？",
+                config,
+                vector_db=object(),
+                embedding_function=object(),
+                sparse_retriever=object(),
+            )
+
+        self.assertEqual(config.final_top_k, 5)
+        self.assertEqual(explicit["stages"]["final"][0]["metadata"]["unit_id"], "table")
+        self.assertEqual(ordinary["stages"]["final"][0]["metadata"]["unit_id"], "text")
+
 
 class RagToolTests(unittest.TestCase):
     def test_original_tool_name_invokes_multimodal_service(self):
@@ -108,6 +157,75 @@ class RagToolTests(unittest.TestCase):
 
 
 class RagNodeTests(unittest.TestCase):
+    def test_mcp_adapter_text_block_list_is_parsed_as_success(self):
+        """真实 MCP adapter 的文本块列表必须保留业务 success 字段。"""
+        from langchain_core.messages import ToolMessage
+        from Agent.tool_node.tool_message_adapter import parse_tool_message_json
+
+        message = ToolMessage(
+            content=[{"type": "text", "text": '{"success": true, "data": {"nodes": []}}'}],
+            tool_call_id="call-1",
+        )
+        self.assertEqual(parse_tool_message_json(message), {"success": True, "data": {"nodes": []}})
+
+    def test_mcp_adapter_text_block_dict_is_parsed_as_success(self):
+        """真实 adapter 的单个 text block 也必须解出业务 success 字段。"""
+        from langchain_core.messages import ToolMessage
+        from Agent.tool_node.tool_message_adapter import parse_tool_message_json
+
+        message = ToolMessage(
+            content={"type": "text", "text": '{"success": true, "data": {"nodes": []}}'},
+            tool_call_id="call-1",
+        )
+        self.assertEqual(parse_tool_message_json(message), {"success": True, "data": {"nodes": []}})
+
+    def test_mcp_adapter_artifact_wrapper_is_parsed_as_success(self):
+        """artifact structured_content 包装不得吞掉真实 MCP success 字段。"""
+        from langchain_core.messages import ToolMessage
+        from Agent.tool_node.tool_message_adapter import parse_tool_message_json
+
+        message = ToolMessage(
+            content="ignored",
+            artifact={"structured_content": {"result": [{"type": "text", "text": '{"success": true}'}]}},
+            tool_call_id="call-1",
+        )
+        self.assertEqual(parse_tool_message_json(message), {"success": True})
+
+    def test_mcp_adapter_artifact_result_string_is_parsed_as_success(self):
+        """真实 adapter 的 result 字符串必须递归还原为业务 JSON。"""
+        from langchain_core.messages import ToolMessage
+        from Agent.tool_node.tool_message_adapter import parse_tool_message_json
+
+        message = ToolMessage(
+            content="ignored",
+            artifact={"structured_content": {"result": '{"success": true, "data": {}}'}},
+            tool_call_id="call-1",
+        )
+        self.assertEqual(parse_tool_message_json(message), {"success": True, "data": {}})
+
+    def test_mcp_failure_routes_to_terminal_normal_chat(self):
+        """明确 MCP 失败不得回到 agent 形成无限循环。"""
+        from Agent.causal_agent.edges import mcp_router
+
+        self.assertEqual(mcp_router({"causal_analysis_result": {"success": False}}), "normal_chat")
+
+    def test_successful_mcp_result_routes_to_rag(self):
+        """成功 MCP 返回必须进入普通 rag 节点，而非回到 agent。"""
+        from Agent.causal_agent.edges import mcp_router
+
+        self.assertEqual(mcp_router({"causal_analysis_result": {"success": True}}), "rag")
+
+    def test_mcp_subgraph_success_is_exported_to_parent_router(self):
+        """子图完成后的 success 字段必须原样到达父图的 MCP 路由。"""
+        from Agent.causal_agent.edges import mcp_router
+        from Agent.causal_agent.graph import _mcp_parent_update
+
+        parent_update = _mcp_parent_update(
+            {"causal_analysis_result": {"success": True, "data": {}}, "tool_call_request": True}
+        )
+        self.assertEqual(parent_update["causal_analysis_result"]["success"], True)
+        self.assertEqual(mcp_router(parent_update), "rag")
+
     def test_direct_rag_node_generates_questions_and_calls_service(self):
         """单一 RAG 节点必须直接生成问题、调用 Service 并写回结果。"""
         from Agent.causal_agent import nodes
@@ -127,6 +245,15 @@ class RagNodeTests(unittest.TestCase):
 
         graph = build_graph(MagicMock(), [], MagicMock(), checkpointer=False)
         self.assertEqual([name for name, _graph in graph.get_subgraphs()], ["mcp"])
+
+    def test_successful_rag_flow_proceeds_to_postprocess(self):
+        """RAG 成功后不得重新进入 agent 并再次调用 MCP。"""
+        from Agent.causal_agent.graph import build_graph
+
+        graph = build_graph(MagicMock(), [], MagicMock(), checkpointer=False)
+        edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
+        self.assertIn(("rag", "postprocess"), edges)
+        self.assertNotIn(("rag", "agent"), edges)
 
 
 class WorkerRagAssemblyTests(unittest.TestCase):
