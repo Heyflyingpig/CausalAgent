@@ -159,10 +159,10 @@ graph TD;
 - **典型能力**：
   - 在生成报告时，自动检索相关理论和方法描述，为结论补充严谨的文献背景；
   - 支持面向初学者的「概念解释」，例如“什么是混杂变量”“为什么需要随机试验”等。
-- **运行时生命周期**：worker 启动时严格创建一次进程级 `RagRuntime`，集中持有 embedding、Chroma、由 Chroma 文档构建的 BM25s 内存稀疏索引和回答 LLM；同一 worker 的所有 slot 共享该 Runtime，但各自拥有 RAG Tool 和 Agent Graph。生产 Tool 不会在首次查询时加载这些重资源。
-- **可选能力降级**：知识库目录、embedding、collection 或 sparse corpus 初始化失败时，worker 仍会领取和处理任务，RAG Tool 返回稳定的“知识库暂不可用”结果，报告继续基于因果分析结果生成。该 worker 进程不会自动重试，修复配置或知识库后需重启 worker。
-- **评测兼容**：`query_rag.py` 的既有评测、CLI 和 Web 导入入口仍然保留，并使用独立的 compatibility Service；生产 worker 不经过该兼容缓存。生产检索参数仍逐问题读取发布配置，参数热发布无需重启。
-- **多模态公共知识库**：维护者可通过 `python -m Agent.knowledge_base.multimodal.cli` 对离线公共 TXT、Markdown、图片和已配置解析器支持的 PDF 创建隔离暂存索引。它不接入用户上传文件、不修改 PubMedQA；版本只会在完整性与显式质量门禁均通过后切换独立的多模态 active pointer。查询还会校验 active pointer、manifest 与运行期 embedding 指纹，漂移时拒绝检索而不回退到 PubMedQA。
+- **默认生产链路**：使用 `RagRuntime -> RagService -> rag 普通节点`；该节点直接生成问题、调用 Service 并写回结果，不再经过 RAG ToolNode 子图。`rag_enrichment_search` 仅作为兼容工具入口保留。worker 启动时从多模态 active pointer 初始化共享 Runtime，RAG 问题的默认且唯一 corpus 是 `multimodal`。
+- **多模态公共知识库**：维护者可通过 `python -m Agent.knowledge_base.multimodal.cli` 对离线公共 TXT、Markdown、图片和已配置解析器支持的 PDF 创建隔离暂存索引；独立图片与 PDF 图片均使用本地 RapidOCR 生成可检索文本。生产默认固定为本地 `bge-small-zh-v1.5`（512 维、L2 归一化）、两本已哈希锁定的 Pearl 资料与关闭的远程视觉；版本还须通过 24 条人工页级 gold 的 Hit@5、MRR、引用定位准确率和空结果率门禁，才可切换 active pointer。Runtime 会校验来源、manifest 与 embedding 指纹，漂移时拒绝初始化且绝不回退到 PubMedQA。
+- **全量摄取与发布**：正式 PDF 使用独立子进程逐页运行 Docling + RapidOCR，并原子保存页级 checkpoint；中断后复用已完成页面，Chroma 分批写入独立 attempt 目录，成功后才提交。24 题命中同时要求文档、页码和 `expected_modality` 一致。`run` 默认停在 `ready_to_publish`，只有显式传 `--publish` 或单独执行 `publish` 才切换 active pointer。
+- **医疗兼容边界**：PubMedQA 构建、数据和专用评测入口暂时保留，但已退出默认生产与默认测试链路，供后续分阶段清理。
 - PDF 当前默认使用已通过本地 smoke 的 Docling；MinerU 仅保留为显式选择时的兼容回退。原始资料、Docling 原始输出、标准化单元与本地资源 URI/内容哈希都写入版本 manifest，并在发布门禁中回读核验。远程视觉仅接受 `wcode.net` 的 `qwen/qwen3-vl-flash` 配置和固定 allowlist 资料。
 
 ```bash
@@ -176,7 +176,7 @@ python -m Agent.knowledge_base.multimodal.omnidocbench_export --root Agent/knowl
 python -m Agent.knowledge_base.multimodal.cli omnidocbench-export-official --root Agent/knowledge_base/multimodal_benchmarks/omnidocbench --selection-manifest Agent/knowledge_base/multimodal_benchmarks/omnidocbench/production_100/production_100_manifest.json --output-dir Agent/knowledge_base/multimodal_benchmarks/omnidocbench/production_100/official_export_docling
 ```
 
-OmniDocBench 本地固定子集只用于研究验证，当前覆盖 6 页代表样本；生产抽样的 100 页由 `production_100_manifest.json` 固定版本、页面哈希与标注属性。`omnidocbench_export` 可生成官方 end-to-end 所需的 GT JSON、同名页面 Markdown 和哈希 manifest；传入 `--selection-manifest` 时按生产清单导出。100 页 Docling Markdown 已在官方 Docker 运行时完成 end-to-end 评测（文本 Edit Distance、表格 TEDS、公式 CDM、阅读顺序）；该证据只衡量解析器，不证明知识库索引已通过发布门禁。布局 mAP 尚未运行，当前 active 索引仍是旧 manifest，不能发布。完整开发依赖通过 `requirements.txt` 引入 `requirements-multimodal.txt`；基础生产镜像仍不安装多模态解析与测试依赖。详细开发记录见 `README/开发日志.md`。
+OmniDocBench 本地固定子集只用于研究验证，当前覆盖 6 页代表样本；生产抽样的 100 页由 `production_100_manifest.json` 固定版本、页面哈希与标注属性。`omnidocbench_export` 可生成官方 end-to-end 所需的 GT JSON、同名页面 Markdown 和哈希 manifest；传入 `--selection-manifest` 时按生产清单导出。100 页 Docling Markdown 已在官方 Docker 运行时完成 end-to-end 评测（文本 Edit Distance、表格 TEDS、公式 CDM、阅读顺序）；该证据只衡量解析器，不证明知识库索引已通过发布门禁。布局 mAP 尚未运行。当前生产 active 索引已发布为 `mm_74b5aef2f5e7322b5a79`；固定 OmniDocBench 子集始终使用隔离索引，不能作为生产知识源发布。完整开发依赖通过 `requirements.txt` 引入 `requirements-multimodal.txt`；基础生产镜像仍不安装多模态解析与测试依赖。详细开发记录见 `README/开发日志.md`。
 
 ### 后处理
 *对因果图进行后处理，包括环路检测、边合理性评估等，提高因果结构的可解释性与可靠性*
@@ -449,12 +449,14 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 │   ├── Report/             # 报告生成逻辑
 │   ├── knowledge_base/     # RAG 知识库
 │   │   ├── build_knowledge.py # 知识库构建入口，支持 default / medical profile
-│   │   ├── rag_runtime.py  # worker 进程级 RAG 重资源生命周期
-│   │   ├── rag_service.py  # 查询编排、兼容 Service 与可选能力降级
-│   │   ├── sparse_retriever.py # 一次构建、只读共享的 BM25s 内存稀疏索引
-│   │   ├── query_rag.py    # 评测/CLI/Web 兼容查询与算法入口
-│   │   ├── multimodal/     # 隔离的资料检查、摄取、索引、发布与检索模块
-│   │   ├── db/             # 当前运行时向量知识库存储；医疗库应使用 PubMedQA active corpus 重建
+
+│   │   ├── rag_runtime.py      # 默认多模态 RAG 重资源初始化与生命周期
+│   │   ├── rag_service.py      # 默认 RAG 查询编排与降级服务
+│   │   ├── sparse_retriever.py # 默认 BM25s 稀疏索引
+│   │   ├── query_rag.py    # 默认 dense/BM25s/rerank/answer 实现
+│   │   ├── multimodal/     # 默认资料检查、摄取、索引、发布与检索模块
+│   │   ├── db/             # 旧医疗兼容向量库存储
+
 │   │   ├── models/         # 本地嵌入模型，default profile 使用 bge-small-zh-v1.5
 │   │   └── rag/            # RAG 测评框架、数据集操作、报告和外部医疗数据
 │   │       ├── rag_config.py
