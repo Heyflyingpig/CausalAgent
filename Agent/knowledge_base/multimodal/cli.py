@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
         commands.choices[name].add_argument("--retry-generation", type=int, default=0)
     commands.choices["run"].add_argument("--timeout-seconds", type=int)
     commands.choices["run"].add_argument("--cancel-file")
+    commands.choices["run"].add_argument("--publish", action="store_true")
     for name in ("evaluate", "publish", "status", "rollback"):
         sub = commands.add_parser(name); sub.add_argument("--index-version", required=name != "status")
     benchmark_audit = commands.add_parser("omnidocbench-audit")
@@ -50,7 +51,7 @@ def main() -> int:
         (Path(args.index_root) / args.index_version / "omnidocbench_eval.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     elif args.command == "inspect": result = service.inspect(args.source or [str(path) for path in production_source_paths()])
     elif args.command == "ingest": result = service.ingest(args.source or [str(path) for path in production_source_paths()], allow_remote_data=args.allow_remote_data, max_images=args.max_images, retry_failed=args.retry_failed, retry_generation=args.retry_generation)
-    elif args.command == "run": result = service.run(args.source or [str(path) for path in production_source_paths()], allow_remote_data=args.allow_remote_data, max_images=args.max_images, retry_failed=args.retry_failed, retry_generation=args.retry_generation, timeout_seconds=args.timeout_seconds, cancel_check=(lambda: Path(args.cancel_file).exists()) if args.cancel_file else None)
+    elif args.command == "run": result = service.run(args.source or [str(path) for path in production_source_paths()], allow_remote_data=args.allow_remote_data, max_images=args.max_images, retry_failed=args.retry_failed, retry_generation=args.retry_generation, timeout_seconds=args.timeout_seconds, cancel_check=(lambda: Path(args.cancel_file).exists()) if args.cancel_file else None, publish_on_pass=args.publish)
     elif args.command == "evaluate": result = service.evaluate(args.index_version)
     elif args.command == "publish": result = service.publish(args.index_version)
     elif args.command == "rollback": result = service.rollback(args.index_version)

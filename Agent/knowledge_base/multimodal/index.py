@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import gc
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any
 
 from langchain_chroma import Chroma
@@ -37,24 +39,57 @@ def _embeddings() -> Any:
 class StagedIndex:
     """只向版本专属目录写入的 Chroma 索引。"""
 
-    def __init__(self, version_dir: Path, collection_name: str) -> None:
+    def __init__(self, version_dir: Path, collection_name: str, *, directory_name: str = "chroma") -> None:
         """绑定唯一版本目录和 collection 名称。"""
         self.version_dir = version_dir
         self.collection_name = collection_name
+        self.directory_name = directory_name
 
-    def write(self, units: list[KnowledgeUnit]) -> int:
+    def write(self, units: Iterable[KnowledgeUnit], *, batch_size: int = 64) -> int:
         """写入一个此前不存在的版本，拒绝追加到已有 Chroma 数据。"""
-        chroma_dir = self.version_dir / "chroma"
+        chroma_dir = self.version_dir / self.directory_name
         if chroma_dir.exists() and any(chroma_dir.iterdir()):
             raise ValueError("staged index is immutable and cannot be appended")
         db = Chroma(persist_directory=str(chroma_dir), collection_name=self.collection_name, embedding_function=_embeddings())
-        db.add_texts([unit.retrieval_text for unit in units], metadatas=[unit.chroma_metadata() for unit in units], ids=[unit.unit_id for unit in units])
-        return db._collection.count()
+        try:
+            batch: list[KnowledgeUnit] = []
+            for unit in units:
+                batch.append(unit)
+                if len(batch) >= batch_size:
+                    self._write_batch(db, batch)
+                    batch.clear()
+            if batch:
+                self._write_batch(db, batch)
+            return db._collection.count()
+        finally:
+            self._close(db)
+
+    @staticmethod
+    def _write_batch(db: Any, batch: list[KnowledgeUnit]) -> None:
+        """把一批标准化单元写入 Chroma。"""
+        db.add_texts(
+            [unit.retrieval_text for unit in batch],
+            metadatas=[unit.chroma_metadata() for unit in batch],
+            ids=[unit.unit_id for unit in batch],
+        )
 
     def count(self) -> int:
         """读取版本 collection 中的向量数量。"""
-        db = Chroma(persist_directory=str(self.version_dir / "chroma"), collection_name=self.collection_name)
-        return db._collection.count()
+        db = Chroma(persist_directory=str(self.version_dir / self.directory_name), collection_name=self.collection_name)
+        try:
+            return db._collection.count()
+        finally:
+            self._close(db)
+
+    @staticmethod
+    def _close(db: Any) -> None:
+        """Release the PersistentClient before Windows renames its directory."""
+        client = getattr(db, "_client", None)
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+        del db
+        gc.collect()
 
 
 class ActiveIndexRegistry:

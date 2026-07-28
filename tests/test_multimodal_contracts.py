@@ -14,10 +14,11 @@ from unittest.mock import patch
 
 from Agent.knowledge_base.multimodal.assets import AssetStore
 from Agent.knowledge_base.multimodal.benchmark import audit_omnidocbench_subset, evaluate_omnidocbench_staged_index
+from Agent.knowledge_base.multimodal.index import StagedIndex
 from Agent.knowledge_base.multimodal.omnidocbench_export import export_omnidocbench_official_inputs
 from Agent.knowledge_base.multimodal.contracts import BoundingBox, IngestionIssue, IssueSeverity, KnowledgeUnit, UnitStatus, VisionAnalysis, render_retrieval_text, sha256_bytes, stable_id
 from Agent.knowledge_base.multimodal.pipeline import MultimodalKnowledgeBaseMaintenance
-from Agent.knowledge_base.multimodal.parsers import parse_document
+from Agent.knowledge_base.multimodal.parsers import ParsedDocument, ParsedItem, _convert_docling_page, parse_document
 from Agent.knowledge_base.multimodal.retrieval import _parent_context
 from Agent.knowledge_base.multimodal.retrieval import multimodal_rag_search
 from Agent.knowledge_base.rag_runtime import RagRuntimeConfig
@@ -59,6 +60,20 @@ class MultimodalContractTests(unittest.TestCase):
             uri = store.put("doc_" + "a" * 64, name, b"image")
             self.assertLess(len(Path(uri).name), 80)
             self.assertEqual(store.read(uri), b"image")
+
+    @patch("Agent.knowledge_base.multimodal.index._embeddings")
+    @patch("Agent.knowledge_base.multimodal.index.Chroma")
+    def test_staged_index_closes_client_after_write(self, chroma: MagicMock, _embeddings: MagicMock) -> None:
+        """Persistent writes release the SQLite client before a staged directory move."""
+        db = MagicMock()
+        db._collection.count.return_value = 1
+        chroma.return_value = db
+        unit = MagicMock(retrieval_text="causal text", unit_id="unit_1")
+        unit.chroma_metadata.return_value = {}
+        with tempfile.TemporaryDirectory() as directory:
+            count = StagedIndex(Path(directory), "test_collection").write([unit])
+        self.assertEqual(count, 1)
+        db._client.close.assert_called_once_with()
 
     def test_inspect_is_deterministic_and_does_not_create_index(self) -> None:
         """inspect 只产生 manifest，不创建索引或资源目录。"""
@@ -109,6 +124,29 @@ class MultimodalContractTests(unittest.TestCase):
             self.assertTrue(parsed.items, parsed.issues)
             self.assertTrue(any("Causal inference" in item.raw_text for item in parsed.items))
             self.assertTrue(any(item.page_number == 1 for item in parsed.items))
+
+    def test_docling_pdf_parser_skips_blank_page_without_failing_source(self) -> None:
+        """合法空白页应留下 warning，不能使整份 required PDF 失败。"""
+        from reportlab.pdfgen import canvas
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "sample.pdf"
+            pdf = canvas.Canvas(str(source)); pdf.drawString(72, 720, "Causal inference"); pdf.showPage(); pdf.showPage(); pdf.save()
+            parsed = parse_document(source, "docling")
+            self.assertTrue(parsed.items)
+            self.assertFalse(any(issue.severity is IssueSeverity.ERROR for issue in parsed.issues))
+            self.assertTrue(any(issue.code == "pdf_page_empty" for issue in parsed.issues))
+
+    def test_docling_page_conversion_retries_once_with_new_converter(self) -> None:
+        """converter 状态异常时应重建一次，并返回可供后续页复用的新实例。"""
+        failed = MagicMock(); failed.convert.side_effect = RuntimeError("stale converter")
+        replacement = MagicMock(); replacement.convert.return_value = "result"
+        with patch("Agent.knowledge_base.multimodal.parsers._new_docling_converter", return_value=replacement) as factory:
+            result, converter = _convert_docling_page(Path("sample.pdf"), 7, object(), failed)
+        self.assertEqual(result, "result")
+        self.assertIs(converter, replacement)
+        factory.assert_called_once()
+        replacement.convert.assert_called_once_with(Path("sample.pdf"), page_range=(7, 7))
 
     def test_evaluate_rejects_any_required_source_parse_error(self) -> None:
         """任一默认 required 来源解析失败时不得发布混合成功版本。"""
@@ -301,7 +339,11 @@ class MultimodalContractTests(unittest.TestCase):
             root = Path(directory); source = root / "source.md"; source.write_text("正文", encoding="utf-8")
             service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
             version = service._index_version(service._manifest(service._scan([str(source)])[0]))
-            (root / "indexes" / version).mkdir(parents=True)
+            version_dir = root / "indexes" / version
+            version_dir.mkdir(parents=True)
+            for name in ("manifest.json", "units.jsonl", "issues.jsonl"):
+                (version_dir / name).write_text("{}" if name.endswith(".json") else "", encoding="utf-8")
+            (version_dir / "build_state.json").write_text(json.dumps({"status": "staged_complete", "unit_count": 0, "vector_count": 0}), encoding="utf-8")
             with patch.object(service, "ingest") as ingest, patch.object(service, "evaluate", return_value={"passed": False, "failures": ["quality_gate_failed"]}), patch.object(service, "publish") as publish:
                 result = service.run([str(source)])
             self.assertEqual(result["status"], "gate_failed"); ingest.assert_not_called(); publish.assert_not_called()
@@ -391,6 +433,57 @@ class MultimodalContractTests(unittest.TestCase):
             with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "true"}), patch("Agent.knowledge_base.multimodal.retrieval.Chroma") as chroma:
                 result = multimodal_rag_search(["测试"])
             self.assertFalse(result["success"]); self.assertEqual(result["error_code"], "embedding_fingerprint_mismatch"); chroma.assert_not_called()
+
+    def test_only_complete_staged_version_can_be_reused(self) -> None:
+        """崩溃留下的确定性版本目录不得被 run 当作已完成索引复用。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            version = "mm_" + "a" * 20
+            version_dir = root / "indexes" / version
+            version_dir.mkdir(parents=True)
+            service = MultimodalKnowledgeBaseMaintenance(
+                asset_root=root / "assets",
+                index_root=root / "indexes",
+                active_config=root / "active.json",
+            )
+
+            self.assertFalse(service._is_reusable_staged_version(version))
+            (version_dir / "build_state.json").write_text(
+                json.dumps({"status": "staged_complete", "unit_count": 2, "vector_count": 1}),
+                encoding="utf-8",
+            )
+            self.assertFalse(service._is_reusable_staged_version(version))
+            (version_dir / "build_state.json").write_text(
+                json.dumps({"status": "staged_complete", "unit_count": 0, "vector_count": 0}),
+                encoding="utf-8",
+            )
+            for name in ("manifest.json", "units.jsonl", "issues.jsonl"):
+                (version_dir / name).write_text("{}" if name.endswith(".json") else "", encoding="utf-8")
+            self.assertTrue(service._is_reusable_staged_version(version))
+
+    def test_failed_vector_build_resumes_from_page_checkpoints(self) -> None:
+        """页解析完成后向量写入失败，重试不得再次运行已完成页面。"""
+        from reportlab.pdfgen import canvas
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "two-pages.pdf"
+            pdf = canvas.Canvas(str(source)); pdf.drawString(72, 720, "page one"); pdf.showPage(); pdf.drawString(72, 720, "page two"); pdf.save()
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            parsed_pages = [
+                ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="page one has enough searchable causal inference content", page_number=1),), raw_artifacts=(("docling_page_0001.json", b"{}"),)),
+                ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="page two has enough searchable causal inference content", page_number=2),), raw_artifacts=(("docling_page_0002.json", b"{}"),)),
+            ]
+            with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", side_effect=parsed_pages) as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", side_effect=RuntimeError("vector failed")):
+                with self.assertRaisesRegex(RuntimeError, "vector failed"):
+                    service.ingest([str(source)])
+            self.assertEqual(parse_page.call_count, 2)
+
+            with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page") as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=2):
+                result = service.ingest([str(source)])
+            parse_page.assert_not_called()
+            self.assertEqual(result["unit_count"], 2)
+            self.assertEqual(result["vector_count"], 2)
 
     def test_index_version_changes_with_embedding_or_vision_configuration(self) -> None:
         """影响向量或增强产物的配置变化必须生成新不可变版本。"""

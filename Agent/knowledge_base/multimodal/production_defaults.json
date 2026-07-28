@@ -9,7 +9,8 @@
   "parser": "docling",
   "pdf_parser": {
     "page_range_mode": "single_page",
-    "converter_restart_interval": 20
+    "process_isolation": "spawn_per_page",
+    "page_timeout_seconds": 900
   },
   "vision": {
     "remote_enabled": false,

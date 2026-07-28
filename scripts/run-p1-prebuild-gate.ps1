@@ -2,6 +2,7 @@
 param(
     [string]$DoclingArtifactsDir = (Join-Path $env:USERPROFILE ".cache\\docling\\models"),
     [string]$WorkerImage = "causalagent-demopaper-worker",
+    [long]$MinimumFreeBytes = 2GB,
     [switch]$DryRun
 )
 
@@ -108,12 +109,13 @@ $sourceBytes = Get-DirectoryBytes -Path $SourceRoot
 $parserArtifactBudgetBytes = Get-DirectoryBytes -Path $AssetRoot
 $vectorIndexBudgetBytes = Get-DirectoryBytes -Path $IndexRoot
 $bufferBytes = 512MB
-$requiredBytes = $sourceBytes + $parserArtifactBudgetBytes + $vectorIndexBudgetBytes + $bufferBytes
+$estimatedBytes = $sourceBytes + $parserArtifactBudgetBytes + $vectorIndexBudgetBytes + $bufferBytes
+$requiredBytes = [Math]::Max($estimatedBytes, $MinimumFreeBytes)
 $freeBytes = (Get-PSDrive -Name (Split-Path -Qualifier $RepositoryRoot).TrimEnd(':')).Free
 if ($freeBytes -lt $requiredBytes) {
-    throw "Insufficient disk space for source + parser artifacts + vector index + 512 MiB buffer: need $requiredBytes bytes, have $freeBytes bytes."
+    throw "Insufficient disk space for full ingestion: need at least $requiredBytes bytes, have $freeBytes bytes."
 }
-Write-Host (([PSCustomObject]@{ source_bytes = $sourceBytes; parser_artifact_budget_bytes = $parserArtifactBudgetBytes; vector_index_budget_bytes = $vectorIndexBudgetBytes; buffer_bytes = $bufferBytes; required_bytes = $requiredBytes; free_bytes = $freeBytes }) | ConvertTo-Json -Compress)
+Write-Host (([PSCustomObject]@{ source_bytes = $sourceBytes; parser_artifact_budget_bytes = $parserArtifactBudgetBytes; vector_index_budget_bytes = $vectorIndexBudgetBytes; buffer_bytes = $bufferBytes; estimated_bytes = $estimatedBytes; minimum_free_bytes = $MinimumFreeBytes; required_bytes = $requiredBytes; free_bytes = $freeBytes }) | ConvertTo-Json -Compress)
 
 $env:MULTIMODAL_DOCLING_HOST_DIR = (Resolve-Path -LiteralPath $DoclingArtifactsDir).Path
 $env:P1_WORKER_IMAGE = $WorkerImage

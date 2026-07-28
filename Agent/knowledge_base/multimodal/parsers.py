@@ -5,9 +5,11 @@ from __future__ import annotations
 import importlib.util
 import csv
 import json
+import multiprocessing
 import os
 from dataclasses import dataclass, field
 from io import BytesIO
+from collections.abc import Iterator
 from pathlib import Path
 
 from .contracts import IngestionIssue, IssueSeverity
@@ -17,6 +19,7 @@ TABLE_SUFFIXES = {".csv", ".xlsx"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
 PDF_SUFFIXES = {".pdf"}
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | TABLE_SUFFIXES | IMAGE_SUFFIXES | PDF_SUFFIXES
+_RAPID_OCR_ENGINE: object | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,30 @@ def parse_document(path: Path, preferred_parser: str) -> ParsedDocument:
     if suffix in PDF_SUFFIXES:
         return _parse_pdf(path, preferred_parser)
     raise ValueError(f"unsupported source suffix: {suffix}")
+
+
+def iter_document_pages(path: Path, preferred_parser: str) -> Iterator[ParsedDocument]:
+    """逐页产生解析结果；PDF 每页使用独立进程以释放原生模型内存。"""
+    if path.suffix.lower() != ".pdf":
+        yield parse_document(path, preferred_parser)
+        return
+    if importlib.util.find_spec("docling") is None:
+        yield _parse_pdf(path, preferred_parser)
+        return
+    yield from _iter_pdf_with_docling(path, preferred_parser)
+
+
+def parse_document_page(path: Path, preferred_parser: str, page_number: int) -> ParsedDocument:
+    """解析指定物理页，供可恢复摄取按页调度。"""
+    if page_number < 1:
+        raise ValueError("page_number must be positive")
+    if path.suffix.lower() != ".pdf":
+        if page_number != 1:
+            raise ValueError("non-PDF sources contain one logical page")
+        return parse_document(path, preferred_parser)
+    if importlib.util.find_spec("docling") is None:
+        return _parse_pdf(path, preferred_parser)
+    return _parse_docling_page_isolated(path, page_number)
 
 
 def _parse_text(path: Path) -> ParsedDocument:
@@ -147,52 +174,125 @@ def _parse_pdf(path: Path, preferred_parser: str) -> ParsedDocument:
 
 
 def _parse_pdf_with_docling(path: Path, preferred_parser: str) -> ParsedDocument:
-    """逐页调用 Docling，避免大 PDF 的批量预处理内存峰值。"""
-    try:
-        from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import PdfPipelineOptions
-        from docling.document_converter import DocumentConverter, PdfFormatOption
-
-        artifacts_path = Path(os.getenv("MULTIMODAL_DOCLING_ARTIFACTS_DIR", Path.home() / ".cache" / "docling" / "models"))
-        options = PdfPipelineOptions(artifacts_path=artifacts_path)
-        from pypdf import PdfReader
-
-        items: list[ParsedItem] = []
-        raw_artifacts: list[tuple[str, bytes]] = []
-        restart_interval = int(os.getenv("MULTIMODAL_DOCLING_RESTART_INTERVAL", "20"))
-        if restart_interval < 1:
-            raise ValueError("MULTIMODAL_DOCLING_RESTART_INTERVAL must be positive")
-        converter = None
-        for page_number in range(1, len(PdfReader(path).pages) + 1):
-            if converter is None or (page_number - 1) % restart_interval == 0:
-                converter = DocumentConverter(
-                    format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
-                )
-            result = converter.convert(path, page_range=(page_number, page_number))
-            page_items = _docling_items(result.document)
-            if not page_items:
-                raise ValueError(f"Docling did not return page {page_number}")
-            items.extend(page_items)
-            raw_artifacts.append(
-                (
-                    f"docling_page_{page_number:04d}.json",
-                    json.dumps(result.document.export_to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8"),
-                )
-            )
-    except Exception as exc:
-        return ParsedDocument(
-            "docling", "2.115.0",
-            issues=(IngestionIssue(code="pdf_parse_failed", message=f"Docling PDF 解析失败：{type(exc).__name__}", severity=IssueSeverity.ERROR, blocking=False, source_path=str(path)),),
-        )
+    """聚合逐页结果，供兼容调用者和小型测试使用。"""
+    pages = list(_iter_pdf_with_docling(path, preferred_parser))
+    items = [item for page in pages for item in page.items]
+    issues = [issue for page in pages for issue in page.issues]
+    raw_artifacts = [artifact for page in pages for artifact in page.raw_artifacts]
     if not items:
         return ParsedDocument(
             "docling", "2.115.0",
             issues=(IngestionIssue(code="pdf_empty_output", message="Docling 未提取到可索引正文", severity=IssueSeverity.ERROR, blocking=False, source_path=str(path)),),
         )
-    issues: tuple[IngestionIssue, ...] = ()
     if preferred_parser == "mineru":
-        issues = (IngestionIssue(code="mineru_fallback_docling", message="MinerU 未配置为可运行解析路径，已使用 Docling fallback", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)),)
-    return ParsedDocument("docling", "2.115.0", tuple(items), issues, tuple(raw_artifacts))
+        issues.append(IngestionIssue(code="mineru_fallback_docling", message="MinerU 未配置为可运行解析路径，已使用 Docling fallback", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
+    return ParsedDocument("docling", "2.115.0", tuple(items), tuple(issues), tuple(raw_artifacts))
+
+
+def _iter_pdf_with_docling(path: Path, preferred_parser: str) -> Iterator[ParsedDocument]:
+    """按物理页隔离运行 Docling，并为每页保留成功或失败证据。"""
+    from pypdf import PdfReader
+
+    page_count = len(PdfReader(path).pages)
+    for page_number in range(1, page_count + 1):
+        yield _parse_docling_page_isolated(path, page_number)
+
+
+def _parse_docling_page_isolated(path: Path, page_number: int) -> ParsedDocument:
+    """在 spawn 子进程中解析一页，超时或崩溃时返回阻断 issue。"""
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_docling_page_worker, args=(str(path), page_number, sender))
+    process.start()
+    sender.close()
+    timeout = int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900"))
+    try:
+        if receiver.poll(timeout):
+            parsed = receiver.recv()
+            process.join(30)
+            return parsed
+        process.terminate()
+        process.join(30)
+        return _page_failure(path, page_number, "TimeoutError")
+    except (EOFError, OSError):
+        process.join(30)
+        return _page_failure(path, page_number, f"ProcessExit{process.exitcode}")
+    finally:
+        receiver.close()
+
+
+def _docling_page_worker(path_value: str, page_number: int, sender: object) -> None:
+    """子进程入口：解析单页并通过管道返回纯本地结果。"""
+    path = Path(path_value)
+    try:
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+
+        artifacts_path = Path(os.getenv("MULTIMODAL_DOCLING_ARTIFACTS_DIR", Path.home() / ".cache" / "docling" / "models"))
+        options = PdfPipelineOptions(artifacts_path=artifacts_path)
+        options.generate_picture_images = True
+        converter = _new_docling_converter(options)
+        result, _ = _convert_docling_page(path, page_number, options, converter)
+        items = tuple(_docling_items(result.document))
+        issues: tuple[IngestionIssue, ...] = ()
+        if not items:
+            content_exists = _pdf_page_has_content(path, page_number)
+            issues = (IngestionIssue(
+                code="pdf_page_content_missing" if content_exists else "pdf_page_empty",
+                message=f"Docling 第 {page_number} 页未返回可索引内容",
+                severity=IssueSeverity.ERROR if content_exists else IssueSeverity.WARNING,
+                blocking=content_exists,
+                source_path=str(path),
+            ),)
+        artifact = (
+            f"docling_page_{page_number:04d}.json",
+            json.dumps(result.document.export_to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8"),
+        )
+        sender.send(ParsedDocument("docling", "2.115.0", items, issues, (artifact,)))
+    except Exception as exc:
+        sender.send(_page_failure(path, page_number, type(exc).__name__))
+    finally:
+        sender.close()
+
+
+def _page_failure(path: Path, page_number: int, error_name: str) -> ParsedDocument:
+    """为单页隔离失败创建可审计的阻断结果。"""
+    issue = IngestionIssue(
+        code="pdf_page_parse_failed",
+        message=f"Docling 第 {page_number} 页解析失败：{error_name}",
+        severity=IssueSeverity.ERROR,
+        blocking=True,
+        source_path=str(path),
+    )
+    return ParsedDocument("docling", "2.115.0", issues=(issue,))
+
+
+def _pdf_page_has_content(path: Path, page_number: int) -> bool:
+    """独立检查 PDF 页是否包含文本或图片对象，防止把解析遗漏当作空白页。"""
+    from pypdf import PdfReader
+
+    page = PdfReader(path).pages[page_number - 1]
+    if (page.extract_text() or "").strip():
+        return True
+    resources = page.get("/Resources") or {}
+    xobjects = resources.get("/XObject") if hasattr(resources, "get") else None
+    return bool(xobjects)
+
+
+def _new_docling_converter(options: object) -> object:
+    """创建使用同一离线模型配置的 Docling converter。"""
+    from docling.datamodel.base_models import InputFormat
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    return DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)})
+
+
+def _convert_docling_page(path: Path, page_number: int, options: object, converter: object) -> tuple[object, object]:
+    """转换单页；converter 状态异常时仅重建并重试一次。"""
+    try:
+        return converter.convert(path, page_range=(page_number, page_number)), converter
+    except Exception:
+        replacement = _new_docling_converter(options)
+        return replacement.convert(path, page_range=(page_number, page_number)), replacement
 
 
 def _docling_items(document: object) -> list[ParsedItem]:
@@ -213,9 +313,13 @@ def _docling_items(document: object) -> list[ParsedItem]:
         elif isinstance(item, PictureItem):
             asset_bytes = _docling_image_bytes(item, document)
             if asset_bytes:
-                items.append(ParsedItem("image", "image", page_number=page_number, bbox=bbox, asset_bytes=asset_bytes, asset_name=f"page_{page_number or 0:04d}_image_{index:04d}.png", parent_key=f"page_{page_number}" if page_number else None))
+                caption = (item.caption_text(document) or "").strip()
+                local_ocr = _rapidocr_text(asset_bytes)
+                raw_text = "\n".join(dict.fromkeys(part for part in (caption, local_ocr) if part))
+                items.append(ParsedItem("image", "image", raw_text=raw_text, page_number=page_number, bbox=bbox, asset_bytes=asset_bytes, asset_name=f"page_{page_number or 0:04d}_image_{index:04d}.png", parent_key=f"page_{page_number}" if page_number else None))
         elif isinstance(item, TextItem) and (item.text or "").strip():
-            items.append(ParsedItem("text", "paragraph", raw_text=item.text.strip(), page_number=page_number, bbox=bbox, parent_key=f"page_{page_number}" if page_number else None))
+            label = str(getattr(getattr(item, "label", None), "value", getattr(item, "label", "paragraph")))
+            items.append(ParsedItem("text", label or "paragraph", raw_text=item.text.strip(), page_number=page_number, bbox=bbox, parent_key=f"page_{page_number}" if page_number else None))
     return items
 
 
@@ -251,3 +355,17 @@ def _docling_image_bytes(item: object, document: object) -> bytes | None:
         return output.getvalue()
     except Exception:
         return None
+
+
+def _rapidocr_text(image_bytes: bytes) -> str:
+    """使用随 Docling 环境提供的本地 RapidOCR 为图片生成可检索文本。"""
+    global _RAPID_OCR_ENGINE
+    try:
+        from rapidocr import RapidOCR
+
+        if _RAPID_OCR_ENGINE is None:
+            _RAPID_OCR_ENGINE = RapidOCR()
+        result = _RAPID_OCR_ENGINE(image_bytes)
+        return "\n".join(text.strip() for text in (result.txts or ()) if text.strip())
+    except Exception:
+        return ""
