@@ -112,6 +112,14 @@ class MultimodalContractTests(unittest.TestCase):
             self.assertIn("工作表：实验", parsed.items[0].raw_text)
             self.assertIn("行：2", parsed.items[0].raw_text)
 
+    def test_standalone_image_parser_uses_local_rapidocr_text(self) -> None:
+        """独立图片必须复用本地 RapidOCR 文本，不能依赖远程视觉才能入库。"""
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "sample.png"; source.write_bytes(b"image")
+            with patch("Agent.knowledge_base.multimodal.parsers._rapidocr_text", return_value="本地 OCR 文本"):
+                parsed = parse_document(source, "docling")
+            self.assertEqual(parsed.items[0].raw_text, "本地 OCR 文本")
+
     def test_docling_pdf_parser_returns_page_scoped_text(self) -> None:
         """本地 Docling artifacts 必须能把 PDF 正文转换为一基页码单元。"""
         from reportlab.pdfgen import canvas
@@ -230,8 +238,8 @@ class MultimodalContractTests(unittest.TestCase):
             self.assertFalse(result["passed"])
             self.assertIn("sample:annotation_attribute_mismatch", result["failures"])
 
-    def test_omnidocbench_evaluation_records_successful_enriched_retrieval(self) -> None:
-        """公开 OCR probe 命中已增强单元时应计为通过，并写出报告。"""
+    def test_omnidocbench_evaluation_records_successful_local_ocr_retrieval(self) -> None:
+        """公开 OCR probe 命中本地 OCR 单元时应计为通过，并写出报告。"""
         with tempfile.TemporaryDirectory() as directory, patch("Agent.knowledge_base.multimodal.benchmark.FIXED_SAMPLES", ({"sample_id": "sample", "relative_path": "images/sample.png", "coverage": "测试", "attributes": {"layout": "single_column"}, "required_categories": ("text_block",)},)):
             root = Path(directory) / "dataset"; (root / "images").mkdir(parents=True)
             content = b"image"; (root / "images" / "sample.png").write_bytes(content)
@@ -241,7 +249,7 @@ class MultimodalContractTests(unittest.TestCase):
             document_id = stable_id("doc", {"path": "images/sample.png", "content_hash": sha256_bytes(content)})
             unit_id = "unit_" + "a" * 64; asset_root = root / "assets"; store = AssetStore(asset_root); asset_uri = store.put(document_id, "sample.png", content)
             manifest = {"documents": [{"document_id": document_id, "relative_path": "images/sample.png"}]}
-            unit = {"unit_id": unit_id, "document_id": document_id, "page_number": None, "modality": "image", "content_kind": "image", "raw_text": "", "asset_uri": asset_uri, "vision_model": "mock", "retrieval_text": "OCR：abcdefgh retrieval probe"}
+            unit = {"unit_id": unit_id, "document_id": document_id, "page_number": None, "modality": "image", "content_kind": "image", "raw_text": "abcdefgh retrieval probe", "asset_uri": asset_uri, "vision_model": "", "retrieval_text": "类型：image\nabcdefgh retrieval probe"}
             (index_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             (index_dir / "units.jsonl").write_text(json.dumps(unit) + "\n", encoding="utf-8")
             hit = type("Document", (), {"metadata": {"unit_id": unit_id}})()
