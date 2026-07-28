@@ -68,7 +68,8 @@ def parse_document(path: Path, preferred_parser: str) -> ParsedDocument:
     if suffix == ".xlsx":
         return _parse_xlsx(path)
     if suffix in IMAGE_SUFFIXES:
-        return ParsedDocument("image", "builtin-1", (ParsedItem("image", "image", asset_bytes=path.read_bytes(), asset_name=path.name),))
+        payload = path.read_bytes()
+        return ParsedDocument("image", "builtin-1", (ParsedItem("image", "image", raw_text=_rapidocr_text(payload), asset_bytes=payload, asset_name=path.name),))
     if suffix in PDF_SUFFIXES:
         return _parse_pdf(path, preferred_parser)
     raise ValueError(f"unsupported source suffix: {suffix}")

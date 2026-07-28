@@ -90,8 +90,8 @@ def evaluate_omnidocbench_staged_index(root: Path, index_root: Path, index_versi
         case = {"sample_id": specification["sample_id"], "coverage": specification["coverage"], "source_present": document is not None, "unit_count": len(document_units), "asset_available": asset_ok, "query": query, "status": "passed"}
         if not document or not document_units or not asset_ok:
             case["status"] = "failed"; case["failure_type"] = "parse_or_asset_chain"
-        elif not any(unit.get("vision_model") and ("OCR：" in unit.get("retrieval_text", "") or "摘要：" in unit.get("retrieval_text", "")) for unit in document_units):
-            case["status"] = "skipped"; case["failure_type"] = "vision_not_enriched"
+        elif not any(unit.get("modality") == "image" and unit.get("raw_text", "").strip() for unit in document_units):
+            case["status"] = "skipped"; case["failure_type"] = "local_ocr_unavailable"
         elif not query:
             case["status"] = "skipped"; case["failure_type"] = "gold_ocr_probe_unavailable"
         else:
