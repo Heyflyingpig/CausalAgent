@@ -55,6 +55,9 @@ def mcp_router(state: CausalAgentState) -> str:
     if isinstance(mcp_result, dict) and mcp_result.get("success") is True:
         logging.info("路由决策 -> MCP分析成功, 前往[RAG工具阶段]")
         return "rag"
+    if isinstance(mcp_result, dict) and mcp_result.get("success") is False:
+        logging.info("路由决策 -> MCP分析失败, 前往[普通问答]终止本轮")
+        return "normal_chat"
     logging.info("路由决策 -> MCP分析缺失不充足, 前往[Agent决策路由]")
     return "agent"
 

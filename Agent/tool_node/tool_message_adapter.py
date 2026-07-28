@@ -1,6 +1,7 @@
 "辅助函数：规范化tool调用接口"
 from __future__ import annotations
 
+import ast
 import json
 from typing import Any
 
@@ -63,15 +64,58 @@ def _parse_content_blocks(tool_message: ToolMessage) -> dict[str, Any] | None:
     return None
 
 
+def _parse_content_block_list(content: Any) -> dict[str, Any] | None:
+    """解析 MCP adapter 直接写入 ToolMessage.content 的文本块列表。"""
+    if not isinstance(content, list):
+        return None
+    for block in content:
+        if isinstance(block, dict):
+            text = block.get("text")
+            if isinstance(text, str) and (parsed := _json_object_from_text(text)) is not None:
+                return parsed
+    return None
+
+
+def _parse_adapter_payload(payload: Any) -> dict[str, Any] | None:
+    """从 adapter 的 structured_content 包装中递归取出业务 JSON。"""
+    if isinstance(payload, str):
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError:
+            try:
+                decoded = ast.literal_eval(payload)
+            except (ValueError, SyntaxError):
+                return None
+        return _parse_adapter_payload(decoded)
+    if (parsed := _parse_content_block_list(payload)) is not None:
+        return parsed
+    if isinstance(payload, dict):
+        text = payload.get("text")
+        if isinstance(text, str) and (parsed := _json_object_from_text(text)) is not None:
+            return parsed
+        if "success" in payload:
+            return payload
+        for value in payload.values():
+            if (parsed := _parse_adapter_payload(value)) is not None:
+                return parsed
+    return None
+
+
 def parse_tool_message_json(tool_message: ToolMessage) -> dict[str, Any]:
     """解析 ToolMessage 多种有效载荷并将其转换为业务结果字典。"""
     artifact_payload = _structured_content_from_artifact(getattr(tool_message, "artifact", None))
     if artifact_payload is not None:
+        if parsed := _parse_adapter_payload(artifact_payload):
+            return parsed
         return _normalize_payload(artifact_payload)
 
     content = getattr(tool_message, "content", "")
     if isinstance(content, dict):
+        if parsed := _parse_adapter_payload(content):
+            return parsed
         return content
+    if content_block_list_result := _parse_content_block_list(content):
+        return content_block_list_result
     # 海象表达法，先赋值，后判断
     if content_blocks_result := _parse_content_blocks(tool_message):
         return content_blocks_result
@@ -80,6 +124,12 @@ def parse_tool_message_json(tool_message: ToolMessage) -> dict[str, Any]:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
+        try:
+            literal = ast.literal_eval(content)
+        except (ValueError, SyntaxError):
+            literal = None
+        if parsed := _parse_adapter_payload(literal):
+            return parsed
         return {
             "success": False,
             "error": f"ToolMessage content is not valid JSON: {exc}",
