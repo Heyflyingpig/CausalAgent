@@ -190,6 +190,9 @@ def validate_production_manifest(manifest: dict[str, Any], config: dict[str, Any
 
 def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
     """直接评测尚未发布的不可变索引，并在版本目录保存门禁报告。"""
+    from Agent.knowledge_base import query_rag
+    from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever
+
     config = config or load_production_defaults()
     units = {
         unit["unit_id"]: unit
@@ -197,23 +200,34 @@ def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[
         if line
         for unit in [json.loads(line)]
     }
+    embedding = _embeddings()
     database = Chroma(
         persist_directory=str(version_dir / "chroma"),
         collection_name=collection_name,
-        embedding_function=_embeddings(),
+        embedding_function=embedding,
     )
+    sparse_retriever = Bm25sSparseRetriever.from_vector_db(database)
+    retrieval_config = query_rag._load_production_rag_config()[0]
 
     def search(question: str, k: int) -> list[dict[str, Any]]:
-        """把 Chroma 结果收缩为评测所需的稳定定位字段。"""
+        """把正式 Runtime 检索 trace 收缩为评测所需的稳定定位字段。"""
+        trace = query_rag._build_retrieval_trace_with_resources(
+            question,
+            retrieval_config,
+            vector_db=database,
+            embedding_function=embedding,
+            sparse_retriever=sparse_retriever,
+        )
         evidence: list[dict[str, Any]] = []
-        for document, _score in database.similarity_search_with_relevance_scores(question, k=k):
-            unit = units.get(document.metadata.get("unit_id"), {})
+        for candidate in trace["stages"]["final"][:k]:
+            metadata = candidate["metadata"]
+            unit = units.get(metadata.get("unit_id") or metadata.get("chunk_id"), {})
             evidence.append(
                 {
-                    "unit_id": unit.get("unit_id"),
-                    "document_id": unit.get("document_id"),
-                    "page_number": unit.get("page_number"),
-                    "modality": unit.get("modality"),
+                    "unit_id": unit.get("unit_id") or metadata.get("unit_id") or metadata.get("chunk_id"),
+                    "document_id": unit.get("document_id") or metadata.get("document_id") or metadata.get("doc_id"),
+                    "page_number": unit.get("page_number") or metadata.get("page_number") or metadata.get("page"),
+                    "modality": unit.get("modality") or metadata.get("modality"),
                 }
             )
         return evidence

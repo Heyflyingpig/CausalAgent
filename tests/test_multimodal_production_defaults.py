@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from Agent.knowledge_base.multimodal.production import (
     audit_production_coverage,
@@ -57,6 +58,22 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
             self.assertIn(case["expected_modality"], {"text", "table", "image"})
             self.assertTrue(case["reference_answer"] or case["key_facts"])
             self.assertTrue(case["human_reviewed"])
+
+    def test_reviewed_modality_cases_match_physical_pdf_evidence(self) -> None:
+        """人工复核过的页码与模态必须对应 PDF 物理页上的实际证据。"""
+        config = load_production_defaults()
+        dataset_path = Path(__file__).parents[1] / config["evaluation"]["dataset_path"]
+        payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+        actual = {
+            case["case_id"]: (case["gold_page_numbers"], case["expected_modality"])
+            for case in payload["cases"]
+        }
+
+        self.assertEqual(actual["causality-003"], ([40], "image"))
+        self.assertEqual(actual["causality-009"], ([197], "table"))
+        self.assertEqual(actual["causality-011"], ([300], "table"))
+        self.assertEqual(actual["why-003"], ([148], "table"))
+        self.assertEqual(actual["why-005"], ([51], "image"))
 
     def test_retrieval_metrics_use_exact_document_and_page_locator(self) -> None:
         """Hit、MRR 和引用定位不得退化成仅匹配两本书的文档级指标。"""
@@ -131,6 +148,60 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
         self.assertEqual(coverage["covered_gold_pages"], 2)
         self.assertEqual(coverage["total_gold_pages"], 2)
         self.assertEqual(coverage["missing_modality_cases"], ["image"])
+
+    def test_staged_evaluation_uses_the_production_retrieval_trace(self) -> None:
+        """暂存门禁必须复用 dense、BM25、rerank 的正式检索链路。"""
+        from Agent.knowledge_base.multimodal.production import evaluate_staged_index
+
+        case = {
+            "case_id": "runtime-chain",
+            "question": "q",
+            "gold_doc_ids": ["doc-a"],
+            "gold_page_numbers": [7],
+            "expected_modality": "image",
+        }
+        unit = {
+            "unit_id": "unit-a",
+            "document_id": "doc-a",
+            "page_number": 7,
+            "modality": "image",
+        }
+        candidate = {
+            "metadata": {
+                "unit_id": "unit-a",
+                "document_id": "doc-a",
+                "page_number": 7,
+                "modality": "image",
+            }
+        }
+
+        class DenseOnlyMiss:
+            def similarity_search_with_relevance_scores(self, _question, *, k):
+                return []
+
+        config = {"evaluation": {"thresholds": {
+            "min_hit_at_5": 1.0,
+            "min_mrr": 1.0,
+            "min_citation_location_accuracy": 1.0,
+            "max_empty_result_rate": 0.0,
+        }}}
+        with tempfile.TemporaryDirectory() as directory:
+            version_dir = Path(directory)
+            (version_dir / "units.jsonl").write_text(json.dumps(unit) + "\n", encoding="utf-8")
+            with (
+                patch("Agent.knowledge_base.multimodal.production.Chroma", return_value=DenseOnlyMiss()),
+                patch("Agent.knowledge_base.multimodal.production._embeddings", return_value=object()),
+                patch("Agent.knowledge_base.multimodal.production.load_evaluation_cases", return_value=[case]),
+                patch("Agent.knowledge_base.sparse_retriever.Bm25sSparseRetriever.from_vector_db", return_value=object()),
+                patch(
+                    "Agent.knowledge_base.query_rag._build_retrieval_trace_with_resources",
+                    return_value={"stages": {"final": [candidate]}},
+                ) as runtime_trace,
+            ):
+                report = evaluate_staged_index(version_dir, "collection", config=config)
+
+        self.assertTrue(report["gate"]["passed"])
+        runtime_trace.assert_called_once()
 
     def test_threshold_gate_reports_each_failed_metric(self) -> None:
         """固定阈值必须逐项阻止不合格评测结果。"""

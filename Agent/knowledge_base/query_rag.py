@@ -31,7 +31,7 @@ PRODUCTION_RAG_CONFIG_PATH = os.environ.get(
 DENSE_FETCH_K = 10
 DENSE_MMR_K = 6
 SPARSE_FETCH_K = 8
-FINAL_TOP_K = 4
+FINAL_TOP_K = 5
 DENSE_SCORE_THRESHOLD = 0.45
 FINAL_RERANK_THRESHOLD = 0.18
 MMR_LAMBDA = 0.7
@@ -273,9 +273,13 @@ def _dense_retrieve(
     score_threshold: float = DENSE_SCORE_THRESHOLD,
     *,
     vector_db: Any = None,
+    metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     active_vector_db = vector_db if vector_db is not None else _get_vector_db()
-    dense_results = active_vector_db.similarity_search_with_relevance_scores(question, k=fetch_k)
+    search_kwargs: Dict[str, Any] = {"k": fetch_k}
+    if metadata_filter:
+        search_kwargs["filter"] = metadata_filter
+    dense_results = active_vector_db.similarity_search_with_relevance_scores(question, **search_kwargs)
     candidates: List[Dict[str, Any]] = []
 
     for index, (doc, score) in enumerate(dense_results):
@@ -294,6 +298,15 @@ def _dense_retrieve(
 
     _normalize_scores(candidates, "dense_score", "dense_score_norm")
     return candidates
+
+
+def _requested_modality(question: str) -> Optional[str]:
+    """只识别用户明确提出的图或表请求，避免把“表达式/表示”误判为表格。"""
+    if re.search(r"(?:^|[，。；：、\s])表\s*\d+(?:\.\d+)?|表格|表中", question):
+        return "table"
+    if re.search(r"(?:^|[，。；：、\s])图\s*\d+(?:\.\d+)?|图中|图示|因果图", question):
+        return "image"
+    return None
 
 
 def _select_mmr_candidates(
@@ -816,6 +829,14 @@ def _build_retrieval_trace_with_resources(
         score_threshold=0.0,
         vector_db=vector_db,
     )
+    requested_modality = _requested_modality(question_text)
+    modality_dense = _dense_retrieve(
+        question_text,
+        fetch_k=1,
+        score_threshold=0.0,
+        vector_db=vector_db,
+        metadata_filter={"modality": requested_modality},
+    ) if requested_modality else []
     timings_ms["dense_raw"] = round((time.perf_counter() - started) * 1000, 3)
 
     started = time.perf_counter()
@@ -857,6 +878,18 @@ def _build_retrieval_trace_with_resources(
 
     started = time.perf_counter()
     final_candidates = _select_final_candidates(reranked, active_config)
+    if modality_dense:
+        modality_candidate = dict(modality_dense[0])
+        modality_candidate["retrieval_sources"] = {"dense_modality"}
+        modality_candidate["retrieval_source"] = "dense_modality"
+        modality_candidate["rerank_score"] = float(modality_candidate.get("dense_score", 0.0))
+        modality_unit_id = modality_candidate["metadata"]["chunk_id"]
+        final_candidates = [modality_candidate] + [
+            candidate
+            for candidate in final_candidates
+            if candidate["metadata"]["chunk_id"] != modality_unit_id
+        ]
+        final_candidates = final_candidates[: active_config.final_top_k]
     evidence_payloads = _build_evidence_payloads(
         final_candidates,
         max_chars=active_config.max_evidence_chars,

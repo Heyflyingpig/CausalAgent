@@ -1,7 +1,7 @@
 {
   "schema_version": "multimodal_retrieval_eval_v1",
-  "reviewed_at": "2026-07-27",
-  "review_method": "逐题回读本地 PDF 对应物理页的可提取正文，并核对问题、定位与关键事实。",
+  "reviewed_at": "2026-07-28",
+  "review_method": "逐题回读并渲染本地 PDF 对应物理页，交叉核对 Docling 原始对象、问题、定位、模态与关键事实。",
   "cases": [
     {
       "case_id": "causality-001",
@@ -29,7 +29,7 @@
       "case_id": "causality-003",
       "question": "d-分离中，对撞机及其后代的条件化会怎样改变路径？",
       "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
-      "gold_page_numbers": [39],
+      "gold_page_numbers": [40],
       "gold_unit_ids": [],
       "expected_modality": "image",
       "reference_answer": "对撞机默认阻断路径；对对撞机或其后代条件化会打开路径，使原本独立的原因变得依赖。",
@@ -93,13 +93,13 @@
     },
     {
       "case_id": "causality-009",
-      "question": "辛普森悖论为什么不能只靠统计表决定是否分层？",
+      "question": "表 6.1 中，综合数据与按性别分层的数据为什么会给出相反的用药结论？",
       "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
-      "gold_page_numbers": [199, 200],
+      "gold_page_numbers": [197],
       "gold_unit_ids": [],
       "expected_modality": "table",
-      "reference_answer": "相同统计数据可由不同因果模型产生；是否对分层变量条件化取决于它是混杂因素还是因果路径上的中介。",
-      "key_facts": ["统计等价不等于因果等价", "混杂因素应调整", "中介条件化会遮蔽效应"],
+      "reference_answer": "综合数据中用药组恢复率为 50%，高于未用药组的 40%；但男性分层为 60% 对 70%，女性分层为 20% 对 30%，两个分层都显示用药组更低。这是分组构成差异造成的辛普森反转。",
+      "key_facts": ["综合恢复率 50% 对 40%", "男性恢复率 60% 对 70%", "女性恢复率 20% 对 30%"],
       "human_reviewed": true
     },
     {
@@ -115,13 +115,13 @@
     },
     {
       "case_id": "causality-011",
-      "question": "吉布斯采样示例中，增加样本量对不同先验的影响是什么？",
+      "question": "表 8.1 的可识别 ACE 分布中，哪些 (z, x, y) 组合具有非零概率？",
       "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
-      "gold_page_numbers": [299],
+      "gold_page_numbers": [300],
       "gold_unit_ids": [],
       "expected_modality": "table",
-      "reference_answer": "随着样本量增加，数据逐步消除平坦先验与倾斜先验对后验因果效应分布的影响。",
-      "key_facts": ["比较平坦与倾斜先验", "样本增加削弱先验影响"],
+      "reference_answer": "非零组合为 (0,0,0)=0.275、(0,1,0)=0.225、(1,0,0)=0.225 和 (1,1,1)=0.275，其余组合均为 0。",
+      "key_facts": ["(0,0,0) 与 (1,1,1) 均为 0.275", "(0,1,0) 与 (1,0,0) 均为 0.225", "其余组合为 0"],
       "human_reviewed": true
     },
     {
@@ -159,13 +159,13 @@
     },
     {
       "case_id": "why-003",
-      "question": "疫苗示例中，为什么死亡人数的表面比较会误导决策？",
+      "question": "表 4.1 中四种疫苗响应类型在接种与不接种时分别会出现什么结果？",
       "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
-      "gold_page_numbers": [50],
+      "gold_page_numbers": [148],
       "gold_unit_ids": [],
       "expected_modality": "table",
-      "reference_answer": "接种者占 99%，所以绝对死亡数可更高；反事实比较显示若无人接种会有约 4000 人死亡，比现实多 3861 人。",
-      "key_facts": ["接种率 99%", "现实死亡 139", "不接种反事实死亡 4000"],
+      "reference_answer": "必然患病型无论是否接种都会患流感；致病型接种后患病、不接种不患病；预防型接种后不患病、不接种患病；免疫型两种情况下都不患病。",
+      "key_facts": ["Doomed 两种情况下都患病", "Causative 与 Preventive 的结果相反", "Immune 两种情况下都不患病"],
       "human_reviewed": true
     },
     {
@@ -181,13 +181,13 @@
     },
     {
       "case_id": "why-005",
-      "question": "因果图比贝叶斯网络多回答哪两类问题？",
+      "question": "图 1.7 中，疫苗接种通过哪两条因果路径影响死亡？",
       "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
-      "gold_page_numbers": [126],
+      "gold_page_numbers": [51],
       "gold_unit_ids": [],
       "expected_modality": "image",
-      "reference_answer": "因果图能回答干预问题和反事实问题，而贝叶斯网络只描述观察条件下的概率关系，不能区分观察与行动。",
-      "key_facts": ["干预问题", "反事实问题", "区分观察与行动"],
+      "reference_answer": "一条路径是疫苗接种经由副作用影响死亡，另一条是疫苗接种经由天花感染影响死亡；前者可能增加风险，后者通过预防天花降低风险。",
+      "key_facts": ["Vaccination → Reaction → Death", "Vaccination → Smallpox → Death", "两条路径方向和作用可能不同"],
       "human_reviewed": true
     },
     {
