@@ -485,6 +485,33 @@ class MultimodalContractTests(unittest.TestCase):
             self.assertEqual(result["unit_count"], 2)
             self.assertEqual(result["vector_count"], 2)
 
+    def test_retry_candidate_reuses_only_non_error_page_checkpoints(self) -> None:
+        """新的 retry 候选应只重新解析带 ERROR issue 的页，不能修改旧版本。"""
+        from reportlab.pdfgen import canvas
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "three-pages.pdf"
+            pdf = canvas.Canvas(str(source))
+            for page in ("one", "two", "three"):
+                pdf.drawString(72, 720, page); pdf.showPage()
+            pdf.save()
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            failed_issue = IngestionIssue(code="pdf_page_parse_failed", message="transient", severity=IssueSeverity.ERROR, blocking=True, source_path=str(source))
+            failed = ParsedDocument("docling", "2.115.0", (), issues=(failed_issue,), raw_artifacts=(("docling_page_0001.json", b"{}"),))
+            stable_two = ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="page two has enough searchable causal inference content", page_number=2),), raw_artifacts=(("docling_page_0002.json", b"{}"),))
+            stable_three = ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="page three has enough searchable causal inference content", page_number=3),), raw_artifacts=(("docling_page_0003.json", b"{}"),))
+            with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", side_effect=[failed, stable_two, stable_three]), patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", side_effect=[2, 3]):
+                original = service.ingest([str(source)])
+                original_manifest = json.loads((root / "indexes" / original["index_version"] / "manifest.json").read_text(encoding="utf-8"))
+                repaired = ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="page one now parses after resources recovered", page_number=1),), raw_artifacts=(("docling_page_0001.json", b"{}"),))
+                with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=repaired) as parse_page:
+                    retry = service.ingest([str(source)], retry_failed=True, retry_generation=1, retry_from_index_version=original["index_version"])
+            parse_page.assert_called_once_with(source, "docling", 1)
+            self.assertNotEqual(retry["index_version"], original["index_version"])
+            self.assertEqual(retry["unit_count"], 3)
+            self.assertEqual(original_manifest["index_version"], original["index_version"])
+
     def test_index_version_changes_with_embedding_or_vision_configuration(self) -> None:
         """影响向量或增强产物的配置变化必须生成新不可变版本。"""
         with tempfile.TemporaryDirectory() as directory:

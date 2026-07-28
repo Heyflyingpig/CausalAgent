@@ -37,12 +37,13 @@ class MultimodalKnowledgeBaseMaintenance:
         entries, issues = self._scan(sources)
         return {"status": "inspected", "manifest": self._manifest(entries), "configuration": self._configuration_status(), "issues": [issue.model_dump(mode="json") for issue in issues]}
 
-    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0) -> dict[str, Any]:
+    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None) -> dict[str, Any]:
         """逐页解析、原子保存 checkpoint，并分批写入不可变暂存索引。"""
         entries, issues = self._scan(sources)
         manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation)
         version = self._index_version(manifest)
         version_dir = self.index_root / version
+        retry_source = self._retry_source_directory(retry_from_index_version, manifest, retry_failed)
         if version_dir.exists() and not self._is_resumable_build(version_dir):
             raise ValueError("same source and configuration already has a staged version")
         version_dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +70,16 @@ class MultimodalKnowledgeBaseMaintenance:
                 parsed_version = "unknown"
                 for page_number in range(1, expected_pages + 1):
                     checkpoint = self._read_page_checkpoint(version_dir, document_id, page_number)
+                    if checkpoint is None and retry_source is not None:
+                        checkpoint = self._reusable_retry_checkpoint(retry_source, document_id, page_number)
+                        if checkpoint is not None:
+                            self._write_page_checkpoint(
+                                version_dir,
+                                document_id,
+                                page_number,
+                                checkpoint,
+                                self._read_page_units(retry_source, document_id, page_number),
+                            )
                     if checkpoint is None:
                         parsed = parse_document_page(path, parser_name, page_number)
                         page_quality = {key: 0 for key in quality_keys}
@@ -110,7 +121,7 @@ class MultimodalKnowledgeBaseMaintenance:
             self._write_build_state(version_dir, {"status": "failed", "unit_count": unit_count, "attempted_pages": attempted_pages, "error_type": type(exc).__name__})
             raise
 
-    def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
+    def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
         """以版本锁执行 ingest 和评测；仅在显式授权时发布。"""
         started = time.monotonic()
         entries, _ = self._scan(sources)
@@ -128,7 +139,7 @@ class MultimodalKnowledgeBaseMaintenance:
             resumable = self._is_resumable_build(self.index_root / version)
             if version_exists and not reused and not resumable:
                 return {"status": "incomplete_staged", "index_version": version, "published": False}
-            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation)
+            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, retry_from_index_version=retry_from_index_version)
             self._check_run_control(started, timeout_seconds, cancel_check)
             evaluation = self.evaluate(version)
             self._check_run_control(started, timeout_seconds, cancel_check)
@@ -310,6 +321,52 @@ class MultimodalKnowledgeBaseMaintenance:
             return checkpoint if checkpoint.get("unit_count") == unit_count else None
         except (OSError, json.JSONDecodeError):
             return None
+
+    def _read_page_units(self, directory: Path, document_id: str, page_number: int) -> list[KnowledgeUnit]:
+        """Read one complete page checkpoint's normalized units."""
+        _, units_path = self._page_checkpoint_paths(directory, document_id, page_number)
+        return [KnowledgeUnit.model_validate_json(line) for line in units_path.read_text(encoding="utf-8").splitlines() if line]
+
+    def _reusable_retry_checkpoint(self, directory: Path, document_id: str, page_number: int) -> dict[str, Any] | None:
+        """Reuse only a source page that has no blocking parsing issue."""
+        checkpoint = self._read_page_checkpoint(directory, document_id, page_number)
+        if checkpoint is None:
+            return None
+        issues = [IngestionIssue.model_validate(issue) for issue in checkpoint.get("issues", [])]
+        return None if any(issue.severity is IssueSeverity.ERROR for issue in issues) else checkpoint
+
+    def _retry_source_directory(self, index_version: str | None, manifest: dict[str, Any], retry_failed: bool) -> Path | None:
+        """Validate an immutable checkpoint source before cross-version reuse."""
+        if index_version is None:
+            return None
+        if not retry_failed:
+            raise ValueError("retry source requires --retry-failed")
+        directory = self.index_root / index_version
+        manifest_path = directory / "manifest.json"
+        if not manifest_path.is_file() or not (directory / "page_checkpoints").is_dir():
+            raise ValueError("retry source has no page checkpoints")
+        try:
+            source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("retry source manifest is unreadable") from exc
+        if self._retry_contract(source_manifest) != self._retry_contract(manifest):
+            raise ValueError("retry source contract does not match this build")
+        return directory
+
+    @staticmethod
+    def _retry_contract(manifest: dict[str, Any]) -> dict[str, Any]:
+        """Return the content-affecting build contract, excluding retry controls."""
+        configuration = json.loads(json.dumps(manifest.get("build_configuration", {})))
+        vision = configuration.get("vision")
+        if isinstance(vision, dict):
+            vision.pop("retry_failed", None)
+            vision.pop("retry_generation", None)
+        return {
+            "schema_version": manifest.get("schema_version"),
+            "sources": manifest.get("sources"),
+            "parser": manifest.get("parser"),
+            "build_configuration": configuration,
+        }
 
     def _write_page_checkpoint(self, directory: Path, document_id: str, page_number: int, checkpoint: dict[str, Any], units: list[KnowledgeUnit]) -> None:
         """先原子写页单元，再提交元数据，使中断后的半页结果不会被复用。"""
