@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -14,7 +15,7 @@ from typing import Any, Callable
 from .assets import AssetStore
 from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, UnitStatus, render_retrieval_text, sha256_bytes, stable_id
 from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, file_sha256
-from .parsers import IMAGE_SUFFIXES, inspect_source, parse_document
+from .parsers import IMAGE_SUFFIXES, ParsedItem, inspect_source, parse_document_page
 from .remote_policy import RemoteSamplePolicy
 from .vision import PROMPT_VERSION, REQUIRED_MODEL, VisionAnalyzer
 
@@ -37,75 +38,80 @@ class MultimodalKnowledgeBaseMaintenance:
         return {"status": "inspected", "manifest": self._manifest(entries), "configuration": self._configuration_status(), "issues": [issue.model_dump(mode="json") for issue in issues]}
 
     def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0) -> dict[str, Any]:
-        """解析、增强并写入一个新的不可变暂存索引版本。"""
+        """逐页解析、原子保存 checkpoint，并分批写入不可变暂存索引。"""
         entries, issues = self._scan(sources)
         manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation)
         version = self._index_version(manifest)
         version_dir = self.index_root / version
-        if version_dir.exists():
-            raise ValueError("same source and configuration already has an immutable staged version")
+        if version_dir.exists() and not self._is_resumable_build(version_dir):
+            raise ValueError("same source and configuration already has a staged version")
+        version_dir.mkdir(parents=True, exist_ok=True)
+        (version_dir / "page_checkpoints").mkdir(exist_ok=True)
+        self._write_build_state(version_dir, {"status": "building", "unit_count": 0, "attempted_pages": 0})
         embedding = embedding_fingerprint()
         store = AssetStore(self.asset_root)
         analyzer = VisionAnalyzer(self.asset_root / "vision_cache", allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed)
-        quality = {"eligible_images": 0, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 0, "low_value_images_skipped": 0}
-        units: list[KnowledgeUnit] = []
+        quality_keys = ("eligible_images", "enriched_images", "vision_failed_images", "skipped_images", "low_value_images_skipped", "filtered_short_text_units")
+        quality = {key: 0 for key in quality_keys}
         documents: list[dict[str, Any]] = []
         parser_name = os.getenv("MULTIMODAL_PARSER", "docling")
-        for entry in entries:
-            path = Path(entry["path"])
-            parsed = parse_document(path, parser_name)
-            issues.extend(parsed.issues)
-            document_id = stable_id("doc", {"path": entry["relative_path"], "content_hash": entry["content_hash"]})
-            source_asset_uri = store.put(document_id, path.name, path.read_bytes(), category="source")
-            parser_artifacts = [
-                {"name": name, "asset_uri": store.put(document_id, name, payload, category="parsed"), "content_hash": sha256_bytes(payload)}
-                for name, payload in parsed.raw_artifacts
-            ]
-            documents.append({"document_id": document_id, "relative_path": entry["relative_path"], "content_hash": entry["content_hash"], "source_asset_uri": source_asset_uri, "parser_artifact_uris": [artifact["asset_uri"] for artifact in parser_artifacts], "parser_artifacts": parser_artifacts, "parser_name": parsed.parser_name, "parser_version": parsed.parser_version})
-            for number, item in enumerate(parsed.items, 1):
-                analysis = None
-                asset_uri = None
-                if item.asset_bytes:
-                    asset_uri = store.put(document_id, item.asset_name or f"asset_{number}", item.asset_bytes)
-                    if allow_remote_data and self._remote_resource_allowed(path, item.page_number):
-                        quality["eligible_images"] += 1
-                        try:
-                            media_type = "image/" + (Path(item.asset_name or "png").suffix.lstrip(".").replace("jpg", "jpeg") or "png")
-                            analysis = analyzer.analyze(item.asset_bytes, media_type)
-                        except Exception as exc:
-                            quality["vision_failed_images"] += 1
-                            issues.append(IngestionIssue(code="vision_failed", message=f"视觉增强失败：{type(exc).__name__}", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
-                    elif allow_remote_data:
-                        quality["skipped_images"] += 1
-                        issues.append(IngestionIssue(code="remote_source_not_allowed", message="该资料不在远程视觉数据 allowlist 中，已跳过外发", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
-                    else:
-                        quality["skipped_images"] += 1
-                    if analysis and not analysis.informative:
-                        quality["skipped_images"] += 1
-                        continue
-                    if analysis:
-                        quality["enriched_images"] += 1
-                text = render_retrieval_text(content_kind=item.content_kind, title=path.name, analysis=analysis, raw_text=item.raw_text)
-                if item.modality == "image" and not analysis and not item.raw_text.strip():
-                    quality["low_value_images_skipped"] += 1
-                    continue
-                if not text.strip():
-                    continue
-                content_hash = sha256_bytes((item.raw_text.encode("utf-8") if item.raw_text else item.asset_bytes or b""))
-                unit_id = stable_id("unit", {"document_id": document_id, "position": number, "modality": item.modality, "content_hash": content_hash, "parser": [parsed.parser_name, parsed.parser_version], "vision": [analyzer.model if analysis else "", "vision-v1"]})
-                units.append(KnowledgeUnit(unit_id=unit_id, document_id=document_id, parent_id=item.parent_key, modality=item.modality, content_kind=analysis.content_kind if analysis else item.content_kind, page_number=item.page_number, bbox=item.bbox, raw_text=item.raw_text, retrieval_text=text, asset_uri=asset_uri, content_hash=content_hash, parser_name=parsed.parser_name, parser_version=parsed.parser_version, vision_model=analyzer.model if analysis else "", embedding_provider=embedding["provider"], embedding_model=embedding["model"], status=UnitStatus.ENRICHED if analysis else UnitStatus.COMPLETED))
-        version_dir.mkdir(parents=True)
-        (version_dir / "units.jsonl").write_text("".join(unit.model_dump_json() + "\n" for unit in units), encoding="utf-8")
-        (version_dir / "issues.jsonl").write_text("".join(issue.model_dump_json() + "\n" for issue in issues), encoding="utf-8")
-        manifest.update({"index_version": version, "embedding": embedding, "unit_count": len(units), "issues_count": len(issues), "quality_policy": self._quality_policy(), "quality_observations": quality})
-        manifest["documents"] = documents
-        manifest_path = version_dir / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        vector_count = StagedIndex(version_dir, f"{self.collection_prefix}_{version}").write(units) if units else 0
-        return {"status": "staged", "index_version": version, "unit_count": len(units), "vector_count": vector_count, "issues": [issue.model_dump(mode="json") for issue in issues]}
+        unit_count = 0
+        attempted_pages = 0
+        try:
+            for entry in entries:
+                path = Path(entry["path"])
+                document_id = stable_id("doc", {"path": entry["relative_path"], "content_hash": entry["content_hash"]})
+                source_asset_uri = store.put(document_id, path.name, path.read_bytes(), category="source")
+                parser_artifacts: list[dict[str, str]] = []
+                document_units = 0
+                expected_pages = self._source_page_count(path)
+                parsed_name = parser_name
+                parsed_version = "unknown"
+                for page_number in range(1, expected_pages + 1):
+                    checkpoint = self._read_page_checkpoint(version_dir, document_id, page_number)
+                    if checkpoint is None:
+                        parsed = parse_document_page(path, parser_name, page_number)
+                        page_quality = {key: 0 for key in quality_keys}
+                        page_issues = list(parsed.issues)
+                        page_artifacts = [
+                            {"name": name, "asset_uri": store.put(document_id, name, payload, category="parsed"), "content_hash": sha256_bytes(payload)}
+                            for name, payload in parsed.raw_artifacts
+                        ]
+                        page_items, filtered = self._prepare_page_items(parsed.items)
+                        page_quality["filtered_short_text_units"] = filtered
+                        page_units: list[KnowledgeUnit] = []
+                        for item_index, item in enumerate(page_items, 1):
+                            unit = self._build_unit(item, path, document_id, page_number * 10000 + item_index, parsed.parser_name, parsed.parser_version, embedding, store, analyzer, page_quality, page_issues, allow_remote_data)
+                            if unit is not None:
+                                page_units.append(unit)
+                        checkpoint = {"document_id": document_id, "page_number": page_number, "parser_name": parsed.parser_name, "parser_version": parsed.parser_version, "parser_artifacts": page_artifacts, "issues": [issue.model_dump(mode="json") for issue in page_issues], "quality": page_quality, "unit_count": len(page_units)}
+                        self._write_page_checkpoint(version_dir, document_id, page_number, checkpoint, page_units)
+                    attempted_pages += 1
+                    parsed_name, parsed_version = checkpoint["parser_name"], checkpoint["parser_version"]
+                    parser_artifacts.extend(checkpoint["parser_artifacts"])
+                    page_issues = [IngestionIssue.model_validate(issue) for issue in checkpoint["issues"]]
+                    issues.extend(page_issues)
+                    for key in quality_keys:
+                        quality[key] += int(checkpoint["quality"].get(key, 0))
+                    page_units = int(checkpoint["unit_count"])
+                    unit_count += page_units
+                    document_units += page_units
+                    self._write_build_state(version_dir, {"status": "building", "unit_count": unit_count, "attempted_pages": attempted_pages})
+                documents.append({"document_id": document_id, "relative_path": entry["relative_path"], "content_hash": entry["content_hash"], "source_asset_uri": source_asset_uri, "parser_artifact_uris": [artifact["asset_uri"] for artifact in parser_artifacts], "parser_artifacts": parser_artifacts, "parser_name": parsed_name, "parser_version": parsed_version, "expected_page_count": expected_pages, "attempted_page_count": expected_pages, "unit_count": document_units})
+            self._materialize_units(version_dir, documents)
+            (version_dir / "issues.jsonl").write_text("".join(issue.model_dump_json() + "\n" for issue in issues), encoding="utf-8")
+            manifest.update({"index_version": version, "embedding": embedding, "unit_count": unit_count, "issues_count": len(issues), "quality_policy": self._quality_policy(), "quality_observations": quality, "documents": documents})
+            (version_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            vector_count = self._build_staged_vectors(version_dir, version, unit_count)
+            self._write_build_state(version_dir, {"status": "staged_complete", "unit_count": unit_count, "vector_count": vector_count, "attempted_pages": attempted_pages})
+            return {"status": "staged", "index_version": version, "unit_count": unit_count, "vector_count": vector_count, "issues": [issue.model_dump(mode="json") for issue in issues]}
+        except Exception as exc:
+            (version_dir / "issues.jsonl").write_text("".join(issue.model_dump_json() + "\n" for issue in issues), encoding="utf-8")
+            self._write_build_state(version_dir, {"status": "failed", "unit_count": unit_count, "attempted_pages": attempted_pages, "error_type": type(exc).__name__})
+            raise
 
-    def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None) -> dict[str, Any]:
-        """以版本锁串行执行 ingest、评测和条件发布，并保留暂存失败版本。"""
+    def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
+        """以版本锁执行 ingest 和评测；仅在显式授权时发布。"""
         started = time.monotonic()
         entries, _ = self._scan(sources)
         manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation)
@@ -117,13 +123,19 @@ class MultimodalKnowledgeBaseMaintenance:
             return {"status": "already_running", "index_version": version, "published": False}
         try:
             self._check_run_control(started, timeout_seconds, cancel_check)
-            reused = (self.index_root / version).is_dir()
+            version_exists = (self.index_root / version).is_dir()
+            reused = self._is_reusable_staged_version(version)
+            resumable = self._is_resumable_build(self.index_root / version)
+            if version_exists and not reused and not resumable:
+                return {"status": "incomplete_staged", "index_version": version, "published": False}
             staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation)
             self._check_run_control(started, timeout_seconds, cancel_check)
             evaluation = self.evaluate(version)
             self._check_run_control(started, timeout_seconds, cancel_check)
             if not evaluation["passed"]:
                 return {"status": "gate_failed", "index_version": version, "staged": staged, "evaluation": evaluation, "published": False}
+            if not publish_on_pass:
+                return {"status": "ready_to_publish", "index_version": version, "staged": staged, "evaluation": evaluation, "published": False}
             published = self.publish(version)
             return {"status": "published", "index_version": version, "staged": staged, "evaluation": evaluation, "publish": published, "published": True}
         except TimeoutError as exc:
@@ -159,6 +171,18 @@ class MultimodalKnowledgeBaseMaintenance:
         if manifest.get("embedding") != embedding_fingerprint(): failures.append("embedding_fingerprint_mismatch")
         if "build_configuration" not in manifest:
             failures.append("legacy_manifest_missing_build_configuration")
+        if manifest.get("schema_version", 0) >= 3:
+            if not self._is_reusable_staged_version(index_version):
+                failures.append("staged_build_incomplete")
+            documents = manifest.get("documents", [])
+            if any(document.get("expected_page_count") != document.get("attempted_page_count") for document in documents):
+                failures.append("source_page_count_mismatch")
+            if any(
+                document.get("parser_name") == "docling"
+                and len(document.get("parser_artifacts", [])) != document.get("expected_page_count")
+                for document in documents
+            ):
+                failures.append("parser_page_artifact_count_mismatch")
         quality = self._quality_evaluation(manifest, directory)
         if not quality["passed"]:
             failures.append("quality_gate_failed")
@@ -182,6 +206,8 @@ class MultimodalKnowledgeBaseMaintenance:
         evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
         if not evaluation.get("passed"): raise ValueError("blocking evaluation failures prevent publication")
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        if manifest.get("schema_version", 0) >= 3 and not self._is_reusable_staged_version(index_version):
+            raise ValueError("staged build is incomplete and cannot be published")
         from .production import is_production_manifest
         if is_production_manifest(manifest):
             production_evaluation = directory / "production_evaluation.json"
@@ -219,15 +245,192 @@ class MultimodalKnowledgeBaseMaintenance:
         """构造不包含宿主绝对路径的来源清单。"""
         public = [{"relative_path": entry["relative_path"], "content_hash": entry["content_hash"]} for entry in entries]
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "sources": public,
             "parser": os.getenv("MULTIMODAL_PARSER", "docling"),
             "build_configuration": {
+                "ingestion_schema": "streaming-page-v1",
                 "embedding": embedding_fingerprint(),
-                "pdf_parser": {"page_range_mode": "single_page", "converter_restart_interval": int(os.getenv("MULTIMODAL_DOCLING_RESTART_INTERVAL", "20"))},
-                "vision": {"enabled": allow_remote_data, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "max_images": min(max_images, 100), "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "retry_failed": retry_failed, "retry_generation": retry_generation},
+                "pdf_parser": {"page_range_mode": "single_page", "process_isolation": "spawn_per_page", "page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900"))},
+                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": True, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "max_images": min(max_images, 100), "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "retry_failed": retry_failed, "retry_generation": retry_generation},
             },
         }
+
+    def _is_reusable_staged_version(self, index_version: str) -> bool:
+        """仅接受带完整状态、必要产物且单位/向量计数一致的暂存版本。"""
+        directory = self.index_root / index_version
+        required = ("manifest.json", "units.jsonl", "issues.jsonl", "build_state.json")
+        if not directory.is_dir() or any(not (directory / name).is_file() for name in required):
+            return False
+        try:
+            state = json.loads((directory / "build_state.json").read_text(encoding="utf-8"))
+            unit_count = int(state.get("unit_count", -1))
+            vector_count = int(state.get("vector_count", -1))
+            persisted_units = sum(1 for line in (directory / "units.jsonl").read_text(encoding="utf-8").splitlines() if line)
+            if state.get("status") != "staged_complete" or unit_count < 0 or unit_count != vector_count or persisted_units != unit_count:
+                return False
+            if vector_count == 0:
+                return True
+            if not (directory / "chroma").is_dir():
+                return False
+            return StagedIndex(directory, f"{self.collection_prefix}_{index_version}").count() == vector_count
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+
+    def _write_build_state(self, directory: Path, state: dict[str, Any]) -> None:
+        """原子写入当前构建阶段，供崩溃诊断和复用判定使用。"""
+        temporary = directory / "build_state.tmp"
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(directory / "build_state.json")
+
+    def _is_resumable_build(self, directory: Path) -> bool:
+        """判断目录是否为本 schema 可安全续跑的未完成构建。"""
+        state_path = directory / "build_state.json"
+        if not state_path.is_file():
+            return False
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            return state.get("status") in {"building", "failed"} and (directory / "page_checkpoints").is_dir()
+        except (OSError, json.JSONDecodeError):
+            return False
+
+    def _page_checkpoint_paths(self, directory: Path, document_id: str, page_number: int) -> tuple[Path, Path]:
+        """返回页级元数据和标准化单元的隔离路径。"""
+        page_root = directory / "page_checkpoints" / document_id
+        return page_root / f"page_{page_number:04d}.json", page_root / f"page_{page_number:04d}.units.jsonl"
+
+    def _read_page_checkpoint(self, directory: Path, document_id: str, page_number: int) -> dict[str, Any] | None:
+        """只读取元数据与单元文件均存在且计数一致的页 checkpoint。"""
+        metadata_path, units_path = self._page_checkpoint_paths(directory, document_id, page_number)
+        if not metadata_path.is_file() or not units_path.is_file():
+            return None
+        try:
+            checkpoint = json.loads(metadata_path.read_text(encoding="utf-8"))
+            unit_count = sum(1 for line in units_path.read_text(encoding="utf-8").splitlines() if line)
+            return checkpoint if checkpoint.get("unit_count") == unit_count else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _write_page_checkpoint(self, directory: Path, document_id: str, page_number: int, checkpoint: dict[str, Any], units: list[KnowledgeUnit]) -> None:
+        """先原子写页单元，再提交元数据，使中断后的半页结果不会被复用。"""
+        metadata_path, units_path = self._page_checkpoint_paths(directory, document_id, page_number)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        units_temporary = units_path.with_suffix(units_path.suffix + ".tmp")
+        units_temporary.write_text("".join(unit.model_dump_json() + "\n" for unit in units), encoding="utf-8")
+        units_temporary.replace(units_path)
+        metadata_temporary = metadata_path.with_suffix(".tmp")
+        metadata_temporary.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
+        metadata_temporary.replace(metadata_path)
+
+    def _materialize_units(self, directory: Path, documents: list[dict[str, Any]]) -> None:
+        """按文档和页码顺序流式汇总页级单元，生成最终 units.jsonl。"""
+        temporary = directory / "units.tmp"
+        with temporary.open("w", encoding="utf-8") as output:
+            for document in documents:
+                for page_number in range(1, int(document["expected_page_count"]) + 1):
+                    _, units_path = self._page_checkpoint_paths(directory, document["document_id"], page_number)
+                    with units_path.open(encoding="utf-8") as page_units:
+                        shutil.copyfileobj(page_units, output)
+        temporary.replace(directory / "units.jsonl")
+
+    def _build_staged_vectors(self, directory: Path, version: str, unit_count: int) -> int:
+        """在独立 attempt 目录构建 Chroma，成功后再提交为正式目录。"""
+        if not unit_count:
+            return 0
+        attempt_number = 1
+        while (directory / f"chroma_attempt_{attempt_number}").exists():
+            attempt_number += 1
+        attempt_name = f"chroma_attempt_{attempt_number}"
+        count = StagedIndex(directory, f"{self.collection_prefix}_{version}", directory_name=attempt_name).write(self._read_units(directory))
+        attempt_path = directory / attempt_name
+        final_path = directory / "chroma"
+        if attempt_path.exists():
+            if final_path.exists():
+                raise ValueError("completed chroma directory already exists")
+            attempt_path.replace(final_path)
+        return count
+
+    def _source_page_count(self, path: Path) -> int:
+        """返回来源的物理页数；非 PDF 来源按一个逻辑页计。"""
+        if path.suffix.lower() != ".pdf":
+            return 1
+        from pypdf import PdfReader
+
+        return len(PdfReader(path).pages)
+
+    def _read_units(self, directory: Path):
+        """从 JSONL 流式回读标准化单元，避免构建向量时全量驻留内存。"""
+        with (directory / "units.jsonl").open(encoding="utf-8") as stream:
+            for line in stream:
+                if line.strip():
+                    yield KnowledgeUnit.model_validate_json(line)
+
+    def _prepare_page_items(self, items: tuple[ParsedItem, ...]) -> tuple[list[ParsedItem], int]:
+        """把短标题并入同页后续正文，避免产生孤立标题向量。"""
+        prepared: list[ParsedItem] = []
+        pending: list[str] = []
+        filtered = 0
+        for item in items:
+            short_text = item.modality == "text" and 0 < len(item.raw_text.strip()) < 30
+            heading = item.content_kind in {"title", "section_header", "page_header", "page_footer"}
+            if short_text or heading:
+                pending.append(item.raw_text.strip())
+                filtered += 1
+                continue
+            if pending and item.raw_text:
+                item = replace(item, raw_text="\n".join(pending + [item.raw_text]))
+                pending.clear()
+            prepared.append(item)
+        return prepared, filtered
+
+    def _build_unit(
+        self,
+        item: ParsedItem,
+        path: Path,
+        document_id: str,
+        position: int,
+        parser_name: str,
+        parser_version: str,
+        embedding: dict[str, Any],
+        store: AssetStore,
+        analyzer: VisionAnalyzer,
+        quality: dict[str, int],
+        issues: list[IngestionIssue],
+        allow_remote_data: bool,
+    ) -> KnowledgeUnit | None:
+        """把单个解析项转换为可追溯知识单元，并隔离可选远程增强。"""
+        analysis = None
+        asset_uri = None
+        if item.asset_bytes:
+            asset_uri = store.put(document_id, item.asset_name or f"asset_{position}", item.asset_bytes)
+            if allow_remote_data and self._remote_resource_allowed(path, item.page_number):
+                quality["eligible_images"] += 1
+                try:
+                    media_type = "image/" + (Path(item.asset_name or "png").suffix.lstrip(".").replace("jpg", "jpeg") or "png")
+                    analysis = analyzer.analyze(item.asset_bytes, media_type)
+                except Exception as exc:
+                    quality["vision_failed_images"] += 1
+                    issues.append(IngestionIssue(code="vision_failed", message=f"视觉增强失败：{type(exc).__name__}", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
+            elif allow_remote_data:
+                quality["skipped_images"] += 1
+                issues.append(IngestionIssue(code="remote_source_not_allowed", message="该资料不在远程视觉数据 allowlist 中，已跳过外发", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
+            else:
+                quality["skipped_images"] += 1
+            if analysis and not analysis.informative:
+                quality["skipped_images"] += 1
+                return None
+            if analysis:
+                quality["enriched_images"] += 1
+        if item.modality == "image" and not analysis and not item.raw_text.strip():
+            quality["low_value_images_skipped"] += 1
+            issues.append(IngestionIssue(code="image_text_missing", message=f"第 {item.page_number or 0} 页图片缺少本地 caption/OCR 文本", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
+            return None
+        text = render_retrieval_text(content_kind=item.content_kind, title=path.name, analysis=analysis, raw_text=item.raw_text)
+        if not text.strip():
+            return None
+        content_hash = sha256_bytes(item.raw_text.encode("utf-8") if item.raw_text else item.asset_bytes or b"")
+        unit_id = stable_id("unit", {"document_id": document_id, "position": position, "modality": item.modality, "content_hash": content_hash, "parser": [parser_name, parser_version], "vision": [analyzer.model if analysis else "", "vision-v1"]})
+        return KnowledgeUnit(unit_id=unit_id, document_id=document_id, parent_id=item.parent_key, modality=item.modality, content_kind=analysis.content_kind if analysis else item.content_kind, page_number=item.page_number, bbox=item.bbox, raw_text=item.raw_text, retrieval_text=text, asset_uri=asset_uri, content_hash=content_hash, parser_name=parser_name, parser_version=parser_version, vision_model=analyzer.model if analysis else "", embedding_provider=embedding["provider"], embedding_model=embedding["model"], status=UnitStatus.ENRICHED if analysis else UnitStatus.COMPLETED)
 
     def _index_version(self, manifest: dict[str, Any]) -> str:
         """从完整配置和来源生成不含时钟的可重现版本名。"""

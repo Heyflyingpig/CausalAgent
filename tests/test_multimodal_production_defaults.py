@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from Agent.knowledge_base.multimodal.production import (
+    audit_production_coverage,
     evaluate_retrieval_cases,
     is_production_manifest,
     load_production_defaults,
@@ -35,7 +36,7 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
         self.assertEqual(config["parser"], "docling")
         self.assertEqual(
             config["pdf_parser"],
-            {"page_range_mode": "single_page", "converter_restart_interval": 20},
+            {"page_range_mode": "single_page", "process_isolation": "spawn_per_page", "page_timeout_seconds": 900},
         )
         self.assertEqual(len(config["sources"]), 2)
         self.assertTrue(all(source["required"] for source in config["sources"]))
@@ -90,6 +91,46 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
         self.assertEqual(result["mrr"], 0.25)
         self.assertEqual(result["citation_location_accuracy"], 0.0)
         self.assertEqual(result["empty_result_rate"], 0.5)
+
+    def test_retrieval_metrics_require_expected_modality(self) -> None:
+        """同页正文不能冒充评测题要求的图片或表格证据。"""
+        cases = [{
+            "case_id": "image-case",
+            "question": "q",
+            "gold_doc_ids": ["doc-a"],
+            "gold_page_numbers": [7],
+            "expected_modality": "image",
+        }]
+        responses = {
+            "image-case": [
+                {"document_id": "doc-a", "page_number": 7, "modality": "text"},
+                {"document_id": "doc-a", "page_number": 7, "modality": "image"},
+            ]
+        }
+
+        result = evaluate_retrieval_cases(cases, responses, k=5)
+
+        self.assertEqual(result["hit_at_5"], 1.0)
+        self.assertEqual(result["mrr"], 0.5)
+        self.assertEqual(result["citation_location_accuracy"], 0.0)
+
+    def test_production_coverage_requires_every_gold_page_and_modality(self) -> None:
+        """正式检索前必须证明 gold 页存在对应模态的可索引单元。"""
+        cases = [
+            {"case_id": "text", "gold_doc_ids": ["doc-a"], "gold_page_numbers": [1], "expected_modality": "text"},
+            {"case_id": "image", "gold_doc_ids": ["doc-a"], "gold_page_numbers": [2], "expected_modality": "image"},
+        ]
+        units = [
+            {"document_id": "doc-a", "page_number": 1, "modality": "text"},
+            {"document_id": "doc-a", "page_number": 2, "modality": "text"},
+        ]
+
+        coverage = audit_production_coverage(units, cases)
+
+        self.assertFalse(coverage["passed"])
+        self.assertEqual(coverage["covered_gold_pages"], 2)
+        self.assertEqual(coverage["total_gold_pages"], 2)
+        self.assertEqual(coverage["missing_modality_cases"], ["image"])
 
     def test_threshold_gate_reports_each_failed_metric(self) -> None:
         """固定阈值必须逐项阻止不合格评测结果。"""
