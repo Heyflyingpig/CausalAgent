@@ -18,7 +18,7 @@ from Agent.knowledge_base.multimodal.index import StagedIndex
 from Agent.knowledge_base.multimodal.omnidocbench_export import export_omnidocbench_official_inputs
 from Agent.knowledge_base.multimodal.contracts import BoundingBox, IngestionIssue, IssueSeverity, KnowledgeUnit, UnitStatus, VisionAnalysis, render_retrieval_text, sha256_bytes, stable_id
 from Agent.knowledge_base.multimodal.pipeline import MultimodalKnowledgeBaseMaintenance
-from Agent.knowledge_base.multimodal.parsers import ParsedDocument, ParsedItem, _convert_docling_page, parse_document
+from Agent.knowledge_base.multimodal.parsers import ParsedDocument, ParsedItem, OcrResult, _convert_docling_page, _rapidocr_probe, ocr_fingerprint, parse_document
 from Agent.knowledge_base.multimodal.retrieval import _parent_context
 from Agent.knowledge_base.multimodal.retrieval import multimodal_rag_search
 from Agent.knowledge_base.rag_runtime import RagRuntimeConfig
@@ -114,9 +114,11 @@ class MultimodalContractTests(unittest.TestCase):
 
     def test_standalone_image_parser_uses_local_rapidocr_text(self) -> None:
         """独立图片必须复用本地 RapidOCR 文本，不能依赖远程视觉才能入库。"""
+        from Agent.knowledge_base.multimodal.parsers import OcrResult
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "sample.png"; source.write_bytes(b"image")
-            with patch("Agent.knowledge_base.multimodal.parsers._rapidocr_text", return_value="本地 OCR 文本"):
+            probe = OcrResult(text="本地 OCR 文本", engine="rapidocr-onnxruntime", engine_version="1.4.4", model_fingerprint="1.4.4", line_count=1, mean_confidence=0.95, elapsed_ms=10, status="ok")
+            with patch("Agent.knowledge_base.multimodal.parsers._rapidocr_probe", return_value=probe):
                 parsed = parse_document(source, "docling")
             self.assertEqual(parsed.items[0].raw_text, "本地 OCR 文本")
 
@@ -627,6 +629,176 @@ class MultimodalContractTests(unittest.TestCase):
         self.assertEqual(metadata["source_name"], "chart.png")
         self.assertEqual(metadata["doc_type"], "chart")
         self.assertEqual(metadata["corpus"], "multimodal")
+
+    def test_rapidocr_probe_classifies_engine_unavailable_failed_and_no_text(self) -> None:
+        """RapidOCR 必须区分依赖缺失、推理失败和无文字三种状态，不能统一返回空串。"""
+        fp_available = {"engine": "rapidocr-onnxruntime", "engine_version": "1.4.4", "model_fingerprint": "1.4.4", "status": "available"}
+        with patch("Agent.knowledge_base.multimodal.parsers.ocr_fingerprint", return_value={**fp_available, "status": "unavailable"}):
+            self.assertEqual(_rapidocr_probe(b"image").status, "engine_unavailable")
+        broken_engine = MagicMock(); broken_engine.side_effect = RuntimeError("inference failed")
+        with patch("Agent.knowledge_base.multimodal.parsers.ocr_fingerprint", return_value=fp_available), patch("Agent.knowledge_base.multimodal.parsers._RAPID_OCR_ENGINE", broken_engine):
+            probe = _rapidocr_probe(b"image")
+            self.assertEqual(probe.status, "failed")
+            self.assertEqual(probe.failure_type, "RuntimeError")
+        empty_result = MagicMock(); empty_result.txts = []; empty_result.scores = []
+        empty_engine = MagicMock(); empty_engine.return_value = empty_result
+        with patch("Agent.knowledge_base.multimodal.parsers.ocr_fingerprint", return_value=fp_available), patch("Agent.knowledge_base.multimodal.parsers._RAPID_OCR_ENGINE", empty_engine):
+            self.assertEqual(_rapidocr_probe(b"image").status, "no_text")
+
+    def test_rapidocr_initialization_failure_is_engine_unavailable(self) -> None:
+        """模型或引擎初始化失败必须阻断，不能伪装成单图推理失败。"""
+        fp_available = {"engine": "rapidocr-onnxruntime", "engine_version": "1.4.4", "model_fingerprint": "a" * 64, "status": "available"}
+        with patch("Agent.knowledge_base.multimodal.parsers.ocr_fingerprint", return_value=fp_available), patch("Agent.knowledge_base.multimodal.parsers._RAPID_OCR_ENGINE", None), patch("rapidocr.RapidOCR", side_effect=FileNotFoundError("model missing")):
+            probe = _rapidocr_probe(b"image")
+        self.assertEqual(probe.status, "engine_unavailable")
+        self.assertEqual(probe.failure_type, "FileNotFoundError")
+
+    def test_ocr_engine_unavailable_produces_blocking_issue(self) -> None:
+        """依赖缺失必须生成 ERROR 级 issue，使正式来源在门禁处被阻断。"""
+        from Agent.knowledge_base.multimodal.parsers import _ocr_issues, OcrResult
+        probe = OcrResult("", "rapidocr-onnxruntime", "1.4.4", "1.4.4", 0, 0.0, 0, "engine_unavailable")
+        issues = _ocr_issues(probe, Path("source.pdf"))
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].code, "ocr_engine_unavailable")
+        self.assertEqual(issues[0].severity, IssueSeverity.ERROR)
+        self.assertTrue(issues[0].blocking)
+
+    def test_informative_false_keeps_ocr_only_unit(self) -> None:
+        """VLM 判定不具信息量时必须保留已有 OCR 文本的单元，不得丢弃。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root / "page.png"; source.write_bytes(b"image-bytes")
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
+            store = AssetStore(root / "assets")
+            analyzer = MagicMock(); analyzer.model = "qwen/qwen3-vl-flash"
+            analyzer.analyze.return_value = VisionAnalysis(content_kind="illustration", informative=False, confidence=0.3)
+            quality = {"eligible_images": 0, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 0, "low_value_images_skipped": 0, "filtered_short_text_units": 0}
+            issues: list = []
+            item = ParsedItem(modality="image", content_kind="image", raw_text="本地 OCR 文本", asset_bytes=b"image-bytes", asset_name="page_0001_image_0001.png", page_number=1)
+            with patch.object(service, "_remote_resource_allowed", return_value=True):
+                unit = service._build_unit(item, source, "doc_" + "a" * 64, 1, "docling", "2.115.0", embedding, store, analyzer, quality, issues, allow_remote_data=True)
+            self.assertIsNotNone(unit)
+            self.assertIn("本地 OCR 文本", unit.retrieval_text)
+            self.assertEqual(unit.vision_model, "")
+            self.assertTrue(any(issue.code == "image_low_information" for issue in issues))
+
+    def test_vision_failure_keeps_ocr_only_unit(self) -> None:
+        """VLM 调用失败时必须保留已有 OCR 文本的单元，不得删除本地证据。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root / "page.png"; source.write_bytes(b"image-bytes")
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
+            store = AssetStore(root / "assets")
+            analyzer = MagicMock(); analyzer.model = "qwen/qwen3-vl-flash"
+            analyzer.analyze.side_effect = RuntimeError("timeout")
+            quality = {"eligible_images": 0, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 0, "low_value_images_skipped": 0, "filtered_short_text_units": 0}
+            issues: list = []
+            item = ParsedItem(modality="image", content_kind="image", raw_text="本地 OCR 文本", asset_bytes=b"image-bytes", asset_name="page_0001_image_0001.png", page_number=1)
+            with patch.object(service, "_remote_resource_allowed", return_value=True):
+                unit = service._build_unit(item, source, "doc_" + "a" * 64, 1, "docling", "2.115.0", embedding, store, analyzer, quality, issues, allow_remote_data=True)
+            self.assertIsNotNone(unit)
+            self.assertIn("本地 OCR 文本", unit.retrieval_text)
+            self.assertTrue(any(issue.code == "vision_failed" for issue in issues))
+
+    def test_image_content_hash_uses_asset_bytes(self) -> None:
+        """图片单元的 content_hash 必须基于图片字节而非 OCR 文本。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root / "page.png"; source.write_bytes(b"image-bytes")
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
+            store = AssetStore(root / "assets")
+            analyzer = MagicMock(); analyzer.model = ""
+            quality = {"eligible_images": 0, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 0, "low_value_images_skipped": 0, "filtered_short_text_units": 0}
+            issues: list = []
+            item = ParsedItem(modality="image", content_kind="image", raw_text="OCR text", asset_bytes=b"image-bytes", asset_name="page.png", page_number=1)
+            unit = service._build_unit(item, source, "doc_" + "a" * 64, 1, "docling", "2.115.0", embedding, store, analyzer, quality, issues, allow_remote_data=False)
+            self.assertEqual(unit.content_hash, sha256_bytes(b"image-bytes"))
+            self.assertNotEqual(unit.content_hash, sha256_bytes("OCR text".encode()))
+
+    def test_manifest_includes_ocr_and_remote_policy_fingerprint(self) -> None:
+        """manifest 必须包含 OCR 指纹和白名单哈希，使策略变化产生新不可变版本。"""
+        service = MultimodalKnowledgeBaseMaintenance()
+        manifest = service._manifest([], allow_remote_data=False)
+        build_config = manifest["build_configuration"]
+        self.assertIn("ocr", build_config)
+        self.assertEqual(build_config["ocr"]["engine"], "rapidocr-onnxruntime")
+        self.assertIn("model_fingerprint", build_config["ocr"])
+        self.assertIn("remote_policy_hash", build_config)
+        self.assertRegex(build_config["remote_policy_hash"], r"^[0-9a-f]{64}$")
+
+    def test_image_unit_id_changes_with_ocr_or_prompt_fingerprint(self) -> None:
+        """图片 unit ID 必须绑定本地 OCR 模型与远程提示词版本。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root / "page.png"; source.write_bytes(b"image-bytes")
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
+            item = ParsedItem(modality="image", content_kind="image", raw_text="OCR text", asset_bytes=b"image-bytes", asset_name="page.png", page_number=1)
+            analyzer = MagicMock(); analyzer.model = ""
+            quality = {"eligible_images": 0, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 0, "low_value_images_skipped": 0, "filtered_short_text_units": 0}
+            with patch("Agent.knowledge_base.multimodal.pipeline.ocr_fingerprint", return_value={"model_fingerprint": "a" * 64}), patch("Agent.knowledge_base.multimodal.pipeline.PROMPT_VERSION", "vision-v1"):
+                first = service._build_unit(item, source, "doc_" + "a" * 64, 1, "docling", "2.115.0", embedding, AssetStore(root / "assets"), analyzer, quality, [], allow_remote_data=False)
+            with patch("Agent.knowledge_base.multimodal.pipeline.ocr_fingerprint", return_value={"model_fingerprint": "b" * 64}), patch("Agent.knowledge_base.multimodal.pipeline.PROMPT_VERSION", "vision-v2"):
+                second = service._build_unit(item, source, "doc_" + "a" * 64, 1, "docling", "2.115.0", embedding, AssetStore(root / "assets"), analyzer, quality, [], allow_remote_data=False)
+            self.assertNotEqual(first.unit_id, second.unit_id)
+
+    def test_local_parse_checkpoint_reuse_skips_docling_across_vision_policy(self) -> None:
+        """--reuse-local-checkpoints-from 必须只复用本地解析，跨视觉策略跳过 Docling。"""
+        from reportlab.pdfgen import canvas
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "page.pdf"
+            pdf = canvas.Canvas(str(source)); pdf.drawString(72, 720, "causal inference content"); pdf.save()
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            parsed = ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="causal inference content", page_number=1),), raw_artifacts=(("docling_page_0001.json", b"{}"),))
+            with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed), patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
+                ocr_only = service.ingest([str(source)])
+            self.assertTrue((root / "indexes" / ocr_only["index_version"] / "local_parse_checkpoints").is_dir())
+            with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page") as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
+                vlm_version = service.ingest([str(source)], allow_remote_data=True, max_images=1, reuse_local_from_index_version=ocr_only["index_version"])
+            parse_page.assert_not_called()
+            self.assertNotEqual(vlm_version["index_version"], ocr_only["index_version"])
+
+    def test_reuse_local_and_retry_are_mutually_exclusive(self) -> None:
+        """--reuse-local-checkpoints-from 和 --retry-from-index-version 不得同时使用。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root / "s.md"; source.write_text("正文", encoding="utf-8")
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            with self.assertRaisesRegex(ValueError, "cannot be combined"):
+                service.ingest([str(source)], retry_failed=True, retry_from_index_version="mm_" + "a" * 20, reuse_local_from_index_version="mm_" + "b" * 20)
+
+    def test_invalid_local_checkpoint_reparses_instead_of_silently_reusing(self) -> None:
+        """schema、资源或 parser 契约失配时必须回退本地解析。"""
+        from reportlab.pdfgen import canvas
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root / "page.pdf"
+            pdf = canvas.Canvas(str(source)); pdf.drawString(72, 720, "causal inference content"); pdf.save()
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            parsed = ParsedDocument("docling", "2.115.0", (ParsedItem("image", "image", raw_text="OCR text", asset_bytes=b"image-bytes", asset_name="page.png", page_number=1),), raw_artifacts=(("docling_page_0001.json", b"{}"),))
+            with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed), patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
+                ocr_only = service.ingest([str(source)])
+            checkpoint_path = next((root / "indexes" / ocr_only["index_version"] / "local_parse_checkpoints").rglob("*.json"))
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            source_asset = root / "assets" / checkpoint["items"][0]["asset_uri"]
+            source_asset.unlink()
+            with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed) as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
+                service.ingest([str(source)], allow_remote_data=True, max_images=1, reuse_local_from_index_version=ocr_only["index_version"])
+            parse_page.assert_called_once()
+
+    def test_local_checkpoint_requires_schema_and_matching_parser_contract(self) -> None:
+        """不带 schema 或 Docling 版本不匹配的 checkpoint 不得被复用。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            store = AssetStore(root / "assets")
+            entry = {"relative_path": "page.pdf", "content_hash": "a" * 64}
+            parsed = ParsedDocument("docling", service._docling_version(), (ParsedItem("text", "paragraph", raw_text="text", page_number=1),))
+            checkpoint = service._build_local_parse_checkpoint(root, "doc_" + "a" * 64, 1, parsed, entry, 1, store)
+            checkpoint.pop("schema_version")
+            service._write_local_parse_checkpoint(root, "doc_" + "a" * 64, 1, checkpoint)
+            self.assertIsNone(service._reusable_local_parse_checkpoint(root, "doc_" + "a" * 64, 1, entry, 1, store))
+            checkpoint["schema_version"] = "local-parse-v1"
+            checkpoint["contract"]["parser"]["version"] = "mismatch"
+            service._write_local_parse_checkpoint(root, "doc_" + "a" * 64, 1, checkpoint)
+            self.assertIsNone(service._reusable_local_parse_checkpoint(root, "doc_" + "a" * 64, 1, entry, 1, store))
 
 if __name__ == "__main__":
     unittest.main()

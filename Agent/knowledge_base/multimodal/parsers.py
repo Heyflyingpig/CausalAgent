@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import csv
+import hashlib
 import json
 import multiprocessing
 import os
+import time
 from dataclasses import dataclass, field
 from io import BytesIO
 from collections.abc import Iterator
@@ -20,6 +23,64 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
 PDF_SUFFIXES = {".pdf"}
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | TABLE_SUFFIXES | IMAGE_SUFFIXES | PDF_SUFFIXES
 _RAPID_OCR_ENGINE: object | None = None
+_OCR_FINGERPRINT: dict[str, str] | None = None
+_RAPIDOCR_MODEL_NAMES = (
+    "PP-OCRv6_det_small.onnx",
+    "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    "PP-OCRv6_rec_small.onnx",
+)
+
+
+@dataclass(frozen=True)
+class OcrResult:
+    """本地 OCR 引擎一次推理的分类结果，区分无文字、依赖缺失与推理失败。
+
+    ponytail: 不进入 KnowledgeUnit 公共接口，仅作 parser 内部契约和 manifest 指纹来源。
+    """
+
+    text: str
+    engine: str
+    engine_version: str
+    model_fingerprint: str
+    line_count: int
+    mean_confidence: float
+    elapsed_ms: int
+    status: str  # "ok" | "no_text" | "failed" | "engine_unavailable"
+    failure_type: str = ""
+
+
+def ocr_fingerprint() -> dict[str, str]:
+    """返回 RapidOCR 包与固定本地模型文件的内容指纹，不加载模型。"""
+    global _OCR_FINGERPRINT
+    if _OCR_FINGERPRINT is not None:
+        return dict(_OCR_FINGERPRINT)
+    engine = "rapidocr-onnxruntime"
+    try:
+        version = importlib.metadata.version("rapidocr-onnxruntime")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    spec = importlib.util.find_spec("rapidocr")
+    model_root = Path(next(iter(spec.submodule_search_locations), "")) / "models" if spec and spec.submodule_search_locations else None
+    model_paths = [model_root / name for name in _RAPIDOCR_MODEL_NAMES] if model_root else []
+    if not model_paths or any(not path.is_file() for path in model_paths):
+        _OCR_FINGERPRINT = {
+            "engine": engine,
+            "engine_version": version,
+            "model_fingerprint": "missing",
+            "status": "unavailable",
+        }
+        return dict(_OCR_FINGERPRINT)
+    digest = hashlib.sha256()
+    for path in model_paths:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(path.read_bytes())
+    _OCR_FINGERPRINT = {
+        "engine": engine,
+        "engine_version": version,
+        "model_fingerprint": digest.hexdigest(),
+        "status": "available",
+    }
+    return dict(_OCR_FINGERPRINT)
 
 
 @dataclass(frozen=True)
@@ -69,7 +130,8 @@ def parse_document(path: Path, preferred_parser: str) -> ParsedDocument:
         return _parse_xlsx(path)
     if suffix in IMAGE_SUFFIXES:
         payload = path.read_bytes()
-        return ParsedDocument("image", "builtin-1", (ParsedItem("image", "image", raw_text=_rapidocr_text(payload), asset_bytes=payload, asset_name=path.name),))
+        probe = _rapidocr_probe(payload)
+        return ParsedDocument("image", "builtin-1", (ParsedItem("image", "image", raw_text=probe.text, asset_bytes=payload, asset_name=path.name),), issues=_ocr_issues(probe, path))
     if suffix in PDF_SUFFIXES:
         return _parse_pdf(path, preferred_parser)
     raise ValueError(f"unsupported source suffix: {suffix}")
@@ -233,11 +295,11 @@ def _docling_page_worker(path_value: str, page_number: int, sender: object) -> N
         options.generate_picture_images = True
         converter = _new_docling_converter(options)
         result, _ = _convert_docling_page(path, page_number, options, converter)
-        items = tuple(_docling_items(result.document))
-        issues: tuple[IngestionIssue, ...] = ()
-        if not items:
+        items_list, ocr_issues = _docling_items(result.document, path)
+        issues: tuple[IngestionIssue, ...] = tuple(ocr_issues)
+        if not items_list:
             content_exists = _pdf_page_has_content(path, page_number)
-            issues = (IngestionIssue(
+            issues = issues + (IngestionIssue(
                 code="pdf_page_content_missing" if content_exists else "pdf_page_empty",
                 message=f"Docling 第 {page_number} 页未返回可索引内容",
                 severity=IssueSeverity.ERROR if content_exists else IssueSeverity.WARNING,
@@ -248,7 +310,7 @@ def _docling_page_worker(path_value: str, page_number: int, sender: object) -> N
             f"docling_page_{page_number:04d}.json",
             json.dumps(result.document.export_to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8"),
         )
-        sender.send(ParsedDocument("docling", "2.115.0", items, issues, (artifact,)))
+        sender.send(ParsedDocument("docling", "2.115.0", tuple(items_list), issues, (artifact,)))
     except Exception as exc:
         sender.send(_page_failure(path, page_number, type(exc).__name__))
     finally:
@@ -296,11 +358,12 @@ def _convert_docling_page(path: Path, page_number: int, options: object, convert
         return replacement.convert(path, page_range=(page_number, page_number)), replacement
 
 
-def _docling_items(document: object) -> list[ParsedItem]:
+def _docling_items(document: object, source_path: Path) -> tuple[list[ParsedItem], list[IngestionIssue]]:
     """将 Docling 项映射为项目契约，不暴露其第三方对象。"""
     from docling_core.types.doc import FormulaItem, PictureItem, TableItem, TextItem
 
     items: list[ParsedItem] = []
+    ocr_issues: list[IngestionIssue] = []
     for index, (item, _) in enumerate(document.iterate_items(), 1):
         page_number, bbox = _docling_locator(item, document)
         if isinstance(item, TableItem):
@@ -315,13 +378,16 @@ def _docling_items(document: object) -> list[ParsedItem]:
             asset_bytes = _docling_image_bytes(item, document)
             if asset_bytes:
                 caption = (item.caption_text(document) or "").strip()
-                local_ocr = _rapidocr_text(asset_bytes)
-                raw_text = "\n".join(dict.fromkeys(part for part in (caption, local_ocr) if part))
+                probe = _rapidocr_probe(asset_bytes)
+                raw_text = "\n".join(dict.fromkeys(part for part in (caption, probe.text) if part))
                 items.append(ParsedItem("image", "image", raw_text=raw_text, page_number=page_number, bbox=bbox, asset_bytes=asset_bytes, asset_name=f"page_{page_number or 0:04d}_image_{index:04d}.png", parent_key=f"page_{page_number}" if page_number else None))
+                ocr_issues.extend(_ocr_issues(probe, source_path))
+            else:
+                ocr_issues.append(IngestionIssue(code="image_asset_missing", message=f"第 {page_number or 0} 页图片资源无法提取", severity=IssueSeverity.WARNING, blocking=False, source_path=str(source_path)))
         elif isinstance(item, TextItem) and (item.text or "").strip():
             label = str(getattr(getattr(item, "label", None), "value", getattr(item, "label", "paragraph")))
             items.append(ParsedItem("text", label or "paragraph", raw_text=item.text.strip(), page_number=page_number, bbox=bbox, parent_key=f"page_{page_number}" if page_number else None))
-    return items
+    return items, ocr_issues
 
 
 def _docling_locator(item: object, document: object) -> tuple[int | None, dict[str, float] | None]:
@@ -358,15 +424,44 @@ def _docling_image_bytes(item: object, document: object) -> bytes | None:
         return None
 
 
-def _rapidocr_text(image_bytes: bytes) -> str:
-    """使用随 Docling 环境提供的本地 RapidOCR 为图片生成可检索文本。"""
-    global _RAPID_OCR_ENGINE
-    try:
-        from rapidocr import RapidOCR
+def _rapidocr_probe(image_bytes: bytes) -> OcrResult:
+    """使用本地 RapidOCR 为图片生成分类 OCR 结果，永不抛异常。
 
-        if _RAPID_OCR_ENGINE is None:
+    ponytail: 把原来吞所有异常返回空串的 helper 拆成可观测契约；
+    状态机 ok|no_text|failed|engine_unavailable 覆盖 §5.4 全部分类。
+    """
+    started = time.monotonic()
+    fp = ocr_fingerprint()
+    if fp["status"] != "available":
+        return OcrResult("", fp["engine"], fp["engine_version"], fp["model_fingerprint"], 0, 0.0, 0, "engine_unavailable")
+    global _RAPID_OCR_ENGINE
+    if _RAPID_OCR_ENGINE is None:
+        try:
+            from rapidocr import RapidOCR
             _RAPID_OCR_ENGINE = RapidOCR()
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            return OcrResult("", fp["engine"], fp["engine_version"], fp["model_fingerprint"], 0, 0.0, elapsed_ms, "engine_unavailable", type(exc).__name__)
+    try:
         result = _RAPID_OCR_ENGINE(image_bytes)
-        return "\n".join(text.strip() for text in (result.txts or ()) if text.strip())
-    except Exception:
-        return ""
+        texts = [text.strip() for text in (result.txts or ()) if text and text.strip()]
+        scores = [float(score) for score in (getattr(result, "scores", None) or ()) if score is not None]
+        mean_confidence = round(sum(scores) / len(scores), 6) if scores else 0.0
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if not texts:
+            return OcrResult("", fp["engine"], fp["engine_version"], fp["model_fingerprint"], 0, 0.0, elapsed_ms, "no_text")
+        return OcrResult("\n".join(texts), fp["engine"], fp["engine_version"], fp["model_fingerprint"], len(texts), mean_confidence, elapsed_ms, "ok")
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return OcrResult("", fp["engine"], fp["engine_version"], fp["model_fingerprint"], 0, 0.0, elapsed_ms, "failed", type(exc).__name__)
+
+
+def _ocr_issues(probe: OcrResult, path: Path) -> tuple[IngestionIssue, ...]:
+    """把 OCR 分类状态映射为可追踪 issue，不记录图片正文。"""
+    if probe.status == "engine_unavailable":
+        return (IngestionIssue(code="ocr_engine_unavailable", message="RapidOCR 引擎或模型不可用，无法识别图片文字", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)),)
+    if probe.status == "failed":
+        return (IngestionIssue(code="ocr_failed", message=f"RapidOCR 推理失败：{probe.failure_type or 'UnknownError'}，已隔离该图片", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)),)
+    if probe.status == "no_text":
+        return (IngestionIssue(code="ocr_no_text", message="图片未识别到文字，可由后续 VLM 判断是否为信息图", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)),)
+    return ()

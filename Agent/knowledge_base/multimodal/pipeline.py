@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import shutil
@@ -15,10 +16,11 @@ from typing import Any, Callable
 from .assets import AssetStore
 from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, UnitStatus, render_retrieval_text, sha256_bytes, stable_id
 from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, file_sha256
-from .parsers import IMAGE_SUFFIXES, ParsedItem, inspect_source, parse_document_page
+from .parsers import IMAGE_SUFFIXES, ParsedDocument, ParsedItem, inspect_source, ocr_fingerprint, parse_document_page
 from .remote_policy import RemoteSamplePolicy
 from .vision import PROMPT_VERSION, REQUIRED_MODEL, VisionAnalyzer
 
+LOCAL_PARSE_CHECKPOINT_SCHEMA = "local-parse-v1"
 
 class MultimodalKnowledgeBaseMaintenance:
     """为 CLI 与未来 HTTP adapter 提供单一维护入口。"""
@@ -37,17 +39,21 @@ class MultimodalKnowledgeBaseMaintenance:
         entries, issues = self._scan(sources)
         return {"status": "inspected", "manifest": self._manifest(entries), "configuration": self._configuration_status(), "issues": [issue.model_dump(mode="json") for issue in issues]}
 
-    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None) -> dict[str, Any]:
+    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None) -> dict[str, Any]:
         """逐页解析、原子保存 checkpoint，并分批写入不可变暂存索引。"""
+        if retry_from_index_version is not None and reuse_local_from_index_version is not None:
+            raise ValueError("--reuse-local-checkpoints-from cannot be combined with --retry-from-index-version")
         entries, issues = self._scan(sources)
         manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation)
         version = self._index_version(manifest)
         version_dir = self.index_root / version
         retry_source = self._retry_source_directory(retry_from_index_version, manifest, retry_failed)
+        local_reuse_source = self._local_reuse_source_directory(reuse_local_from_index_version, manifest, retry_source)
         if version_dir.exists() and not self._is_resumable_build(version_dir):
             raise ValueError("same source and configuration already has a staged version")
         version_dir.mkdir(parents=True, exist_ok=True)
         (version_dir / "page_checkpoints").mkdir(exist_ok=True)
+        (version_dir / "local_parse_checkpoints").mkdir(exist_ok=True)
         self._write_build_state(version_dir, {"status": "building", "unit_count": 0, "attempted_pages": 0})
         embedding = embedding_fingerprint()
         store = AssetStore(self.asset_root)
@@ -81,7 +87,17 @@ class MultimodalKnowledgeBaseMaintenance:
                                 self._read_page_units(retry_source, document_id, page_number),
                             )
                     if checkpoint is None:
-                        parsed = parse_document_page(path, parser_name, page_number)
+                        local_checkpoint = self._reusable_local_parse_checkpoint(version_dir, document_id, page_number, entry, expected_pages, store)
+                        if local_checkpoint is None and local_reuse_source is not None:
+                            local_checkpoint = self._reusable_local_parse_checkpoint(local_reuse_source, document_id, page_number, entry, expected_pages, store)
+                            if local_checkpoint is not None:
+                                self._write_local_parse_checkpoint(version_dir, document_id, page_number, local_checkpoint)
+                        if local_checkpoint is not None:
+                            parsed = self._parsed_document_from_local_checkpoint(local_checkpoint, store)
+                        else:
+                            parsed = parse_document_page(path, parser_name, page_number)
+                            local_checkpoint = self._build_local_parse_checkpoint(path, document_id, page_number, parsed, entry, expected_pages, store)
+                            self._write_local_parse_checkpoint(version_dir, document_id, page_number, local_checkpoint)
                         page_quality = {key: 0 for key in quality_keys}
                         page_issues = list(parsed.issues)
                         page_artifacts = [
@@ -121,7 +137,7 @@ class MultimodalKnowledgeBaseMaintenance:
             self._write_build_state(version_dir, {"status": "failed", "unit_count": unit_count, "attempted_pages": attempted_pages, "error_type": type(exc).__name__})
             raise
 
-    def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
+    def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
         """以版本锁执行 ingest 和评测；仅在显式授权时发布。"""
         started = time.monotonic()
         entries, _ = self._scan(sources)
@@ -139,7 +155,7 @@ class MultimodalKnowledgeBaseMaintenance:
             resumable = self._is_resumable_build(self.index_root / version)
             if version_exists and not reused and not resumable:
                 return {"status": "incomplete_staged", "index_version": version, "published": False}
-            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, retry_from_index_version=retry_from_index_version)
+            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, retry_from_index_version=retry_from_index_version, reuse_local_from_index_version=reuse_local_from_index_version)
             self._check_run_control(started, timeout_seconds, cancel_check)
             evaluation = self.evaluate(version)
             self._check_run_control(started, timeout_seconds, cancel_check)
@@ -263,6 +279,8 @@ class MultimodalKnowledgeBaseMaintenance:
                 "ingestion_schema": "streaming-page-v1",
                 "embedding": embedding_fingerprint(),
                 "pdf_parser": {"page_range_mode": "single_page", "process_isolation": "spawn_per_page", "page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900"))},
+                "ocr": ocr_fingerprint(),
+                "remote_policy_hash": self.remote_policy.policy_sha256,
                 "vision": {"enabled": allow_remote_data, "local_ocr_enabled": True, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "max_images": min(max_images, 100), "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "retry_failed": retry_failed, "retry_generation": retry_generation},
             },
         }
@@ -334,6 +352,152 @@ class MultimodalKnowledgeBaseMaintenance:
             return None
         issues = [IngestionIssue.model_validate(issue) for issue in checkpoint.get("issues", [])]
         return None if any(issue.severity is IssueSeverity.ERROR for issue in issues) else checkpoint
+
+    def _local_parse_checkpoint_path(self, directory: Path, document_id: str, page_number: int) -> Path:
+        """返回本地解析 checkpoint 的隔离路径。"""
+        return directory / "local_parse_checkpoints" / document_id / f"page_{page_number:04d}.json"
+
+    def _read_local_parse_checkpoint(self, directory: Path, document_id: str, page_number: int) -> dict[str, Any] | None:
+        """读取本地解析 checkpoint；不存在或损坏时返回 None。"""
+        path = self._local_parse_checkpoint_path(directory, document_id, page_number)
+        if not path.is_file():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _write_local_parse_checkpoint(self, directory: Path, document_id: str, page_number: int, checkpoint: dict[str, Any]) -> None:
+        """原子写入本地解析 checkpoint，绑定 source/Docling/OCR 契约而非视觉策略。"""
+        path = self._local_parse_checkpoint_path(directory, document_id, page_number)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+
+    def _build_local_parse_checkpoint(self, path: Path, document_id: str, page_number: int, parsed: ParsedDocument, entry: dict[str, str], page_count: int, store: AssetStore) -> dict[str, Any]:
+        """把 ParsedDocument 序列化为不含 asset_bytes 的可复用本地解析结果。"""
+        serializable_items: list[dict[str, Any]] = []
+        for item in parsed.items:
+            asset_uri = None
+            asset_content_hash = None
+            if item.asset_bytes:
+                asset_uri = store.put(document_id, item.asset_name or f"asset_{page_number}", item.asset_bytes)
+                asset_content_hash = sha256_bytes(item.asset_bytes)
+            serializable_items.append({"modality": item.modality, "content_kind": item.content_kind, "raw_text": item.raw_text, "page_number": item.page_number, "bbox": item.bbox, "asset_uri": asset_uri, "asset_content_hash": asset_content_hash, "asset_name": item.asset_name, "parent_key": item.parent_key})
+        return {
+            "schema_version": LOCAL_PARSE_CHECKPOINT_SCHEMA,
+            "document_id": document_id,
+            "page_number": page_number,
+            "parser_name": parsed.parser_name,
+            "parser_version": parsed.parser_version,
+            "parser_artifacts": [{"name": name, "asset_uri": store.put(document_id, name, payload, category="parsed"), "content_hash": sha256_bytes(payload)} for name, payload in parsed.raw_artifacts],
+            "issues": [issue.model_dump(mode="json") for issue in parsed.issues],
+            "items": serializable_items,
+            "contract": {
+                "source_content_hash": entry["content_hash"],
+                "page_count": page_count,
+                "parser": {"name": parsed.parser_name, "version": parsed.parser_version},
+                "docling_config": {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True},
+                "ocr_fingerprint": ocr_fingerprint(),
+            },
+        }
+
+    def _parsed_document_from_local_checkpoint(self, checkpoint: dict[str, Any], store: AssetStore) -> ParsedDocument:
+        """从已校验的本地解析 checkpoint 重建 ParsedDocument。"""
+        items: list[ParsedItem] = []
+        for item_dict in checkpoint.get("items", []):
+            asset_uri = item_dict.get("asset_uri")
+            asset_bytes = store.read(asset_uri) if asset_uri else None
+            items.append(ParsedItem(modality=item_dict["modality"], content_kind=item_dict["content_kind"], raw_text=item_dict.get("raw_text", ""), page_number=item_dict.get("page_number"), bbox=item_dict.get("bbox"), asset_bytes=asset_bytes, asset_name=item_dict.get("asset_name"), parent_key=item_dict.get("parent_key")))
+        raw_artifacts: list[tuple[str, bytes]] = []
+        for artifact in checkpoint.get("parser_artifacts", []):
+            asset_uri = artifact.get("asset_uri")
+            if asset_uri:
+                raw_artifacts.append((artifact["name"], store.read(asset_uri)))
+        issues = [IngestionIssue.model_validate(issue) for issue in checkpoint.get("issues", [])]
+        return ParsedDocument(parser_name=checkpoint.get("parser_name", "docling"), parser_version=checkpoint.get("parser_version", "unknown"), items=tuple(items), issues=tuple(issues), raw_artifacts=tuple(raw_artifacts))
+
+    def _reusable_local_parse_checkpoint(self, directory: Path, document_id: str, page_number: int, entry: dict[str, str], page_count: int, store: AssetStore) -> dict[str, Any] | None:
+        """校验契约后返回可复用的本地解析 checkpoint；不一致则返回 None 触发重解析。"""
+        checkpoint = self._read_local_parse_checkpoint(directory, document_id, page_number)
+        if checkpoint is None:
+            return None
+        if checkpoint.get("schema_version") != LOCAL_PARSE_CHECKPOINT_SCHEMA:
+            return None
+        if checkpoint.get("document_id") != document_id or checkpoint.get("page_number") != page_number:
+            return None
+        contract = checkpoint.get("contract", {})
+        if contract.get("source_content_hash") != entry["content_hash"]:
+            return None
+        if contract.get("page_count") != page_count:
+            return None
+        expected_docling = {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True}
+        if contract.get("docling_config") != expected_docling:
+            return None
+        if contract.get("ocr_fingerprint") != ocr_fingerprint():
+            return None
+        if contract.get("parser") != {"name": checkpoint.get("parser_name"), "version": checkpoint.get("parser_version")}:
+            return None
+        if Path(entry["relative_path"]).suffix.lower() == ".pdf" and contract.get("parser", {}).get("version") != self._docling_version():
+            return None
+        try:
+            for item in checkpoint.get("items", []):
+                if not isinstance(item, dict) or not isinstance(item.get("modality"), str) or not isinstance(item.get("content_kind"), str):
+                    return None
+                asset_uri, asset_hash = item.get("asset_uri"), item.get("asset_content_hash")
+                if bool(asset_uri) != bool(asset_hash) or (asset_uri and not self._asset_matches(store, asset_uri, asset_hash)):
+                    return None
+            for artifact in checkpoint.get("parser_artifacts", []):
+                if not isinstance(artifact, dict) or not isinstance(artifact.get("name"), str) or not self._asset_matches(store, artifact.get("asset_uri"), artifact.get("content_hash")):
+                    return None
+            [IngestionIssue.model_validate(issue) for issue in checkpoint.get("issues", [])]
+        except (OSError, TypeError, ValueError):
+            return None
+        return checkpoint
+
+    @staticmethod
+    def _asset_matches(store: AssetStore, asset_uri: object, content_hash: object) -> bool:
+        """确认 checkpoint 引用的资源存在且仍是记录时的不可变内容。"""
+        return isinstance(asset_uri, str) and isinstance(content_hash, str) and sha256_bytes(store.read(asset_uri)) == content_hash
+
+    @staticmethod
+    def _docling_version() -> str:
+        """读取当前 Docling 包版本，供 PDF 本地解析 checkpoint 复用校验。"""
+        try:
+            return importlib.metadata.version("docling")
+        except importlib.metadata.PackageNotFoundError:
+            return "unknown"
+
+    def _local_reuse_source_directory(self, index_version: str | None, manifest: dict[str, Any], retry_source: Path | None) -> Path | None:
+        """校验并返回跨版本本地解析复用源；与 --retry-from-index-version 互斥。"""
+        if index_version is None:
+            return None
+        if retry_source is not None:
+            raise ValueError("--reuse-local-checkpoints-from cannot be combined with --retry-from-index-version")
+        directory = self._version_dir(index_version)
+        manifest_path = directory / "manifest.json"
+        if not manifest_path.is_file() or not (directory / "local_parse_checkpoints").is_dir():
+            return None
+        try:
+            source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if self._local_parse_contract(source_manifest) != self._local_parse_contract(manifest):
+            return None
+        return directory
+
+    @staticmethod
+    def _local_parse_contract(manifest: dict[str, Any]) -> dict[str, Any]:
+        """返回只绑定本地解析（不含视觉策略）的版本契约。"""
+        configuration = json.loads(json.dumps(manifest.get("build_configuration", {})))
+        configuration.pop("vision", None)
+        return {
+            "schema_version": manifest.get("schema_version"),
+            "sources": manifest.get("sources"),
+            "parser": manifest.get("parser"),
+            "build_configuration": configuration,
+        }
 
     def _retry_source_directory(self, index_version: str | None, manifest: dict[str, Any], retry_failed: bool) -> Path | None:
         """Validate an immutable checkpoint source before cross-version reuse."""
@@ -474,8 +638,8 @@ class MultimodalKnowledgeBaseMaintenance:
             else:
                 quality["skipped_images"] += 1
             if analysis and not analysis.informative:
-                quality["skipped_images"] += 1
-                return None
+                issues.append(IngestionIssue(code="image_low_information", message=f"第 {item.page_number or 0} 页图片被远程判定为不具信息量，保留 OCR-only 单元", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
+                analysis = None
             if analysis:
                 quality["enriched_images"] += 1
         if item.modality == "image" and not analysis and not item.raw_text.strip():
@@ -485,8 +649,11 @@ class MultimodalKnowledgeBaseMaintenance:
         text = render_retrieval_text(content_kind=item.content_kind, title=path.name, analysis=analysis, raw_text=item.raw_text)
         if not text.strip():
             return None
-        content_hash = sha256_bytes(item.raw_text.encode("utf-8") if item.raw_text else item.asset_bytes or b"")
-        unit_id = stable_id("unit", {"document_id": document_id, "position": position, "modality": item.modality, "content_hash": content_hash, "parser": [parser_name, parser_version], "vision": [analyzer.model if analysis else "", "vision-v1"]})
+        if item.modality == "image" and item.asset_bytes:
+            content_hash = sha256_bytes(item.asset_bytes)
+        else:
+            content_hash = sha256_bytes(item.raw_text.encode("utf-8") if item.raw_text else item.asset_bytes or b"")
+        unit_id = stable_id("unit", {"document_id": document_id, "position": position, "modality": item.modality, "content_hash": content_hash, "parser": [parser_name, parser_version], "ocr": ocr_fingerprint()["model_fingerprint"] if item.modality == "image" else "", "vision": [analyzer.model if analysis else "", PROMPT_VERSION]})
         return KnowledgeUnit(unit_id=unit_id, document_id=document_id, parent_id=item.parent_key, modality=item.modality, content_kind=analysis.content_kind if analysis else item.content_kind, page_number=item.page_number, bbox=item.bbox, raw_text=item.raw_text, retrieval_text=text, asset_uri=asset_uri, content_hash=content_hash, parser_name=parser_name, parser_version=parser_version, vision_model=analyzer.model if analysis else "", embedding_provider=embedding["provider"], embedding_model=embedding["model"], status=UnitStatus.ENRICHED if analysis else UnitStatus.COMPLETED)
 
     def _index_version(self, manifest: dict[str, Any]) -> str:
@@ -569,7 +736,10 @@ class MultimodalKnowledgeBaseMaintenance:
         for unit in units:
             if unit.asset_uri and not store.exists(unit.asset_uri):
                 continue
-            if unit.asset_uri and not unit.raw_text and sha256_bytes(store.read(unit.asset_uri)) != unit.content_hash:
+            if unit.modality == "image" and unit.asset_uri:
+                if sha256_bytes(store.read(unit.asset_uri)) != unit.content_hash:
+                    return ["unit_asset_hash_mismatch"]
+            elif unit.asset_uri and not unit.raw_text and sha256_bytes(store.read(unit.asset_uri)) != unit.content_hash:
                 return ["unit_asset_hash_mismatch"]
         return []
 
