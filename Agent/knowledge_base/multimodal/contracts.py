@@ -6,9 +6,9 @@ import hashlib
 import json
 import re
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def canonical_json(value: Any) -> str:
@@ -63,25 +63,62 @@ class BoundingBox(BaseModel):
 class DirectedRelation(BaseModel):
     """由视觉服务明确识别的一条有向关系。"""
 
+    model_config = ConfigDict(extra="forbid")
+
     source: str = Field(min_length=1)
     target: str = Field(min_length=1)
     condition: str | None = None
 
 
 class VisionAnalysis(BaseModel):
-    """视觉模型必须满足的、仅记录可见事实的输出。"""
+    """vision-v2 必须完整返回的、仅记录可见事实的输出。"""
 
-    content_kind: str = Field(min_length=1)
-    ocr_text: str = ""
-    visible_facts: list[str] = Field(default_factory=list)
-    summary: str = ""
-    entities: list[str] = Field(default_factory=list)
-    table_markdown: str = ""
-    formula_latex: str = ""
-    directed_relations: list[DirectedRelation] = Field(default_factory=list)
-    uncertain_relations: list[str] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
+
+    content_kind: Literal["causal_graph", "chart", "table", "formula", "illustration", "other"]
+    ocr_text: str
+    visible_facts: list[str]
+    summary: str
+    entities: list[str]
+    table_markdown: str
+    formula_latex: str
+    directed_relations: list[DirectedRelation]
+    uncertain_relations: list[str]
     confidence: float = Field(ge=0, le=1)
     informative: bool
+
+
+class OutboundImageRecord(BaseModel):
+    """批准外发的单张图片及其不可变哈希边界。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_relative_path: str = Field(min_length=1)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    document_id: str = Field(pattern=r"^doc_[0-9a-f]{64}$")
+    page_number: int = Field(ge=1)
+    image_index: int = Field(ge=1)
+    original_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    normalized_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    media_type: str = Field(pattern=r"^image/(png|jpeg)$")
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
+    original_bytes: int = Field(ge=1)
+    normalized_bytes: int = Field(ge=1)
+    transformation: str = Field(min_length=1)
+    context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider: str = Field(pattern=r"^wcode$")
+    model: str = Field(min_length=1)
+    prompt_version: str = Field(pattern=r"^vision-v2$")
+    remote_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("source_relative_path")
+    @classmethod
+    def validate_source_relative_path(cls, value: str) -> str:
+        """拒绝绝对路径、反斜杠和目录逃逸进入外发审计。"""
+        if value.startswith("/") or "\\" in value or ".." in value.split("/"):
+            raise ValueError("source_relative_path must be a safe relative POSIX path")
+        return value
 
 
 class KnowledgeUnit(BaseModel):
@@ -161,12 +198,12 @@ def render_retrieval_text(*, content_kind: str, title: str = "", analysis: Visio
     if title:
         parts.append(f"标题：{title}")
     if analysis:
+        if analysis.ocr_text:
+            parts.append(f"OCR：\n{analysis.ocr_text}")
         if analysis.summary:
             parts.append(f"摘要：{analysis.summary}")
         if analysis.visible_facts:
             parts.append("可见事实：\n" + "\n".join(f"- {item}" for item in analysis.visible_facts))
-        if analysis.ocr_text:
-            parts.append(f"OCR：\n{analysis.ocr_text}")
         if analysis.table_markdown:
             parts.append(f"表格：\n{analysis.table_markdown}")
         if analysis.formula_latex:

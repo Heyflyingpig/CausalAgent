@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .assets import AssetStore
-from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, UnitStatus, render_retrieval_text, sha256_bytes, stable_id
+from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, OutboundImageRecord, UnitStatus, canonical_json, render_retrieval_text, sha256_bytes, stable_id
 from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, file_sha256
-from .parsers import IMAGE_SUFFIXES, ParsedDocument, ParsedItem, inspect_source, ocr_fingerprint, parse_document_page
+from .parsers import IMAGE_SUFFIXES, TEXT_SPLIT, ParsedDocument, ParsedItem, inspect_source, parse_document_page
 from .remote_policy import RemoteSamplePolicy
 from .vision import PROMPT_VERSION, REQUIRED_MODEL, VisionAnalyzer
 
-LOCAL_PARSE_CHECKPOINT_SCHEMA = "local-parse-v1"
+LOCAL_PARSE_CHECKPOINT_SCHEMA = "local-parse-v2"
 
 class MultimodalKnowledgeBaseMaintenance:
     """为 CLI 与未来 HTTP adapter 提供单一维护入口。"""
@@ -39,12 +39,15 @@ class MultimodalKnowledgeBaseMaintenance:
         entries, issues = self._scan(sources)
         return {"status": "inspected", "manifest": self._manifest(entries), "configuration": self._configuration_status(), "issues": [issue.model_dump(mode="json") for issue in issues]}
 
-    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None) -> dict[str, Any]:
+    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None) -> dict[str, Any]:
         """逐页解析、原子保存 checkpoint，并分批写入不可变暂存索引。"""
         if retry_from_index_version is not None and reuse_local_from_index_version is not None:
             raise ValueError("--reuse-local-checkpoints-from cannot be combined with --retry-from-index-version")
         entries, issues = self._scan(sources)
-        manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation)
+        outbound_records = self._frozen_outbound_records(outbound_manifest, entries) if allow_remote_data else []
+        if allow_remote_data and max_images is not None and max_images < len(outbound_records):
+            raise ValueError("--max-images cannot be smaller than the frozen outbound manifest")
+        manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records)
         version = self._index_version(manifest)
         version_dir = self.index_root / version
         retry_source = self._retry_source_directory(retry_from_index_version, manifest, retry_failed)
@@ -57,10 +60,12 @@ class MultimodalKnowledgeBaseMaintenance:
         self._write_build_state(version_dir, {"status": "building", "unit_count": 0, "attempted_pages": 0})
         embedding = embedding_fingerprint()
         store = AssetStore(self.asset_root)
-        analyzer = VisionAnalyzer(self.asset_root / "vision_cache", allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed)
+        analyzer = VisionAnalyzer(self.asset_root / "vision_cache", allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, remote_policy_sha256=self.remote_policy.policy_sha256)
         quality_keys = ("eligible_images", "enriched_images", "vision_failed_images", "skipped_images", "low_value_images_skipped", "filtered_short_text_units")
         quality = {key: 0 for key in quality_keys}
         documents: list[dict[str, Any]] = []
+        outbound_manifest_path = version_dir / "outbound_manifest.json"
+        self._write_outbound_manifest(outbound_manifest_path, outbound_records)
         parser_name = os.getenv("MULTIMODAL_PARSER", "docling")
         unit_count = 0
         attempted_pages = 0
@@ -108,7 +113,15 @@ class MultimodalKnowledgeBaseMaintenance:
                         page_quality["filtered_short_text_units"] = filtered
                         page_units: list[KnowledgeUnit] = []
                         for item_index, item in enumerate(page_items, 1):
-                            unit = self._build_unit(item, path, document_id, page_number * 10000 + item_index, parsed.parser_name, parsed.parser_version, embedding, store, analyzer, page_quality, page_issues, allow_remote_data)
+                            unit = self._build_unit(
+                                item, path, document_id, page_number * 10000 + item_index,
+                                parsed.parser_name, parsed.parser_version, embedding, store, analyzer,
+                                page_quality, page_issues, allow_remote_data,
+                                context=self._same_page_context(item, page_items),
+                                source_relative_path=entry["relative_path"],
+                                source_sha256=entry["content_hash"],
+                                outbound_records=outbound_records,
+                            )
                             if unit is not None:
                                 page_units.append(unit)
                         checkpoint = {"document_id": document_id, "page_number": page_number, "parser_name": parsed.parser_name, "parser_version": parsed.parser_version, "parser_artifacts": page_artifacts, "issues": [issue.model_dump(mode="json") for issue in page_issues], "quality": page_quality, "unit_count": len(page_units)}
@@ -127,7 +140,8 @@ class MultimodalKnowledgeBaseMaintenance:
                 documents.append({"document_id": document_id, "relative_path": entry["relative_path"], "content_hash": entry["content_hash"], "source_asset_uri": source_asset_uri, "parser_artifact_uris": [artifact["asset_uri"] for artifact in parser_artifacts], "parser_artifacts": parser_artifacts, "parser_name": parsed_name, "parser_version": parsed_version, "expected_page_count": expected_pages, "attempted_page_count": expected_pages, "unit_count": document_units})
             self._materialize_units(version_dir, documents)
             (version_dir / "issues.jsonl").write_text("".join(issue.model_dump_json() + "\n" for issue in issues), encoding="utf-8")
-            manifest.update({"index_version": version, "embedding": embedding, "unit_count": unit_count, "issues_count": len(issues), "quality_policy": self._quality_policy(), "quality_observations": quality, "documents": documents})
+            self._write_outbound_manifest(outbound_manifest_path, outbound_records)
+            manifest.update({"index_version": version, "embedding": embedding, "unit_count": unit_count, "issues_count": len(issues), "quality_policy": self._quality_policy(), "quality_observations": quality, "documents": documents, "outbound_manifest_sha256": sha256_bytes(outbound_manifest_path.read_bytes()), "outbound_image_count": len(outbound_records)})
             (version_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
             vector_count = self._build_staged_vectors(version_dir, version, unit_count)
             self._write_build_state(version_dir, {"status": "staged_complete", "unit_count": unit_count, "vector_count": vector_count, "attempted_pages": attempted_pages})
@@ -137,11 +151,14 @@ class MultimodalKnowledgeBaseMaintenance:
             self._write_build_state(version_dir, {"status": "failed", "unit_count": unit_count, "attempted_pages": attempted_pages, "error_type": type(exc).__name__})
             raise
 
-    def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
+    def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
         """以版本锁执行 ingest 和评测；仅在显式授权时发布。"""
         started = time.monotonic()
         entries, _ = self._scan(sources)
-        manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation)
+        outbound_records = self._frozen_outbound_records(outbound_manifest, entries) if allow_remote_data else []
+        if allow_remote_data and max_images is not None and max_images < len(outbound_records):
+            raise ValueError("--max-images cannot be smaller than the frozen outbound manifest")
+        manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records)
         version = self._index_version(manifest)
         lock = self.index_root / ".locks" / version
         try:
@@ -155,7 +172,7 @@ class MultimodalKnowledgeBaseMaintenance:
             resumable = self._is_resumable_build(self.index_root / version)
             if version_exists and not reused and not resumable:
                 return {"status": "incomplete_staged", "index_version": version, "published": False}
-            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, retry_from_index_version=retry_from_index_version, reuse_local_from_index_version=reuse_local_from_index_version)
+            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, retry_from_index_version=retry_from_index_version, reuse_local_from_index_version=reuse_local_from_index_version, outbound_manifest=outbound_manifest)
             self._check_run_control(started, timeout_seconds, cancel_check)
             evaluation = self.evaluate(version)
             self._check_run_control(started, timeout_seconds, cancel_check)
@@ -194,6 +211,8 @@ class MultimodalKnowledgeBaseMaintenance:
         store = AssetStore(self.asset_root)
         if any(unit.asset_uri and not store.exists(unit.asset_uri) for unit in units): failures.append("missing_asset")
         failures.extend(self._audit_manifest_chain(manifest, units, store))
+        if manifest.get("schema_version", 0) >= 4:
+            failures.extend(self._audit_outbound_manifest(directory, manifest))
         if any(not unit.retrieval_text.strip() for unit in units): failures.append("empty_retrieval_text")
         if manifest.get("embedding") != embedding_fingerprint(): failures.append("embedding_fingerprint_mismatch")
         if "build_configuration" not in manifest:
@@ -268,21 +287,23 @@ class MultimodalKnowledgeBaseMaintenance:
                 entries.append({"path": str(item.resolve()), "relative_path": relative_path, "content_hash": sha256_bytes(item.read_bytes())})
         return sorted(entries, key=lambda item: (item["relative_path"].casefold(), item["content_hash"])), issues
 
-    def _manifest(self, entries: list[dict[str, str]], *, allow_remote_data: bool = False, max_images: int = 12, retry_failed: bool = False, retry_generation: int = 0) -> dict[str, Any]:
+    def _manifest(self, entries: list[dict[str, str]], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, outbound_records: list[OutboundImageRecord] | None = None) -> dict[str, Any]:
         """构造不包含宿主绝对路径的来源清单。"""
         public = [{"relative_path": entry["relative_path"], "content_hash": entry["content_hash"]} for entry in entries]
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "sources": public,
             "parser": os.getenv("MULTIMODAL_PARSER", "docling"),
             "build_configuration": {
                 "ingestion_schema": "streaming-page-v1",
                 "embedding": embedding_fingerprint(),
-                "pdf_parser": {"page_range_mode": "single_page", "process_isolation": "spawn_per_page", "page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900"))},
-                "ocr": ocr_fingerprint(),
+                "pdf_parser": {"page_range_mode": "single_page", "process_isolation": "spawn_per_page", "page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "do_ocr": False},
+                "text_split": dict(TEXT_SPLIT),
                 "remote_policy_hash": self.remote_policy.policy_sha256,
-                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": True, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "max_images": min(max_images, 100), "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "retry_failed": retry_failed, "retry_generation": retry_generation},
+                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", "16000000")), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation},
             },
+            "outbound_manifest_sha256": sha256_bytes(self._outbound_manifest_payload(outbound_records or [])),
+            "outbound_image_count": len(outbound_records or []),
         }
 
     def _is_reusable_staged_version(self, index_version: str) -> bool:
@@ -398,8 +419,8 @@ class MultimodalKnowledgeBaseMaintenance:
                 "source_content_hash": entry["content_hash"],
                 "page_count": page_count,
                 "parser": {"name": parsed.parser_name, "version": parsed.parser_version},
-                "docling_config": {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True},
-                "ocr_fingerprint": ocr_fingerprint(),
+                "docling_config": {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True, "do_ocr": False},
+                "image_text_strategy": "remote-vision-v2",
             },
         }
 
@@ -432,10 +453,10 @@ class MultimodalKnowledgeBaseMaintenance:
             return None
         if contract.get("page_count") != page_count:
             return None
-        expected_docling = {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True}
+        expected_docling = {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True, "do_ocr": False}
         if contract.get("docling_config") != expected_docling:
             return None
-        if contract.get("ocr_fingerprint") != ocr_fingerprint():
+        if contract.get("image_text_strategy") != "remote-vision-v2":
             return None
         if contract.get("parser") != {"name": checkpoint.get("parser_name"), "version": checkpoint.get("parser_version")}:
             return None
@@ -618,43 +639,123 @@ class MultimodalKnowledgeBaseMaintenance:
         quality: dict[str, int],
         issues: list[IngestionIssue],
         allow_remote_data: bool,
+        *,
+        context: str = "",
+        source_relative_path: str | None = None,
+        source_sha256: str | None = None,
+        outbound_records: list[OutboundImageRecord] | None = None,
     ) -> KnowledgeUnit | None:
-        """把单个解析项转换为可追溯知识单元，并隔离可选远程增强。"""
+        """把解析项转为单索引单元；获准图片必须完整通过远程 OCR+VLM。"""
         analysis = None
+        outbound_record = None
         asset_uri = None
         if item.asset_bytes:
             asset_uri = store.put(document_id, item.asset_name or f"asset_{position}", item.asset_bytes)
             if allow_remote_data and self._remote_resource_allowed(path, item.page_number):
                 quality["eligible_images"] += 1
                 try:
-                    media_type = "image/" + (Path(item.asset_name or "png").suffix.lstrip(".").replace("jpg", "jpeg") or "png")
-                    analysis = analyzer.analyze(item.asset_bytes, media_type)
+                    if not source_relative_path or not source_sha256 or outbound_records is None:
+                        raise ValueError("outbound manifest metadata is incomplete")
+                    identity = (document_id, item.page_number or 1, max(1, position % 10000))
+                    record = next((candidate for candidate in outbound_records if (candidate.document_id, candidate.page_number, candidate.image_index) == identity), None)
+                    if record is None:
+                        raise PermissionError("image is absent from the frozen outbound manifest")
+                    if record.source_relative_path != source_relative_path or record.source_sha256 != source_sha256:
+                        raise PermissionError("outbound manifest source does not match the current source")
+                    analysis = analyzer.analyze(item.asset_bytes, record.media_type, context, outbound_record=record)
+                    outbound_record = record
                 except Exception as exc:
                     quality["vision_failed_images"] += 1
-                    issues.append(IngestionIssue(code="vision_failed", message=f"视觉增强失败：{type(exc).__name__}", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
+                    issues.append(IngestionIssue(code="remote_image_failed", message=f"远程图片分析失败：{type(exc).__name__}", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
+                    return None
             elif allow_remote_data:
                 quality["skipped_images"] += 1
-                issues.append(IngestionIssue(code="remote_source_not_allowed", message="该资料不在远程视觉数据 allowlist 中，已跳过外发", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
+                issues.append(IngestionIssue(code="remote_source_not_allowed", message="该图片不在批准的远程外发清单中，禁止生成候选图片单元", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
+                return None
             else:
                 quality["skipped_images"] += 1
-            if analysis and not analysis.informative:
-                issues.append(IngestionIssue(code="image_low_information", message=f"第 {item.page_number or 0} 页图片被远程判定为不具信息量，保留 OCR-only 单元", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
-                analysis = None
             if analysis:
                 quality["enriched_images"] += 1
+                has_semantics = any((analysis.summary.strip(), analysis.visible_facts, analysis.entities, analysis.table_markdown.strip(), analysis.formula_latex.strip(), analysis.directed_relations, analysis.uncertain_relations))
+                if not analysis.ocr_text.strip() and not has_semantics:
+                    quality["low_value_images_skipped"] += 1
+                    issues.append(IngestionIssue(code="image_low_information", message=f"第 {item.page_number or 0} 页远程 OCR 与视觉语义均为空", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
+                    return None
         if item.modality == "image" and not analysis and not item.raw_text.strip():
             quality["low_value_images_skipped"] += 1
-            issues.append(IngestionIssue(code="image_text_missing", message=f"第 {item.page_number or 0} 页图片缺少本地 caption/OCR 文本", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
+            issues.append(IngestionIssue(code="image_text_missing", message=f"第 {item.page_number or 0} 页图片尚未完成远程 OCR 与视觉分析", severity=IssueSeverity.WARNING, blocking=False, source_path=str(path)))
             return None
-        text = render_retrieval_text(content_kind=item.content_kind, title=path.name, analysis=analysis, raw_text=item.raw_text)
+        content_kind = analysis.content_kind if analysis else item.content_kind
+        text = render_retrieval_text(content_kind=content_kind, title=path.name, analysis=analysis, raw_text=item.raw_text)
         if not text.strip():
             return None
+        raw_text = "\n".join(dict.fromkeys(part for part in (item.raw_text.strip(), analysis.ocr_text.strip() if analysis else "") if part))
         if item.modality == "image" and item.asset_bytes:
             content_hash = sha256_bytes(item.asset_bytes)
         else:
             content_hash = sha256_bytes(item.raw_text.encode("utf-8") if item.raw_text else item.asset_bytes or b"")
-        unit_id = stable_id("unit", {"document_id": document_id, "position": position, "modality": item.modality, "content_hash": content_hash, "parser": [parser_name, parser_version], "ocr": ocr_fingerprint()["model_fingerprint"] if item.modality == "image" else "", "vision": [analyzer.model if analysis else "", PROMPT_VERSION]})
-        return KnowledgeUnit(unit_id=unit_id, document_id=document_id, parent_id=item.parent_key, modality=item.modality, content_kind=analysis.content_kind if analysis else item.content_kind, page_number=item.page_number, bbox=item.bbox, raw_text=item.raw_text, retrieval_text=text, asset_uri=asset_uri, content_hash=content_hash, parser_name=parser_name, parser_version=parser_version, vision_model=analyzer.model if analysis else "", embedding_provider=embedding["provider"], embedding_model=embedding["model"], status=UnitStatus.ENRICHED if analysis else UnitStatus.COMPLETED)
+        policy_fingerprint = getattr(analyzer, "remote_policy_sha256", "")
+        if not isinstance(policy_fingerprint, str):
+            policy_fingerprint = ""
+        unit_id = stable_id("unit", {"document_id": document_id, "position": position, "modality": item.modality, "content_hash": content_hash, "parser": [parser_name, parser_version], "vision": [analyzer.model if analysis else "", PROMPT_VERSION, policy_fingerprint, sha256_bytes(context.encode("utf-8")) if analysis else "", outbound_record.normalized_sha256 if outbound_record else "", outbound_record.transformation if outbound_record else ""]})
+        return KnowledgeUnit(unit_id=unit_id, document_id=document_id, parent_id=item.parent_key, modality=item.modality, content_kind=content_kind, page_number=item.page_number, bbox=item.bbox, raw_text=raw_text, retrieval_text=text, asset_uri=asset_uri, content_hash=content_hash, parser_name=parser_name, parser_version=parser_version, vision_model=analyzer.model if analysis else "", vision_prompt_version=PROMPT_VERSION if analysis else "", embedding_provider=embedding["provider"], embedding_model=embedding["model"], status=UnitStatus.ENRICHED if analysis else UnitStatus.COMPLETED)
+
+    @staticmethod
+    def _same_page_context(image: ParsedItem, items: list[ParsedItem]) -> str:
+        """只拼接同一物理页的 caption、正文、表格和公式，最多 2000 字。"""
+        parts = [image.raw_text.strip()] if image.raw_text.strip() else []
+        parts.extend(
+            item.raw_text.strip()
+            for item in items
+            if item is not image and item.page_number == image.page_number and item.modality in {"text", "table", "equation"} and item.raw_text.strip()
+        )
+        return "\n\n".join(dict.fromkeys(parts))[:2000]
+
+    @staticmethod
+    def _outbound_manifest_payload(records: list[OutboundImageRecord]) -> bytes:
+        """把已验证记录稳定序列化为候选内冻结清单。"""
+        return canonical_json({"schema_version": "outbound-v1", "images": [record.model_dump(mode="json") for record in records]}).encode("utf-8")
+
+    def _frozen_outbound_records(self, outbound_manifest: str | Path | None, entries: list[dict[str, str]]) -> list[OutboundImageRecord]:
+        """读取并验证外部预冻结清单，拒绝在远程运行中动态扩展授权范围。"""
+        if outbound_manifest is None:
+            return []
+        path = Path(outbound_manifest)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            records = [OutboundImageRecord.model_validate(record) for record in payload.get("images", [])]
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("outbound manifest is unreadable or invalid") from exc
+        if payload.get("schema_version") != "outbound-v1":
+            raise ValueError("outbound manifest schema is unsupported")
+        sources = {(entry["relative_path"], entry["content_hash"]) for entry in entries}
+        identities = {(record.document_id, record.page_number, record.image_index) for record in records}
+        if len(identities) != len(records):
+            raise ValueError("outbound manifest contains duplicate image identities")
+        if any((record.source_relative_path, record.source_sha256) not in sources for record in records):
+            raise ValueError("outbound manifest does not match the current frozen sources")
+        if any(record.remote_policy_sha256 != self.remote_policy.policy_sha256 for record in records):
+            raise ValueError("outbound manifest does not match the current remote policy")
+        return records
+
+    @staticmethod
+    def _write_outbound_manifest(path: Path, records: list[OutboundImageRecord]) -> None:
+        """把已批准记录原子复制到候选目录，不保存图片、上下文或密钥。"""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = MultimodalKnowledgeBaseMaintenance._outbound_manifest_payload(records).decode("utf-8")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(payload, encoding="utf-8")
+        temporary.replace(path)
+
+    @staticmethod
+    def _read_outbound_manifest(path: Path) -> list[OutboundImageRecord]:
+        """恢复已原子写入的 outbound 记录，供同一不可变候选断点续跑。"""
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema_version") != "outbound-v1" or not isinstance(payload.get("images"), list):
+            raise ValueError("invalid outbound manifest")
+        return [OutboundImageRecord.model_validate(record) for record in payload["images"]]
 
     def _index_version(self, manifest: dict[str, Any]) -> str:
         """从完整配置和来源生成不含时钟的可重现版本名。"""
@@ -741,6 +842,31 @@ class MultimodalKnowledgeBaseMaintenance:
                     return ["unit_asset_hash_mismatch"]
             elif unit.asset_uri and not unit.raw_text and sha256_bytes(store.read(unit.asset_uri)) != unit.content_hash:
                 return ["unit_asset_hash_mismatch"]
+        return []
+
+    @staticmethod
+    def _audit_outbound_manifest(directory: Path, manifest: dict[str, Any]) -> list[str]:
+        """校验 outbound 文件哈希、数量、来源和唯一图片身份。"""
+        path = directory / "outbound_manifest.json"
+        expected_hash = manifest.get("outbound_manifest_sha256")
+        if not path.is_file() or not isinstance(expected_hash, str) or sha256_bytes(path.read_bytes()) != expected_hash:
+            return ["outbound_manifest_mismatch"]
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or not isinstance(payload.get("images"), list):
+                return ["invalid_outbound_manifest"]
+            records = [OutboundImageRecord.model_validate(record) for record in payload.get("images", [])]
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return ["invalid_outbound_manifest"]
+        policy_hash = manifest.get("build_configuration", {}).get("remote_policy_hash")
+        if payload.get("schema_version") != "outbound-v1" or len(records) != manifest.get("outbound_image_count"):
+            return ["invalid_outbound_manifest"]
+        sources = {(source.get("relative_path"), source.get("content_hash")) for source in manifest.get("sources", []) if isinstance(source, dict)}
+        identities = {(record.document_id, record.page_number, record.image_index) for record in records}
+        if len(identities) != len(records) or any((record.source_relative_path, record.source_sha256) not in sources for record in records):
+            return ["invalid_outbound_manifest"]
+        if not isinstance(policy_hash, str) or any(record.remote_policy_sha256 != policy_hash for record in records):
+            return ["invalid_outbound_manifest"]
         return []
 
     def _configuration_status(self) -> dict[str, Any]:
