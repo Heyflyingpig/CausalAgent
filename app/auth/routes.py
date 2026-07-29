@@ -64,6 +64,10 @@ def handle_login():
     if not user_data:
         return jsonify({'success': False, 'error': '用户名不存在'}), 401 # 401 Unauthorized
 
+    if not user_data['is_active']:
+        logging.warning("已禁用用户尝试登录: %s", username)
+        return jsonify({'success': False, 'error': '账号已被禁用'}), 403
+
     # 使用 bcrypt 验证密码
     # bcrypt.checkpw() 会自动从存储的哈希中提取盐值进行验证
     stored_hashed_password = user_data["password_hash"].encode('utf-8')
@@ -84,8 +88,7 @@ def handle_login():
 # 登出
 @auth_bp.route('/logout', methods=['POST'])
 def handle_logout():
-
-    
+    """清空当前浏览器对应的后端登录会话。"""
     # 从会话中获取用户名用于日志记录
     username = session.get('username', '未知用户')
     logging.info(f"用户 {username} 请求退出登录")
@@ -98,7 +101,7 @@ def handle_logout():
 #  检查认证状态 API 端点 
 @auth_bp.route('/check_auth', methods=['GET'])
 def check_auth():
-    """检查当前后端记录的登录状态"""
+    """从主库重新确认当前后端记录的登录状态。"""
 
     current_user = get_current_session_user()
     if current_user:

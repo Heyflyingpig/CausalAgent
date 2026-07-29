@@ -293,6 +293,17 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 - `GET /api/admin/db/slow-queries`
 - `GET /api/admin/jobs/workers`
 
+以上接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问。未登录请求返回 `401`，普通登录用户返回 `403`；后端会在每次请求时从主库重新确认当前角色和启用状态，不信任浏览器 session 中的角色缓存。
+
+执行包含 `users.role` 的最新 Alembic migration 后，可以把一个已经注册且已启用的用户提升为初始管理员：
+
+```bash
+python -m app.auth.admin_cli promote <username> ----本地运行
+docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.admin_cli promote <username> ----docker运行
+```
+
+该命令只支持幂等提升，不创建账号、不降级管理员，也不提供 Web 管理入口。目标用户不存在或已禁用时不会修改数据库。
+
 
 
 ### windows部署

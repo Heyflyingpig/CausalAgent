@@ -6,23 +6,31 @@ app.auth.service - 用户认证服务
 - 注册用户
 
 '''
-from app.db import get_write_connection
+from app.db import get_read_connection, get_write_connection
 import mysql.connector
 import logging
 import bcrypt
 from mysql.connector import errorcode       
 # 查找用户
 def find_user(username):
+    """按用户名从主库读取登录所需的用户、角色和启用状态。"""
     try:
         # with提供一个临时变量，储存这个函数
-        with get_write_connection() as conn:
+        with get_read_connection(consistency="strong") as conn:
             # 使用 dictionary=True 使 cursor 返回字典而不是元组，方便按列名访问
             cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT id, username, password_hash FROM users WHERE username = %s", (username,))
+            cursor.execute(
+                """
+                SELECT id, username, password_hash, role, is_active
+                FROM users
+                WHERE username = %s
+                """,
+                (username,),
+            )
             user_row = cursor.fetchone()
             # cursor.close() # 'with' 语句会自动关闭游标和连接
             if user_row:
-                # 返回一个字典，包含 id, username 和 password_hash
+                # 返回包含登录、角色和启用状态的用户字典
                 return user_row # user_row 已经是字典了
             return None
     except mysql.connector.Error as e: 
@@ -34,15 +42,19 @@ def find_user(username):
 
 
 def find_user_by_id(user_id):
-    """按 ID 查找用户；未找到返回 None，数据库异常继续向上抛出。"""
-    with get_write_connection() as conn:
+    """按 ID 从主库读取当前角色和启用状态；未找到返回 None。"""
+    with get_read_connection(consistency="strong") as conn:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT id, username FROM users WHERE id = %s", (user_id,))
+        cursor.execute(
+            "SELECT id, username, role, is_active FROM users WHERE id = %s",
+            (user_id,),
+        )
         return cursor.fetchone()
 
 
 # 哈希密码
 def hash_password(password):
+    """使用 bcrypt 为明文密码生成不可逆哈希。"""
     hashed_password = bcrypt.hashpw(
         password.encode('utf-8'), 
         bcrypt.gensalt(rounds=12)).decode('utf-8')

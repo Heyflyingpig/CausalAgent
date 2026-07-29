@@ -2,25 +2,20 @@
 管理接口路由。
 """
 
-from flask import Blueprint, jsonify, session
+from flask import Blueprint, jsonify
 import logging
 
 from Database.monitoring import get_db_health, get_slow_query_summary
 from app.agent.job_service import get_worker_snapshot
-from app.auth.session_guard import get_current_session_user
+from app.auth.authorization import admin_required
 
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
-
-def _require_login():
-    return get_current_session_user() is not None
-
-
 @admin_bp.route("/db/health")
+@admin_required
 def db_health():
-    if not _require_login():
-        return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
+    """返回仅管理员可读的数据库健康状态。"""
     try:
         return jsonify({"success": True, "data": get_db_health()})
     except Exception as exc:
@@ -29,9 +24,9 @@ def db_health():
 
 
 @admin_bp.route("/db/slow-queries")
+@admin_required
 def db_slow_queries():
-    if not _require_login():
-        return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
+    """返回仅管理员可读的慢查询摘要。"""
     try:
         return jsonify({"success": True, "data": get_slow_query_summary()})
     except Exception as exc:
@@ -40,9 +35,9 @@ def db_slow_queries():
 
 
 @admin_bp.route("/jobs/workers")
+@admin_required
 def job_workers():
-    if not _require_login():
-        return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
+    """返回仅管理员可读的 worker 与任务快照。"""
     try:
         return jsonify({"success": True, "data": get_worker_snapshot()})
     except Exception as exc:

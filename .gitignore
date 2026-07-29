@@ -198,6 +198,16 @@ Agent/knowledge_base/unfinish_source/
 # skils
 skills/
 
+# test
+tests/
+!tests/
+tests/*
+!tests/test_admin_authorization.py
+!tests/test_auth_service.py
+!tests/test_stale_session_guard.py
+!tests/test_admin_cli.py
+!tests/test_migration_chain.py
+
 # study
 study/
 
