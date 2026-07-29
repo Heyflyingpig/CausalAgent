@@ -77,4 +77,58 @@ describe('管理员类型化 API 客户端', () => {
       fields: { realtime_interval_seconds: '必须在 5 到 10 之间' },
     } satisfies Partial<ApiError>)
   })
+
+  it('业务列表编码筛选参数且正文接口显式携带 offset', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        data: { items: [], limit: 20, has_more: false, next_cursor: null },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        data: {
+          kind: 'message',
+          content: '下一块',
+          offset: 65536,
+          returned_length: 3,
+          total_length: 65539,
+          next_offset: null,
+          truncated: false,
+        },
+      }))
+
+    await adminApi.users({ q: '张 三', role: 'admin', is_active: false })
+    await adminApi.messageContent(12, 65536)
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/api/admin/business/users?q=%E5%BC%A0+%E4%B8%89&role=admin&is_active=false',
+    )
+    expect(String(fetchMock.mock.calls[1][0])).toBe(
+      '/api/admin/business/messages/12/content?offset=65536',
+    )
+  })
+
+  it('deep 审计登记请求携带 CSRF 且固定为手动 deep 模式', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        isLoggedIn: true,
+        username: 'admin',
+        role: 'admin',
+        csrf_token: 'deep-csrf',
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        data: { groups: ['deep_audit'], requested_at: '2026-07-26T12:00:00Z' },
+      }, 202))
+
+    await loadIdentity()
+    await adminApi.runDeepAudit()
+
+    const [, options] = fetchMock.mock.calls[1]
+    expect(options?.method).toBe('POST')
+    expect(new Headers(options?.headers).get('X-CSRF-Token')).toBe('deep-csrf')
+    expect(options?.body).toBe(JSON.stringify({ mode: 'deep' }))
+  })
 })

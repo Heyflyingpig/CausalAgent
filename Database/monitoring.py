@@ -19,7 +19,8 @@ from app.db import get_read_connection_with_source, get_write_connection
 
 
 LOGGER = logging.getLogger(__name__)
-SNAPSHOT_KEYS = ("realtime", "sql_performance", "capacity", "integrity")
+DASHBOARD_SNAPSHOT_KEYS = ("realtime", "sql_performance", "capacity", "integrity")
+SNAPSHOT_KEYS = (*DASHBOARD_SNAPSHOT_KEYS, "deep_audit")
 DEFAULT_REFRESH_GROUPS = ("realtime", "sql_performance", "capacity")
 SLOW_QUERY_LIMIT = 20
 
@@ -94,6 +95,8 @@ def _scheduled(
     policy: dict[str, Any] | None = None,
 ) -> bool:
     """判断某类快照是否允许自动定时采集。"""
+    if snapshot_key == "deep_audit":
+        return False
     effective = policy or get_monitor_settings()["effective"]
     if not effective["auto_refresh_enabled"]:
         return False
@@ -121,7 +124,9 @@ def _read_snapshot_records() -> dict[str, dict[str, Any]]:
             SELECT snapshot_key, payload_json, observed_at, refresh_requested_at, updated_at,
                    UTC_TIMESTAMP(6) AS database_now
             FROM database_monitor_snapshots
-            WHERE snapshot_key IN ('realtime', 'sql_performance', 'capacity', 'integrity')
+            WHERE snapshot_key IN (
+                'realtime', 'sql_performance', 'capacity', 'integrity', 'deep_audit'
+            )
         """)
         rows = cursor.fetchall()
     return {row["snapshot_key"]: row for row in rows}
@@ -178,7 +183,7 @@ def get_dashboard_snapshots() -> dict[str, Any]:
         records = {}
     return {
         key: _enrich_snapshot(key, records.get(key), policy=effective)
-        for key in SNAPSHOT_KEYS
+        for key in DASHBOARD_SNAPSHOT_KEYS
     } | {
         "refresh_policy": {
             **effective,
@@ -187,6 +192,34 @@ def get_dashboard_snapshots() -> dict[str, Any]:
             "configuration_warning": resolved["warning"],
         }
     }
+
+
+def get_deep_audit_snapshot() -> dict[str, Any]:
+    """返回最近一次手动 deep 审计快照且绝不现场执行审计。"""
+    try:
+        records = _read_snapshot_records()
+    except Exception as exc:
+        LOGGER.warning("读取 deep 审计共享快照失败: %s", exc, exc_info=True)
+        records = {}
+    row = records.get("deep_audit")
+    payload = _decode_payload((row or {}).get("payload_json")) or _empty_snapshot(
+        "deep_audit"
+    )
+    observed_at = _parse_utc((row or {}).get("observed_at") or payload.get("observed_at"))
+    requested_at = _parse_utc((row or {}).get("refresh_requested_at"))
+    result = dict(payload)
+    result["observed_at"] = _iso_utc(observed_at) if observed_at else None
+    result["refresh_requested_at"] = _iso_utc(requested_at) if requested_at else None
+    result["refresh_pending"] = bool(
+        requested_at and (not observed_at or requested_at > observed_at)
+    )
+    result["scheduled"] = False
+    result["interval_seconds"] = None
+    result["is_stale"] = False
+    result["next_due_at"] = None
+    result.setdefault("mode", "deep")
+    result.setdefault("checks", [])
+    return result
 
 
 def request_snapshot_refresh(groups: Iterable[str]) -> dict[str, Any]:
@@ -279,6 +312,10 @@ def _collect_payload(
         return get_capacity_report()
     if snapshot_key == "integrity":
         return get_quick_integrity_report()
+    if snapshot_key == "deep_audit":
+        from Database.deep_audit import get_deep_audit_report
+
+        return get_deep_audit_report()
     raise ValueError(f"未知监控快照类型: {snapshot_key}")
 
 
@@ -304,6 +341,12 @@ def _collection_failure_payload(snapshot_key: str, exc: Exception) -> dict[str, 
         })
     if snapshot_key == "integrity":
         payload.update({"blocking_count": 0, "blocking_record_count": 0, "checks": []})
+    if snapshot_key == "deep_audit":
+        payload.update({
+            "mode": "deep",
+            "auto_scheduled": False,
+            "checks": [],
+        })
     return payload
 
 

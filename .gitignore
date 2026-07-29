@@ -10,7 +10,7 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
@@ -211,6 +211,12 @@ tests/*
 !tests/test_monitor_settings.py
 !tests/test_admin_settings_api.py
 !tests/test_admin_deployment.py
+!tests/test_admin_business_api.py
+!tests/test_admin_business_service.py
+!tests/test_deep_audit_monitoring.py
+!tests/seed_admin_31_e2e.py
+!tests/verify_admin_31_e2e.py
+!tests/run_admin_31_e2e.ps1
 
 # study
 study/

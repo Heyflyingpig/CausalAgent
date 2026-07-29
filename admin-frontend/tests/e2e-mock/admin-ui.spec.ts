@@ -257,6 +257,7 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
   await expect(page.getByText('共享监控快照已刷新。')).toBeVisible()
   await expect(page.getByText('共享监控快照已刷新。')).toBeHidden({ timeout: 7_000 })
 
+  await page.getByRole('button', { name: '打开后台导航' }).click()
   await page.getByRole('link', { name: '采集配置' }).click()
   await expect(page).toHaveURL(/\/admin\/database\/settings$/)
   await expect(page.getByRole('heading', { name: '采集配置' })).toBeVisible()
@@ -266,4 +267,293 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
   await page.getByRole('button', { name: '保存配置' }).click()
   await expect(page.getByText(/配置已保存/)).toBeVisible()
   expect(version).toBe(2)
+})
+
+test('3.1 业务页面、敏感揭示和可收缩导航在 mock 数据下可交互', async ({ page }) => {
+  const observedAt = '2026-07-26T12:00:00.000Z'
+  let messageContentReads = 0
+
+  await page.route('**/api/check_auth', route => route.fulfill({
+    json: {
+      isLoggedIn: true,
+      username: 'readonly-admin',
+      role: 'admin',
+      csrf_token: 'business-csrf',
+    },
+  }))
+  await page.route('**/api/admin/brand/logo', route => route.fulfill({
+    status: 200,
+    contentType: 'image/png',
+    body: Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  }))
+  await page.route('**/api/admin/business/**', async route => {
+    const requestUrl = new URL(route.request().url())
+    const path = requestUrl.pathname
+    const pageData = (items: unknown[]) => ({
+      success: true,
+      data: { items, limit: 20, has_more: false, next_cursor: null },
+      request_id: 'mock-business',
+    })
+
+    if (path.endsWith('/business/overview')) {
+      return route.fulfill({
+        json: {
+          success: true,
+          data: {
+            metrics: [{
+              key: 'users',
+              label: '用户',
+              value: 2,
+              is_estimate: true,
+              source_alias: 'primary-information-schema',
+            }],
+            snapshots: [{
+              snapshot_key: 'realtime',
+              observed_at: observedAt,
+              refresh_requested_at: null,
+              status: 'healthy',
+              warning: null,
+              source_alias: 'primary',
+            }],
+            observed_at: observedAt,
+            source_alias: 'primary-information-schema',
+            is_estimate: true,
+          },
+          request_id: 'mock-overview',
+        },
+      })
+    }
+    if (/\/business\/users\/1$/.test(path)) {
+      return route.fulfill({
+        json: {
+          success: true,
+          data: {
+            id: 1,
+            username: 'alice',
+            role: 'admin',
+            is_active: true,
+            created_at: observedAt,
+            last_login_at: observedAt,
+          },
+          request_id: 'mock-user-detail',
+        },
+      })
+    }
+    if (path.endsWith('/business/users')) {
+      return route.fulfill({
+        json: pageData([{
+          id: 1,
+          username: 'alice',
+          role: 'admin',
+          is_active: true,
+          created_at: observedAt,
+          last_login_at: observedAt,
+        }]),
+      })
+    }
+    if (/\/business\/sessions\/session-1\/messages$/.test(path)) {
+      return route.fulfill({
+        json: pageData([{
+          id: 11,
+          session_id: 'session-1',
+          user_id: 1,
+          username: 'alice',
+          message_type: 'user',
+          content_preview: '只读摘要',
+          content_length: 10,
+          has_attachment: false,
+          attachment_count: 0,
+          created_at: observedAt,
+        }]),
+      })
+    }
+    if (/\/business\/sessions\/session-1$/.test(path)) {
+      return route.fulfill({
+        json: {
+          success: true,
+          data: {
+            id: 'session-1',
+            user_id: 1,
+            username: 'alice',
+            title: '核对会话',
+            created_at: observedAt,
+            last_activity_at: observedAt,
+            message_count: 1,
+            is_archived: false,
+            archived_at: null,
+          },
+          request_id: 'mock-session-detail',
+        },
+      })
+    }
+    if (path.endsWith('/business/sessions')) {
+      return route.fulfill({
+        json: pageData([{
+          id: 'session-1',
+          user_id: 1,
+          username: 'alice',
+          title: '核对会话',
+          created_at: observedAt,
+          last_activity_at: observedAt,
+          message_count: 1,
+          is_archived: false,
+          archived_at: null,
+        }]),
+      })
+    }
+    if (/\/business\/messages\/11\/content$/.test(path)) {
+      messageContentReads += 1
+      return route.fulfill({
+        json: {
+          success: true,
+          data: {
+            content: '<b>只作为文本</b>',
+            offset: 0,
+            limit: 65536,
+            total_length: 11,
+            complete: true,
+            next_offset: null,
+          },
+          request_id: 'mock-message-content',
+        },
+      })
+    }
+    if (path.endsWith('/business/jobs')) {
+      return route.fulfill({
+        json: pageData([{
+          job_id: 'job-1',
+          user_id: 1,
+          username: 'alice',
+          session_id: 'session-1',
+          status: 'succeeded',
+          worker_id: 'worker-1',
+          attempt_count: 1,
+          max_attempts: 3,
+          has_result: true,
+          locked_at: observedAt,
+          heartbeat_at: observedAt,
+          created_at: observedAt,
+          started_at: observedAt,
+          finished_at: observedAt,
+          chat_saved_at: observedAt,
+        }]),
+      })
+    }
+    if (path.endsWith('/business/files')) {
+      return route.fulfill({
+        json: pageData([{
+          id: 9,
+          user_id: 1,
+          username: 'alice',
+          filename: 'stored.csv',
+          original_filename: 'report.csv',
+          mime_type: 'text/csv',
+          file_size: 24,
+          upload_timestamp: observedAt,
+          last_accessed_at: observedAt,
+          access_count: 0,
+        }]),
+      })
+    }
+    return route.fulfill({
+      status: 404,
+      json: {
+        success: false,
+        code: 'not_found',
+        error: 'mock route missing',
+        request_id: 'mock-missing',
+      },
+    })
+  })
+  await page.route('**/api/admin/db/audit?mode=quick', route => route.fulfill({
+    json: {
+      success: true,
+      data: { observed_at: observedAt, checks: [] },
+      request_id: 'mock-quick',
+    },
+  }))
+  await page.route('**/api/admin/db/audit?mode=deep', route => route.fulfill({
+    json: {
+      success: true,
+      data: {
+        mode: 'deep',
+        status: 'healthy',
+        observed_at: observedAt,
+        refresh_requested_at: null,
+        refresh_pending: false,
+        scheduled: false,
+        source_alias: 'deep-audit-shared-snapshot',
+        query_timeout_ms: 3000,
+        sample_limit: 20,
+        checks: [{
+          key: 'revision',
+          label: 'Alembic revision',
+          status: 'healthy',
+          summary: '迁移链一致',
+          details: { matches: true },
+        }],
+      },
+      request_id: 'mock-deep',
+    },
+  }))
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto('/admin/overview')
+  await expect(page.getByRole('heading', { name: '业务概览' })).toBeVisible()
+  await expect(page.getByText('primary-information-schema')).toBeVisible()
+
+  const logoSources = await page.locator('img[alt="CausalAgent"], .mobile-brand-icon img')
+    .evaluateAll(images => images.map(image => image.getAttribute('src')))
+  expect(new Set(logoSources)).toEqual(new Set(['/api/admin/brand/logo']))
+
+  const toggle = page.getByRole('button', { name: '收起左侧导航' })
+  await toggle.click()
+  await expect(page.locator('.admin-shell')).toHaveClass(/sidebar-collapsed/)
+  expect(await page.evaluate(() => localStorage.getItem('causalagent.admin.sidebar.collapsed')))
+    .toBe('true')
+  await page.reload()
+  await expect(page.locator('.admin-shell')).toHaveClass(/sidebar-collapsed/)
+  await page.getByRole('button', { name: '展开左侧导航' }).click()
+
+  await page.getByRole('link', { name: '用户与权限' }).click()
+  await expect(page.getByRole('heading', { name: '用户与权限' })).toBeVisible()
+  await expect(page.getByText('alice', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '查看详情' }).click()
+  await expect(page.getByText('用户只读详情')).toBeVisible()
+  await page.keyboard.press('Escape')
+
+  await page.getByRole('link', { name: '会话与内容' }).click()
+  await expect(page.getByRole('heading', { name: '会话与内容' })).toBeVisible()
+  await expect(page.getByText('核对会话')).toBeVisible()
+  expect(messageContentReads).toBe(0)
+  await page.getByRole('button', { name: '查看详情' }).click()
+  await expect(page.getByText('只读摘要')).toBeVisible()
+  expect(messageContentReads).toBe(0)
+  await page.getByRole('button', { name: '查看正文' }).click()
+  await expect(page.getByText('<b>只作为文本</b>', { exact: true })).toBeVisible()
+  expect(messageContentReads).toBe(1)
+  await expect(page.locator('.sensitive-content b')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+
+  await page.getByRole('link', { name: '分析任务' }).click()
+  await expect(page.getByRole('heading', { name: '分析任务' })).toBeVisible()
+  await expect(page.getByText('job-1', { exact: true })).toBeVisible()
+
+  await page.getByRole('link', { name: '文件资产' }).click()
+  await expect(page.getByRole('heading', { name: '文件资产' })).toBeVisible()
+  await expect(page.getByText('report.csv', { exact: true })).toBeVisible()
+
+  await page.getByRole('link', { name: 'Schema 与审计' }).click()
+  await expect(page.getByRole('heading', { name: 'Schema 与深度审计' })).toBeVisible()
+  await expect(page.getByText('迁移链一致')).toBeVisible()
+
+  await page.setViewportSize({ width: 720, height: 900 })
+  await page.getByRole('button', { name: '打开后台导航' }).click()
+  await expect(page.locator('.admin-sidebar')).toHaveClass(/mobile-open/)
+  await page.getByRole('button', { name: '关闭后台导航' }).first().click()
+  await expect(page.locator('.admin-sidebar')).not.toHaveClass(/mobile-open/)
 })

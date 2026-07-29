@@ -71,3 +71,162 @@ export interface Identity {
   role?: 'user' | 'admin'
   csrf_token?: string
 }
+
+export interface CursorPage<T> {
+  items: T[]
+  limit: number
+  has_more: boolean
+  next_cursor: string | null
+}
+
+export interface OverviewMetric {
+  key: string
+  label: string
+  value: number
+  is_estimate: boolean
+  source_alias: string
+}
+
+export interface SnapshotSummary {
+  snapshot_key: string
+  observed_at: string | null
+  refresh_requested_at: string | null
+  status: HealthStatus
+  warning: string | null
+  source_alias: string
+}
+
+export interface BusinessOverview {
+  metrics: OverviewMetric[]
+  snapshots: SnapshotSummary[]
+  observed_at: string
+  source_alias: string
+  is_estimate: boolean
+}
+
+export interface AdminUser {
+  id: number
+  username: string
+  role: 'user' | 'admin'
+  is_active: boolean
+  created_at: string
+  last_login_at: string | null
+}
+
+export interface AdminSession {
+  id: string
+  user_id: number
+  username: string
+  title: string | null
+  created_at: string
+  last_activity_at: string
+  message_count: number
+  is_archived: boolean
+  archived_at: string | null
+}
+
+export interface AdminMessage {
+  id: number
+  session_id: string
+  user_id: number
+  username: string
+  message_type: 'user' | 'ai'
+  content_preview: string
+  content_length: number
+  has_attachment: boolean
+  attachment_count: number
+  created_at: string
+}
+
+export interface AdminAttachment {
+  id: number
+  message_id: number
+  attachment_type: string
+  content_size: number
+  created_at: string
+}
+
+export interface AdminJob {
+  row_id?: number
+  job_id: string
+  user_id: number
+  username: string
+  session_id: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+  worker_id: string | null
+  attempt_count: number
+  max_attempts: number
+  error_preview?: string | null
+  has_input?: boolean
+  has_result: boolean
+  has_error?: boolean
+  locked_at: string | null
+  heartbeat_at: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  chat_saved_at: string | null
+}
+
+export interface AdminJobEvent {
+  id: number
+  job_id: string
+  event_type: string
+  created_at: string
+  has_payload: boolean
+}
+
+export interface AdminFile {
+  id: number
+  user_id: number
+  username: string
+  filename: string
+  original_filename: string
+  mime_type: string
+  file_size: number
+  upload_timestamp: string
+  last_accessed_at: string
+  access_count: number
+}
+
+export interface SensitiveContentChunk {
+  content: string
+  offset: number
+  limit: number
+  total_length: number
+  complete: boolean
+  next_offset: number | null
+  kind?: 'input' | 'result' | 'error'
+}
+
+export interface CsvPreview {
+  file_id: number
+  filename: string
+  mime_type: string
+  encoding: string
+  columns: string[]
+  rows: string[][]
+  truncated: boolean
+  limits: {
+    bytes: number
+    rows: number
+    columns: number
+    cell_chars: number
+  }
+}
+
+export interface DeepAuditCheck {
+  key: string
+  label: string
+  status: HealthStatus
+  summary: string
+  details: unknown
+}
+
+export interface DeepAuditSnapshot extends SnapshotMeta {
+  mode: 'deep'
+  auto_scheduled?: boolean
+  sample_limit?: number
+  query_timeout_ms?: number
+  checks: DeepAuditCheck[]
+}

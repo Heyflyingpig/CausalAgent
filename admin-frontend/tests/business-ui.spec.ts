@@ -1,0 +1,127 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import App from '../src/App.vue'
+import SensitiveContentDialog from '../src/components/SensitiveContentDialog.vue'
+
+const { loadIdentityMock } = vi.hoisted(() => ({
+  loadIdentityMock: vi.fn(async () => ({
+    isLoggedIn: true,
+    username: 'admin',
+    role: 'admin',
+    csrf_token: 'csrf',
+  })),
+}))
+
+vi.mock('../src/api', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../src/api')>()
+  return {
+    ...original,
+    loadIdentity: loadIdentityMock,
+    adminApi: {
+      ...original.adminApi,
+      logout: vi.fn(),
+    },
+  }
+})
+
+const elementStubs = {
+  ElAlert: { template: '<div class="alert-stub"><slot /></div>' },
+  ElButton: { template: '<button><slot /></button>' },
+  ElDialog: {
+    props: ['modelValue', 'title'],
+    emits: ['update:modelValue'],
+    template: '<section v-if="modelValue" class="dialog-stub"><slot /><slot name="footer" /></section>',
+  },
+  ElEmpty: { template: '<div class="empty-stub" />' },
+  ElSkeleton: { template: '<div class="skeleton-stub" />' },
+  ElTooltip: { template: '<span class="tooltip-stub"><slot /></span>' },
+}
+
+describe('3.1 管理员界面交互边界', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    loadIdentityMock.mockClear()
+  })
+
+  it('敏感正文在对话框打开前不请求，打开后只以文本节点展示', async () => {
+    const loadChunk = vi.fn(async () => ({
+      content: '<img src=x onerror=alert(1)>',
+      offset: 0,
+      limit: 65536,
+      total_length: 32,
+      complete: true,
+      next_offset: null,
+    }))
+    const wrapper = mount(SensitiveContentDialog, {
+      props: {
+        modelValue: false,
+        title: '消息正文',
+        loadChunk,
+        'onUpdate:modelValue': () => undefined,
+      },
+      global: { stubs: elementStubs },
+    })
+
+    expect(loadChunk).not.toHaveBeenCalled()
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+
+    expect(loadChunk).toHaveBeenCalledOnce()
+    expect(wrapper.find('pre').text()).toBe('<img src=x onerror=alert(1)>')
+    expect(wrapper.find('img').exists()).toBe(false)
+  })
+
+  it('桌面侧栏在 248/76 模式间切换并持久化，Logo 始终复用受保护原图', async () => {
+    const router = createRouter({
+      history: createMemoryHistory('/admin/'),
+      routes: [{ path: '/database', component: { template: '<div>database</div>' } }],
+    })
+    await router.push('/database')
+    await router.isReady()
+    const wrapper = mount(App, {
+      global: {
+        plugins: [router],
+        stubs: elementStubs,
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.classes()).not.toContain('sidebar-collapsed')
+    expect(wrapper.findAll('img[src="/api/admin/brand/logo"]')).toHaveLength(2)
+    await wrapper.find('.sidebar-toggle').trigger('click')
+    expect(wrapper.classes()).toContain('sidebar-collapsed')
+    expect(window.localStorage.getItem('causalagent.admin.sidebar.collapsed')).toBe('true')
+
+    wrapper.unmount()
+    const restored = mount(App, {
+      global: {
+        plugins: [router],
+        stubs: elementStubs,
+      },
+    })
+    await flushPromises()
+    expect(restored.classes()).toContain('sidebar-collapsed')
+  })
+
+  it('移动端导航可以打开并通过遮罩关闭', async () => {
+    const router = createRouter({
+      history: createMemoryHistory('/admin/'),
+      routes: [{ path: '/database', component: { template: '<div>database</div>' } }],
+    })
+    await router.push('/database')
+    await router.isReady()
+    const wrapper = mount(App, {
+      global: {
+        plugins: [router],
+        stubs: elementStubs,
+      },
+    })
+    await flushPromises()
+
+    await wrapper.find('.mobile-menu-button').trigger('click')
+    expect(wrapper.find('.admin-sidebar').classes()).toContain('mobile-open')
+    await wrapper.find('.sidebar-backdrop').trigger('click')
+    expect(wrapper.find('.admin-sidebar').classes()).not.toContain('mobile-open')
+  })
+})

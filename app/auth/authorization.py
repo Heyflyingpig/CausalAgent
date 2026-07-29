@@ -5,6 +5,7 @@ from functools import wraps
 from flask import g, jsonify, redirect
 
 from app.auth.session_guard import get_current_session_user
+from app.request_context import get_request_id
 
 
 def admin_required(view_func=None, *, page: bool = False):
@@ -20,10 +21,20 @@ def admin_required(view_func=None, *, page: bool = False):
             if current_user is None or not current_user.get("is_active"):
                 if page:
                     return redirect("/")
-                return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
-            if current_user.get("role") != "admin":
-                return jsonify({"success": False, "error": "需要管理员权限"}), 403
+                return jsonify({
+                    "success": False,
+                    "error": "用户未登录或会话已过期",
+                    "code": "auth_required",
+                    "request_id": get_request_id(),
+                }), 401
             g.current_user = current_user
+            if current_user.get("role") != "admin":
+                return jsonify({
+                    "success": False,
+                    "error": "需要管理员权限",
+                    "code": "admin_required",
+                    "request_id": get_request_id(),
+                }), 403
             return func(*args, **kwargs)
 
         return wrapped_view

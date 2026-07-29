@@ -232,7 +232,7 @@ MYSQL_POOL_SIZE_READ=5
 MYSQL_REPLICA_MAX_LAG_SECONDS=2
 MYSQL_QUERY_WARN_MS=500
 
-# 管理员只读数据库看板
+# 管理员数据库看板、3.1 只读业务后台与 deep 审计
 DB_INSPECTION_QUERY_TIMEOUT_MS=3000
 DB_DASHBOARD_CONNECTION_WARNING_PERCENT=70
 DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=85
@@ -327,7 +327,11 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 
 “SQL 性能摘要/高负载 SQL”中的 Performance Schema digest 按累计 `SUM_TIMER_WAIT` 排序，不表示单次执行时间超过 `long_query_time`；`slow_query_log`、`long_query_time` 和 `Slow_queries` 仍表示 MySQL 慢查询配置与状态。看板主要用采集窗口内 `Slow_queries` 增量告警，默认增量达到 `1` 进入 warning，启动以来累计值仅作辅助信息。
 
-管理员登录或恢复会话后只进入受保护的 `/admin/database` 后台，不进入聊天界面；普通用户继续进入原聊天界面。管理员后台已经迁移到独立 `admin-frontend/` 的 Vue 3 + TypeScript + Element Plus 应用，提供 `/admin/database` 看板和 `/admin/database/settings` 配置页；普通用户的 Flask 静态 HTML/CSS/JavaScript 与聊天 API/SSE 协议保持不变。后台仍只提供共享快照、手动刷新、独立完整性审计和七项采集参数配置，没有 SQL、修复、迁移、用户管理或任意业务数据写入入口。运行期审计不再重复扫描已经由外键保证的关系，只轻量确认关键约束仍存在，并保留当前没有外键保证的 checkpoint/session 关系检查；升级前审计则按现有 schema 和待执行迁移决定是否需要孤立数据 preflight。连接使用率默认在 `70%` 进入 warning、`85%` 进入 error；单条检查 SELECT 默认最多执行 `3000ms`。
+管理员登录或恢复会话后仍以 `/admin/database` 为落点，不进入聊天界面；普通用户继续进入原聊天界面。管理员后台位于独立的 `admin-frontend/` Vue 3 + TypeScript + Element Plus 应用，现提供业务概览、用户、会话/消息、任务/事件、文件资产、数据库看板、采集配置与 Schema/deep 审计页面。左侧导航在桌面端可在 `248px` 和约 `76px` 间收缩并保存浏览器偏好，移动端使用可关闭抽屉；展开和折叠状态均复用受保护接口返回的 `README/CausalAgent.png` 原图。
+
+3.1 业务页面只做有界、主库强一致读取，不提供用户启停、角色修改、改密、删除、任务控制、SQL、迁移或复制控制。列表默认 20 条、最多 50 条，使用不透明游标；密码哈希、正文、文件 BLOB/哈希、Cookie、Token、账号 host 和 grants 不进入列表 DTO。消息、附件以及任务输入/结果/错误只在管理员明确点击后通过最多 `64 KiB` 的分块接口读取，成功敏感读取需要审计可写，否则失败关闭。CSV 预览只以文本展示，最多读取 `256 KiB`、100 行、50 列、单元格 1000 字符；预览或下载成功会在同一事务中增加 `access_count`、更新 `last_accessed_at` 并写入不含正文的访问审计。
+
+数据库审计提供 quick 和 deep 两种共享快照。deep 只能手动登记，由独立 monitor 执行 revision、关键 schema、运行时、账号职责、Job/Event、checkpoint/pending writes、归档关系、`active_session_key` 和逐从库状态检查；它永不定时调度、不自动修复，也不返回真实账号、host 或 grants。普通用户的 Flask 静态 HTML/CSS/JavaScript 与聊天 API、Job/Event 和 SSE 契约保持不变。连接使用率默认在 `70%` 进入 warning、`85%` 进入 error；单条检查 SELECT 默认最多执行 `3000ms`。
 
 管理员前端开发与验证：
 
@@ -340,13 +344,21 @@ npm run test:e2e:mock
 npm run build
 ```
 
+3.1 的真实写副作用与迁移往返只在独立临时主从中验收。先完成上述生产构建，再从仓库根目录运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests/run_admin_31_e2e.ps1
+```
+
+脚本使用 `docker-compose.replica.yml` 与 `docker-compose.admin-e2e.yml`，生成仅存在于进程环境中的临时凭据，并使用 `127.0.0.1:13317` / `127.0.0.2:13317` 和 Web `15011`，不会迁移或写入当前开发库。为遵守清理门禁，脚本只停止自己启动的 Flask/monitor 进程，结束后会保留明确命名的 `causalchat31e2e_*` 数据库容器和项目卷；确认后再单独清理。
+
 真实 Flask + monitor + 隔离 MySQL 的 Playwright 流程需要提供
 `PLAYWRIGHT_BASE_URL`、`PLAYWRIGHT_ADMIN_USERNAME`、`PLAYWRIGHT_ADMIN_PASSWORD`、
 `PLAYWRIGHT_USER_USERNAME` 和 `PLAYWRIGHT_USER_PASSWORD` 后执行
 `npm run test:e2e`。本机没有当前 Playwright Chromium 构件时，可显式设置
 `PLAYWRIGHT_CHANNEL=msedge` 复用已安装的 Edge；CI 未设置时仍使用标准 Chromium。
 
-Vite 固定使用 `/admin/` base，并只在开发模式代理 `/api` 到 Flask。只有显式设置 `ADMIN_VITE_DEV_SERVER_URL=http://127.0.0.1:5173` 时，Flask 完成页面鉴权后才跳转到 Vite；未配置时 Flask 托管生产构建。Dockerfile 使用 Node 24 构建阶段生成 Vue 产物，并把产物复制到最终 Python 镜像的 `/opt/causalchat-admin`；最终镜像不包含 Node 运行时、不启动 Vite，也不开放 Node 端口。发布回滚以迁移前基线提交或上一版镜像为单位，不提供长期 legacy 管理路由。
+Vite 固定使用 `/admin/` base，并只在开发模式代理 `/api` 到 Flask。只有显式设置 `ADMIN_VITE_DEV_SERVER_URL=http://127.0.0.1:5173` 时，Flask 完成页面鉴权后才跳转到 Vite；未配置时 Flask 托管生产构建。`admin-frontend/dist/` 作为发布产物随源码同步构建并纳入 Git；根 `.gitignore` 中的 `/dist/` 只忽略仓库根目录的 Python 打包产物。Dockerfile 使用 Node 24 构建阶段从当前源码重新生成 Vue 产物，并把产物复制到最终 Python 镜像的 `/opt/causalchat-admin`；因此 `.dockerignore` 仍排除本地 `admin-frontend/dist/`。最终镜像不包含 Node 运行时、不启动 Vite，也不开放 Node 端口。发布回滚以迁移前基线提交或上一版镜像为单位，不提供长期 legacy 管理路由。
 
 执行包含 `users.role` 的最新 Alembic migration 后，可以把一个已经注册且已启用的用户提升为初始管理员：
 
@@ -544,6 +556,7 @@ python Run_causal.py
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
 ├── .github/workflows/       # GitHub Actions 工作流
+├── docker-compose.admin-e2e.yml # 3.1 独立主从验收端口/容器覆盖
 ├── README.md               # 项目说明
 ├── README/                 # README 图片与更新日志
 ├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
@@ -581,6 +594,7 @@ python Run_causal.py
 │   ├── database_init.py    # 数据库初始化引导脚本
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
 │   ├── inspection.py       # 管理员看板统一只读检查服务
+│   ├── deep_audit.py       # 3.1 手动 deep 数据库事实审计
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口
 │   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
 │   ├── monitor_worker.py   # 数据库看板分层采集进程
