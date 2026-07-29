@@ -2,6 +2,7 @@
 用户认证路由
 """
 from flask import Blueprint, request, jsonify, session
+from app.auth.csrf import ensure_csrf_token
 from app.auth.session_guard import get_current_session_user
 import bcrypt
 import logging
@@ -78,12 +79,14 @@ def handle_login():
         session.clear() # 先清除旧的会话数据
         session['user_id'] = user_data['id']
         session['username'] = user_data['username']
+        csrf_token = ensure_csrf_token()
         # Session 会自动通过浏览器 cookie 维护状态，不再需要文件
         
         return jsonify({
             'success': True,
             'username': username,
             'role': user_data['role'],
+            'csrf_token': csrf_token,
         })
     else:
         logging.warning(f"用户登录失败（密码错误）: {username}")
@@ -115,6 +118,7 @@ def check_auth():
             'isLoggedIn': True,
             'username': username,
             'role': current_user['role'],
+            'csrf_token': ensure_csrf_token(),
         })
     else:
         logging.debug("检查认证状态：无有效会话")

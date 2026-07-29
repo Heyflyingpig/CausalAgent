@@ -11,9 +11,11 @@ def create_app():
     from app.agent.routes import agent_bp
     from app.main.routes import main_bp
     from app.admin.routes import admin_bp, admin_page_bp
+    from app.request_context import register_request_context
 
     app = Flask(__name__, static_folder="static")
     app.secret_key = settings.SECRET_KEY
+    register_request_context(app)
 
     try:
         check_database_readiness()

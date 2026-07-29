@@ -14,7 +14,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
@@ -208,9 +208,17 @@ tests/*
 !tests/test_admin_cli.py
 !tests/test_migration_chain.py
 !tests/test_database_inspection.py
+!tests/test_monitor_settings.py
+!tests/test_admin_settings_api.py
+!tests/test_admin_deployment.py
 
 # study
 study/
+
+# Admin Vue
+admin-frontend/node_modules/
+admin-frontend/test-results/
+admin-frontend/playwright-report/
 
 # docs
 docs/

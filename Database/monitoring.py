@@ -14,8 +14,8 @@ from Database.inspection import (
     get_realtime_report,
     inspect_slow_queries,
 )
+from Database.monitor_settings import get_monitor_settings
 from app.db import get_read_connection_with_source, get_write_connection
-from config.settings import settings
 
 
 LOGGER = logging.getLogger(__name__)
@@ -74,34 +74,41 @@ def _decode_payload(value: Any) -> dict[str, Any] | None:
     return decoded if isinstance(decoded, dict) else None
 
 
-def _interval_seconds(snapshot_key: str) -> int:
+def _interval_seconds(
+    snapshot_key: str,
+    policy: dict[str, Any] | None = None,
+) -> int:
     """从统一配置取得某类快照的采集周期。"""
+    effective = policy or get_monitor_settings()["effective"]
     intervals = {
-        "realtime": settings.DB_MONITOR_REALTIME_INTERVAL_SECONDS,
-        "sql_performance": settings.DB_MONITOR_SQL_INTERVAL_SECONDS,
-        "capacity": settings.DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS,
-        "integrity": settings.DB_MONITOR_INTEGRITY_INTERVAL_SECONDS,
+        "realtime": effective["realtime_interval_seconds"],
+        "sql_performance": effective["sql_interval_seconds"],
+        "capacity": effective["table_capacity_interval_seconds"],
+        "integrity": effective["integrity_interval_seconds"],
     }
     return int(intervals[snapshot_key])
 
 
-def _scheduled(snapshot_key: str) -> bool:
+def _scheduled(
+    snapshot_key: str,
+    policy: dict[str, Any] | None = None,
+) -> bool:
     """判断某类快照是否允许自动定时采集。"""
-    if not settings.DB_MONITOR_AUTO_REFRESH_ENABLED:
+    effective = policy or get_monitor_settings()["effective"]
+    if not effective["auto_refresh_enabled"]:
         return False
-    return snapshot_key != "integrity" or settings.DB_MONITOR_INTEGRITY_ENABLED
+    return snapshot_key != "integrity" or effective["integrity_enabled"]
 
 
 def get_refresh_policy() -> dict[str, Any]:
     """返回供采集器和前端共同使用的有效刷新策略。"""
+    resolved = get_monitor_settings()
+    effective = resolved["effective"]
     return {
-        "auto_refresh_enabled": settings.DB_MONITOR_AUTO_REFRESH_ENABLED,
-        "realtime_interval_seconds": settings.DB_MONITOR_REALTIME_INTERVAL_SECONDS,
-        "sql_interval_seconds": settings.DB_MONITOR_SQL_INTERVAL_SECONDS,
-        "table_capacity_interval_seconds": settings.DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS,
-        "slow_query_warning_delta": settings.DB_MONITOR_SLOW_QUERY_WARNING_DELTA,
-        "integrity_enabled": settings.DB_MONITOR_INTEGRITY_ENABLED,
-        "integrity_interval_seconds": settings.DB_MONITOR_INTEGRITY_INTERVAL_SECONDS,
+        **effective,
+        "configuration_version": resolved["version"],
+        "configuration_state": resolved["state"],
+        "configuration_warning": resolved["warning"],
     }
 
 
@@ -132,18 +139,24 @@ def _empty_snapshot(snapshot_key: str) -> dict[str, Any]:
     }
 
 
-def _enrich_snapshot(snapshot_key: str, row: dict[str, Any] | None) -> dict[str, Any]:
+def _enrich_snapshot(
+    snapshot_key: str,
+    row: dict[str, Any] | None,
+    *,
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """为持久化 payload 补充过期、调度和手动请求状态。"""
     payload = _decode_payload(row.get("payload_json")) if row else None
     result = dict(payload or _empty_snapshot(snapshot_key))
     observed_at = _parse_utc((row or {}).get("observed_at") or result.get("observed_at"))
     requested_at = _parse_utc((row or {}).get("refresh_requested_at"))
-    interval = _interval_seconds(snapshot_key)
+    effective = policy or get_monitor_settings()["effective"]
+    interval = _interval_seconds(snapshot_key, effective)
     now = _parse_utc((row or {}).get("database_now")) or _utc_now()
     result["observed_at"] = _iso_utc(observed_at) if observed_at else None
     result["refresh_requested_at"] = _iso_utc(requested_at) if requested_at else None
     result["refresh_pending"] = bool(requested_at and (not observed_at or requested_at > observed_at))
-    result["scheduled"] = _scheduled(snapshot_key)
+    result["scheduled"] = _scheduled(snapshot_key, effective)
     result["interval_seconds"] = interval
     result["is_stale"] = not observed_at or now - observed_at > timedelta(seconds=interval * 2)
     result["next_due_at"] = (
@@ -156,15 +169,24 @@ def _enrich_snapshot(snapshot_key: str, row: dict[str, Any] | None) -> dict[str,
 
 def get_dashboard_snapshots() -> dict[str, Any]:
     """返回全部共享快照；该函数绝不触发现场数据库采集。"""
+    resolved = get_monitor_settings()
+    effective = resolved["effective"]
     try:
         records = _read_snapshot_records()
     except Exception as exc:
         LOGGER.warning("读取数据库监控共享快照失败: %s", exc, exc_info=True)
         records = {}
     return {
-        key: _enrich_snapshot(key, records.get(key))
+        key: _enrich_snapshot(key, records.get(key), policy=effective)
         for key in SNAPSHOT_KEYS
-    } | {"refresh_policy": get_refresh_policy()}
+    } | {
+        "refresh_policy": {
+            **effective,
+            "configuration_version": resolved["version"],
+            "configuration_state": resolved["state"],
+            "configuration_warning": resolved["warning"],
+        }
+    }
 
 
 def request_snapshot_refresh(groups: Iterable[str]) -> dict[str, Any]:
@@ -212,9 +234,14 @@ def _result_status(results: Iterable[dict[str, Any]]) -> str:
 def get_slow_query_summary(
     limit: int = SLOW_QUERY_LIMIT,
     previous: dict[str, Any] | None = None,
+    warning_threshold: int | None = None,
 ) -> dict[str, Any]:
     """采集并展平 SQL 性能结果，同时保留旧慢查询字段。"""
-    result = inspect_slow_queries(limit=limit, previous=previous)
+    result = inspect_slow_queries(
+        limit=limit,
+        previous=previous,
+        warning_threshold=warning_threshold,
+    )
     value = result.get("value") or {}
     statements = value.get("high_load_statements", value.get("top_statements") or [])
     return {
@@ -233,12 +260,21 @@ def get_slow_query_summary(
     }
 
 
-def _collect_payload(snapshot_key: str, previous: dict[str, Any] | None) -> dict[str, Any]:
+def _collect_payload(
+    snapshot_key: str,
+    previous: dict[str, Any] | None,
+    *,
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """调用指定分层采集器，路由和 SQL 均不包含调度策略。"""
+    effective = policy or get_monitor_settings()["effective"]
     if snapshot_key == "realtime":
         return get_realtime_report()
     if snapshot_key == "sql_performance":
-        return get_slow_query_summary(previous=previous)
+        return get_slow_query_summary(
+            previous=previous,
+            warning_threshold=effective["slow_query_warning_delta"],
+        )
     if snapshot_key == "capacity":
         return get_capacity_report()
     if snapshot_key == "integrity":
@@ -284,11 +320,20 @@ def collect_snapshot(snapshot_key: str, *, require_due: bool = False) -> bool:
             return False
         try:
             records = _read_snapshot_records()
-            if require_due and not _record_is_due(snapshot_key, records.get(snapshot_key)):
+            effective = get_monitor_settings()["effective"]
+            if require_due and not _record_is_due(
+                snapshot_key,
+                records.get(snapshot_key),
+                policy=effective,
+            ):
                 return False
             previous = _decode_payload((records.get(snapshot_key) or {}).get("payload_json"))
             try:
-                payload = _collect_payload(snapshot_key, previous)
+                payload = _collect_payload(
+                    snapshot_key,
+                    previous,
+                    policy=effective,
+                )
             except Exception as exc:
                 payload = _collection_failure_payload(snapshot_key, exc)
             cursor.execute("""
@@ -312,16 +357,24 @@ def collect_snapshot(snapshot_key: str, *, require_due: bool = False) -> bool:
                 LOGGER.warning("释放监控采集锁失败: %s", snapshot_key, exc_info=True)
 
 
-def _record_is_due(snapshot_key: str, row: dict[str, Any] | None) -> bool:
+def _record_is_due(
+    snapshot_key: str,
+    row: dict[str, Any] | None,
+    *,
+    policy: dict[str, Any] | None = None,
+) -> bool:
     """判断快照是否因手动请求或自动周期到期而需要采集。"""
+    effective = policy or get_monitor_settings()["effective"]
     observed_at = _parse_utc((row or {}).get("observed_at"))
     requested_at = _parse_utc((row or {}).get("refresh_requested_at"))
     if requested_at and (not observed_at or requested_at > observed_at):
         return True
-    if not _scheduled(snapshot_key):
+    if not _scheduled(snapshot_key, effective):
         return False
     now = _parse_utc((row or {}).get("database_now")) or _utc_now()
-    return not observed_at or now - observed_at >= timedelta(seconds=_interval_seconds(snapshot_key))
+    return not observed_at or now - observed_at >= timedelta(
+        seconds=_interval_seconds(snapshot_key, effective)
+    )
 
 
 def get_due_snapshot_keys() -> tuple[str, ...]:
@@ -331,10 +384,15 @@ def get_due_snapshot_keys() -> tuple[str, ...]:
     except Exception as exc:
         LOGGER.warning("读取监控调度状态失败: %s", exc, exc_info=True)
         return ()
+    effective = get_monitor_settings()["effective"]
     return tuple(
         snapshot_key
         for snapshot_key in SNAPSHOT_KEYS
-        if _record_is_due(snapshot_key, records.get(snapshot_key))
+        if _record_is_due(
+            snapshot_key,
+            records.get(snapshot_key),
+            policy=effective,
+        )
     )
 
 

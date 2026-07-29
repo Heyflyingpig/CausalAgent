@@ -21,6 +21,7 @@ for key, value in TEST_ENV.items():
 
 
 from app.admin.routes import admin_bp, admin_page_bp
+from app.request_context import register_request_context
 
 
 ADMIN_GET_ENDPOINTS = (
@@ -30,6 +31,8 @@ ADMIN_GET_ENDPOINTS = (
     "/api/admin/db/integrity?mode=quick",
     "/api/admin/db/slow-queries?limit=20",
     "/api/admin/jobs/workers",
+    "/api/admin/db/settings",
+    "/api/admin/db/settings/history?limit=20",
 )
 ADMIN_POST_ENDPOINTS = (
     "/api/admin/db/refresh",
@@ -42,6 +45,7 @@ def build_app():
     """构建只注册管理接口和后台页面蓝图的最小测试应用。"""
     app = Flask(__name__)
     app.secret_key = "admin-test-secret"
+    register_request_context(app)
     app.register_blueprint(admin_bp)
     app.register_blueprint(admin_page_bp)
     return app
@@ -87,24 +91,45 @@ def admin_service_patches():
                 "requested_at": "2026-07-22T00:00:00.000Z",
             },
         ),
+        patch(
+            "app.admin.routes.get_monitor_settings",
+            return_value={
+                "version": 1,
+                "overrides": {},
+                "effective": {},
+                "sources": {},
+                "limits": {},
+                "updated_by": None,
+                "updated_at": None,
+                "state": "current",
+                "warning": None,
+            },
+        ),
+        patch(
+            "app.admin.routes.list_monitor_setting_events",
+            return_value={"items": [], "next_before_id": None},
+        ),
     )
 
 
 class AdminAuthorizationTests(unittest.TestCase):
     """验证全部管理接口和页面共用同一个实时管理员授权边界。"""
 
-    def test_missing_session_returns_401_for_all_admin_surfaces(self):
-        """无有效会话时所有管理接口和后台页面都应返回 401。"""
+    def test_missing_session_returns_api_401_and_page_redirect(self):
+        """无有效会话时 API 返回 401，后台页面回到统一登录入口。"""
         app = build_app()
         with patch("app.auth.authorization.get_current_session_user", return_value=None):
             with app.test_client() as client:
-                for endpoint in (*ADMIN_GET_ENDPOINTS, ADMIN_PAGE):
+                for endpoint in ADMIN_GET_ENDPOINTS:
                     response = client.get(endpoint)
                     self.assertEqual(response.status_code, 401, endpoint)
                     self.assertEqual(
                         response.get_json(),
                         {"success": False, "error": "用户未登录或会话已过期"},
                     )
+                page_response = client.get(ADMIN_PAGE)
+                self.assertEqual(page_response.status_code, 302)
+                self.assertEqual(page_response.headers["Location"], "/")
                 for endpoint in ADMIN_POST_ENDPOINTS:
                     response = client.post(endpoint)
                     self.assertEqual(response.status_code, 401, endpoint)
@@ -159,6 +184,9 @@ class AdminAuthorizationTests(unittest.TestCase):
             )
             for service_patch in patches:
                 stack.enter_context(service_patch)
+            stack.enter_context(
+                patch("app.admin.routes._serve_admin_index", return_value=("vue-admin-index", 200))
+            )
             with app.test_client() as client:
                 for endpoint in ADMIN_GET_ENDPOINTS:
                     response = client.get(endpoint)
@@ -166,13 +194,18 @@ class AdminAuthorizationTests(unittest.TestCase):
                     self.assertTrue(response.get_json()["success"])
 
                 for endpoint in ADMIN_POST_ENDPOINTS:
-                    response = client.post(endpoint)
+                    with client.session_transaction() as flask_session:
+                        flask_session["csrf_token"] = "admin-csrf"
+                    response = client.post(
+                        endpoint,
+                        headers={"X-CSRF-Token": "admin-csrf"},
+                    )
                     self.assertEqual(response.status_code, 202, endpoint)
                     self.assertTrue(response.get_json()["success"])
 
                 page_response = client.get(ADMIN_PAGE)
                 self.assertEqual(page_response.status_code, 200)
-                self.assertIn("数据库状态看板", page_response.get_data(as_text=True))
+                self.assertIn("vue-admin-index", page_response.get_data(as_text=True))
                 page_response.close()
 
     def test_legacy_admin_response_shapes_remain_compatible(self):
@@ -213,8 +246,11 @@ class AdminAuthorizationTests(unittest.TestCase):
             ) as request_refresh,
         ):
             with app.test_client() as client:
-                dashboard_refresh = client.post("/api/admin/db/refresh")
-                integrity_refresh = client.post("/api/admin/db/integrity/run")
+                with client.session_transaction() as flask_session:
+                    flask_session["csrf_token"] = "refresh-csrf"
+                headers = {"X-CSRF-Token": "refresh-csrf"}
+                dashboard_refresh = client.post("/api/admin/db/refresh", headers=headers)
+                integrity_refresh = client.post("/api/admin/db/integrity/run", headers=headers)
 
         self.assertEqual(dashboard_refresh.status_code, 202)
         self.assertEqual(integrity_refresh.status_code, 202)
@@ -224,6 +260,27 @@ class AdminAuthorizationTests(unittest.TestCase):
             "capacity",
         ))
         self.assertEqual(request_refresh.call_args_list[1].args[0], ("integrity",))
+
+    def test_admin_write_requires_matching_csrf_and_returns_request_id(self):
+        """管理员写请求必须携带 Session 绑定令牌，并可由请求 ID 关联。"""
+        app = build_app()
+        admin = {"id": 2, "username": "admin", "role": "admin", "is_active": True}
+        with patch("app.auth.authorization.get_current_session_user", return_value=admin):
+            with app.test_client() as client:
+                with client.session_transaction() as flask_session:
+                    flask_session["csrf_token"] = "expected-token"
+                response = client.post(
+                    "/api/admin/db/refresh",
+                    headers={
+                        "X-CSRF-Token": "wrong-token",
+                        "X-Request-ID": "admin-write-123",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["code"], "csrf_invalid")
+        self.assertEqual(response.get_json()["request_id"], "admin-write-123")
+        self.assertEqual(response.headers["X-Request-ID"], "admin-write-123")
 
     def test_read_only_query_parameters_are_bounded(self):
         """慢查询上限和完整性模式必须在服务端白名单范围内。"""

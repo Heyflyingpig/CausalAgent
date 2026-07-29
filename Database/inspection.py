@@ -471,8 +471,9 @@ def _window_seconds(started_at: str | None, ended_at: str) -> float | None:
 def inspect_slow_queries(
     limit: int = 20,
     previous: dict[str, Any] | None = None,
+    warning_threshold: int | None = None,
 ) -> dict[str, Any]:
-    """读取主库慢查询累计状态，并计算同一采集来源上的周期增量。"""
+    """读取主库慢查询累计状态，并按动态阈值计算同源周期增量。"""
     normalized_limit = max(1, min(int(limit), MAX_SLOW_QUERY_LIMIT))
     try:
         from app.db import get_read_connection_with_source
@@ -552,7 +553,11 @@ def inspect_slow_queries(
             if baseline_reset or slow_queries_total is None
             else slow_queries_total - previous_total
         )
-        threshold = settings.DB_MONITOR_SLOW_QUERY_WARNING_DELTA
+        threshold = (
+            settings.DB_MONITOR_SLOW_QUERY_WARNING_DELTA
+            if warning_threshold is None
+            else warning_threshold
+        )
         warnings = [message for message in [digest_warning] if message]
         if str(slow_query_log).upper() not in {"ON", "1"}:
             warnings.append("当前节点未开启 slow_query_log")

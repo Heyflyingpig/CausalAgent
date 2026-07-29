@@ -29,6 +29,7 @@ from Database.inspection import (
     inspect_slow_queries,
 )
 from Database.monitoring import (
+    _collect_payload,
     _enrich_snapshot,
     _record_is_due,
     collect_due_snapshots,
@@ -53,6 +54,24 @@ def result(status="healthy", value=None, source_alias="primary", warning=None):
         "source_alias": source_alias,
         "is_estimate": False,
         "warning": warning,
+    }
+
+
+def monitor_config_payload(*, auto_refresh=True, slow_query_delta=1):
+    """构造动态监控配置服务的标准测试响应。"""
+    return {
+        "version": 1,
+        "state": "current",
+        "warning": None,
+        "effective": {
+            "auto_refresh_enabled": auto_refresh,
+            "realtime_interval_seconds": 10,
+            "sql_interval_seconds": 60,
+            "table_capacity_interval_seconds": 900,
+            "slow_query_warning_delta": slow_query_delta,
+            "integrity_enabled": False,
+            "integrity_interval_seconds": 86400,
+        },
     }
 
 
@@ -313,14 +332,12 @@ class DatabaseMonitorConfigTests(unittest.TestCase):
         self.assertEqual(config.DB_MONITOR_INTEGRITY_INTERVAL_SECONDS, 86400)
 
     def test_monitor_booleans_only_accept_explicit_supported_values(self):
-        """布尔配置只接受 true/false 与 1/0，且忽略大小写和首尾空格。"""
+        """布尔配置只接受 true/false，且忽略大小写和首尾空格。"""
         accepted = {
             "true": True,
             " TRUE ": True,
-            "1": True,
             "false": False,
             " False ": False,
-            "0": False,
         }
         for raw_value, expected in accepted.items():
             with self.subTest(raw_value=raw_value):
@@ -331,7 +348,7 @@ class DatabaseMonitorConfigTests(unittest.TestCase):
                 self.assertIs(config.DB_MONITOR_AUTO_REFRESH_ENABLED, expected)
                 self.assertIs(config.DB_MONITOR_INTEGRITY_ENABLED, expected)
 
-        for raw_value in ("yes", "on", "enabled", "2"):
+        for raw_value in ("yes", "on", "enabled", "1", "0", "2"):
             with self.subTest(invalid=raw_value):
                 with self.assertRaises(ValueError):
                     self.build_config(DB_MONITOR_AUTO_REFRESH_ENABLED=raw_value)
@@ -702,36 +719,49 @@ class DatabaseInspectionTests(unittest.TestCase):
     def test_snapshot_due_respects_layer_interval_and_manual_request(self):
         """自动周期按层判断到期，而新于快照的手动请求始终优先。"""
         now = datetime(2026, 7, 22, 0, 1, tzinfo=timezone.utc)
-        with (
-            patch("Database.monitoring._utc_now", return_value=now),
-            patch.object(settings, "DB_MONITOR_AUTO_REFRESH_ENABLED", True),
-            patch.object(settings, "DB_MONITOR_REALTIME_INTERVAL_SECONDS", 10),
-        ):
+        policy = {
+            "auto_refresh_enabled": True,
+            "realtime_interval_seconds": 10,
+            "sql_interval_seconds": 60,
+            "table_capacity_interval_seconds": 900,
+            "slow_query_warning_delta": 1,
+            "integrity_enabled": False,
+            "integrity_interval_seconds": 86400,
+        }
+        with patch("Database.monitoring._utc_now", return_value=now):
             recent = {"observed_at": now - timedelta(seconds=9)}
             due = {"observed_at": now - timedelta(seconds=10)}
             requested = {
                 "observed_at": now - timedelta(seconds=1),
                 "refresh_requested_at": now,
             }
-            self.assertFalse(_record_is_due("realtime", recent))
-            self.assertTrue(_record_is_due("realtime", due))
-            self.assertTrue(_record_is_due("realtime", requested))
+            self.assertFalse(_record_is_due("realtime", recent, policy=policy))
+            self.assertTrue(_record_is_due("realtime", due, policy=policy))
+            self.assertTrue(_record_is_due("realtime", requested, policy=policy))
 
     def test_auto_refresh_off_still_allows_manual_refresh(self):
         """总开关关闭时不执行缺失或到期采集，但仍处理显式刷新请求。"""
         now = datetime(2026, 7, 22, 0, 1, tzinfo=timezone.utc)
-        with (
-            patch("Database.monitoring._utc_now", return_value=now),
-            patch.object(settings, "DB_MONITOR_AUTO_REFRESH_ENABLED", False),
-        ):
-            self.assertFalse(_record_is_due("realtime", None))
+        policy = {
+            "auto_refresh_enabled": False,
+            "realtime_interval_seconds": 10,
+            "sql_interval_seconds": 60,
+            "table_capacity_interval_seconds": 900,
+            "slow_query_warning_delta": 1,
+            "integrity_enabled": False,
+            "integrity_interval_seconds": 86400,
+        }
+        with patch("Database.monitoring._utc_now", return_value=now):
+            self.assertFalse(_record_is_due("realtime", None, policy=policy))
             self.assertFalse(_record_is_due(
                 "capacity",
                 {"observed_at": now - timedelta(days=1)},
+                policy=policy,
             ))
             self.assertTrue(_record_is_due(
                 "integrity",
                 {"observed_at": None, "refresh_requested_at": now},
+                policy=policy,
             ))
 
     def test_due_collection_with_auto_off_only_processes_manual_request(self):
@@ -745,7 +775,10 @@ class DatabaseInspectionTests(unittest.TestCase):
         }
         with (
             patch("Database.monitoring._utc_now", return_value=now),
-            patch.object(settings, "DB_MONITOR_AUTO_REFRESH_ENABLED", False),
+            patch(
+                "Database.monitoring.get_monitor_settings",
+                return_value=monitor_config_payload(auto_refresh=False),
+            ),
             patch("Database.monitoring._read_snapshot_records", return_value=records),
             patch("Database.monitoring.collect_snapshot", return_value=True) as collect,
         ):
@@ -764,12 +797,17 @@ class DatabaseInspectionTests(unittest.TestCase):
             "observed_at": observed_at,
             "refresh_requested_at": requested_at,
         }
-        with (
-            patch("Database.monitoring._utc_now", return_value=now),
-            patch.object(settings, "DB_MONITOR_REALTIME_INTERVAL_SECONDS", 10),
-            patch.object(settings, "DB_MONITOR_AUTO_REFRESH_ENABLED", True),
-        ):
-            snapshot = _enrich_snapshot("realtime", row)
+        policy = {
+            "auto_refresh_enabled": True,
+            "realtime_interval_seconds": 10,
+            "sql_interval_seconds": 60,
+            "table_capacity_interval_seconds": 900,
+            "slow_query_warning_delta": 1,
+            "integrity_enabled": False,
+            "integrity_interval_seconds": 86400,
+        }
+        with patch("Database.monitoring._utc_now", return_value=now):
+            snapshot = _enrich_snapshot("realtime", row, policy=policy)
 
         self.assertTrue(snapshot["is_stale"])
         self.assertTrue(snapshot["refresh_pending"])
@@ -816,8 +854,10 @@ class DatabaseInspectionTests(unittest.TestCase):
         with (
             patch("Database.monitoring.get_write_connection", return_value=connection),
             patch("Database.monitoring._utc_now", return_value=now),
-            patch.object(settings, "DB_MONITOR_AUTO_REFRESH_ENABLED", True),
-            patch.object(settings, "DB_MONITOR_REALTIME_INTERVAL_SECONDS", 10),
+            patch(
+                "Database.monitoring.get_monitor_settings",
+                return_value=monitor_config_payload(),
+            ),
             patch(
                 "Database.monitoring._read_snapshot_records",
                 return_value={"realtime": {"observed_at": now}},
@@ -836,6 +876,10 @@ class DatabaseInspectionTests(unittest.TestCase):
         with (
             patch("Database.monitoring.get_write_connection", return_value=connection),
             patch("Database.monitoring._read_snapshot_records", return_value={}),
+            patch(
+                "Database.monitoring.get_monitor_settings",
+                return_value=monitor_config_payload(),
+            ),
             patch("Database.monitoring._collect_payload", side_effect=RuntimeError("boom")),
         ):
             collected = collect_snapshot("sql_performance")
@@ -855,6 +899,10 @@ class DatabaseInspectionTests(unittest.TestCase):
         """管理页面读取只查询共享快照，不触发任一现场采集器。"""
         with (
             patch("Database.monitoring._read_snapshot_records", return_value={}),
+            patch(
+                "Database.monitoring.get_monitor_settings",
+                return_value=monitor_config_payload(),
+            ),
             patch("Database.monitoring.get_realtime_report") as realtime_collector,
             patch("Database.monitoring.inspect_slow_queries") as sql_collector,
             patch("Database.monitoring.get_capacity_report") as capacity_collector,
@@ -873,6 +921,22 @@ class DatabaseInspectionTests(unittest.TestCase):
             integrity_collector,
         ):
             collector.assert_not_called()
+
+    def test_sql_collection_uses_resolved_dynamic_warning_threshold(self):
+        """SQL 采集必须使用数据库/环境统一解析后的动态慢查询阈值。"""
+        policy = monitor_config_payload(slow_query_delta=7)["effective"]
+        with patch(
+            "Database.monitoring.get_slow_query_summary",
+            return_value={"status": "healthy"},
+        ) as summary:
+            payload = _collect_payload(
+                "sql_performance",
+                {"Slow_queries": 3},
+                policy=policy,
+            )
+
+        self.assertEqual(payload["status"], "healthy")
+        self.assertEqual(summary.call_args.kwargs["warning_threshold"], 7)
 
     def test_legacy_monitoring_fields_are_kept_with_additive_metadata(self):
         """兼容层继续返回旧字段，并追加来源与采集信息。"""
