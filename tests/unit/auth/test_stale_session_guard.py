@@ -172,8 +172,80 @@ class SessionGuardTests(unittest.TestCase):
         self.assertEqual(payload["success"], True)
         self.assertEqual(payload["username"], "admin-login")
         self.assertEqual(payload["role"], "admin")
+        self.assertEqual(payload["redirect_to"], "/admin/database")
         self.assertIsInstance(payload["csrf_token"], str)
         self.assertGreaterEqual(len(payload["csrf_token"]), 32)
+
+    def test_login_only_returns_server_validated_admin_redirect(self):
+        """登录接口只回显白名单管理页面，并对管理员保留安全默认落点。"""
+        app = build_app()
+        service_module = types.ModuleType("app.auth.service")
+        service_module.find_user = lambda _username: {
+            "id": 8,
+            "username": "admin-login",
+            "password_hash": "stored-hash",
+            "role": "admin",
+            "is_active": True,
+        }
+        with (
+            patch.dict(sys.modules, {"app.auth.service": service_module}),
+            patch("app.auth.routes.bcrypt.checkpw", return_value=True),
+            app.test_client() as client,
+        ):
+            safe_response = client.post(
+                "/api/login",
+                json={
+                    "username": "admin-login",
+                    "password": "secret",
+                    "next": "/admin/database/settings?ignored=true#ignored",
+                },
+            )
+            unsafe_response = client.post(
+                "/api/login",
+                json={
+                    "username": "admin-login",
+                    "password": "secret",
+                    "next": "https://evil.example/admin/database",
+                },
+            )
+
+        self.assertEqual(
+            safe_response.get_json()["redirect_to"],
+            "/admin/database/settings",
+        )
+        self.assertEqual(
+            unsafe_response.get_json()["redirect_to"],
+            "/admin/database",
+        )
+
+    def test_normal_user_with_admin_return_target_reaches_authorization_boundary(self):
+        """普通用户登录可恢复原管理 URL，但不能获得任何管理员权限。"""
+        app = build_app()
+        service_module = types.ModuleType("app.auth.service")
+        service_module.find_user = lambda _username: {
+            "id": 9,
+            "username": "normal-login",
+            "password_hash": "stored-hash",
+            "role": "user",
+            "is_active": True,
+        }
+        with (
+            patch.dict(sys.modules, {"app.auth.service": service_module}),
+            patch("app.auth.routes.bcrypt.checkpw", return_value=True),
+            app.test_client() as client,
+        ):
+            response = client.post(
+                "/api/login",
+                json={
+                    "username": "normal-login",
+                    "password": "secret",
+                    "next": "/admin/users",
+                },
+            )
+
+        payload = response.get_json()
+        self.assertEqual(payload["role"], "user")
+        self.assertEqual(payload["redirect_to"], "/admin/users")
 
 
 if __name__ == "__main__":

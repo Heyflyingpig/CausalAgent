@@ -105,6 +105,14 @@ def _serve_admin_index():
     return send_from_directory(dist_dir, "index.html")
 
 
+@admin_page_bp.route("")
+@admin_page_bp.route("/")
+@admin_required(page=True)
+def admin_root_page():
+    """实时确认管理员身份后，把后台根路径送到固定默认落点。"""
+    return redirect("/admin/database")
+
+
 @admin_page_bp.route("/overview")
 @admin_page_bp.route("/users")
 @admin_page_bp.route("/sessions")

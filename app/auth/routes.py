@@ -2,6 +2,7 @@
 用户认证路由
 """
 from flask import Blueprint, request, jsonify, session
+from app.auth.authorization import DEFAULT_ADMIN_PAGE, safe_admin_return_target
 from app.auth.csrf import ensure_csrf_token
 from app.auth.session_guard import get_current_session_user
 import bcrypt
@@ -31,9 +32,9 @@ def handle_register():
     if len(plain_password) < 6:
         return jsonify({'success': False, 'error': '密码至少需要6个字符'}), 400
     
-    # 可选：添加密码强度验证
-    # if not any(c.isdigit() for c in plain_password):
-    #     return jsonify({'success': False, 'error': '密码必须包含至少一个数字'}), 400
+    # 密码强度验证
+    if not any(c.isdigit() for c in plain_password):
+        return jsonify({'success': False, 'error': '密码必须包含至少一个数字'}), 400
 
     from app.auth.service import register_user
 
@@ -56,6 +57,7 @@ def handle_login():
     data = request.json
     username = data.get('username')
     plain_password = data.get('password')  # 接收明文密码（HTTPS保护传输）
+    requested_next = data.get('next')
 
     if not username or not plain_password:
         return jsonify({'success': False, 'error': '缺少用户名或密码'}), 400
@@ -83,12 +85,19 @@ def handle_login():
         csrf_token = ensure_csrf_token()
         # Session 会自动通过浏览器 cookie 维护状态，不再需要文件
         
-        return jsonify({
+        redirect_to = safe_admin_return_target(requested_next)
+        if redirect_to is None and user_data['role'] == 'admin':
+            redirect_to = DEFAULT_ADMIN_PAGE
+
+        response_payload = {
             'success': True,
             'username': username,
             'role': user_data['role'],
             'csrf_token': csrf_token,
-        })
+        }
+        if redirect_to is not None:
+            response_payload['redirect_to'] = redirect_to
+        return jsonify(response_payload)
     else:
         logging.warning(f"用户登录失败（密码错误）: {username}")
         return jsonify({'success': False, 'error': '密码错误'}), 401 # 401 Unauthorized

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  adminAuthRedirectOptions,
   adminApi,
   ApiError,
   loadIdentity,
@@ -143,6 +144,19 @@ describe('管理员类型化 API 客户端', () => {
     expect(shouldRedirectForApiError(403, 'csrf_invalid')).toBe(false)
     expect(shouldRedirectForApiError(401, 'auth_required')).toBe(true)
     expect(shouldRedirectForApiError(403, 'admin_required')).toBe(true)
+  })
+
+  it('Session 失效保留管理页面，角色越权只返回普通首页提示', () => {
+    expect(
+      adminAuthRedirectOptions(401, 'auth_required', '/admin/database/settings'),
+    ).toEqual({ next: '/admin/database/settings' })
+    expect(
+      adminAuthRedirectOptions(401, 'auth_required', '/unexpected'),
+    ).toEqual({ next: '/admin/database' })
+    expect(
+      adminAuthRedirectOptions(403, 'admin_required', '/admin/users'),
+    ).toEqual({ notice: 'admin_required' })
+    expect(adminAuthRedirectOptions(401, 'reauth_failed', '/admin/users')).toBeNull()
   })
 
   it('受控改密只在 JSON 请求体传递密码，并同时携带 CSRF 与幂等键', async () => {

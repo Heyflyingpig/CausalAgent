@@ -21,6 +21,11 @@ for key, value in TEST_ENV.items():
 
 
 from app.admin.routes import admin_bp, admin_page_bp
+from app.auth.authorization import (
+    DEFAULT_ADMIN_PAGE,
+    admin_login_url,
+    safe_admin_return_target,
+)
 from app.request_context import register_request_context
 
 
@@ -130,7 +135,13 @@ class AdminAuthorizationTests(unittest.TestCase):
                     self.assertTrue(payload["request_id"])
                 page_response = client.get(ADMIN_PAGE)
                 self.assertEqual(page_response.status_code, 302)
-                self.assertEqual(page_response.headers["Location"], "/")
+                self.assertEqual(
+                    page_response.headers["Location"],
+                    "/?next=%2Fadmin%2Fdatabase",
+                )
+                asset_response = client.get("/admin/assets/app.js")
+                self.assertEqual(asset_response.status_code, 302)
+                self.assertEqual(asset_response.headers["Location"], "/")
                 for endpoint in ADMIN_POST_ENDPOINTS:
                     response = client.post(endpoint)
                     self.assertEqual(response.status_code, 401, endpoint)
@@ -146,7 +157,7 @@ class AdminAuthorizationTests(unittest.TestCase):
         user = {"id": 1, "username": "normal", "role": "user", "is_active": True}
         with patch("app.auth.authorization.get_current_session_user", return_value=user):
             with app.test_client() as client:
-                for endpoint in (*ADMIN_GET_ENDPOINTS, ADMIN_PAGE):
+                for endpoint in ADMIN_GET_ENDPOINTS:
                     response = client.get(endpoint)
                     self.assertEqual(response.status_code, 403, endpoint)
                     payload = response.get_json()
@@ -154,6 +165,16 @@ class AdminAuthorizationTests(unittest.TestCase):
                     self.assertEqual(payload["error"], "需要管理员权限")
                     self.assertEqual(payload["code"], "admin_required")
                     self.assertTrue(payload["request_id"])
+                page_response = client.get(ADMIN_PAGE)
+                self.assertEqual(page_response.status_code, 403)
+                self.assertEqual(
+                    page_response.headers["Content-Type"],
+                    "text/html; charset=utf-8",
+                )
+                self.assertEqual(page_response.headers["Cache-Control"], "no-store")
+                page_body = page_response.get_data(as_text=True)
+                self.assertIn("无管理员权限", page_body)
+                self.assertIn("/?notice=admin_required", page_body)
                 for endpoint in ADMIN_POST_ENDPOINTS:
                     response = client.post(endpoint)
                     self.assertEqual(response.status_code, 403, endpoint)
@@ -212,6 +233,43 @@ class AdminAuthorizationTests(unittest.TestCase):
                 self.assertEqual(page_response.status_code, 200)
                 self.assertIn("vue-admin-index", page_response.get_data(as_text=True))
                 page_response.close()
+                for root_path in ("/admin", "/admin/"):
+                    root_response = client.get(root_path)
+                    self.assertEqual(root_response.status_code, 302)
+                    self.assertEqual(
+                        root_response.headers["Location"],
+                        DEFAULT_ADMIN_PAGE,
+                    )
+
+    def test_admin_return_target_only_accepts_known_same_origin_pages(self):
+        """登录回跳只接受现有管理页面，并统一丢弃查询参数和片段。"""
+        accepted = {
+            "/admin": "/admin",
+            "/admin/": "/admin",
+            "/admin/database?tab=slow#digest": "/admin/database",
+            "/admin/database/settings": "/admin/database/settings",
+            "/admin/database/audit": "/admin/database/audit",
+        }
+        for raw_target, expected in accepted.items():
+            with self.subTest(raw_target=raw_target):
+                self.assertEqual(safe_admin_return_target(raw_target), expected)
+
+        rejected = (
+            None,
+            "",
+            "admin/database",
+            "https://evil.example/admin/database",
+            "//evil.example/admin/database",
+            r"/admin\database",
+            "/admin/assets/app.js",
+            "/admin/unknown",
+            "/%2F%2Fevil.example",
+            "/admin/database\nLocation: https://evil.example",
+        )
+        for raw_target in rejected:
+            with self.subTest(raw_target=raw_target):
+                self.assertIsNone(safe_admin_return_target(raw_target))
+                self.assertEqual(admin_login_url(raw_target), "/")
 
     def test_legacy_admin_response_shapes_remain_compatible(self):
         """旧接口继续保留 health 对象、slow 对象和 worker 列表数据类型。"""

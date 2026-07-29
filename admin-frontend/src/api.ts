@@ -58,15 +58,52 @@ export class ApiError extends Error {
 
 let csrfToken = ''
 
-/** 返回普通用户统一登录入口，并兼容显式 Flask 开发源。 */
-function loginUrl(): string {
-  const origin = import.meta.env.VITE_FLASK_ORIGIN?.replace(/\/$/, '') || ''
-  return `${origin}/`
+interface LoginRedirectOptions {
+  next?: string
+  notice?: 'admin_required'
 }
 
-/** 把失效或越权的管理员会话送回统一登录入口。 */
-function redirectToLogin(): void {
-  window.location.assign(loginUrl())
+/** 返回普通用户统一登录入口，并编码受服务端复核的内部导航状态。 */
+function loginUrl(options: LoginRedirectOptions = {}): string {
+  const origin = import.meta.env.VITE_FLASK_ORIGIN?.replace(/\/$/, '') || ''
+  const params = new URLSearchParams()
+  if (options.next) params.set('next', options.next)
+  if (options.notice) params.set('notice', options.notice)
+  const query = params.toString()
+  return `${origin}/${query ? `?${query}` : ''}`
+}
+
+/** 返回当前管理员页面路径，供重新登录后由服务端白名单复核。 */
+function currentAdminPath(path = window.location.pathname): string {
+  return path === '/admin' || path.startsWith('/admin/')
+    ? path
+    : '/admin/database'
+}
+
+/** 把管理员鉴权错误转换为可验证的统一登录导航参数。 */
+export function adminAuthRedirectOptions(
+  status: number,
+  code: string | undefined,
+  path = window.location.pathname,
+): LoginRedirectOptions | null {
+  if (status === 401 && code === 'auth_required') {
+    return { next: currentAdminPath(path) }
+  }
+  if (status === 403 && code === 'admin_required') {
+    return { notice: 'admin_required' }
+  }
+  return null
+}
+
+/** 把管理员会话送回统一登录入口，并区分失效与越权提示。 */
+function redirectToLogin(options: LoginRedirectOptions = {}): void {
+  window.location.assign(loginUrl(options))
+}
+
+/** 按稳定错误码选择重新登录回跳或普通用户无权限提示。 */
+function redirectForAdminAuthError(status: number, code?: string): void {
+  const options = adminAuthRedirectOptions(status, code)
+  if (options) redirectToLogin(options)
 }
 
 /** 只把真实 Session 失效或管理员权限失效视为需要离开当前管理页面。 */
@@ -85,9 +122,13 @@ export async function loadIdentity(): Promise<Identity> {
     cache: 'no-store',
   })
   const data = (await response.json()) as Identity
-  if (!data.isLoggedIn || data.role !== 'admin' || !data.csrf_token) {
-    redirectToLogin()
+  if (!data.isLoggedIn || !data.csrf_token) {
+    redirectToLogin({ next: currentAdminPath() })
     throw new ApiError('管理员会话无效', response.status || 401)
+  }
+  if (data.role !== 'admin') {
+    redirectToLogin({ notice: 'admin_required' })
+    throw new ApiError('需要管理员权限', 403, { code: 'admin_required' })
   }
   csrfToken = data.csrf_token
   return data
@@ -130,7 +171,7 @@ async function apiRequest<T>(
       response.headers.get('X-Request-ID'),
     )
     if (shouldRedirectForApiError(response.status, payload.code)) {
-      redirectToLogin()
+      redirectForAdminAuthError(response.status, payload.code)
     }
     throw error
   }
@@ -172,7 +213,7 @@ async function downloadRequest(url: string): Promise<void> {
       response.headers.get('X-Request-ID'),
     )
     if (shouldRedirectForApiError(response.status, payload.code)) {
-      redirectToLogin()
+      redirectForAdminAuthError(response.status, payload.code)
     }
     throw error
   }

@@ -13,9 +13,8 @@ test.describe('管理员 Vue 与真实共享快照', () => {
 
   test('管理员直接访问、登录、看板刷新、审计与配置版本流程', async ({ page, context }) => {
     await page.goto('/admin/database')
-    await expect(page).toHaveURL(/\/$/)
+    await expect(page).toHaveURL(/\/\?next=%2Fadmin%2Fdatabase$/)
 
-    await page.goto('/')
     await page.locator('#loginUsername').fill(username!)
     await page.locator('#loginPassword').fill(password!)
     await page.getByRole('button', { name: /登录/ }).click()
@@ -23,6 +22,14 @@ test.describe('管理员 Vue 与真实共享快照', () => {
     await expect(page.getByRole('heading', { name: '数据库状态看板' })).toBeVisible()
     await expect(page.getByText('Revision', { exact: true })).toBeVisible()
     await expect(page.getByText('Worker / Job 快照')).toBeVisible()
+
+    await page.getByRole('link', { name: '进入聊天' }).click()
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.locator('#mainContainer')).toBeVisible()
+    await page.locator('#userAvatar').evaluate(element => (element as HTMLElement).click())
+    await expect(page.getByRole('button', { name: '管理后台' })).toBeVisible()
+    await page.getByRole('button', { name: '管理后台' }).click()
+    await expect(page).toHaveURL(/\/admin\/database$/)
 
     await page.getByRole('button', { name: '手动刷新' }).click()
     await expect(page.getByText('共享监控快照已刷新。')).toBeVisible({ timeout: 65_000 })
@@ -59,6 +66,20 @@ test.describe('管理员 Vue 与真实共享快照', () => {
     await page.getByRole('button', { name: /登录/ }).click()
 
     await expect(page).not.toHaveURL(/\/admin\//)
+    await expect(page.locator('#mainContainer')).toBeVisible()
+    await page.locator('#userAvatar').evaluate(element => (element as HTMLElement).click())
+    await expect(page.getByRole('button', { name: '管理后台' })).toBeHidden()
+
+    const forbiddenResponse = await page.request.get('/admin/database')
+    expect(forbiddenResponse.status()).toBe(403)
+    expect(await forbiddenResponse.text()).toContain('无管理员权限')
+
+    const dialogPromise = page.waitForEvent('dialog')
+    await page.goto('/admin/database')
+    const dialog = await dialogPromise
+    expect(dialog.message()).toBe('无管理员权限')
+    await dialog.accept()
+    await expect(page).toHaveURL(/\/$/)
     await expect(page.locator('#mainContainer')).toBeVisible()
   })
 

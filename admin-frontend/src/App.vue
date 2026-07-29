@@ -10,24 +10,26 @@ const collapsed = ref(false)
 const mobileOpen = ref(false)
 const SIDEBAR_STORAGE_KEY = 'causalagent.admin.sidebar.collapsed'
 const BRAND_LOGO_URL = '/api/admin/brand/logo'
+const FLASK_ORIGIN = import.meta.env.VITE_FLASK_ORIGIN?.replace(/\/$/, '') || ''
+const CHAT_URL = `${FLASK_ORIGIN}/`
 
 const navigation = [
   {
     label: '业务数据',
     items: [
-      { to: '/overview', label: '业务概览', icon: '▦' },
-      { to: '/users', label: '用户与权限', icon: '♙' },
-      { to: '/sessions', label: '会话与内容', icon: '◫' },
-      { to: '/jobs', label: '分析任务', icon: '⌁' },
-      { to: '/files', label: '文件资产', icon: '▤' },
+      { to: '/overview', label: '业务概览', icon: '📋' },
+      { to: '/users', label: '用户与权限', icon: '👥' },
+      { to: '/sessions', label: '会话与内容', icon: '💬' },
+      { to: '/jobs', label: '分析任务', icon: '🔍' },
+      { to: '/files', label: '文件资产', icon: '📁' },
     ],
   },
   {
     label: '数据库管理',
     items: [
-      { to: '/database', label: '数据库看板', icon: '◉' },
-      { to: '/database/settings', label: '采集配置', icon: '⚙' },
-      { to: '/database/audit', label: 'Schema 与审计', icon: '✓' },
+      { to: '/database', label: '数据库看板', icon: '📊' },
+      { to: '/database/settings', label: '采集配置', icon: '🎯' },
+      { to: '/database/audit', label: 'Schema 与审计', icon: '✅' },
     ],
   },
 ]
@@ -148,6 +150,18 @@ watch(
           <span class="identity-label">当前管理员</span>
           <strong>{{ username }}</strong>
         </div>
+        <el-tooltip content="进入聊天" placement="right" :disabled="!collapsed">
+          <el-button
+            class="chat-entry-button"
+            tag="a"
+            type="primary"
+            :href="CHAT_URL"
+            :disabled="!identityReady"
+          >
+            <span class="chat-entry-icon" aria-hidden="true">◌</span>
+            <span class="chat-entry-text">进入聊天</span>
+          </el-button>
+        </el-tooltip>
         <el-tooltip content="退出登录" placement="right" :disabled="!collapsed">
           <el-button
             class="logout-button"
