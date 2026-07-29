@@ -15,6 +15,7 @@ from langgraph.checkpoint.base import (
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 import mysql.connector
 from contextlib import contextmanager
+import hashlib
 import json
 import logging
 import asyncio
@@ -25,6 +26,28 @@ from Database.mysql_checkpointer_helpers import is_missing_checkpoint_foreign_ke
 logger = logging.getLogger(__name__)
 
 _SERDE_PREFIX = b"LGST1"
+
+
+def _pending_write_identity_hash(
+    thread_id: str,
+    checkpoint_ns: str,
+    checkpoint_id: str,
+    task_id: str,
+    idx: int,
+) -> bytes:
+    """生成与 migration 回填完全一致的 pending write 业务键摘要。"""
+    payload = b"".join(
+        str(len(encoded)).encode("ascii") + b":" + encoded
+        for encoded in (
+            thread_id.encode("utf-8"),
+            checkpoint_ns.encode("utf-8"),
+            checkpoint_id.encode("utf-8"),
+            task_id.encode("utf-8"),
+        )
+    )
+    payload += b":" + str(idx).encode("ascii")
+    return hashlib.sha256(payload).digest()
+
 
 class MySQLSaver(BaseCheckpointSaver):
     """
@@ -336,7 +359,7 @@ class MySQLSaver(BaseCheckpointSaver):
                         created_at
                     FROM checkpoints
                     WHERE thread_id = %s AND checkpoint_ns = %s
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, checkpoint_id DESC
                     LIMIT 1
                 """, (thread_id, checkpoint_ns))
             
@@ -468,7 +491,7 @@ class MySQLSaver(BaseCheckpointSaver):
                 query += " WHERE thread_id = %s AND checkpoint_ns = %s"
                 params.extend([thread_id, checkpoint_ns])
 
-            query += " ORDER BY created_at DESC"
+            query += " ORDER BY created_at DESC, checkpoint_id DESC"
             
             # 如果指定了 limit，添加到查询
             if limit:
@@ -589,26 +612,45 @@ class MySQLSaver(BaseCheckpointSaver):
         writes: Sequence[Tuple[str, Any]],
         task_id: str,
     ) -> int:
-        """Insert pending writes using the checkpoint key from config."""
+        """按 LangGraph 特殊 write upsert、普通 write 忽略重复的语义写入。"""
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
         checkpoint_id = config["configurable"]["checkpoint_id"]
         saved_count = 0
 
+        upsert_known_writes = all(
+            channel in WRITES_IDX_MAP
+            for channel, _value in writes
+        )
+        insert_sql = """
+            INSERT INTO checkpoint_writes (
+                thread_id,
+                checkpoint_ns,
+                checkpoint_id,
+                task_id,
+                idx,
+                channel,
+                value,
+                write_identity_hash
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        if upsert_known_writes:
+            insert_sql += """
+                ON DUPLICATE KEY UPDATE
+                    channel = VALUES(channel),
+                    value = VALUES(value)
+            """
+        else:
+            insert_sql = insert_sql.replace(
+                "INSERT INTO checkpoint_writes",
+                "INSERT IGNORE INTO checkpoint_writes",
+                1,
+            )
+
         for idx, (channel, value) in enumerate(writes):
             write_idx = WRITES_IDX_MAP.get(channel, idx)
             value_blob = self._serialize_blob(value)
-            cursor.execute("""
-                INSERT INTO checkpoint_writes (
-                    thread_id,
-                    checkpoint_ns,
-                    checkpoint_id,
-                    task_id,
-                    idx,
-                    channel,
-                    value
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (
+            cursor.execute(insert_sql, (
                 thread_id,
                 checkpoint_ns,
                 checkpoint_id,
@@ -616,8 +658,16 @@ class MySQLSaver(BaseCheckpointSaver):
                 write_idx,
                 channel,
                 value_blob,
+                _pending_write_identity_hash(
+                    thread_id,
+                    checkpoint_ns,
+                    checkpoint_id,
+                    task_id,
+                    write_idx,
+                ),
             ))
-            saved_count += 1
+            if cursor.rowcount:
+                saved_count += 1
 
         return saved_count
 

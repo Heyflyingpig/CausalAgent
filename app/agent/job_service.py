@@ -16,6 +16,7 @@ from typing import Any
 import mysql.connector
 from mysql.connector import errorcode
 
+from app.chat.session_title import build_session_title
 from app.db import get_read_connection, get_read_connection_with_source, get_write_connection
 from config.settings import settings
 
@@ -38,11 +39,6 @@ def _json_loads(value: Any) -> Any:
     if isinstance(value, (bytes, bytearray)):
         value = value.decode("utf-8")
     return json.loads(value)
-
-
-def _session_title(message: str) -> str:
-    title = message[:8]
-    return title + ("..." if len(message) > 8 else "")
 
 
 def _row_to_job(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -102,7 +98,7 @@ def create_job(user_id: int, session_id: str, message: str) -> tuple[dict[str, A
             VALUES (%s, %s, %s, %s, %s, 0)
             ON DUPLICATE KEY UPDATE id = id
             """,
-            (session_id, user_id, _session_title(message), now, now),
+            (session_id, user_id, build_session_title(message), now, now),
         )
         # 增加悲观锁，查看当前session属于当前用户
         cursor.execute(

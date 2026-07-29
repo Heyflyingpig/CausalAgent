@@ -46,7 +46,7 @@ watch(visible, (opened) => {
       type="warning"
       :closable="false"
       show-icon
-      title="本次正文读取会记录管理员、目标、结果和 request ID；审计不会保存正文。"
+      title="读取正文将会记录管理员、目标、结果和 request ID。"
     />
     <el-alert v-if="error" class="content-error" type="error" :closable="false" :title="error" />
     <div v-loading="loading && !content" class="sensitive-content">

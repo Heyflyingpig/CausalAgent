@@ -180,7 +180,7 @@ config.json
 #  demo
 杂项/
 项目规划/
-Document/
+
 
 # AI
 .cursor/
@@ -197,26 +197,6 @@ Agent/knowledge_base/unfinish_source/
 
 # skils
 skills/
-
-# test
-tests/
-!tests/
-tests/*
-!tests/test_admin_authorization.py
-!tests/test_auth_service.py
-!tests/test_stale_session_guard.py
-!tests/test_admin_cli.py
-!tests/test_migration_chain.py
-!tests/test_database_inspection.py
-!tests/test_monitor_settings.py
-!tests/test_admin_settings_api.py
-!tests/test_admin_deployment.py
-!tests/test_admin_business_api.py
-!tests/test_admin_business_service.py
-!tests/test_deep_audit_monitoring.py
-!tests/seed_admin_31_e2e.py
-!tests/verify_admin_31_e2e.py
-!tests/run_admin_31_e2e.ps1
 
 # study
 study/

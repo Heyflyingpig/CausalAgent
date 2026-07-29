@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { ApiError, adminApi } from '../api'
 import CursorPager from '../components/CursorPager.vue'
 import { formatBytes, formatDate } from '../lib/dashboard'
-import type { AdminFile, CsvPreview, CursorPage } from '../types'
+import type { AdminFile, CsvPreview, CursorPage, FileDeleteImpact } from '../types'
 
 const page = ref<CursorPage<AdminFile> | null>(null)
 const loading = ref(false)
@@ -19,6 +20,15 @@ const preview = ref<CsvPreview | null>(null)
 const previewVisible = ref(false)
 const previewLoading = ref(false)
 const downloadingId = ref<number | null>(null)
+const deleteVisible = ref(false)
+const deleteLoading = ref(false)
+const deleteSubmitting = ref(false)
+const deleteImpact = ref<FileDeleteImpact | null>(null)
+const deleteTarget = ref<AdminFile | null>(null)
+const deleteConfirmation = ref('')
+const deleteReauthPassword = ref('')
+const deleteIdempotencyKey = ref('')
+const deleteError = ref('')
 
 const currentCursor = computed(() => cursors.value[cursors.value.length - 1])
 
@@ -26,6 +36,15 @@ const currentCursor = computed(() => cursors.value[cursors.value.length - 1])
 function showError(caught: unknown): void {
   const apiError = caught as ApiError
   error.value = `${apiError.message}（请求 ID：${apiError.requestId || '未知'}）`
+}
+
+/** 把文件删除错误转换为弹窗内可直接处理的提示。 */
+function dialogErrorMessage(caught: unknown): string {
+  const apiError = caught as ApiError
+  const message = apiError.code === 'reauth_failed'
+    ? '当前管理员密码不正确，请重新输入。'
+    : apiError.message
+  return `${message}（请求 ID：${apiError.requestId || '未知'}）`
 }
 
 /** 按当前筛选和游标读取文件元数据。 */
@@ -107,6 +126,63 @@ async function download(row: AdminFile): Promise<void> {
   }
 }
 
+/** 生成文件删除对话框内稳定复用的幂等键。 */
+function newIdempotencyKey(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `admin-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/** 打开文件行、BLOB 大小和活动任务阻断预览。 */
+async function openDelete(row: AdminFile): Promise<void> {
+  deleteVisible.value = true
+  deleteLoading.value = true
+  deleteImpact.value = null
+  deleteTarget.value = row
+  deleteConfirmation.value = ''
+  deleteReauthPassword.value = ''
+  deleteIdempotencyKey.value = newIdempotencyKey()
+  deleteError.value = ''
+  error.value = ''
+  try {
+    deleteImpact.value = await adminApi.fileDeleteImpact(row.id)
+  } catch (caught) {
+    showError(caught)
+    deleteVisible.value = false
+  } finally {
+    deleteLoading.value = false
+  }
+}
+
+/** 经文件名确认与重新认证后物理删除数据库行和 BLOB。 */
+async function submitDelete(): Promise<void> {
+  if (!deleteTarget.value || !deleteImpact.value?.can_delete) return
+  deleteSubmitting.value = true
+  deleteError.value = ''
+  error.value = ''
+  try {
+    const result = await adminApi.deleteFile(
+      deleteTarget.value.id,
+      {
+        confirm_filename: deleteConfirmation.value,
+        reauth_password: deleteReauthPassword.value,
+        confirmed: true,
+      },
+      deleteIdempotencyKey.value,
+    )
+    ElMessage.success(`文件已删除${result.replayed ? '（幂等重放）' : ''}`)
+    deleteVisible.value = false
+    await loadFiles(true)
+  } catch (caught) {
+    const apiError = caught as ApiError
+    deleteError.value = dialogErrorMessage(caught)
+    if (apiError.code === 'reauth_failed' || apiError.code === 'reauth_required') {
+      deleteReauthPassword.value = ''
+    }
+  } finally {
+    deleteSubmitting.value = false
+  }
+}
+
 onMounted(() => loadFiles())
 </script>
 
@@ -114,18 +190,17 @@ onMounted(() => loadFiles())
   <section>
     <header class="page-header">
       <div>
-        <p class="eyebrow">只读业务数据</p>
-        <h1>文件资产</h1>
+        <h1>对话文件管理</h1>
         <p class="page-description">
-          列表不返回 BLOB 或哈希；CSV 预览与下载会原子更新访问时间、次数并写入审计。
+          CSV 预览与下载会更新访问时间、次数并写入审计。
         </p>
       </div>
     </header>
 
     <section class="filter-bar">
-      <el-input v-model="q" clearable placeholder="按原始文件名开头搜索" @keyup.enter="loadFiles(true)" />
+      <el-input v-model="q" clearable placeholder="文件名" @keyup.enter="loadFiles(true)" />
       <el-input v-model="userId" clearable placeholder="用户 ID" @keyup.enter="loadFiles(true)" />
-      <el-select v-model="mimeType" clearable placeholder="全部 MIME">
+      <el-select v-model="mimeType" clearable placeholder="MIME类型">
         <el-option label="text/csv" value="text/csv" />
         <el-option label="application/vnd.ms-excel" value="application/vnd.ms-excel" />
       </el-select>
@@ -147,10 +222,10 @@ onMounted(() => loadFiles())
         <el-table-column label="最近访问" min-width="180">
           <template #default="{ row }">{{ formatDate(row.last_accessed_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="290" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-            <el-button link type="primary" @click="openPreview(row)">安全预览</el-button>
+            <el-button link type="primary" @click="openPreview(row)">预览</el-button>
             <el-button
               link
               type="primary"
@@ -159,6 +234,7 @@ onMounted(() => loadFiles())
             >
               下载
             </el-button>
+            <el-button link type="danger" @click="openDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -171,7 +247,7 @@ onMounted(() => loadFiles())
       />
     </section>
 
-    <el-drawer v-model="detailVisible" title="文件只读详情" size="min(560px, 100vw)">
+    <el-drawer v-model="detailVisible" title="文件详情" size="min(560px, 100vw)">
       <div v-loading="detailLoading">
         <el-descriptions v-if="detail" :column="1" border>
           <el-descriptions-item label="文件 ID">{{ detail.id }}</el-descriptions-item>
@@ -187,17 +263,11 @@ onMounted(() => loadFiles())
       </div>
     </el-drawer>
 
-    <el-dialog v-model="previewVisible" title="CSV 安全预览" width="min(1100px, 96vw)">
-      <el-alert
-        type="warning"
-        :closable="false"
-        show-icon
-        title="预览只按纯文本渲染，不执行公式、HTML 或脚本；成功读取会更新访问计数并记录审计。"
-      />
+    <el-dialog v-model="previewVisible" title="CSV 预览" width="min(1100px, 96vw)">
       <div v-loading="previewLoading" class="csv-preview-wrap">
         <p v-if="preview" class="preview-meta">
           {{ preview.filename }} · {{ preview.encoding }}
-          <span v-if="preview.truncated">· 已按安全上限截断</span>
+          <span v-if="preview.truncated">· 按安全上限截断</span>
         </p>
         <div v-if="preview" class="csv-table-scroll">
           <table class="csv-preview-table">
@@ -216,5 +286,121 @@ onMounted(() => loadFiles())
         <el-empty v-else-if="!previewLoading" description="CSV 内容为空" />
       </div>
     </el-dialog>
+
+    <el-dialog v-model="deleteVisible" title="删除文件" width="min(660px, 96vw)">
+      <div v-loading="deleteLoading">
+        <el-alert
+          type="error"
+          :closable="false"
+          show-icon
+          title="删除记录会同时删除数据库 BLOB，不提供回收站且不可恢复！"
+        />
+        <el-alert
+          v-if="deleteError"
+          class="dialog-error"
+          type="error"
+          :closable="false"
+          show-icon
+          :title="deleteError"
+        />
+        <template v-if="deleteImpact">
+          <el-descriptions :column="1" border class="file-delete-impact">
+            <el-descriptions-item label="文件">
+              {{ deleteImpact.file.original_filename }} (#{{ deleteImpact.file.id }})
+            </el-descriptions-item>
+            <el-descriptions-item label="归属用户">
+              {{ deleteImpact.file.username }} (#{{ deleteImpact.file.user_id }})
+            </el-descriptions-item>
+            <el-descriptions-item label="BLOB 大小">
+              {{ formatBytes(deleteImpact.impact.blob_bytes) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="归属用户活动任务">
+              {{ deleteImpact.impact.owner_active_jobs }}
+            </el-descriptions-item>
+          </el-descriptions>
+          <el-alert
+            v-if="deleteImpact.blockers.length"
+            class="page-notice"
+            type="error"
+            :closable="false"
+            :title="deleteImpact.blockers.join('；')"
+          />
+          <div class="file-delete-form">
+            <div class="danger-confirmation-field">
+              <label for="file-delete-confirmation">
+                第一步：输入文件名以确认删除
+              </label>
+              <el-input
+                id="file-delete-confirmation"
+                v-model="deleteConfirmation"
+                :aria-label="`输入文件名 ${deleteImpact.requires_confirmation} 确认`"
+                autocomplete="off"
+                :placeholder="`请输入完整文件名：${deleteImpact.requires_confirmation}`"
+              />
+              <p>请完整输入“{{ deleteImpact.requires_confirmation }}”，防止误删其他文件。</p>
+            </div>
+            <div class="danger-confirmation-field">
+              <label for="file-delete-reauth-password">
+                第二步：输入当前管理员登录密码
+              </label>
+              <el-input
+                id="file-delete-reauth-password"
+                v-model="deleteReauthPassword"
+                aria-label="当前管理员密码（重新认证）"
+                type="password"
+                show-password
+                autocomplete="current-password"
+                placeholder="请输入当前管理员密码"
+              />
+            </div>
+          </div>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="deleteVisible = false">取消</el-button>
+        <el-button
+          type="danger"
+          :loading="deleteSubmitting"
+          :disabled="
+            !deleteImpact?.can_delete ||
+              deleteConfirmation !== deleteImpact?.requires_confirmation ||
+              !deleteReauthPassword
+          "
+          @click="submitDelete"
+        >
+          确认删除
+        </el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
+
+<style scoped>
+.file-delete-impact,
+.file-delete-form {
+  margin-top: 16px;
+}
+
+.dialog-error {
+  margin-top: 12px;
+}
+
+.file-delete-form {
+  display: grid;
+  gap: 16px;
+}
+
+.danger-confirmation-field label {
+  display: block;
+  margin-bottom: 8px;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.danger-confirmation-field p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.5;
+}
+</style>

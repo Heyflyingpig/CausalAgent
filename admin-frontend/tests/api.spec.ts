@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { adminApi, ApiError, loadIdentity } from '../src/api'
+import {
+  adminAuthRedirectOptions,
+  adminApi,
+  ApiError,
+  loadIdentity,
+  shouldRedirectForApiError,
+} from '../src/api'
 
 function jsonResponse(body: unknown, status = 200, requestId = 'response-request-id'): Response {
   return {
@@ -130,5 +136,71 @@ describe('管理员类型化 API 客户端', () => {
     expect(options?.method).toBe('POST')
     expect(new Headers(options?.headers).get('X-CSRF-Token')).toBe('deep-csrf')
     expect(options?.body).toBe(JSON.stringify({ mode: 'deep' }))
+  })
+
+  it('重新认证密码错误留在当前弹窗，只有 Session 或管理员权限失效才跳转', () => {
+    expect(shouldRedirectForApiError(401, 'reauth_failed')).toBe(false)
+    expect(shouldRedirectForApiError(401, 'reauth_required')).toBe(false)
+    expect(shouldRedirectForApiError(403, 'csrf_invalid')).toBe(false)
+    expect(shouldRedirectForApiError(401, 'auth_required')).toBe(true)
+    expect(shouldRedirectForApiError(403, 'admin_required')).toBe(true)
+  })
+
+  it('Session 失效保留管理页面，角色越权只返回普通首页提示', () => {
+    expect(
+      adminAuthRedirectOptions(401, 'auth_required', '/admin/database/settings'),
+    ).toEqual({ next: '/admin/database/settings' })
+    expect(
+      adminAuthRedirectOptions(401, 'auth_required', '/unexpected'),
+    ).toEqual({ next: '/admin/database' })
+    expect(
+      adminAuthRedirectOptions(403, 'admin_required', '/admin/users'),
+    ).toEqual({ notice: 'admin_required' })
+    expect(adminAuthRedirectOptions(401, 'reauth_failed', '/admin/users')).toBeNull()
+  })
+
+  it('受控改密只在 JSON 请求体传递密码，并同时携带 CSRF 与幂等键', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        isLoggedIn: true,
+        username: 'admin',
+        role: 'admin',
+        csrf_token: 'write-csrf',
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        data: {
+          operation_id: 'operation-1',
+          operation_type: 'user_set_password',
+          target_count: 2,
+          replayed: false,
+          items: [],
+        },
+      }))
+
+    await loadIdentity()
+    await adminApi.executeUserOperation({
+      action: 'set_password',
+      target_ids: [7, 8],
+      new_password: 'a sufficiently long password',
+      reauth_password: 'current admin password',
+      confirmed: true,
+    }, 'idempotency-key-1')
+
+    const [url, options] = fetchMock.mock.calls[1]
+    const headers = new Headers(options?.headers)
+    expect(String(url)).toBe('/api/admin/business/users/operations')
+    expect(String(url)).not.toContain('password')
+    expect(options?.method).toBe('POST')
+    expect(headers.get('X-CSRF-Token')).toBe('write-csrf')
+    expect(headers.get('Idempotency-Key')).toBe('idempotency-key-1')
+    expect(JSON.parse(String(options?.body))).toMatchObject({
+      action: 'set_password',
+      target_ids: [7, 8],
+      new_password: 'a sufficiently long password',
+      reauth_password: 'current admin password',
+      confirmed: true,
+    })
   })
 })

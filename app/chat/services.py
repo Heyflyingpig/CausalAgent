@@ -6,6 +6,7 @@ app.chat.services - 聊天服务
 '''
 from app.db import get_read_connection, get_write_connection
 from app.chat.response_storage import prepare_ai_response_for_storage
+from app.chat.session_title import build_session_title
 import mysql.connector
 import logging
 from datetime import datetime
@@ -67,7 +68,7 @@ def save_chat(user_id, session_id, user_msg, ai_response):
             
             if not session_data:
                 # Session不存在，创建新的session记录（延迟创建）
-                new_title = user_msg[:8] + ("..." if len(user_msg) > 8 else "")
+                new_title = build_session_title(user_msg)
                 cursor.execute("""
                     INSERT INTO sessions (id, user_id, title, created_at, last_activity_at, message_count)
                     VALUES (%s, %s, %s, %s, %s, 0)
@@ -113,8 +114,7 @@ def save_chat(user_id, session_id, user_msg, ai_response):
             # 根据是否为第一条消息，决定是否更新标题
             if is_first_message:
                 #  更新会话，包括新标题（或确认创建时的标题）
-                new_title = user_msg[:8] # 截取前8个字符作为标题
-                new_title = new_title + "..." if len(user_msg) > 8 else new_title
+                new_title = build_session_title(user_msg)
                 sql_update_session = """
                     UPDATE sessions 
                     SET title = %s, last_activity_at = %s, message_count = message_count + 2

@@ -35,6 +35,31 @@ def get_current_session_user():
         session.clear()
         return None
 
+    database_auth_version = int(user.get("auth_version") or 1)
+    session_auth_version = session.get("auth_version")
+    if session_auth_version is None:
+        # 兼容升级前签发的 Cookie：只允许尚未发生安全变更的初始版本补写。
+        if database_auth_version != 1:
+            logging.warning(
+                "检测到认证版本已变化的旧会话，用户 ID %s，已清空会话。",
+                user_id,
+            )
+            session.clear()
+            return None
+        session["auth_version"] = database_auth_version
+    else:
+        try:
+            matches_version = int(session_auth_version) == database_auth_version
+        except (TypeError, ValueError):
+            matches_version = False
+        if not matches_version:
+            logging.warning(
+                "检测到认证版本失效的会话，用户 ID %s，已清空会话。",
+                user_id,
+            )
+            session.clear()
+            return None
+
     session["user_id"] = user["id"]
     session["username"] = user["username"]
     return user

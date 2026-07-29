@@ -618,6 +618,14 @@ EXPECTED_FOREIGN_KEYS = (
     ),
 )
 
+EXPECTED_UNIQUE_INDEXES = (
+    (
+        "checkpoint_writes",
+        "uq_checkpoint_writes_task_idx",
+        ("write_identity_hash",),
+    ),
+)
+
 
 def _foreign_key_definition_sql(
     timeout_ms: int,
@@ -646,6 +654,28 @@ def _foreign_key_definition_sql(
           AND referenced_table_name IS NOT NULL"""
 
 
+def _unique_index_definition_sql(
+    timeout_ms: int,
+    table_name: str,
+    index_name: str,
+    columns: tuple[str, ...],
+) -> str:
+    """生成精确核对唯一索引列顺序的轻量元数据查询。"""
+    expected_rows = " OR ".join(
+        f"(seq_in_index = {position} AND column_name = '{column}')"
+        for position, column in enumerate(columns, start=1)
+    )
+    return f"""SELECT {_timeout_hint(timeout_ms)} CASE
+        WHEN COUNT(*) = {len(columns)}
+         AND MIN(non_unique) = 0
+         AND SUM(CASE WHEN {expected_rows} THEN 1 ELSE 0 END) = {len(columns)}
+        THEN 1 ELSE 0 END AS count_value
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = '{table_name}'
+          AND index_name = '{index_name}'"""
+
+
 def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
     """定义运行期低频审计，避免重复扫描已由外键保证的关系。"""
     hint = _timeout_hint(timeout_ms)
@@ -666,6 +696,21 @@ def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
     ]
     definitions.extend([
         {
+            "key": f"constraint_{index_name}",
+            "label": f"唯一约束 {index_name}",
+            "severity": "blocking",
+            "healthy_when": "one",
+            "sql": _unique_index_definition_sql(
+                timeout_ms,
+                table_name,
+                index_name,
+                columns,
+            ),
+        }
+        for table_name, index_name, columns in EXPECTED_UNIQUE_INDEXES
+    ])
+    definitions.extend([
+        {
             "key": "constraint_chat_attachment_type_enum",
             "label": "约束 chat_attachments.attachment_type ENUM",
             "severity": "blocking",
@@ -677,6 +722,21 @@ def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
                   AND column_name = 'attachment_type'
                   AND data_type = 'enum'
                   AND column_type LIKE '%''visualization''%'""",
+        },
+        {
+            "key": "constraint_checkpoint_write_identity_hash",
+            "label": "约束 checkpoint_writes 完整业务键摘要列",
+            "severity": "blocking",
+            "healthy_when": "one",
+            "sql": f"""SELECT {hint} COUNT(*) AS count_value
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'checkpoint_writes'
+                  AND column_name = 'write_identity_hash'
+                  AND data_type = 'binary'
+                  AND character_octet_length = 32
+                  AND is_nullable = 'NO'
+                  AND generation_expression = ''""",
         },
         {
             "key": "orphan_checkpoints_thread",
@@ -794,6 +854,7 @@ def _not_applicable_check(key: str, label: str, reason: str) -> dict[str, Any]:
 
 
 FK_MIGRATION_REVISION = "f6b8c9d0e1a2"
+PENDING_WRITES_IDEMPOTENCY_REVISION = "e4f5a6b7c8d9"
 
 
 def _current_schema_revision(cursor, tables: set[str]) -> str | None:
@@ -844,7 +905,7 @@ def execute_migration_preflight_checks(
     source_role: str = "primary",
     source_alias: str = "primary",
 ) -> list[dict[str, Any]]:
-    """按当前 schema 仅运行待添加外键所需的迁移前数据扫描。"""
+    """按当前 schema 仅运行待添加外键/唯一约束所需的数据扫描。"""
     cursor = connection.cursor(dictionary=True)
     cursor.execute(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()"
@@ -968,6 +1029,59 @@ def execute_migration_preflight_checks(
             "chat_messages_preflight_partitions",
             "迁移前 chat_messages 分区结构",
             "生产升级外键已存在或表尚未创建，无需检查旧分区结构",
+        ))
+
+    idempotency_migration_pending = not _revision_contains_migration(
+        current_revision,
+        PENDING_WRITES_IDEMPOTENCY_REVISION,
+    )
+    cursor.execute("""
+        SELECT index_name
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = 'checkpoint_writes'
+          AND index_name = 'uq_checkpoint_writes_task_idx'
+          AND non_unique = 0
+    """)
+    idempotency_index_exists = cursor.fetchone() is not None
+    duplicate_key = "duplicate_checkpoint_write_key"
+    duplicate_label = "迁移前重复 checkpoint pending write 幂等键"
+    if not idempotency_migration_pending:
+        checks.append(_not_applicable_check(
+            duplicate_key,
+            duplicate_label,
+            f"当前 revision {current_revision} 已包含 pending writes 幂等迁移",
+        ))
+    elif "checkpoint_writes" not in tables:
+        checks.append(_not_applicable_check(
+            duplicate_key,
+            duplicate_label,
+            "checkpoint_writes 尚未创建，跳过迁移前扫描",
+        ))
+    elif idempotency_index_exists:
+        checks.append(_not_applicable_check(
+            duplicate_key,
+            duplicate_label,
+            "目标唯一约束已经存在，跳过重复数据扫描",
+        ))
+    else:
+        checks.extend(_execute_integrity_definitions(
+            connection,
+            [{
+                "key": duplicate_key,
+                "label": duplicate_label,
+                "severity": "blocking",
+                "healthy_when": "zero",
+                "sql": f"""SELECT {hint} COUNT(*) AS count_value
+                    FROM (
+                        SELECT 1
+                        FROM checkpoint_writes
+                        GROUP BY thread_id, checkpoint_ns, checkpoint_id, task_id, idx
+                        HAVING COUNT(*) > 1
+                    ) AS duplicate_keys""",
+            }],
+            source_role=source_role,
+            source_alias=source_alias,
         ))
     return checks
 

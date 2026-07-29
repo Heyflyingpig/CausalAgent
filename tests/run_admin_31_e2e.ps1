@@ -31,13 +31,13 @@ Assert-Admin31Exit "docker ps"
 $primaryExists = $existingContainers -contains $primaryContainer
 $replicaExists = $existingContainers -contains $replicaContainer
 if (($primaryExists -or $replicaExists) -and -not $ReuseExisting) {
-    throw "Existing 3.1 E2E containers found; refusing to overwrite or delete them."
+    throw "Existing 3.1/3.2 E2E containers found; refusing to overwrite or delete them."
 }
 if ($ReuseExisting -and -not ($primaryExists -and $replicaExists)) {
-    throw "ReuseExisting requires both isolated 3.1 database containers."
+    throw "ReuseExisting requires both isolated 3.1/3.2 database containers."
 }
-if ($KeepSeededData -and -not $ReuseExisting) {
-    throw "KeepSeededData requires ReuseExisting."
+if ($KeepSeededData) {
+    throw "3.2 includes physical-delete E2E and cannot reuse already-mutated seed data."
 }
 
 $env:MYSQL_ROOT_PASSWORD = New-Admin31Secret
@@ -65,7 +65,14 @@ $env:MYSQL_READ_HOSTS = "127.0.0.2"
 $env:MYSQL_PORT = "13317"
 $env:MYSQL_POOL_SIZE_WRITE = "5"
 $env:MYSQL_POOL_SIZE_READ = "5"
+$env:MYSQL_CONNECT_TIMEOUT_SECONDS = "5"
+$env:MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS = "3"
+$env:MYSQL_POOL_ACQUIRE_RETRY_MS = "50"
 $env:MYSQL_REPLICA_MAX_LAG_SECONDS = "5"
+$env:MYSQL_REPLICA_STATUS_CACHE_SECONDS = "2"
+$env:ADMIN_BATCH_MAX_TARGETS = "20"
+$env:ADMIN_DELETE_MAX_RELATED_ROWS = "10000"
+$env:ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS = "5"
 $env:DB_INSPECTION_QUERY_TIMEOUT_MS = "3000"
 $env:ADMIN_FRONTEND_DIST_DIR = (Resolve-Path "admin-frontend/dist").Path
 $env:ADMIN_VITE_DEV_SERVER_URL = ""
@@ -75,7 +82,6 @@ $env:PLAYWRIGHT_ADMIN_USERNAME = "e2e-admin-31"
 $env:PLAYWRIGHT_ADMIN_PASSWORD = $env:E2E_ADMIN_PASSWORD
 $env:PLAYWRIGHT_USER_USERNAME = "e2e-user-31"
 $env:PLAYWRIGHT_USER_PASSWORD = $env:E2E_USER_PASSWORD
-$env:PLAYWRIGHT_CHANNEL = "msedge"
 
 $flaskProcess = $null
 $monitorProcess = $null
@@ -107,7 +113,7 @@ FLUSH PRIVILEGES;
             break
         }
         if ([DateTime]::UtcNow -ge $healthDeadline) {
-            throw "Timed out waiting for the isolated 3.1 MySQL pair."
+            throw "Timed out waiting for the isolated 3.1/3.2 MySQL pair."
         }
         Start-Sleep -Seconds 2
     } while ($true)
@@ -121,22 +127,14 @@ FLUSH PRIVILEGES;
     }
     alembic upgrade head
     Assert-Admin31Exit "empty database upgrade"
-    alembic downgrade c2d3e4f5a6b7
-    Assert-Admin31Exit "3.1 migration downgrade"
+    alembic downgrade d3e4f5a6b7c8
+    Assert-Admin31Exit "3.2 migration downgrade"
+    python Database/audit_before_db_upgrade.py
+    Assert-Admin31Exit "3.2 existing structure preflight"
     alembic upgrade head
-    Assert-Admin31Exit "existing structure upgrade"
-    if (-not $KeepSeededData) {
-        python -m tests.seed_admin_31_e2e
-        Assert-Admin31Exit "seed isolated fixtures"
-    } else {
-        $env:E2E_REFRESH_PASSWORDS_ONLY = "true"
-        try {
-            python -m tests.seed_admin_31_e2e
-            Assert-Admin31Exit "refresh isolated login fixtures"
-        } finally {
-            Remove-Item Env:E2E_REFRESH_PASSWORDS_ONLY -ErrorAction SilentlyContinue
-        }
-    }
+    Assert-Admin31Exit "3.2 existing structure upgrade"
+    python -m tests.e2e.admin.seed_admin_31_e2e
+    Assert-Admin31Exit "seed isolated 3.1/3.2 fixtures"
 
     $monitorProcess = Start-Process `
         -FilePath "python" `
@@ -158,11 +156,11 @@ FLUSH PRIVILEGES;
             }
         } catch {
             if ($flaskProcess.HasExited) {
-                throw "The isolated 3.1 Flask process exited early."
+                throw "The isolated 3.1/3.2 Flask process exited early."
             }
         }
         if ([DateTime]::UtcNow -ge $webDeadline) {
-            throw "Timed out waiting for the isolated 3.1 Flask server."
+            throw "Timed out waiting for the isolated 3.1/3.2 Flask server."
         }
         Start-Sleep -Seconds 1
     } while ($true)
@@ -174,7 +172,7 @@ FLUSH PRIVILEGES;
     } finally {
         Pop-Location
     }
-    python -m tests.verify_admin_31_e2e
+    python -m tests.e2e.admin.verify_admin_31_e2e
     Assert-Admin31Exit "database verification"
 } finally {
     if ($flaskProcess -and -not $flaskProcess.HasExited) {

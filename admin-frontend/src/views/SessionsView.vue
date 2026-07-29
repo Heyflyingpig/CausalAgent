@@ -164,16 +164,14 @@ onMounted(() => loadSessions())
   <section>
     <header class="page-header">
       <div>
-        <p class="eyebrow">只读业务数据</p>
-        <h1>会话与内容</h1>
+        <h1>会话与内容管理</h1>
         <p class="page-description">
-          列表只显示消息摘要；完整聊天正文和附件仅在明确点击后分块读取并记录审计。
         </p>
       </div>
     </header>
 
     <section class="filter-bar">
-      <el-input v-model="q" clearable placeholder="会话 ID 或标题开头" @keyup.enter="loadSessions(true)" />
+      <el-input v-model="q" clearable placeholder="会话 ID" @keyup.enter="loadSessions(true)" />
       <el-input v-model="userId" clearable placeholder="用户 ID" @keyup.enter="loadSessions(true)" />
       <el-select v-model="archived" placeholder="全部归档状态" clearable>
         <el-option label="未归档" value="false" />
@@ -188,7 +186,18 @@ onMounted(() => loadSessions())
       <el-table v-loading="loading" :data="page?.items || []" empty-text="没有符合条件的会话">
         <el-table-column prop="id" label="会话 ID" min-width="260" show-overflow-tooltip />
         <el-table-column prop="username" label="归属用户" min-width="140" />
-        <el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip />
+        <el-table-column label="标题" min-width="220">
+          <template #default="{ row }">
+            <el-tooltip
+              :content="row.title || '未命名'"
+              placement="top"
+              :show-after="250"
+              popper-class="session-title-tooltip"
+            >
+              <span class="session-title-cell">{{ row.title || '未命名' }}</span>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column prop="message_count" label="消息数" width="90" />
         <el-table-column label="归档" width="90">
           <template #default="{ row }">{{ row.is_archived ? '是' : '否' }}</template>
@@ -211,7 +220,7 @@ onMounted(() => loadSessions())
       />
     </section>
 
-    <el-drawer v-model="detailVisible" title="会话只读详情" size="min(980px, 100vw)">
+    <el-drawer v-model="detailVisible" title="会话详情" size="min(980px, 100vw)">
       <div v-loading="detailLoading">
         <el-descriptions v-if="detail" :column="2" border>
           <el-descriptions-item label="会话 ID" :span="2">{{ detail.id }}</el-descriptions-item>
@@ -231,7 +240,7 @@ onMounted(() => loadSessions())
           <el-table-column label="时间" min-width="170">
             <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
           </el-table-column>
-          <el-table-column label="敏感操作" width="190" fixed="right">
+          <el-table-column label="操作" width="190" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click="revealMessage(row)">查看正文</el-button>
               <el-button

@@ -102,6 +102,7 @@ button, a { font: inherit; }
   align-items: center;
   gap: 10px;
   color: var(--ca-text);
+  font-size: 14px;
   text-decoration: none;
   font-weight: 600;
 }
@@ -109,7 +110,7 @@ button, a { font: inherit; }
 .nav-icon {
   width: 20px;
   flex: 0 0 20px;
-  font-size: 17px;
+  font-size: 15px;
   text-align: center;
 }
 .nav-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -119,8 +120,19 @@ button, a { font: inherit; }
 .admin-identity { margin-bottom: 12px; }
 .admin-identity span, .admin-identity strong { display: block; }
 .identity-label { margin-bottom: 4px; color: var(--ca-muted); font-size: 12px; }
-.logout-button { width: 100%; }
-.logout-icon { display: none; font-size: 18px; }
+.admin-identity strong { font-size: 14px; }
+.chat-entry-button, .logout-button {
+  width: 100%;
+  font-size: 14px;
+}
+.chat-entry-button { margin-bottom: 10px; }
+.sidebar-footer .logout-button { margin-left: 0; }
+.sidebar-footer .chat-entry-button,
+.sidebar-footer .chat-entry-button:hover,
+.sidebar-footer .chat-entry-button:focus {
+  text-decoration: none;
+}
+.chat-entry-icon, .logout-icon { display: none; font-size: 18px; }
 
 .admin-sidebar.collapsed { padding-right: 12px; padding-left: 12px; }
 .admin-sidebar.collapsed .brand-block { padding-right: 0; padding-left: 0; }
@@ -128,6 +140,7 @@ button, a { font: inherit; }
 .admin-sidebar.collapsed .nav-text,
 .admin-sidebar.collapsed .nav-note,
 .admin-sidebar.collapsed .admin-identity,
+.admin-sidebar.collapsed .chat-entry-text,
 .admin-sidebar.collapsed .logout-text { display: none; }
 .admin-sidebar.collapsed .nav-item {
   width: 44px;
@@ -135,7 +148,9 @@ button, a { font: inherit; }
   justify-content: center;
 }
 .admin-sidebar.collapsed .nav-icon { flex-basis: 20px; }
+.admin-sidebar.collapsed .chat-entry-button,
 .admin-sidebar.collapsed .logout-button { width: 44px; padding: 8px; }
+.admin-sidebar.collapsed .chat-entry-icon,
 .admin-sidebar.collapsed .logout-icon { display: inline; }
 
 .admin-main { min-width: 0; padding: 34px clamp(24px, 4vw, 56px) 64px; }
@@ -249,6 +264,17 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
   grid-template-columns: repeat(4, minmax(140px, 1fr)) auto;
 }
 .table-panel { padding-bottom: 14px; }
+.session-title-cell {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-title-tooltip {
+  max-width: min(480px, calc(100vw - 32px));
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
 .cursor-pager {
   display: flex;
   align-items: center;
@@ -445,6 +471,7 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
   .admin-sidebar.collapsed .nav-label,
   .admin-sidebar.collapsed .nav-text,
   .admin-sidebar.collapsed .admin-identity,
+  .admin-sidebar.collapsed .chat-entry-text,
   .admin-sidebar.collapsed .logout-text { display: block; }
   .admin-sidebar.collapsed .nav-note { display: none; }
   .admin-sidebar.collapsed .nav-item {
@@ -452,13 +479,15 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
     padding: 0 12px;
     justify-content: flex-start;
   }
+  .admin-sidebar.collapsed .chat-entry-button,
   .admin-sidebar.collapsed .logout-button { width: auto; padding: 8px 15px; }
+  .admin-sidebar.collapsed .chat-entry-icon,
   .admin-sidebar.collapsed .logout-icon { display: none; }
   .admin-nav { margin-bottom: 14px; }
   .nav-note { display: none; }
-  .sidebar-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .admin-identity { margin: 0; }
-  .logout-button { width: auto; }
+  .sidebar-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+  .admin-identity { flex: 1 0 100%; margin: 0; }
+  .chat-entry-button, .logout-button { width: auto; margin-bottom: 0; }
   .admin-main { padding: 24px 16px 48px; }
   .page-header { display: block; }
   .header-actions { margin-top: 18px; justify-content: space-between; }

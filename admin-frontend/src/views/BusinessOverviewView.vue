@@ -29,11 +29,7 @@ onMounted(loadOverview)
   <section>
     <header class="page-header">
       <div>
-        <p class="eyebrow">只读业务后台</p>
         <h1>业务概览</h1>
-        <p class="page-description">
-          数量来自数据库表统计估算，具体记录请进入对应页面核对；数据库和 Worker 状态继续复用共享快照。
-        </p>
       </div>
       <el-button type="primary" plain :loading="loading" @click="loadOverview">重新读取</el-button>
     </header>
@@ -52,7 +48,6 @@ onMounted(loadOverview)
       <div class="panel-header">
         <div>
           <h2>共享监控快照</h2>
-          <p>展示快照类型、观测时间、刷新请求时间和对应健康摘要。</p>
         </div>
         <span class="source-meta">
           统计时间 {{ formatDate(overview?.observed_at) }}
@@ -67,7 +62,7 @@ onMounted(loadOverview)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="观测时间" min-width="190">
+        <el-table-column label="时间" min-width="190">
           <template #default="{ row }">{{ formatDate(row.observed_at) }}</template>
         </el-table-column>
         <el-table-column label="刷新请求" min-width="190">

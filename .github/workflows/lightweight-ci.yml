@@ -58,8 +58,8 @@ jobs:
       - name: Run dependency-free tests
         run: >-
           python -m pytest --quiet
-          tests/test_llm_structured_output_usage.py
-          tests/test_llm_structured_output_config.py
+          tests/unit/agent/test_llm_structured_output_usage.py
+          tests/unit/agent/test_llm_structured_output_config.py
 
   pull-request-policy:
     name: Pull request policy

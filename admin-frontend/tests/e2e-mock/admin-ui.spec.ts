@@ -206,6 +206,7 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
 
   await page.goto('/admin/database')
   await expect(page.getByRole('heading', { name: '数据库状态看板' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '进入聊天' })).toHaveAttribute('href', '/')
   for (const text of ['Revision', '主库', '第一从库', '阻塞项', '连接使用率']) {
     await expect(page.getByText(text, { exact: true })).toBeVisible()
   }
@@ -220,25 +221,26 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
   await expect(page.getByText('读取用户身份或权限', { exact: true })).toBeVisible()
   await expect(page.getByText('推断：查询 custom_table 数据', { exact: true })).toBeVisible()
   await expect(page.getByText(mappedDigestText, { exact: true })).toHaveCount(0)
+  await expect(page.locator('.sql-business-table th.is-center').first()).toContainText('业务模块')
+  await expect(page.locator('.sql-business-table td.is-center').first()).toContainText('用户与权限')
 
   await page.setViewportSize({ width: 1180, height: 900 })
   await page.locator('.sql-business-table').getByRole('button', { name: '查看详情' }).first().click()
-  await expect(page.getByRole('heading', { name: 'SQL 原始详情' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'SQL详情' })).toBeVisible()
   await expect(page.locator('.sql-detail-drawer').getByText('代码确认', { exact: true })).toBeVisible()
   await expect(page.getByText('判断依据', { exact: true })).toBeVisible()
   await expect(page.getByText(/app\/auth\/service\.py/)).toBeVisible()
   await expect(page.getByText(mappedDigestText, { exact: true })).toBeVisible()
   for (const label of [
-    'Digest 模板（digest_text / digest）',
-    '执行次数（count_star / execution_count）',
-    '累计总耗时（total_seconds）',
-    '平均耗时（avg_seconds）',
-    '扫描行（rows_examined）',
-    '返回行（rows_sent）',
+    'Digest 模板',
+    '执行次数',
+    '累计总耗时',
+    '平均耗时',
+    '扫描行',
+    '返回行',
   ]) {
     await expect(page.getByText(label, { exact: true })).toBeVisible()
   }
-  await expect(page.getByText(/真实参数不会被 Performance Schema Digest 保存/)).toBeVisible()
   await page.getByRole('button', { name: '关闭详情' }).click()
   await expect(page.getByText(mappedDigestText, { exact: true })).toBeHidden()
 
@@ -258,20 +260,28 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
   await expect(page.getByText('共享监控快照已刷新。')).toBeHidden({ timeout: 7_000 })
 
   await page.getByRole('button', { name: '打开后台导航' }).click()
-  await page.getByRole('link', { name: '采集配置' }).click()
+  await page.getByRole('link', { name: '自动采集时间配置' }).click()
   await expect(page).toHaveURL(/\/admin\/database\/settings$/)
   await expect(page.getByRole('heading', { name: '采集配置' })).toBeVisible()
   await expect(page.getByText('实时状态采集周期')).toBeVisible()
   await expect(page.getByText('代码默认').first()).toBeVisible()
+  for (const label of ['管理员', '错误码']) {
+    const header = page.locator('thead th').filter({ hasText: label }).first()
+    const headerBox = await header.boundingBox()
+    expect(headerBox?.width).toBeGreaterThanOrEqual(179)
+  }
 
   await page.getByRole('button', { name: '保存配置' }).click()
   await expect(page.getByText(/配置已保存/)).toBeVisible()
   expect(version).toBe(2)
 })
 
-test('3.1 业务页面、敏感揭示和可收缩导航在 mock 数据下可交互', async ({ page }) => {
+test('3.2 业务页面、受控写入、敏感揭示和可收缩导航在 mock 数据下可交互', async ({ page }) => {
   const observedAt = '2026-07-26T12:00:00.000Z'
+  const longSessionTitle = '用于验证悬停时展示完整内容的超长会话标题'
   let messageContentReads = 0
+  let controlledWriteCalls = 0
+  let fileDeleteCalls = 0
 
   await page.route('**/api/check_auth', route => route.fulfill({
     json: {
@@ -298,6 +308,125 @@ test('3.1 业务页面、敏感揭示和可收缩导航在 mock 数据下可交�
       request_id: 'mock-business',
     })
 
+    if (path.endsWith('/business/users/operations/preview')) {
+      expect(route.request().headers()['x-csrf-token']).toBe('business-csrf')
+      return route.fulfill({
+        json: {
+          success: true,
+          data: {
+            action: 'set_active',
+            target_count: 1,
+            items: [{
+              id: 1,
+              username: 'alice',
+              current: { role: 'admin', is_active: true },
+              next: { is_active: false },
+              blockers: [],
+            }],
+            can_execute: true,
+            requires_reauthentication: true,
+            batch_limit: 20,
+          },
+        },
+      })
+    }
+    if (path.endsWith('/business/users/operations')) {
+      const body = route.request().postDataJSON()
+      expect(route.request().headers()['x-csrf-token']).toBe('business-csrf')
+      expect(route.request().headers()['idempotency-key']).toBeTruthy()
+      if (body.reauth_password === 'wrong-admin-password') {
+        return route.fulfill({
+          status: 401,
+          json: {
+            success: false,
+            code: 'reauth_failed',
+            error: '当前管理员密码不正确或账号状态已变化',
+            request_id: 'mock-reauth-failed',
+            fields: { reauth_password: '重新认证失败' },
+          },
+        })
+      }
+      expect(body).toMatchObject({
+        action: 'set_active',
+        target_ids: [1],
+        value: false,
+        reauth_password: 'admin-current-password',
+        confirmed: true,
+      })
+      controlledWriteCalls += 1
+      return route.fulfill({
+        json: {
+          success: true,
+          data: {
+            operation_id: 'operation-1',
+            operation_type: 'user_set_active',
+            target_count: 1,
+            replayed: false,
+            items: [{
+              id: 1,
+              username: 'alice',
+              changed: true,
+              role: 'admin',
+              is_active: false,
+              auth_version: 2,
+            }],
+          },
+        },
+      })
+    }
+    if (/\/business\/files\/9\/delete-impact$/.test(path)) {
+      return route.fulfill({
+        json: {
+          success: true,
+          data: {
+            file: {
+              id: 9,
+              user_id: 1,
+              username: 'alice',
+              filename: 'stored.csv',
+              original_filename: 'report.csv',
+              mime_type: 'text/csv',
+              file_size: 24,
+              upload_timestamp: observedAt,
+              last_accessed_at: observedAt,
+              access_count: 0,
+            },
+            impact: { database_rows: 1, blob_bytes: 24, owner_active_jobs: 0 },
+            can_delete: true,
+            blockers: [],
+            requires_confirmation: 'report.csv',
+            requires_reauthentication: true,
+            recycle_bin: false,
+          },
+        },
+      })
+    }
+    if (/\/business\/files\/9$/.test(path) && route.request().method() === 'DELETE') {
+      const body = route.request().postDataJSON()
+      expect(route.request().headers()['x-csrf-token']).toBe('business-csrf')
+      expect(route.request().headers()['idempotency-key']).toBeTruthy()
+      expect(body).toMatchObject({
+        confirm_filename: 'report.csv',
+        reauth_password: 'admin-current-password',
+        confirmed: true,
+      })
+      fileDeleteCalls += 1
+      return route.fulfill({
+        json: {
+          success: true,
+          data: {
+            operation_id: 'operation-2',
+            operation_type: 'file_delete',
+            target_count: 1,
+            replayed: false,
+            deleted: true,
+            file_id: 9,
+            filename: 'report.csv',
+            blob_deleted: true,
+          },
+        },
+      })
+    }
     if (path.endsWith('/business/overview')) {
       return route.fulfill({
         json: {
@@ -378,7 +507,7 @@ test('3.1 业务页面、敏感揭示和可收缩导航在 mock 数据下可交�
             id: 'session-1',
             user_id: 1,
             username: 'alice',
-            title: '核对会话',
+            title: longSessionTitle,
             created_at: observedAt,
             last_activity_at: observedAt,
             message_count: 1,
@@ -395,7 +524,7 @@ test('3.1 业务页面、敏感揭示和可收缩导航在 mock 数据下可交�
           id: 'session-1',
           user_id: 1,
           username: 'alice',
-          title: '核对会话',
+          title: longSessionTitle,
           created_at: observedAt,
           last_activity_at: observedAt,
           message_count: 1,
@@ -504,6 +633,19 @@ test('3.1 业务页面、敏感揭示和可收缩导航在 mock 数据下可交�
   await page.goto('/admin/overview')
   await expect(page.getByRole('heading', { name: '业务概览' })).toBeVisible()
   await expect(page.getByText('primary-information-schema')).toBeVisible()
+  await expect(page.locator('.nav-item').filter({ hasText: '会话与内容管理' }))
+    .toHaveCSS('font-size', '14px')
+
+  const chatEntry = page.getByRole('link', { name: '进入聊天' })
+  const logoutButton = page.getByRole('button', { name: '退出登录' })
+  await expect(chatEntry).toHaveCSS('text-decoration-line', 'none')
+  await expect(logoutButton).toHaveCSS('margin-left', '0px')
+  const [chatBox, logoutBox] = await Promise.all([
+    chatEntry.boundingBox(),
+    logoutButton.boundingBox(),
+  ])
+  expect(chatBox?.x).toBe(logoutBox?.x)
+  expect(chatBox?.width).toBe(logoutBox?.width)
 
   const logoSources = await page.locator('img[alt="CausalAgent"], .mobile-brand-icon img')
     .evaluateAll(images => images.map(image => image.getAttribute('src')))
@@ -518,16 +660,36 @@ test('3.1 业务页面、敏感揭示和可收缩导航在 mock 数据下可交�
   await expect(page.locator('.admin-shell')).toHaveClass(/sidebar-collapsed/)
   await page.getByRole('button', { name: '展开左侧导航' }).click()
 
-  await page.getByRole('link', { name: '用户与权限' }).click()
-  await expect(page.getByRole('heading', { name: '用户与权限' })).toBeVisible()
+  await page.getByRole('link', { name: '用户与权限管理' }).click()
+  await expect(page.getByRole('heading', { name: '用户与权限管理' })).toBeVisible()
   await expect(page.getByText('alice', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '查看详情' }).click()
-  await expect(page.getByText('用户只读详情')).toBeVisible()
+  await page.getByRole('button', { name: '详情', exact: true }).click()
+  await expect(page.getByText('用户详情')).toBeVisible()
   await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '禁用', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '禁用用户' })).toBeVisible()
+  await expect(page.getByText('禁用 / 会话失效', { exact: true })).toBeVisible()
+  await page.getByLabel('当前管理员密码（重新认证）').fill('wrong-admin-password')
+  await page.getByText('我已核对预览，并确认执行 禁用用户', { exact: true }).click()
+  await page.getByRole('button', { name: '确认执行' }).click()
+  await expect(page).toHaveURL(/\/admin\/users$/)
+  await expect(page.getByRole('dialog', { name: '禁用用户' })).toBeVisible()
+  await expect(page.getByText('当前管理员密码不正确，请重新输入。', { exact: false }))
+    .toBeVisible()
+  await expect(page.getByLabel('当前管理员密码（重新认证）')).toHaveValue('')
+  await page.getByLabel('当前管理员密码（重新认证）').fill('admin-current-password')
+  await page.getByRole('button', { name: '确认执行' }).click()
+  await expect(page.getByText('禁用用户已完成')).toBeVisible()
+  expect(controlledWriteCalls).toBe(1)
 
-  await page.getByRole('link', { name: '会话与内容' }).click()
-  await expect(page.getByRole('heading', { name: '会话与内容' })).toBeVisible()
-  await expect(page.getByText('核对会话')).toBeVisible()
+  await page.getByRole('link', { name: '会话与内容管理' }).click()
+  await expect(page.getByRole('heading', { name: '会话与内容管理' })).toBeVisible()
+  const sessionTitle = page.locator('.session-title-cell')
+  await expect(sessionTitle).toHaveText(longSessionTitle)
+  await expect(sessionTitle).toHaveCSS('text-overflow', 'ellipsis')
+  await sessionTitle.hover()
+  await expect(page.locator('.session-title-tooltip').getByText(longSessionTitle, { exact: true }))
+    .toBeVisible()
   expect(messageContentReads).toBe(0)
   await page.getByRole('button', { name: '查看详情' }).click()
   await expect(page.getByText('只读摘要')).toBeVisible()
@@ -539,21 +701,33 @@ test('3.1 业务页面、敏感揭示和可收缩导航在 mock 数据下可交�
   await page.keyboard.press('Escape')
   await page.keyboard.press('Escape')
 
-  await page.getByRole('link', { name: '分析任务' }).click()
-  await expect(page.getByRole('heading', { name: '分析任务' })).toBeVisible()
+  await page.getByRole('link', { name: '分析任务管理' }).click()
+  await expect(page.getByRole('heading', { name: '分析任务管理' })).toBeVisible()
   await expect(page.getByText('job-1', { exact: true })).toBeVisible()
 
-  await page.getByRole('link', { name: '文件资产' }).click()
-  await expect(page.getByRole('heading', { name: '文件资产' })).toBeVisible()
+  await page.getByRole('link', { name: '对话文件管理' }).click()
+  await expect(page.getByRole('heading', { name: '对话文件管理' })).toBeVisible()
   await expect(page.getByText('report.csv', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '删除', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '删除文件' })).toBeVisible()
+  await expect(page.getByText('第一步：输入文件名以确认删除')).toBeVisible()
+  await expect(page.getByPlaceholder('请输入完整文件名：report.csv')).toBeVisible()
+  await expect(page.getByText('第二步：输入当前管理员登录密码')).toBeVisible()
+  await expect(page.getByPlaceholder('请输入当前管理员密码')).toBeVisible()
+  await page.getByLabel('输入文件名 report.csv 确认').fill('report.csv')
+  await page.getByLabel('当前管理员密码（重新认证）').fill('admin-current-password')
+  await page.getByRole('button', { name: '确认删除' }).click()
+  await expect(page.getByText('文件已删除', { exact: true })).toBeVisible()
+  expect(fileDeleteCalls).toBe(1)
 
-  await page.getByRole('link', { name: 'Schema 与审计' }).click()
-  await expect(page.getByRole('heading', { name: 'Schema 与深度审计' })).toBeVisible()
+  await page.getByRole('link', { name: 'Schema与审计' }).click()
+  await expect(page.getByRole('heading', { name: 'Schema与审计' })).toBeVisible()
   await expect(page.getByText('迁移链一致')).toBeVisible()
 
   await page.setViewportSize({ width: 720, height: 900 })
   await page.getByRole('button', { name: '打开后台导航' }).click()
   await expect(page.locator('.admin-sidebar')).toHaveClass(/mobile-open/)
+  await expect(page.getByRole('link', { name: '进入聊天' })).toBeVisible()
   await page.getByRole('button', { name: '关闭后台导航' }).first().click()
   await expect(page.locator('.admin-sidebar')).not.toHaveClass(/mobile-open/)
 })

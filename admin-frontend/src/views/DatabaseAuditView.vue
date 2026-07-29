@@ -56,12 +56,12 @@ async function pollDeep(): Promise<void> {
     deep.value = snapshot
     if (deepRequestCompleted(snapshot)) {
       running.value = false
-      notice.value = 'deep 审计已由独立 monitor 完成。'
+      notice.value = 'deep 审计已由 monitor 完成。'
       return
     }
     if (Date.now() >= deadline) {
       running.value = false
-      error.value = 'deep 审计仍在排队，请稍后重新读取；Web 请求未执行现场审计。'
+      error.value = 'deep 审计仍在排队，请稍后重新读取；Web 请求未执行审计。'
       return
     }
     pollTimer = window.setTimeout(pollDeep, 1500)
@@ -103,11 +103,7 @@ onBeforeUnmount(() => {
   <section>
     <header class="page-header">
       <div>
-        <p class="eyebrow">数据库运维</p>
-        <h1>Schema 与深度审计</h1>
-        <p class="page-description">
-          quick 读取现有完整性快照；deep 只允许手动登记，由 monitor 执行有超时、有样本上限的只读检查，不自动修复。
-        </p>
+        <h1>Schema与审计</h1>
       </div>
       <div class="header-actions">
         <el-button :loading="loading" @click="loadAudits">重新读取</el-button>
@@ -122,7 +118,6 @@ onBeforeUnmount(() => {
       <div class="panel-header">
         <div>
           <h2>Quick 完整性</h2>
-          <p>继续复用 2.5 的共享快照和轻量约束检查。</p>
         </div>
         <span class="source-meta">{{ formatDate(quick?.observed_at) }}</span>
       </div>
@@ -137,10 +132,6 @@ onBeforeUnmount(() => {
       <div class="panel-header">
         <div>
           <h2>Deep 审计</h2>
-          <p>
-            {{ deep?.query_timeout_ms || '—' }}ms 查询超时 ·
-            异常样本最多 {{ deep?.sample_limit || '—' }} 条 · 永不自动调度
-          </p>
         </div>
         <div class="source-meta">
           <el-tag :type="deep?.status === 'healthy' ? 'success' : deep?.status === 'error' ? 'danger' : 'warning'">
@@ -155,7 +146,7 @@ onBeforeUnmount(() => {
         class="page-notice"
         type="info"
         :closable="false"
-        title="deep 审计请求已登记，正在等待独立 monitor 处理。"
+        title="deep 审计请求已登记，正在等待 monitor 处理。"
       />
 
       <el-collapse v-loading="loading || running">

@@ -608,7 +608,14 @@
         background-color: #dc3545;
         color: white;
         border: none;
-        border-radius: 4px;
+         border-radius: 4px;
+     }
+     #adminPortalButton {
+         /* 仅管理员可见的后台入口 */
+         background-color: #2563eb;
+         color: white;
+         border: none;
+         border-radius: 4px;
      }
      #closePopupButton{
          /* 关闭弹窗按钮 */
@@ -623,7 +630,8 @@
          /* 用于包裹用户信息弹窗中按钮的容器 */
          display: flex; /* 启用 Flexbox */
          justify-content: center; /* 水平居中按钮 */
-         gap: 20px; /* 按钮之间的间距 */
+         flex-wrap: wrap;
+         gap: 10px; /* 按钮之间的间距 */
          margin-top: 20px; /* 与上方内容的间距 */
      }
 
