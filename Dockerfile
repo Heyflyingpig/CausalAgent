@@ -1,6 +1,17 @@
 # CausalChat Docker 镜像构建文件
 
-FROM python:3.11-slim
+FROM node:24-alpine AS admin-builder
+
+WORKDIR /frontend
+
+COPY admin-frontend/package.json admin-frontend/package-lock.json ./
+RUN npm ci
+
+COPY admin-frontend/ ./
+RUN npm run build
+
+
+FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
@@ -28,6 +39,9 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
+COPY --from=admin-builder /frontend/dist /opt/causalchat-admin
+
+ENV ADMIN_FRONTEND_DIST_DIR=/opt/causalchat-admin
 
 EXPOSE 5001
 

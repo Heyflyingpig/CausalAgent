@@ -68,6 +68,10 @@ dist/
 build/
 *.egg-info/
 .eggs/
+admin-frontend/node_modules/
+admin-frontend/dist/
+admin-frontend/test-results/
+admin-frontend/playwright-report/
 
 
 # --- 数据文件和大文件 ---

@@ -60,7 +60,7 @@ CausalAgent
 - [贡献](#贡献)
 - [Star 趋势](#star-趋势)
 - [项目结构](#项目结构)
-- [更新日志](./README/CHANGELOG.md)
+- [更新日志](./README/开发日志.md)
 
 
 
@@ -174,7 +174,7 @@ graph TD;
 
 ## 快速开始 | Quick Start
 ### Docker部署
-当前项目已经提供了完整的 `Dockerfile`，支持通过 Docker 运行后端服务，但暂未在公网镜像仓库发布官方镜像。
+当前项目已经提供了完整的多阶段 `Dockerfile`，会先用 Node 24 构建管理员 Vue，再生成仅包含 Python 运行时与静态产物的应用镜像；暂未在公网镜像仓库发布官方镜像。
 如果你已安装 Docker，可以在本地根据下面的步骤自行构建并运行镜像。
 
 
@@ -211,7 +211,7 @@ MYSQL_DATABASE=
 MYSQL_WRITE_USER=pyramid_writer
 MYSQL_WRITE_PASSWORD=
 
-# 应用读账号：用于主库/从库业务查询，建议只授予业务库 SELECT。
+# 应用读账号：用于业务查询，并只额外读取 Performance Schema digest 摘要。
 MYSQL_READ_USER=pyramid_reader
 MYSQL_READ_PASSWORD=
 
@@ -229,8 +229,32 @@ MYSQL_READ_HOSTS=mysql-replica
 MYSQL_PORT=3306
 MYSQL_POOL_SIZE_WRITE=5
 MYSQL_POOL_SIZE_READ=5
+MYSQL_CONNECT_TIMEOUT_SECONDS=5
+MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=3
+MYSQL_POOL_ACQUIRE_RETRY_MS=50
 MYSQL_REPLICA_MAX_LAG_SECONDS=2
+MYSQL_REPLICA_STATUS_CACHE_SECONDS=2
 MYSQL_QUERY_WARN_MS=500
+
+# 3.2 受控管理员写入
+ADMIN_BATCH_MAX_TARGETS=20
+ADMIN_DELETE_MAX_RELATED_ROWS=10000
+ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS=5
+
+# 管理员数据库看板、业务后台与 deep 审计
+DB_INSPECTION_QUERY_TIMEOUT_MS=3000
+DB_DASHBOARD_CONNECTION_WARNING_PERCENT=70
+DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=85
+DB_MONITOR_AUTO_REFRESH_ENABLED=true
+DB_MONITOR_REALTIME_INTERVAL_SECONDS=10
+DB_MONITOR_SQL_INTERVAL_SECONDS=60
+DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS=900
+DB_MONITOR_SLOW_QUERY_WARNING_DELTA=1
+DB_MONITOR_INTEGRITY_ENABLED=false
+DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=86400
+
+# 可选，仅本地管理员 Vue 开发使用；生产环境留空。
+ADMIN_VITE_DEV_SERVER_URL=
 
 # Web/后台任务并发配置
 WEB_WORKERS=1
@@ -263,7 +287,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/databa
 docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head
 ```
 
-如果是已有旧数据、准备做生产化升级，再额外先执行：
+全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 
 ```bash
 docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_before_db_upgrade.py
@@ -281,17 +305,34 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 主从模式下数据库账号按职责拆分：
 
 - 写账号：`MYSQL_WRITE_USER` / `MYSQL_WRITE_PASSWORD`，用于应用写主库、Alembic 迁移和启动就绪检查；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
-- 读账号：`MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`，用于 `get_read_connection()` 的主库强一致读和从库弱一致读；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
+- 读账号：`MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`，用于 `get_read_connection()` 的主库强一致读和从库弱一致读；除业务库 `SELECT` 外，仅额外授予 `performance_schema.events_statements_summary_by_digest` 的表级 `SELECT`，供高负载 SQL digest 摘要使用；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
 - 复制状态检查账号：`MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`，只用于读取 `SHOW REPLICA STATUS`；缺失或不可用时，`eventual` 读安全回退主库读连接。
 - 复制通道账号：`MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`，只用于 MySQL 主从复制链路，不参与应用业务查询。
 
 删除已经创建的会话时，应用会在同一个主库事务内删除会话、聊天消息、附件和同一 `session_id` 对应的 LangGraph MySQL checkpoint；`checkpoint_writes` 由其到 `checkpoints` 的外键级联删除。当前 `thread_id` 使用会话 ID，但不额外建立 `checkpoints.thread_id → sessions.id` 外键。
 
-管理接口：
+#### 管理员后台
 
-- `GET /api/admin/db/health`
-- `GET /api/admin/db/slow-queries`
-- `GET /api/admin/jobs/workers`
+管理员后台提供业务概览、用户、会话、任务、文件、数据库看板、采集配置和数据库审计。普通用户仍进入聊天页面，已启用的管理员登录后进入 `/admin/database`。
+
+管理员仍默认进入 `/admin/database`，也可从后台进入普通聊天界面；聊天页只访问当前账号自己的会话、文件和任务，并向管理员提供返回后台的入口。管理员主动访问 `/` 时不会被再次强制送回后台。
+
+未登录管理页面只保留白名单内的安全回跳；普通用户直访管理页面会得到 `403`。`POST /api/login` 仅在内部 `next` 通过服务端白名单校验后返回 `redirect_to`。
+
+首次使用前，先完成数据库迁移和管理员前端构建，然后把一个已经注册且已启用的用户提升为管理员：
+
+```bash
+# Docker 运行
+docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.admin_cli promote <username>
+```
+
+管理员系统的部署、开发、API、安全边界和测试说明统一放在 [`Document/admin/`](Document/admin/README.md)。其中：
+
+- [API 契约](Document/admin/api.md)
+- [开发与部署](Document/admin/development.md)
+- [测试说明](Document/admin/testing.md)
+
+更深入的数据库治理、读写一致性和恢复规则见 [`setting/database_governance.md`](setting/database_governance.md)。
 
 
 
@@ -299,7 +340,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 
 **不推荐使用windows部署，会有意想不到的问题**
 
-项目采用前后端分离的设计，需要同时运行后端服务和前端应用。
+普通用户前端仍由 Flask 直接托管；管理员 Vue 在开发时可单独运行 Vite，生产时由 Flask 托管预构建产物。长任务仍需要独立 worker，数据库看板仍需要独立 monitor。
 
 首先推荐创建一个环境，具体创建方式请自行查阅
 
@@ -323,6 +364,15 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
     克隆项目后，在项目根目录运行以下命令：
     ```bash
     pip install -r requirements.txt
+    ```
+
+   管理员 Vue 需要 Node 24；首次或锁文件变化后构建一次：
+
+    ```bash
+    cd admin-frontend
+    npm ci
+    npm run build
+    cd ..
     ```
 7. 项目配置
 
@@ -370,6 +420,21 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
     MYSQL_REPLICATION_USER=replica
     MYSQL_REPLICATION_PASSWORD=
 
+    # 管理员数据库看板共享快照
+    DB_INSPECTION_QUERY_TIMEOUT_MS=3000
+    DB_DASHBOARD_CONNECTION_WARNING_PERCENT=70
+    DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=85
+    DB_MONITOR_AUTO_REFRESH_ENABLED=true
+    DB_MONITOR_REALTIME_INTERVAL_SECONDS=10
+    DB_MONITOR_SQL_INTERVAL_SECONDS=60
+    DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS=900
+    DB_MONITOR_SLOW_QUERY_WARNING_DELTA=1
+    DB_MONITOR_INTEGRITY_ENABLED=false
+    DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=86400
+
+    # 可选，仅本地管理员 Vue 开发使用；生产环境留空。
+    ADMIN_VITE_DEV_SERVER_URL=
+
     # LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
     LANGCHAIN_API_KEY=
     LANGCHAIN_PROJECT=
@@ -383,7 +448,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 python Database/database_init.py
 alembic upgrade head
 ```
-`Database/database_init.py` 负责确保数据库存在和连接可用；业务表结构由 Alembic 迁移脚本维护。全新空库直接执行 `alembic upgrade head` 即可；已有历史数据的环境应先执行审计脚本，确认无孤立消息、孤立附件和非法附件类型后再升级。
+`Database/database_init.py` 负责确保数据库存在和连接可用；业务表结构由 Alembic 迁移脚本维护。全新空库直接执行 `alembic upgrade head`，不要先运行 preflight。旧库只有在目标外键尚未建立、且即将执行添加外键的迁移时，才先执行 `python Database/audit_before_db_upgrade.py`；审计会依据当前 schema 跳过尚不存在或已经受约束保护的关系。
 
 9. 启动后端服务
 
@@ -399,7 +464,13 @@ python Causalchat.py
 python -m app.agent.worker
 ```
 
-首次运行时，Web 层会检查数据库表结构。Agent/MCP 初始化只在 worker 中执行；如果没有 worker，前端可以创建任务但不会得到最终分析结果。请保持 Web 和 worker 两个终端窗口持续运行。
+再打开一个终端，运行数据库监控采集器：
+
+```bash
+python -m Database.monitor_worker
+```
+
+首次运行时，Web 层会检查数据库表结构。Agent/MCP 初始化只在 worker 中执行；如果没有 worker，前端可以创建任务但不会得到最终分析结果。数据库看板的共享快照只由 monitor 更新；如果没有 monitor，管理接口仍可读取已有快照并显示过期状态，但不会得到新的自动或手动采集结果。请保持 Web、worker 和 monitor 三个终端窗口持续运行。
 
 10. 启动前端应用
 
@@ -450,14 +521,23 @@ python Run_causal.py
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
 ├── .github/workflows/       # GitHub Actions 工作流
+├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收端口/容器覆盖
 ├── README.md               # 项目说明
 ├── README/                 # README 图片与更新日志
+├── Document/
+│   └── admin/              # 管理员 API、开发部署与测试文档
+├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
+│   ├── src/
+│   ├── tests/
+│   ├── package.json
+│   └── package-lock.json
 ├── database_init.log       # 数据库初始化日志
 ├── app/                    # Flask 应用主目录（Blueprint 结构）
 │   ├── __init__.py         # 创建 Flask app，注册蓝图
 │   ├── db.py               # 数据库会话与连接封装
 │   ├── main/               # 通用页面相关路由
 │   ├── auth/               # 登录、注册等认证相关路由
+│   ├── admin/              # 管理 API、审计服务与受保护 Vue 入口
 │   ├── chat/               # 聊天 & 会话相关路由与服务
 │   ├── files/              # 文件上传/管理相关路由
 │   └── static/             # 前端静态资源
@@ -480,7 +560,12 @@ python Run_causal.py
 ├── Database/               # 数据库初始化与迁移逻辑
 │   ├── database_init.py    # 数据库初始化引导脚本
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
-│   ├── monitoring.py       # 数据库轻量监控查询
+│   ├── inspection.py       # 管理员看板统一只读检查服务
+│   ├── deep_audit.py       # 3.1 手动 deep 数据库事实审计
+│   ├── lifecycle_repair.py # 3.2 孤立关系 dry-run/人工确认修复 CLI
+│   ├── monitoring.py       # 共享快照存取、调度与兼容接口
+│   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
+│   ├── monitor_worker.py   # 数据库看板分层采集进程
 │   ├── agent_connect.py    # Langgraph checkpoint 相关数据库支持
 │   ├── mysql/              # MySQL 主从配置与初始化脚本
 │   └── migrations/         # Alembic 迁移脚本
@@ -489,5 +574,9 @@ python Run_causal.py
 ├── setting/                # 用户可见文档
 │   ├── manual.md           # 用户手册
 │   └── Userprivacy.md      # 用户隐私协议
+├── tests/                  # 后端测试：unit、integration、e2e
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
 ├── openspec/               # 项目规范与变更说明（内部开发用）
 ```

@@ -9,16 +9,21 @@ from __future__ import annotations
 from contextlib import contextmanager
 import logging
 import random
+import threading
 import time
 from typing import Any, Iterable
 
 import mysql.connector
 from mysql.connector import errorcode, pooling
+from mysql.connector.errors import PoolError
 
 from config.settings import settings
 
 _write_pool: pooling.MySQLConnectionPool | None = None
 _read_pools: dict[str, pooling.MySQLConnectionPool] = {}
+_pool_lock = threading.Lock()
+_replica_status_lock = threading.Lock()
+_replica_status_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 
 
 def _base_connection_config(host: str) -> dict[str, Any]:
@@ -27,6 +32,7 @@ def _base_connection_config(host: str) -> dict[str, Any]:
         "port": settings.MYSQL_PORT,
         "charset": "utf8mb4",
         "use_unicode": True,
+        "connection_timeout": settings.MYSQL_CONNECT_TIMEOUT_SECONDS,
     }
 
 
@@ -65,26 +71,49 @@ def replica_status_connection_config(host: str) -> dict[str, Any] | None:
 def _get_write_pool() -> pooling.MySQLConnectionPool:
     global _write_pool
     if _write_pool is None:
-        _write_pool = pooling.MySQLConnectionPool(
-            pool_name="causalchat_write_pool",
-            pool_size=settings.MYSQL_POOL_SIZE_WRITE,
-            pool_reset_session=True,
-            **write_connection_config(settings.MYSQL_WRITE_HOST),
-        )
+        with _pool_lock:
+            if _write_pool is None:
+                _write_pool = pooling.MySQLConnectionPool(
+                    pool_name="causalchat_write_pool",
+                    pool_size=settings.MYSQL_POOL_SIZE_WRITE,
+                    pool_reset_session=True,
+                    **write_connection_config(settings.MYSQL_WRITE_HOST),
+                )
     return _write_pool
 
 
 def _get_read_pool(host: str) -> pooling.MySQLConnectionPool:
     pool = _read_pools.get(host)
     if pool is None:
-        pool = pooling.MySQLConnectionPool(
-            pool_name=f"causalchat_read_{abs(hash(host))}",
-            pool_size=settings.MYSQL_POOL_SIZE_READ,
-            pool_reset_session=True,
-            **read_connection_config(host),
-        )
-        _read_pools[host] = pool
+        with _pool_lock:
+            pool = _read_pools.get(host)
+            if pool is None:
+                pool = pooling.MySQLConnectionPool(
+                    pool_name=f"causalchat_read_{abs(hash(host))}",
+                    pool_size=settings.MYSQL_POOL_SIZE_READ,
+                    pool_reset_session=True,
+                    **read_connection_config(host),
+                )
+                _read_pools[host] = pool
     return pool
+
+
+def _acquire_pool_connection(pool, *, target: str):
+    """在有界等待内获取池连接，耗尽时给出明确错误而不是无限阻塞。"""
+    deadline = time.monotonic() + settings.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS
+    retry_seconds = settings.MYSQL_POOL_ACQUIRE_RETRY_MS / 1000
+    while True:
+        try:
+            return pool.get_connection()
+        except PoolError:
+            if time.monotonic() >= deadline:
+                logging.error(
+                    "MySQL %s连接池在 %.2f 秒内无法取得连接。",
+                    target,
+                    settings.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS,
+                )
+                raise
+            time.sleep(min(retry_seconds, max(0, deadline - time.monotonic())))
 
 
 def _get_replica_status_connection(host: str):
@@ -106,33 +135,55 @@ def _log_connection_error(err: mysql.connector.Error, target: str) -> None:
 def get_write_connection():
     """获取写库连接。"""
     try:
-        return _get_write_pool().get_connection()
+        return _acquire_pool_connection(_get_write_pool(), target="写库")
     except mysql.connector.Error as err:
         _log_connection_error(err, "写库")
         raise
 
 
-def get_replica_status(host: str | None = None) -> dict[str, Any] | None:
-    """使用专用状态账号读取从库状态；无法取得时返回 None。"""
+def get_replica_status(
+    host: str | None = None,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any] | None:
+    """短时缓存专用账号读取的从库状态；失效或失败时返回 None。"""
     if host is None:
         if not settings.MYSQL_READ_HOSTS:
             return None
         host = settings.MYSQL_READ_HOSTS[0]
-    conn = None
-    try:
-        conn = _get_replica_status_connection(host)
-        if conn is None:
-            return None
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute("SHOW REPLICA STATUS")
-        row = cursor.fetchone()
-        return row or None
-    except mysql.connector.Error as err:
-        logging.warning("读取从库复制状态失败，将回退主库: %s", err)
-        return None
-    finally:
-        if conn is not None:
-            conn.close()
+    now = time.monotonic()
+    cached = _replica_status_cache.get(host)
+    if (
+        not force_refresh
+        and cached is not None
+        and now - cached[0] < settings.MYSQL_REPLICA_STATUS_CACHE_SECONDS
+    ):
+        return dict(cached[1]) if cached[1] is not None else None
+
+    with _replica_status_lock:
+        now = time.monotonic()
+        cached = _replica_status_cache.get(host)
+        if (
+            not force_refresh
+            and cached is not None
+            and now - cached[0] < settings.MYSQL_REPLICA_STATUS_CACHE_SECONDS
+        ):
+            return dict(cached[1]) if cached[1] is not None else None
+        conn = None
+        row = None
+        try:
+            conn = _get_replica_status_connection(host)
+            if conn is not None:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute("SHOW REPLICA STATUS")
+                row = cursor.fetchone() or None
+        except mysql.connector.Error as err:
+            logging.warning("读取从库复制状态失败，将回退主库: %s", err)
+        finally:
+            if conn is not None:
+                conn.close()
+        _replica_status_cache[host] = (time.monotonic(), dict(row) if row else None)
+        return dict(row) if row else None
 
 
 def get_replica_lag_seconds(host: str | None = None) -> int | None:
@@ -164,12 +215,36 @@ def get_read_connection(consistency: str = "strong"):
 
     strong 固定走主库；eventual 在从库健康且延迟可接受时走从库，否则回退主库。
     """
+    connection, _source = get_read_connection_with_source(consistency=consistency)
+    return connection
+
+
+def get_read_connection_with_source(
+    consistency: str = "strong",
+) -> tuple[Any, dict[str, str]]:
+    """
+    获取读连接并返回不暴露真实主机名的逻辑来源。
+
+    strong 固定返回主库读连接；eventual 仅在副本健康且延迟合格时返回副本，
+    否则回退主库。来源别名供只读看板解释数据口径，不包含连接信息。
+    """
     if consistency not in {"strong", "eventual"}:
         raise ValueError("consistency 必须是 'strong' 或 'eventual'")
 
+    primary_source = {"source_role": "primary", "source_alias": "primary"}
     if consistency == "strong" or not settings.MYSQL_READ_HOSTS:
-        return _get_read_pool(settings.MYSQL_WRITE_HOST).get_connection()
+        return (
+            _acquire_pool_connection(
+                _get_read_pool(settings.MYSQL_WRITE_HOST),
+                target="主库只读",
+            ),
+            primary_source,
+        )
 
+    aliases = {
+        host: f"replica-{index}"
+        for index, host in enumerate(settings.MYSQL_READ_HOSTS, start=1)
+    }
     hosts = list(settings.MYSQL_READ_HOSTS)
     random.shuffle(hosts)
     for host in hosts:
@@ -177,11 +252,26 @@ def get_read_connection(consistency: str = "strong"):
             logging.warning("从库 %s 状态不可用或延迟超过阈值，回退主库。", host)
             continue
         try:
-            return _get_read_pool(host).get_connection()
+            return (
+                _acquire_pool_connection(
+                    _get_read_pool(host),
+                    target=f"{aliases[host]} 只读",
+                ),
+                {
+                    "source_role": "replica",
+                    "source_alias": aliases[host],
+                },
+            )
         except mysql.connector.Error as err:
             logging.warning("从库 %s 不可用，回退主库: %s", host, err)
 
-    return _get_read_pool(settings.MYSQL_WRITE_HOST).get_connection()
+    return (
+        _acquire_pool_connection(
+            _get_read_pool(settings.MYSQL_WRITE_HOST),
+            target="主库只读回退",
+        ),
+        primary_source,
+    )
 
 
 def get_db_connection():
@@ -231,6 +321,11 @@ def check_database_readiness():
                 "checkpoint_writes",
                 "analysis_jobs",
                 "analysis_job_events",
+                "database_monitor_snapshots",
+                "database_monitor_settings",
+                "admin_audit_events",
+                "admin_operations",
+                "admin_operation_items",
             ]
             cursor.execute(
                 """
@@ -247,6 +342,109 @@ def check_database_readiness():
                 error_msg = (
                     f"数据库表缺失: {sorted(missing_tables)}。"
                     "请先运行 'python Database/database_init.py' 并执行 'alembic upgrade head'。"
+                )
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            cursor.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = 'users'
+                  AND column_name = 'role'
+                """,
+                (settings.MYSQL_DATABASE,),
+            )
+            if cursor.fetchone() is None:
+                error_msg = (
+                    "数据库关键字段缺失: users.role。"
+                    "请先执行 'alembic upgrade head'。"
+                )
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            cursor.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = 'users'
+                  AND column_name IN ('auth_version', 'password_changed_at')
+                """,
+                (settings.MYSQL_DATABASE,),
+            )
+            security_columns = {row[0] for row in cursor.fetchall()}
+            missing_security_columns = {
+                "auth_version",
+                "password_changed_at",
+            } - security_columns
+            if missing_security_columns:
+                error_msg = (
+                    "数据库关键字段缺失: "
+                    f"{sorted(f'users.{name}' for name in missing_security_columns)}。"
+                    "请先执行 'alembic upgrade head'。"
+                )
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            cursor.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = 'checkpoint_writes'
+                  AND column_name = 'write_identity_hash'
+                """,
+                (settings.MYSQL_DATABASE,),
+            )
+            if cursor.fetchone() is None:
+                error_msg = (
+                    "数据库关键字段缺失: checkpoint_writes.write_identity_hash。"
+                    "请先执行 'alembic upgrade head'。"
+                )
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            cursor.execute(
+                """
+                SELECT table_name, index_name
+                FROM information_schema.statistics
+                WHERE table_schema = %s
+                  AND (
+                    (
+                      table_name = 'checkpoint_writes'
+                      AND index_name = 'uq_checkpoint_writes_task_idx'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'checkpoints'
+                      AND index_name = 'idx_checkpoints_thread_ns_created_id'
+                    )
+                    OR (
+                      table_name = 'admin_operations'
+                      AND index_name = 'uq_admin_operations_actor_idempotency'
+                      AND non_unique = 0
+                    )
+                  )
+                """,
+                (settings.MYSQL_DATABASE,),
+            )
+            critical_indexes = {(row[0], row[1]) for row in cursor.fetchall()}
+            required_indexes = {
+                ("checkpoint_writes", "uq_checkpoint_writes_task_idx"),
+                ("checkpoints", "idx_checkpoints_thread_ns_created_id"),
+                (
+                    "admin_operations",
+                    "uq_admin_operations_actor_idempotency",
+                ),
+            }
+            missing_indexes = required_indexes - critical_indexes
+            if missing_indexes:
+                error_msg = (
+                    "数据库关键索引缺失: "
+                    f"{sorted(f'{table}.{index}' for table, index in missing_indexes)}。"
+                    "请先执行 'alembic upgrade head'。"
                 )
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)

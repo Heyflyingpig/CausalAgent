@@ -7,6 +7,7 @@ const registerError = document.getElementById('registerError'); // 错误
 const userAvatar = document.getElementById('userAvatar'); //头像
 const userInfoPopup = document.getElementById('userInfoPopup');
 const userInfoContent = document.getElementById('userInfoContent');
+const adminPortalButton = document.getElementById('adminPortalButton');
 const historyList = document.getElementById('historyList'); // 获取 historyList 元素
 const fileList = document.getElementById('fileList'); //  获取 fileList 元素
 const settingPopup = document.getElementById('settingPopup'); // 获取设置
@@ -19,10 +20,14 @@ const chatArea = document.getElementById('chatArea');
 //全局变量存储当前会话的用户名
 //一个标签页里同时并行操作多个会话的话，会造成冲突
 let currentUsername = null;
+let currentUserRole = null;
 let currentSessionId = null; // < 全局变量跟踪当前会话ID
 let isNewSessionPendingDisplay = false; //  用于跟踪新会话是否已在UI中临时显示
 let chatEventListenersAttached = false; // 跟踪事件监听器是否已附加
 let currentLanguage = localStorage.getItem('language') || 'zh'; // 当前语言，默认中文，从localStorage读取
+const initialNavigationParams = new URLSearchParams(window.location.search);
+let requestedLoginNext = initialNavigationParams.get('next');
+let pendingNavigationNotice = initialNavigationParams.get('notice');
 
 // 多语言文本配置
 const i18n = {
@@ -39,6 +44,7 @@ const i18n = {
         hasAccountLogin: '已有账号？点击登录',
         // 用户信息弹窗
         userInfo: '用户信息',
+        adminPortal: '管理后台',
         logout: '退出登录',
         close: '关闭',
         // 设置弹窗
@@ -92,6 +98,7 @@ const i18n = {
         hasAccountLogin: 'Already have an account? Login',
         // User info popup
         userInfo: 'User Info',
+        adminPortal: 'Admin Console',
         logout: 'Logout',
         close: 'Close',
         // Settings popup
@@ -246,16 +253,30 @@ async function handleLogin() {
     }
 
     try {
+        const loginPayload = { username: username, password: password };
+        if (requestedLoginNext) {
+            loginPayload.next = requestedLoginNext;
+        }
         const response = await fetch('/api/login', {
              method: 'POST',
              headers: {'Content-Type': 'application/json'},
-             body: JSON.stringify({ username: username, password: password})
+             body: JSON.stringify(loginPayload)
         });
         const data = await response.json();
 
         if (data.success && data.username) { // 确保返回了 username
             // 登录成功
             currentUsername = data.username; //  设置全局变量
+            currentUserRole = data.role || 'user';
+            if (data.redirect_to) {
+                window.location.assign(data.redirect_to);
+                return;
+            }
+            if (currentUserRole === 'admin') {
+                window.location.assign('/admin/database');
+                return;
+            }
+            clearInternalNavigationParameters();
             document.body.classList.add('logged-in'); // 添加标记类
             authOverlay.classList.remove('active'); // 隐藏登录/注册层
             
@@ -272,11 +293,13 @@ async function handleLogin() {
         } else {
             loginError.textContent = data.error || '登录失败，请检查用户名和密码。';
             currentUsername = null; //  确保登录失败时全局变量为空
+            currentUserRole = null;
         }
     } catch (error) {
         console.error("Login error:", error);
         loginError.textContent = '登录过程中发生错误。';
         currentUsername = null; //  确保出错时全局变量为空
+        currentUserRole = null;
     }
 }
 
@@ -294,6 +317,7 @@ async function handleLogout() {
         if (data.success) {
             console.log("后端登出成功");
             currentUsername = null; //  清除全局变量
+            currentUserRole = null;
             chatEventListenersAttached = false; //  重置监听器标志 
             document.body.classList.remove('logged-in'); // 移除标记类
             authOverlay.classList.add('active'); // 显示登录/注册层
@@ -324,6 +348,7 @@ async function checkLoginStatus() {
         if (data.isLoggedIn && data.username) {
             console.log(`用户 ${data.username} 已通过后端验证，加载主界面`);
             currentUsername = data.username; // **修改**: 设置全局变量
+            currentUserRole = data.role || 'user';
             document.body.classList.add('logged-in');
             authOverlay.classList.remove('active');
             
@@ -333,9 +358,13 @@ async function checkLoginStatus() {
             updateUserInfo(); // 更新用户信息显示 (稍后修改此函数)
             loadHistory(); // 加载历史记录 (稍后修改此函数)
             loadFiles(); // 加载文件列表 
+            if (requestedLoginNext && pendingNavigationNotice !== 'admin_required') {
+                clearInternalNavigationParameters();
+            }
         } else {
             console.log("后端验证：用户未登录，显示登录界面");
             currentUsername = null; // **修改**: 确保全局变量为空
+            currentUserRole = null;
             document.body.classList.remove('logged-in');
             authOverlay.classList.add('active');
             loginForm.style.display = 'block';
@@ -344,17 +373,44 @@ async function checkLoginStatus() {
             fileList.innerHTML = ''; // 清空文件列表 
             updateUserInfo(); // 清空头像等 (稍后修改此函数)
         }
+        showPendingNavigationNotice();
     } catch (error) {
         console.error("检查认证状态时出错:", error);
         // 网络错误等，也显示登录界面
         currentUsername = null;
+        currentUserRole = null;
         document.body.classList.remove('logged-in');
         authOverlay.classList.add('active');
         loginForm.style.display = 'block';
         registerForm.style.display = 'none';
         historyList.innerHTML = '<p style="padding: 10px; color: red;">无法连接服务器检查状态</p>';
         showError('无法连接服务器检查登录状态。'); // 可以显示错误提示
+        showPendingNavigationNotice();
     }
+}
+
+/**
+ * 清理登录回跳和权限提示参数，避免刷新页面后重复处理。
+ */
+function clearInternalNavigationParameters() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('next');
+    url.searchParams.delete('notice');
+    const query = url.searchParams.toString();
+    window.history.replaceState({}, '', `${url.pathname}${query ? `?${query}` : ''}${url.hash}`);
+    requestedLoginNext = null;
+}
+
+/**
+ * 展示一次普通用户越权提示，并在展示后清除内部导航参数。
+ */
+function showPendingNavigationNotice() {
+    if (pendingNavigationNotice !== 'admin_required') {
+        return;
+    }
+    pendingNavigationNotice = null;
+    clearInternalNavigationParameters();
+    alert('无管理员权限');
 }
 
 // 更新用户界面信息（例如头像区域） -
@@ -362,9 +418,11 @@ function updateUserInfo() {
     if (currentUsername) { // : 使用全局变量
         userAvatar.textContent = currentUsername.charAt(0).toUpperCase(); // 显示用户名首字母
         userInfoContent.textContent = getText('accountPrefix') + currentUsername; // 设置弹窗内容，使用多语言
+        adminPortalButton.hidden = currentUserRole !== 'admin';
     } else {
         userAvatar.textContent = ''; // 未登录则清空
         userInfoContent.textContent = ''; // 清空弹窗内容
+        adminPortalButton.hidden = true;
     }
 }
 
@@ -466,6 +524,9 @@ function setupGlobalEventListeners() {
     // 用户信息弹窗
     document.getElementById('logoutButton').addEventListener('click', handleLogout);
     document.getElementById('closePopupButton').addEventListener('click', closeUserInfoPopup);
+    adminPortalButton.addEventListener('click', () => {
+        window.location.assign('/admin/database');
+    });
     
     // 设置弹窗
     document.getElementById('hideSettingPopupButton').addEventListener('click', hideSettingPopup);

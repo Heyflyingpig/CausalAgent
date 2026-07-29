@@ -1,0 +1,518 @@
+"""管理员 3.1/3.2 手动 deep 数据库事实审计。
+
+该模块只执行有超时、结果有上限的只读查询；返回值仅包含逻辑结论，
+不返回真实数据库账号、host、grants、连接串或业务正文。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import logging
+from typing import Any, Callable
+
+from Database.inspection import inspect_revision
+from app.db import get_read_connection, get_replica_status
+from config.settings import settings
+
+
+LOGGER = logging.getLogger(__name__)
+ANOMALY_SAMPLE_LIMIT = 20
+
+EXPECTED_COLUMNS = {
+    "users": {
+        "id", "username", "role", "is_active", "created_at", "last_login_at",
+        "auth_version", "password_changed_at",
+    },
+    "sessions": {
+        "id", "user_id", "title", "created_at", "last_activity_at",
+        "message_count", "is_archived", "archived_at",
+    },
+    "chat_messages": {
+        "id", "session_id", "user_id", "message_type", "content",
+        "has_attachment", "created_at",
+    },
+    "chat_attachments": {
+        "id", "message_id", "attachment_type", "content",
+        "content_size", "created_at",
+    },
+    "uploaded_files": {
+        "id", "user_id", "filename", "original_filename", "mime_type",
+        "file_size", "file_content", "upload_timestamp", "last_accessed_at",
+        "access_count",
+    },
+    "archived_sessions": {
+        "id", "user_id", "original_session_data", "message_count", "archived_at",
+    },
+    "checkpoints": {
+        "thread_id", "checkpoint_ns", "checkpoint_id", "checkpoint",
+        "metadata_data", "created_at",
+    },
+    "checkpoint_writes": {
+        "id", "thread_id", "checkpoint_ns", "checkpoint_id", "task_id",
+        "idx", "channel", "value", "created_at", "write_identity_hash",
+    },
+    "analysis_jobs": {
+        "id", "job_id", "user_id", "session_id", "status", "worker_id",
+        "created_at", "active_session_key",
+    },
+    "analysis_job_events": {"id", "job_id", "event_type", "payload_json", "created_at"},
+    "database_monitor_snapshots": {
+        "snapshot_key", "payload_json", "observed_at",
+        "refresh_requested_at", "updated_at",
+    },
+    "database_monitor_settings": {"id", "version", "updated_by_user_id", "updated_at"},
+    "admin_audit_events": {
+        "id", "actor_user_id", "actor_username", "action", "target_type",
+        "target_id", "result", "request_id", "created_at",
+    },
+    "admin_operations": {
+        "id", "operation_id", "actor_user_id", "actor_username",
+        "operation_type", "idempotency_key", "request_fingerprint", "status",
+        "target_count", "succeeded_count", "failed_count", "result_json",
+        "request_id", "created_at", "completed_at",
+    },
+    "admin_operation_items": {
+        "id", "operation_id", "target_type", "target_id", "target_label",
+        "result", "error_code", "old_values_json", "new_values_json",
+        "created_at",
+    },
+}
+
+EXPECTED_INDEXES = {
+    "users": {"PRIMARY", "idx_users_admin_role_active"},
+    "sessions": {"PRIMARY", "idx_sessions_admin_activity"},
+    "analysis_jobs": {"PRIMARY", "idx_analysis_jobs_admin_created"},
+    "uploaded_files": {"PRIMARY", "idx_uploaded_files_admin_uploaded"},
+    "admin_audit_events": {"PRIMARY", "idx_admin_audit_target_created"},
+    "checkpoints": {"PRIMARY", "idx_checkpoints_thread_ns_created_id"},
+    "checkpoint_writes": {"PRIMARY", "uq_checkpoint_writes_task_idx"},
+    "admin_operations": {
+        "PRIMARY",
+        "uq_admin_operations_operation_id",
+        "uq_admin_operations_actor_idempotency",
+    },
+    "admin_operation_items": {"PRIMARY", "uq_admin_operation_items_target"},
+}
+
+EXPECTED_FOREIGN_KEYS = {
+    "fk_sessions_user",
+    "fk_chat_messages_session",
+    "fk_chat_messages_user",
+    "fk_chat_attachments_message",
+    "fk_uploaded_files_user",
+    "fk_analysis_jobs_user",
+    "fk_analysis_jobs_session",
+    "fk_analysis_job_events_job",
+    "fk_checkpoint_writes_checkpoint",
+    "fk_admin_operations_actor",
+    "fk_admin_operation_items_operation",
+}
+
+
+def _observed_at() -> str:
+    """返回毫秒精度 UTC 采集时间。"""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00",
+        "Z",
+    )
+
+
+def _check(
+    key: str,
+    label: str,
+    status: str,
+    summary: str,
+    details: Any = None,
+) -> dict[str, Any]:
+    """构造不含内部连接信息的 deep 审计检查项。"""
+    return {
+        "key": key,
+        "label": label,
+        "status": status,
+        "summary": summary,
+        "details": details,
+    }
+
+
+def _overall_status(checks: list[dict[str, Any]]) -> str:
+    """按 error、warning/unknown、healthy 优先级汇总。"""
+    statuses = {item["status"] for item in checks}
+    if "error" in statuses:
+        return "error"
+    if statuses.intersection({"warning", "unknown"}):
+        return "warning"
+    return "healthy"
+
+
+def _safe_block(
+    key: str,
+    label: str,
+    collector: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """隔离单项失败，避免一个检查阻断其他 deep 事实。"""
+    try:
+        return collector()
+    except Exception as exc:
+        LOGGER.warning("deep 审计检查失败 [%s]: %s", key, type(exc).__name__)
+        LOGGER.debug("deep 审计异常详情 [%s]", key, exc_info=True)
+        return _check(key, label, "unknown", "检查失败或查询超时")
+
+
+def _revision_check() -> dict[str, Any]:
+    """复用现有 revision 检查并转换为 deep 审计结构。"""
+    result = inspect_revision()
+    value = result.get("value") or {}
+    matches = value.get("matches")
+    if matches is True:
+        summary = "仓库 head 与实例 revision 一致"
+    elif matches is False:
+        summary = "仓库 head 与实例 revision 不一致"
+    else:
+        summary = "无法完整确认 revision"
+    return _check(
+        "revision",
+        "Alembic revision",
+        result.get("status", "unknown"),
+        summary,
+        {
+            "repository_heads": value.get("repository_heads"),
+            "instance_revisions": value.get("instance_revisions"),
+        },
+    )
+
+
+def _schema_check() -> dict[str, Any]:
+    """检查关键字段、管理员列表索引和外键是否存在。"""
+    timeout = int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS)
+    with get_read_connection(consistency="strong") as conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            f"""
+            SELECT /*+ MAX_EXECUTION_TIME({timeout}) */
+                   TABLE_NAME AS table_name, COLUMN_NAME AS column_name
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME IN ({', '.join(['%s'] * len(EXPECTED_COLUMNS))})
+            """,
+            tuple(EXPECTED_COLUMNS),
+        )
+        actual_columns: dict[str, set[str]] = {}
+        for row in cursor.fetchall():
+            actual_columns.setdefault(row["table_name"], set()).add(row["column_name"])
+
+        cursor.execute(
+            f"""
+            SELECT /*+ MAX_EXECUTION_TIME({timeout}) */
+                   TABLE_NAME AS table_name, INDEX_NAME AS index_name
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME IN ({', '.join(['%s'] * len(EXPECTED_INDEXES))})
+            """,
+            tuple(EXPECTED_INDEXES),
+        )
+        actual_indexes: dict[str, set[str]] = {}
+        for row in cursor.fetchall():
+            actual_indexes.setdefault(row["table_name"], set()).add(row["index_name"])
+
+        cursor.execute(
+            f"""
+            SELECT /*+ MAX_EXECUTION_TIME({timeout}) */
+                   CONSTRAINT_NAME AS constraint_name
+            FROM information_schema.REFERENTIAL_CONSTRAINTS
+            WHERE CONSTRAINT_SCHEMA = DATABASE()
+            """
+        )
+        actual_foreign_keys = {row["constraint_name"] for row in cursor.fetchall()}
+
+    missing_columns = {
+        table: sorted(columns - actual_columns.get(table, set()))
+        for table, columns in EXPECTED_COLUMNS.items()
+        if columns - actual_columns.get(table, set())
+    }
+    missing_indexes = {
+        table: sorted(indexes - actual_indexes.get(table, set()))
+        for table, indexes in EXPECTED_INDEXES.items()
+        if indexes - actual_indexes.get(table, set())
+    }
+    missing_foreign_keys = sorted(EXPECTED_FOREIGN_KEYS - actual_foreign_keys)
+    healthy = not missing_columns and not missing_indexes and not missing_foreign_keys
+    return _check(
+        "schema",
+        "关键 schema",
+        "healthy" if healthy else "error",
+        "关键字段、索引和外键完整" if healthy else "关键 schema 存在缺失",
+        {
+            "missing_columns": missing_columns,
+            "missing_indexes": missing_indexes,
+            "missing_foreign_keys": missing_foreign_keys,
+        },
+    )
+
+
+def _runtime_facts_check() -> dict[str, Any]:
+    """检查字符集、UTC 偏移和事务隔离级别。"""
+    timeout = int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS)
+    with get_read_connection(consistency="strong") as conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            f"""
+            SELECT /*+ MAX_EXECUTION_TIME({timeout}) */
+                   @@character_set_database AS character_set,
+                   @@collation_database AS collation_name,
+                   @@session.time_zone AS session_time_zone,
+                   @@global.time_zone AS global_time_zone,
+                   @@transaction_isolation AS isolation_level,
+                   TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), NOW()) AS utc_offset_seconds
+            """
+        )
+        row = cursor.fetchone() or {}
+    character_set_ok = str(row.get("character_set") or "").lower() == "utf8mb4"
+    utc_offset = int(row.get("utc_offset_seconds") or 0)
+    utc_ok = utc_offset == 0
+    status = "healthy" if character_set_ok and utc_ok else "warning"
+    summary = (
+        "字符集、数据库时钟和隔离级别已确认"
+        if status == "healthy"
+        else "字符集或数据库时钟需要复核"
+    )
+    return _check(
+        "runtime_facts",
+        "字符集、时区与隔离级别",
+        status,
+        summary,
+        {
+            "character_set": row.get("character_set"),
+            "collation": row.get("collation_name"),
+            "session_time_zone": row.get("session_time_zone"),
+            "global_time_zone": row.get("global_time_zone"),
+            "utc_offset_seconds": utc_offset,
+            "isolation_level": row.get("isolation_level"),
+        },
+    )
+
+
+def _account_boundary_check() -> dict[str, Any]:
+    """检查账号职责配置与读账号权限结论，不返回账号和 grants。"""
+    with get_read_connection(consistency="strong") as conn:
+        cursor = conn.cursor()
+        cursor.execute("SHOW GRANTS")
+        grants = [
+            str(value)
+            for row in cursor.fetchall()
+            for value in row
+        ]
+    normalized = "\n".join(grants).upper()
+    dangerous_markers = (
+        "GRANT OPTION",
+        "CREATE USER",
+        "SYSTEM_USER",
+        "SHUTDOWN",
+        "SUPER",
+        "RELOAD",
+        "ALL PRIVILEGES ON *.*",
+    )
+    read_has_dangerous_global = any(marker in normalized for marker in dangerous_markers)
+    read_has_select = "SELECT" in normalized
+    accounts_separated = (
+        bool(settings.MYSQL_WRITE_USER)
+        and bool(settings.MYSQL_READ_USER)
+        and settings.MYSQL_WRITE_USER != settings.MYSQL_READ_USER
+    )
+    replica_status_configured = bool(
+        settings.MYSQL_REPLICA_STATUS_USER
+        and settings.MYSQL_REPLICA_STATUS_PASSWORD
+    )
+    healthy = (
+        accounts_separated
+        and replica_status_configured
+        and read_has_select
+        and not read_has_dangerous_global
+    )
+    return _check(
+        "account_boundaries",
+        "应用账号职责",
+        "healthy" if healthy else "warning",
+        "应用账号职责边界符合预期" if healthy else "应用账号职责边界需要复核",
+        {
+            "write_read_separated": accounts_separated,
+            "replica_status_account_configured": replica_status_configured,
+            "read_select_available": read_has_select,
+            "read_has_dangerous_global_privilege": read_has_dangerous_global,
+        },
+    )
+
+
+def _relationship_check() -> dict[str, Any]:
+    """检查无外键保证关系和 active_session_key 语义。"""
+    timeout = int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS)
+    checks = {
+        "job_event_without_job": """
+            SELECT e.id AS sample_id
+            FROM analysis_job_events AS e
+            LEFT JOIN analysis_jobs AS j ON j.job_id = e.job_id
+            WHERE j.job_id IS NULL
+            LIMIT %s
+        """,
+        "checkpoint_without_session": """
+            SELECT c.thread_id AS sample_id
+            FROM checkpoints AS c
+            LEFT JOIN sessions AS s ON s.id = c.thread_id
+            WHERE s.id IS NULL
+            GROUP BY c.thread_id
+            LIMIT %s
+        """,
+        "checkpoint_write_without_checkpoint": """
+            SELECT w.id AS sample_id
+            FROM checkpoint_writes AS w
+            LEFT JOIN checkpoints AS c
+              ON c.thread_id = w.thread_id
+             AND c.checkpoint_ns = w.checkpoint_ns
+             AND c.checkpoint_id = w.checkpoint_id
+            WHERE c.thread_id IS NULL
+            LIMIT %s
+        """,
+        "duplicate_checkpoint_write_key": """
+            SELECT MIN(id) AS sample_id
+            FROM checkpoint_writes
+            GROUP BY thread_id, checkpoint_ns, checkpoint_id, task_id, idx
+            HAVING COUNT(*) > 1
+            LIMIT %s
+        """,
+        "archived_session_without_user": """
+            SELECT a.id AS sample_id
+            FROM archived_sessions AS a
+            LEFT JOIN users AS u ON u.id = a.user_id
+            WHERE u.id IS NULL
+            LIMIT %s
+        """,
+        "archived_session_still_active": """
+            SELECT a.id AS sample_id
+            FROM archived_sessions AS a
+            JOIN sessions AS s ON s.id = a.id
+            LIMIT %s
+        """,
+        "invalid_active_session_key": """
+            SELECT job_id AS sample_id
+            FROM analysis_jobs
+            WHERE (
+                status IN ('queued', 'running')
+                AND (
+                    active_session_key IS NULL
+                    OR active_session_key <> CONCAT(user_id, ':', session_id)
+                )
+            ) OR (
+                status NOT IN ('queued', 'running')
+                AND active_session_key IS NOT NULL
+            )
+            LIMIT %s
+        """,
+    }
+    samples: dict[str, list[str]] = {}
+    with get_read_connection(consistency="strong") as conn:
+        cursor = conn.cursor(dictionary=True)
+        for key, sql in checks.items():
+            hinted = sql.replace(
+                "SELECT",
+                f"SELECT /*+ MAX_EXECUTION_TIME({timeout}) */",
+                1,
+            )
+            cursor.execute(hinted, (ANOMALY_SAMPLE_LIMIT,))
+            samples[key] = [str(row["sample_id"]) for row in cursor.fetchall()]
+    anomaly_count = sum(len(items) for items in samples.values())
+    return _check(
+        "relationships",
+        "业务关系与任务键",
+        "healthy" if anomaly_count == 0 else "error",
+        "未发现关系异常" if anomaly_count == 0 else "发现关系异常样本",
+        {
+            "sample_limit": ANOMALY_SAMPLE_LIMIT,
+            "samples": samples,
+            "sample_count": anomaly_count,
+        },
+    )
+
+
+def _replica_check() -> dict[str, Any]:
+    """逐个读取配置从库状态并仅返回逻辑别名和健康结论。"""
+    if not settings.MYSQL_READ_HOSTS:
+        return _check(
+            "replicas",
+            "从库状态",
+            "unknown",
+            "未配置从库",
+            {"replicas": []},
+        )
+    replicas = []
+    for index, host in enumerate(settings.MYSQL_READ_HOSTS, start=1):
+        row = get_replica_status(host)
+        if not row:
+            replicas.append({
+                "source_alias": f"replica-{index}",
+                "status": "unknown",
+                "io_running": None,
+                "sql_running": None,
+                "lag_seconds": None,
+                "has_io_error": None,
+                "has_sql_error": None,
+            })
+            continue
+        io_running = row.get("Replica_IO_Running") == "Yes"
+        sql_running = row.get("Replica_SQL_Running") == "Yes"
+        lag = row.get("Seconds_Behind_Source")
+        replicas.append({
+            "source_alias": f"replica-{index}",
+            "status": "healthy" if io_running and sql_running and lag is not None else "warning",
+            "io_running": io_running,
+            "sql_running": sql_running,
+            "lag_seconds": int(lag) if lag is not None else None,
+            "has_io_error": bool(row.get("Last_IO_Error")),
+            "has_sql_error": bool(row.get("Last_SQL_Error")),
+        })
+    statuses = {item["status"] for item in replicas}
+    status = "healthy" if statuses == {"healthy"} else (
+        "warning" if "warning" in statuses else "unknown"
+    )
+    return _check(
+        "replicas",
+        "从库状态",
+        status,
+        "全部从库复制状态正常" if status == "healthy" else "部分从库状态需要复核",
+        {"replicas": replicas},
+    )
+
+
+def get_deep_audit_report() -> dict[str, Any]:
+    """执行全部手动 deep 检查并返回可持久化脱敏报告。"""
+    checks = [
+        _safe_block("revision", "Alembic revision", _revision_check),
+        _safe_block("schema", "关键 schema", _schema_check),
+        _safe_block(
+            "runtime_facts",
+            "字符集、时区与隔离级别",
+            _runtime_facts_check,
+        ),
+        _safe_block(
+            "account_boundaries",
+            "应用账号职责",
+            _account_boundary_check,
+        ),
+        _safe_block(
+            "relationships",
+            "业务关系与任务键",
+            _relationship_check,
+        ),
+        _safe_block("replicas", "从库状态", _replica_check),
+    ]
+    return {
+        "status": _overall_status(checks),
+        "observed_at": _observed_at(),
+        "source_role": "monitor",
+        "source_alias": "deep-audit-shared-snapshot",
+        "is_estimate": False,
+        "warning": None,
+        "mode": "deep",
+        "auto_scheduled": False,
+        "sample_limit": ANOMALY_SAMPLE_LIMIT,
+        "query_timeout_ms": int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS),
+        "checks": checks,
+    }

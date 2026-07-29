@@ -121,13 +121,7 @@ def upload_file():
             existing_file = cursor.fetchone()
             
             if existing_file:
-                # 文件内容已存在，更新访问时间戳和计数
-                cursor.execute("""
-                    UPDATE uploaded_files 
-                    SET last_accessed_at = NOW(), access_count = access_count + 1
-                    WHERE id = %s
-                """, (existing_file['id'],))
-                conn.commit()
+                # 去重命中不等价于正文被使用，不更新访问时间或使用次数。
                 # 使用原始文件名进行提示
                 action_message = f'您之前已上传过内容相同的文件 (名为 "{existing_file["filename"]}")。无需重复上传。'
                 logging.info(f"用户 {username} (ID: {user_id}) 上传了重复内容的文件: {original_filename} (Hash: {file_hash[:10]}...)")
@@ -174,17 +168,53 @@ def delete_file():
 
     try:
         with get_write_connection() as conn:
-            cursor = conn.cursor()
-            
-            # 执行删除，确保文件属于用户
-            cursor.execute("DELETE FROM uploaded_files WHERE id = %s AND user_id = %s", (file_id, user_id))
-            
-            conn.commit()
-            
-            if cursor.rowcount == 0:
+            cursor = conn.cursor(dictionary=True)
+            conn.start_transaction()
+            # 锁住归属用户，阻止删除窗口内创建带该用户外键的新任务或文件。
+            cursor.execute(
+                "SELECT id FROM users WHERE id = %s FOR UPDATE",
+                (user_id,),
+            )
+            if not cursor.fetchone():
+                conn.rollback()
+                return jsonify({"success": False, "error": "用户不存在"}), 404
+            cursor.execute(
+                """
+                SELECT id
+                FROM uploaded_files
+                WHERE id = %s AND user_id = %s
+                FOR UPDATE
+                """,
+                (file_id, user_id),
+            )
+            if not cursor.fetchone():
+                conn.rollback()
                 logging.warning(f"用户 {user_id} 尝试删除无权或不存在的文件 {file_id}")
                 return jsonify({"success": False, "error": "无法删除该文件，权限不足或文件不存在"}), 404
-            
+            cursor.execute(
+                """
+                SELECT job_id
+                FROM analysis_jobs
+                WHERE user_id = %s AND status IN ('queued', 'running')
+                ORDER BY id
+                FOR UPDATE
+                """,
+                (user_id,),
+            )
+            if cursor.fetchall():
+                conn.rollback()
+                return jsonify({
+                    "success": False,
+                    "error": "当前仍有任务正在使用该用户的数据，请等待任务结束后再删除文件",
+                }), 409
+            cursor.execute(
+                "DELETE FROM uploaded_files WHERE id = %s AND user_id = %s",
+                (file_id, user_id),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                raise RuntimeError("文件删除影响行数异常")
+            conn.commit()
             logging.info(f"用户 {user_id} 成功删除了文件 {file_id}")
             return jsonify({"success": True, "message": "文件已成功删除"})
 
