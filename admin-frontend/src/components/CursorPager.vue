@@ -13,7 +13,7 @@ defineEmits<{
 
 <template>
   <div class="cursor-pager">
-    <span>每页最多 20 条，使用稳定游标翻页</span>
+    <span>每页最多展示20条</span>
     <div>
       <el-button :disabled="!canPrevious || loading" @click="$emit('previous')">
         上一页

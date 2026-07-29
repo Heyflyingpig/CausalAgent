@@ -102,6 +102,7 @@ button, a { font: inherit; }
   align-items: center;
   gap: 10px;
   color: var(--ca-text);
+  font-size: 14px;
   text-decoration: none;
   font-weight: 600;
 }
@@ -109,7 +110,7 @@ button, a { font: inherit; }
 .nav-icon {
   width: 20px;
   flex: 0 0 20px;
-  font-size: 17px;
+  font-size: 15px;
   text-align: center;
 }
 .nav-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -119,8 +120,18 @@ button, a { font: inherit; }
 .admin-identity { margin-bottom: 12px; }
 .admin-identity span, .admin-identity strong { display: block; }
 .identity-label { margin-bottom: 4px; color: var(--ca-muted); font-size: 12px; }
-.chat-entry-button, .logout-button { width: 100%; }
+.admin-identity strong { font-size: 14px; }
+.chat-entry-button, .logout-button {
+  width: 100%;
+  font-size: 14px;
+}
 .chat-entry-button { margin-bottom: 10px; }
+.sidebar-footer .logout-button { margin-left: 0; }
+.sidebar-footer .chat-entry-button,
+.sidebar-footer .chat-entry-button:hover,
+.sidebar-footer .chat-entry-button:focus {
+  text-decoration: none;
+}
 .chat-entry-icon, .logout-icon { display: none; font-size: 18px; }
 
 .admin-sidebar.collapsed { padding-right: 12px; padding-left: 12px; }
@@ -253,6 +264,17 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
   grid-template-columns: repeat(4, minmax(140px, 1fr)) auto;
 }
 .table-panel { padding-bottom: 14px; }
+.session-title-cell {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-title-tooltip {
+  max-width: min(480px, calc(100vw - 32px));
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
 .cursor-pager {
   display: flex;
   align-items: center;

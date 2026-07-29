@@ -25,12 +25,12 @@ function clearDetails(): void {
 
 <template>
   <el-table class="sql-business-table" :data="rows" table-layout="auto">
-    <el-table-column label="业务模块" min-width="150">
+    <el-table-column label="业务模块" min-width="150" align="center">
       <template #default="{ row }">
         <el-tag effect="plain" round>{{ row.meaning.module }}</el-tag>
       </template>
     </el-table-column>
-    <el-table-column label="这条 SQL 是做什么的" min-width="240">
+    <el-table-column label="功能" min-width="240">
       <template #default="{ row }">
         <strong class="sql-business-action">{{ row.meaning.action }}</strong>
       </template>
@@ -68,8 +68,7 @@ function clearDetails(): void {
   >
     <template #header>
       <div>
-        <span class="sql-detail-eyebrow">SQL 性能摘要</span>
-        <h3>SQL 原始详情</h3>
+        <h3>SQL详情</h3>
       </div>
     </template>
 
@@ -93,40 +92,32 @@ function clearDetails(): void {
         </div>
       </section>
 
-      <el-alert
-        class="sql-detail-notice"
-        title="这是归一化聚合模板；“?” 的真实参数不会被 Performance Schema Digest 保存，无法从该页面恢复。"
-        type="info"
-        :closable="false"
-        show-icon
-      />
-
       <section class="sql-detail-section">
-        <h4>Digest 模板（digest_text / digest）</h4>
+        <h4>Digest 模板</h4>
         <pre class="sql-detail-digest">{{ selectedStatement.digestText || '—' }}</pre>
       </section>
 
       <section class="sql-detail-section">
-        <h4>原始统计字段</h4>
+        <h4>统计信息</h4>
         <dl class="sql-raw-metrics">
           <div>
-            <dt>执行次数（count_star / execution_count）</dt>
+            <dt>执行次数</dt>
             <dd>{{ formatNumber(selectedStatement.countStar) }}</dd>
           </div>
           <div>
-            <dt>累计总耗时（total_seconds）</dt>
+            <dt>累计总耗时</dt>
             <dd>{{ displayValue(selectedStatement.totalSeconds) }} 秒</dd>
           </div>
           <div>
-            <dt>平均耗时（avg_seconds）</dt>
+            <dt>平均耗时</dt>
             <dd>{{ displayValue(selectedStatement.averageSeconds) }} 秒</dd>
           </div>
           <div>
-            <dt>扫描行（rows_examined）</dt>
+            <dt>扫描行</dt>
             <dd>{{ formatNumber(selectedStatement.rowsExamined) }}</dd>
           </div>
           <div>
-            <dt>返回行（rows_sent）</dt>
+            <dt>返回行</dt>
             <dd>{{ formatNumber(selectedStatement.rowsSent) }}</dd>
           </div>
         </dl>

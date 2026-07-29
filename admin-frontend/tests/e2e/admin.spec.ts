@@ -37,7 +37,7 @@ test.describe('管理员 Vue 与真实共享快照', () => {
     await page.getByRole('button', { name: '执行完整性审计' }).click()
     await expect(page.getByText('完整性审计快照已更新。')).toBeVisible({ timeout: 65_000 })
 
-    await page.getByRole('link', { name: '采集配置' }).click()
+    await page.getByRole('link', { name: '自动采集时间配置' }).click()
     await expect(page.getByRole('heading', { name: '采集配置' })).toBeVisible()
     await expect(page.getByText('数据库覆盖').first()).toBeVisible()
     await expect(page.getByRole('heading', { name: '配置变更记录' })).toBeVisible()
@@ -97,11 +97,11 @@ test.describe('管理员 Vue 与真实共享快照', () => {
       '/api/admin/brand/logo',
     )
 
-    await page.getByRole('link', { name: '用户与权限' }).click()
+    await page.getByRole('link', { name: '用户与权限管理' }).click()
     await expect(page.getByText('e2e-admin-31', { exact: true })).toBeVisible()
     await expect(page.getByText('e2e-user-31', { exact: true })).toBeVisible()
 
-    await page.getByRole('link', { name: '会话与内容' }).click()
+    await page.getByRole('link', { name: '会话与内容管理' }).click()
     await expect(page.getByText('31-user-session', { exact: true })).toBeVisible()
     await page.locator('tr', { hasText: '31-user-session' })
       .getByRole('button', { name: '查看详情' })
@@ -123,7 +123,7 @@ test.describe('管理员 Vue 与真实共享快照', () => {
     await page.keyboard.press('Escape')
     await page.keyboard.press('Escape')
 
-    await page.getByRole('link', { name: '分析任务' }).click()
+    await page.getByRole('link', { name: '分析任务管理' }).click()
     await expect(page.getByText('31-job-succeeded', { exact: true })).toBeVisible()
     await expect(page.getByText('E2E_JOB_RESULT_MARKER_31')).toHaveCount(0)
     await page.locator('tr', { hasText: '31-job-succeeded' })
@@ -134,7 +134,7 @@ test.describe('管理员 Vue 与真实共享快照', () => {
     await page.keyboard.press('Escape')
     await page.keyboard.press('Escape')
 
-    await page.getByRole('link', { name: '文件资产' }).click()
+    await page.getByRole('link', { name: '对话文件管理' }).click()
     const fileRow = page.locator('tr', { hasText: '31-report.csv' })
     await expect(fileRow).toBeVisible()
     await fileRow.getByRole('button', { name: '安全预览' }).click()
@@ -146,7 +146,7 @@ test.describe('管理员 Vue 与真实共享快照', () => {
     const download = await downloadPromise
     expect(download.suggestedFilename()).toBe('31-report.csv')
 
-    await page.getByRole('link', { name: 'Schema 与审计' }).click()
+    await page.getByRole('link', { name: 'Schema与审计' }).click()
     await page.getByRole('button', { name: '运行 deep 审计' }).click()
     await expect(page.getByText('deep 审计已由独立 monitor 完成。')).toBeVisible({
       timeout: 70_000,
@@ -161,7 +161,7 @@ test.describe('管理员 Vue 与真实共享快照', () => {
     await page.getByRole('button', { name: /登录/ }).click()
     await expect(page).toHaveURL(/\/admin\/database$/)
 
-    await page.getByRole('link', { name: '用户与权限' }).click()
+    await page.getByRole('link', { name: '用户与权限管理' }).click()
     const search = page.getByPlaceholder('按用户名开头搜索')
 
     await search.fill('e2e-control-a-32')
@@ -274,17 +274,17 @@ test.describe('管理员 Vue 与真实共享快照', () => {
     await expect(page.getByText('用户已物理删除')).toBeVisible()
     await expect(page.getByText('e2e-delete-32', { exact: true })).toHaveCount(0)
 
-    await page.getByRole('link', { name: '文件资产' }).click()
+    await page.getByRole('link', { name: '对话文件管理' }).click()
     await page.getByPlaceholder('按原始文件名开头搜索').fill('32-delete-file')
     await page.getByRole('button', { name: '筛选' }).click()
     const deleteFileRow = page.locator('tr', { hasText: '32-delete-file.csv' })
-    await deleteFileRow.getByRole('button', { name: '物理删除' }).click()
+    await deleteFileRow.getByRole('button', { name: '删除', exact: true }).click()
     const fileDeleteDialog = page.getByRole('dialog')
     await fileDeleteDialog.getByLabel('输入文件名 32-delete-file.csv 确认')
       .fill('32-delete-file.csv')
     await fileDeleteDialog.getByLabel('当前管理员密码（重新认证）').fill(password!)
-    await fileDeleteDialog.getByRole('button', { name: '确认物理删除' }).click()
-    await expect(page.getByText('文件已物理删除', { exact: true })).toBeVisible()
+    await fileDeleteDialog.getByRole('button', { name: '确认删除' }).click()
+    await expect(page.getByText('文件已删除', { exact: true })).toBeVisible()
     await expect(page.getByText('32-delete-file.csv', { exact: true })).toHaveCount(0)
   })
 

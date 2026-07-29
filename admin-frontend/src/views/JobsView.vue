@@ -149,16 +149,12 @@ onMounted(() => loadJobs())
   <section>
     <header class="page-header">
       <div>
-        <p class="eyebrow">只读业务数据</p>
-        <h1>分析任务</h1>
-        <p class="page-description">
-          展示 analysis_jobs 与事件时间线；本阶段没有取消、重试、强制终态或 Worker 控制。
-        </p>
+        <h1>分析任务管理</h1>
       </div>
     </header>
 
     <section class="filter-bar">
-      <el-input v-model="q" clearable placeholder="Job ID 开头" @keyup.enter="loadJobs(true)" />
+      <el-input v-model="q" clearable placeholder="Job ID" @keyup.enter="loadJobs(true)" />
       <el-select v-model="status" clearable placeholder="全部状态">
         <el-option v-for="item in ['queued', 'running', 'succeeded', 'failed', 'canceled']" :key="item" :label="item" :value="item" />
       </el-select>
@@ -198,7 +194,7 @@ onMounted(() => loadJobs())
       />
     </section>
 
-    <el-drawer v-model="detailVisible" title="任务只读详情" size="min(920px, 100vw)">
+    <el-drawer v-model="detailVisible" title="任务详情" size="min(920px, 100vw)">
       <div v-loading="detailLoading">
         <el-descriptions v-if="detail" :column="2" border>
           <el-descriptions-item label="Job ID" :span="2">{{ detail.job_id }}</el-descriptions-item>
@@ -212,7 +208,7 @@ onMounted(() => loadJobs())
         </el-descriptions>
 
         <div v-if="detail" class="sensitive-actions">
-          <span>敏感正文仅在点击后读取并审计：</span>
+          <span>查看会被读取并审计！</span>
           <el-button v-if="detail.has_input" @click="reveal('input')">查看输入</el-button>
           <el-button v-if="detail.has_result" @click="reveal('result')">查看结果</el-button>
           <el-button v-if="detail.has_error" type="danger" plain @click="reveal('error')">查看错误</el-button>

@@ -18,18 +18,18 @@ const navigation = [
     label: '业务数据',
     items: [
       { to: '/overview', label: '业务概览', icon: '📋' },
-      { to: '/users', label: '用户与权限', icon: '👥' },
-      { to: '/sessions', label: '会话与内容', icon: '💬' },
-      { to: '/jobs', label: '分析任务', icon: '🔍' },
-      { to: '/files', label: '文件资产', icon: '📁' },
+      { to: '/users', label: '用户与权限管理', icon: '👥' },
+      { to: '/sessions', label: '会话与内容管理', icon: '💬' },
+      { to: '/jobs', label: '分析任务管理', icon: '🔍' },
+      { to: '/files', label: '对话文件管理', icon: '📁' },
     ],
   },
   {
     label: '数据库管理',
     items: [
       { to: '/database', label: '数据库看板', icon: '📊' },
-      { to: '/database/settings', label: '采集配置', icon: '🎯' },
-      { to: '/database/audit', label: 'Schema 与审计', icon: '✅' },
+      { to: '/database/settings', label: '自动采集时间配置', icon: '🎯' },
+      { to: '/database/audit', label: 'Schema与审计', icon: '✅' },
     ],
   },
 ]
@@ -142,7 +142,6 @@ watch(
             </router-link>
           </el-tooltip>
         </section>
-        <p class="nav-note">3.2 开放受控用户/文件写入；任务控制、任意 SQL、迁移与复制操作仍永久禁止。</p>
       </nav>
 
       <div class="sidebar-footer">

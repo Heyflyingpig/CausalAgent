@@ -169,7 +169,7 @@ async function submitDelete(): Promise<void> {
       },
       deleteIdempotencyKey.value,
     )
-    ElMessage.success(`文件已物理删除${result.replayed ? '（幂等重放）' : ''}`)
+    ElMessage.success(`文件已删除${result.replayed ? '（幂等重放）' : ''}`)
     deleteVisible.value = false
     await loadFiles(true)
   } catch (caught) {
@@ -190,18 +190,17 @@ onMounted(() => loadFiles())
   <section>
     <header class="page-header">
       <div>
-        <p class="eyebrow">受控文件生命周期</p>
-        <h1>文件资产</h1>
+        <h1>对话文件管理</h1>
         <p class="page-description">
-          列表不返回 BLOB 或哈希；CSV 预览与下载会原子更新访问时间、次数并写入审计。
+          CSV 预览与下载会更新访问时间、次数并写入审计。
         </p>
       </div>
     </header>
 
     <section class="filter-bar">
-      <el-input v-model="q" clearable placeholder="按原始文件名开头搜索" @keyup.enter="loadFiles(true)" />
+      <el-input v-model="q" clearable placeholder="文件名" @keyup.enter="loadFiles(true)" />
       <el-input v-model="userId" clearable placeholder="用户 ID" @keyup.enter="loadFiles(true)" />
-      <el-select v-model="mimeType" clearable placeholder="全部 MIME">
+      <el-select v-model="mimeType" clearable placeholder="MIME类型">
         <el-option label="text/csv" value="text/csv" />
         <el-option label="application/vnd.ms-excel" value="application/vnd.ms-excel" />
       </el-select>
@@ -226,7 +225,7 @@ onMounted(() => loadFiles())
         <el-table-column label="操作" width="290" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
-            <el-button link type="primary" @click="openPreview(row)">安全预览</el-button>
+            <el-button link type="primary" @click="openPreview(row)">预览</el-button>
             <el-button
               link
               type="primary"
@@ -235,7 +234,7 @@ onMounted(() => loadFiles())
             >
               下载
             </el-button>
-            <el-button link type="danger" @click="openDelete(row)">物理删除</el-button>
+            <el-button link type="danger" @click="openDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -248,7 +247,7 @@ onMounted(() => loadFiles())
       />
     </section>
 
-    <el-drawer v-model="detailVisible" title="文件只读详情" size="min(560px, 100vw)">
+    <el-drawer v-model="detailVisible" title="文件详情" size="min(560px, 100vw)">
       <div v-loading="detailLoading">
         <el-descriptions v-if="detail" :column="1" border>
           <el-descriptions-item label="文件 ID">{{ detail.id }}</el-descriptions-item>
@@ -264,17 +263,11 @@ onMounted(() => loadFiles())
       </div>
     </el-drawer>
 
-    <el-dialog v-model="previewVisible" title="CSV 安全预览" width="min(1100px, 96vw)">
-      <el-alert
-        type="warning"
-        :closable="false"
-        show-icon
-        title="预览只按纯文本渲染，不执行公式、HTML 或脚本；成功读取会更新访问计数并记录审计。"
-      />
+    <el-dialog v-model="previewVisible" title="CSV 预览" width="min(1100px, 96vw)">
       <div v-loading="previewLoading" class="csv-preview-wrap">
         <p v-if="preview" class="preview-meta">
           {{ preview.filename }} · {{ preview.encoding }}
-          <span v-if="preview.truncated">· 已按安全上限截断</span>
+          <span v-if="preview.truncated">· 按安全上限截断</span>
         </p>
         <div v-if="preview" class="csv-table-scroll">
           <table class="csv-preview-table">
@@ -294,13 +287,13 @@ onMounted(() => loadFiles())
       </div>
     </el-dialog>
 
-    <el-dialog v-model="deleteVisible" title="物理删除文件" width="min(660px, 96vw)">
+    <el-dialog v-model="deleteVisible" title="删除文件" width="min(660px, 96vw)">
       <div v-loading="deleteLoading">
         <el-alert
           type="error"
           :closable="false"
           show-icon
-          title="删除记录会同时删除数据库 BLOB，不提供回收站且不可恢复。"
+          title="删除记录会同时删除数据库 BLOB，不提供回收站且不可恢复！"
         />
         <el-alert
           v-if="deleteError"
@@ -359,7 +352,6 @@ onMounted(() => loadFiles())
                 autocomplete="current-password"
                 placeholder="请输入当前管理员密码"
               />
-              <p>仅用于确认当前操作者身份，不会修改管理员密码。</p>
             </div>
           </div>
         </template>
@@ -376,7 +368,7 @@ onMounted(() => loadFiles())
           "
           @click="submitDelete"
         >
-          确认物理删除
+          确认删除
         </el-button>
       </template>
     </el-dialog>

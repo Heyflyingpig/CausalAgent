@@ -21,7 +21,7 @@ const dashboardSource = [
 
 const equivalenceMatrix = {
   core: ['Revision', '主库', '第一从库', '阻塞项', '连接使用率'],
-  capacity: ['表容量', '估算行数', '数据量', '索引量', '总大小', 'InnoDB 行数为估算值'],
+  capacity: ['表容量', '估算行数', '数据量', '索引量', '总大小'],
   integrity: ['完整性审计', '执行完整性审计', '检查项', '数量', '结果', '来源'],
   sql: [
     'SQL 性能摘要',
@@ -35,21 +35,15 @@ const equivalenceMatrix = {
     '平均耗时',
     '扫描行',
     '返回行',
-    '增量告警阈值',
     '业务模块',
-    '这条 SQL 是做什么的',
+    '功能',
     '业务说明',
     '识别方式',
     '代码确认',
     '判断依据',
     '查看详情',
-    'Digest 模板（digest_text / digest）',
-    '执行次数（count_star / execution_count）',
-    '累计总耗时（total_seconds）',
-    '平均耗时（avg_seconds）',
-    '扫描行（rows_examined）',
-    '返回行（rows_sent）',
-    '无法从该页面恢复',
+    'Digest 模板',
+    '执行次数',
   ],
   jobs: [
     'Worker / Job 快照',

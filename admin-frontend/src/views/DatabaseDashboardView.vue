@@ -353,9 +353,7 @@ onBeforeUnmount(() => {
 <template>
   <header class="page-header">
     <div>
-      <p class="eyebrow">只读数据库管理</p>
       <h1>数据库状态看板</h1>
-      <p class="page-description">查看服务端分层采集的共享监控快照；打开多个管理页面不会重复执行数据库采集。</p>
     </div>
     <div class="header-actions">
       <div class="header-status">
@@ -395,7 +393,6 @@ onBeforeUnmount(() => {
     <div class="panel-header">
       <div>
         <h2>表容量</h2>
-        <p>数据量、索引量与总大小；InnoDB 行数为估算值。</p>
       </div>
       <span class="source-meta">{{ metaText(tablesMeta) }}</span>
     </div>
@@ -413,7 +410,6 @@ onBeforeUnmount(() => {
     <div class="panel-header">
       <div>
         <h2>完整性审计</h2>
-        <p>仅手动、迁移后或按低频策略执行；普通刷新不会触发完整数据库审计。</p>
       </div>
       <div class="panel-actions">
         <span class="source-meta">{{ metaText(integrity) }}</span>
@@ -437,12 +433,10 @@ onBeforeUnmount(() => {
     <div class="panel-header">
       <div>
         <h2>SQL 性能摘要</h2>
-        <p>慢查询指标以采集周期内增量为主；高负载 SQL 按累计总耗时排序，不代表单次执行超过 long_query_time。</p>
       </div>
       <span class="source-meta">
         {{ metaText(sqlPerformance) }}
         <template v-if="sqlPerformance.slow_query_warning_threshold !== null && sqlPerformance.slow_query_warning_threshold !== undefined">
-          · 增量告警阈值 {{ formatNumber(sqlPerformance.slow_query_warning_threshold) }}
         </template>
       </span>
     </div>
@@ -457,7 +451,7 @@ onBeforeUnmount(() => {
     <template v-if="statements.length">
       <div class="sql-business-heading">
         <strong>高负载 SQL（Digest）</strong>
-        <span>默认展示业务语义；点击“查看详情”可核对完整原始摘要字段。</span>
+        <span>点击“查看详情”可核对完整原始摘要字段。</span>
       </div>
       <SqlDigestTable :statements="statements" />
     </template>
@@ -467,7 +461,7 @@ onBeforeUnmount(() => {
     <div class="panel-header">
       <div>
         <h2>Worker / Job 快照</h2>
-        <p>主库强一致读取活动任务；明细最多展示 100 条。</p>
+        <p>明细最多展示 100 条。</p>
       </div>
       <span class="source-meta">{{ metaText(jobsMeta) }}</span>
     </div>

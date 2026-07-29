@@ -215,9 +215,8 @@ onMounted(async () => {
 <template>
   <header class="page-header">
     <div>
-      <p class="eyebrow">数据库运维</p>
       <h1>采集配置</h1>
-      <p class="page-description">在线覆盖七项监控参数；数据库覆盖优先于环境变量和代码默认值，monitor 最多 5 秒完成热加载。</p>
+      <p class="page-description">覆盖七项监控参数。monitor将在更新后5秒内完成热加载。</p>
     </div>
     <div class="header-actions">
       <el-button :disabled="!canWrite" :loading="resetting" @click="resetAll">重置全部</el-button>
@@ -239,7 +238,7 @@ onMounted(async () => {
   <section class="panel settings-panel" v-loading="loading">
     <div class="settings-summary" v-if="settings">
       <span>版本 {{ settings.version ?? '不可用' }}</span>
-      <span>最后修改：{{ settings.updated_at ? formatDate(settings.updated_at) : '尚未在线修改' }}</span>
+      <span>最后修改：{{ settings.updated_at ? formatDate(settings.updated_at) : '尚未修改' }}</span>
       <span>修改人：{{ settings.updated_by?.username || '—' }}</span>
     </div>
 
@@ -293,16 +292,25 @@ onMounted(async () => {
     <div class="panel-header">
       <div>
         <h2>配置变更记录</h2>
-        <p>记录管理员、动作、结果、request ID 和前后配置；不保存密码或连接秘密。</p>
       </div>
     </div>
-    <el-table :data="history" v-loading="historyLoading" table-layout="auto" empty-text="尚无在线配置变更记录">
+    <el-table :data="history" v-loading="historyLoading" table-layout="auto" empty-text="尚无配置变更记录">
       <el-table-column label="时间" min-width="180"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
-      <el-table-column prop="actor_username" label="管理员" min-width="130" />
+      <el-table-column
+        prop="actor_username"
+        label="管理员"
+        min-width="130"
+        show-overflow-tooltip
+      />
       <el-table-column label="动作" min-width="150"><template #default="{ row }">{{ actionLabel(row.action) }}</template></el-table-column>
       <el-table-column label="结果" min-width="100"><template #default="{ row }"><el-tag :type="resultType(row.result)" round>{{ row.result }}</el-tag></template></el-table-column>
       <el-table-column label="变更内容" min-width="360"><template #default="{ row }">{{ changeSummary(row) }}</template></el-table-column>
-      <el-table-column prop="error_code" label="错误码" min-width="150" />
+      <el-table-column
+        prop="error_code"
+        label="错误码"
+        min-width="130"
+        show-overflow-tooltip
+      />
       <el-table-column prop="request_id" label="Request ID" min-width="260" />
     </el-table>
     <div class="history-more" v-if="nextBeforeId">

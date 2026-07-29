@@ -233,7 +233,7 @@ async function submitDelete(): Promise<void> {
       },
       deleteIdempotencyKey.value,
     )
-    ElMessage.success(`用户已物理删除${result.replayed ? '（幂等重放）' : ''}`)
+    ElMessage.success(`用户已删除${result.replayed ? '（幂等重放）' : ''}`)
     deleteVisible.value = false
     selectedUsers.value = []
     tableRef.value?.clearSelection()
@@ -256,16 +256,12 @@ onMounted(() => loadUsers())
   <section>
     <header class="page-header">
       <div>
-        <p class="eyebrow">受控业务写入</p>
-        <h1>用户与权限</h1>
-        <p class="page-description">
-          支持单个/批量启停、角色切换和同密码设置；所有变更均需预览、重新认证、幂等键和逐目标审计。
-        </p>
+        <h1>用户与权限管理</h1>
       </div>
     </header>
 
     <section class="filter-bar">
-      <el-input v-model="q" clearable placeholder="按用户名开头搜索" @keyup.enter="loadUsers(true)" />
+      <el-input v-model="q" clearable placeholder="用户名" @keyup.enter="loadUsers(true)" />
       <el-select v-model="role" placeholder="全部角色" clearable>
         <el-option label="普通用户" value="user" />
         <el-option label="管理员" value="admin" />
@@ -399,7 +395,7 @@ onMounted(() => loadUsers())
           type="warning"
           :closable="false"
           show-icon
-          title="提交后目标用户旧登录会话立即失效；批量同密码会为每个用户生成独立盐值哈希，明文不会进入响应或审计。"
+          title="提交后目标用户旧登录会话将会立即失效！"
         />
         <el-alert
           v-if="operationError"
@@ -491,13 +487,13 @@ onMounted(() => loadUsers())
       </template>
     </el-dialog>
 
-    <el-dialog v-model="deleteVisible" title="物理删除用户" width="min(720px, 96vw)">
+    <el-dialog v-model="deleteVisible" title="删除用户" width="min(720px, 96vw)">
       <div v-loading="deleteLoading">
         <el-alert
           type="error"
           :closable="false"
           show-icon
-          title="物理删除不可恢复；会话、消息、附件、文件、任务、事件、归档和 checkpoint 将按事务生命周期处理。"
+          title="删除不可恢复；会话、消息、附件、文件、任务、事件、归档和 checkpoint 将会同步删除。"
         />
         <el-alert
           v-if="deleteError"
@@ -551,7 +547,6 @@ onMounted(() => loadUsers())
                 autocomplete="current-password"
                 placeholder="请输入当前管理员密码"
               />
-              <p>仅用于确认当前操作者身份，不会修改管理员密码。</p>
             </div>
           </div>
         </template>
@@ -568,7 +563,7 @@ onMounted(() => loadUsers())
           "
           @click="submitDelete"
         >
-          确认物理删除
+          确认删除
         </el-button>
       </template>
     </el-dialog>
