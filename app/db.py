@@ -164,12 +164,30 @@ def get_read_connection(consistency: str = "strong"):
 
     strong 固定走主库；eventual 在从库健康且延迟可接受时走从库，否则回退主库。
     """
+    connection, _source = get_read_connection_with_source(consistency=consistency)
+    return connection
+
+
+def get_read_connection_with_source(
+    consistency: str = "strong",
+) -> tuple[Any, dict[str, str]]:
+    """
+    获取读连接并返回不暴露真实主机名的逻辑来源。
+
+    strong 固定返回主库读连接；eventual 仅在副本健康且延迟合格时返回副本，
+    否则回退主库。来源别名供只读看板解释数据口径，不包含连接信息。
+    """
     if consistency not in {"strong", "eventual"}:
         raise ValueError("consistency 必须是 'strong' 或 'eventual'")
 
+    primary_source = {"source_role": "primary", "source_alias": "primary"}
     if consistency == "strong" or not settings.MYSQL_READ_HOSTS:
-        return _get_read_pool(settings.MYSQL_WRITE_HOST).get_connection()
+        return _get_read_pool(settings.MYSQL_WRITE_HOST).get_connection(), primary_source
 
+    aliases = {
+        host: f"replica-{index}"
+        for index, host in enumerate(settings.MYSQL_READ_HOSTS, start=1)
+    }
     hosts = list(settings.MYSQL_READ_HOSTS)
     random.shuffle(hosts)
     for host in hosts:
@@ -177,11 +195,14 @@ def get_read_connection(consistency: str = "strong"):
             logging.warning("从库 %s 状态不可用或延迟超过阈值，回退主库。", host)
             continue
         try:
-            return _get_read_pool(host).get_connection()
+            return _get_read_pool(host).get_connection(), {
+                "source_role": "replica",
+                "source_alias": aliases[host],
+            }
         except mysql.connector.Error as err:
             logging.warning("从库 %s 不可用，回退主库: %s", host, err)
 
-    return _get_read_pool(settings.MYSQL_WRITE_HOST).get_connection()
+    return _get_read_pool(settings.MYSQL_WRITE_HOST).get_connection(), primary_source
 
 
 def get_db_connection():
@@ -231,6 +252,7 @@ def check_database_readiness():
                 "checkpoint_writes",
                 "analysis_jobs",
                 "analysis_job_events",
+                "database_monitor_snapshots",
             ]
             cursor.execute(
                 """

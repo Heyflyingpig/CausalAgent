@@ -207,6 +207,7 @@ tests/*
 !tests/test_stale_session_guard.py
 !tests/test_admin_cli.py
 !tests/test_migration_chain.py
+!tests/test_database_inspection.py
 
 # study
 study/

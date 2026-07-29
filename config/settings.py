@@ -113,6 +113,79 @@ class AppConfig:
             default=2
         )
         self.MYSQL_QUERY_WARN_MS = self._get_int_config("MYSQL_QUERY_WARN_MS", default=500)
+        self.DB_INSPECTION_QUERY_TIMEOUT_MS = self._get_int_config(
+            "DB_INSPECTION_QUERY_TIMEOUT_MS",
+            default=3000,
+        )
+        self.DB_DASHBOARD_CONNECTION_WARNING_PERCENT = self._get_int_config(
+            "DB_DASHBOARD_CONNECTION_WARNING_PERCENT",
+            default=70,
+        )
+        self.DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT = self._get_int_config(
+            "DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT",
+            default=85,
+        )
+        self.DB_MONITOR_AUTO_REFRESH_ENABLED = self._get_bool_config(
+            "DB_MONITOR_AUTO_REFRESH_ENABLED",
+            default=True,
+        )
+        self.DB_MONITOR_REALTIME_INTERVAL_SECONDS = self._get_int_config(
+            "DB_MONITOR_REALTIME_INTERVAL_SECONDS",
+            default=10,
+        )
+        self.DB_MONITOR_SQL_INTERVAL_SECONDS = self._get_int_config(
+            "DB_MONITOR_SQL_INTERVAL_SECONDS",
+            default=60,
+        )
+        self.DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS = self._get_int_config(
+            "DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS",
+            default=900,
+        )
+        self.DB_MONITOR_SLOW_QUERY_WARNING_DELTA = self._get_int_config(
+            "DB_MONITOR_SLOW_QUERY_WARNING_DELTA",
+            default=1,
+        )
+        self.DB_MONITOR_INTEGRITY_ENABLED = self._get_bool_config(
+            "DB_MONITOR_INTEGRITY_ENABLED",
+            default=False,
+        )
+        self.DB_MONITOR_INTEGRITY_INTERVAL_SECONDS = self._get_int_config(
+            "DB_MONITOR_INTEGRITY_INTERVAL_SECONDS",
+            default=86400,
+        )
+        if self.DB_INSPECTION_QUERY_TIMEOUT_MS <= 0:
+            raise ValueError("配置错误: DB_INSPECTION_QUERY_TIMEOUT_MS 必须大于 0。")
+        if not (
+            0
+            <= self.DB_DASHBOARD_CONNECTION_WARNING_PERCENT
+            < self.DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT
+            <= 100
+        ):
+            raise ValueError(
+                "配置错误: 数据库看板连接阈值必须满足 "
+                "0 <= WARNING < CRITICAL <= 100。"
+            )
+        monitor_ranges = (
+            ("DB_MONITOR_REALTIME_INTERVAL_SECONDS", self.DB_MONITOR_REALTIME_INTERVAL_SECONDS, 5, 10),
+            ("DB_MONITOR_SQL_INTERVAL_SECONDS", self.DB_MONITOR_SQL_INTERVAL_SECONDS, 30, 60),
+            (
+                "DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS",
+                self.DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS,
+                300,
+                900,
+            ),
+        )
+        for name, value, minimum, maximum in monitor_ranges:
+            if not minimum <= value <= maximum:
+                raise ValueError(
+                    f"配置错误: {name} 必须在 {minimum} 到 {maximum} 之间。"
+                )
+        if self.DB_MONITOR_SLOW_QUERY_WARNING_DELTA <= 0:
+            raise ValueError("配置错误: DB_MONITOR_SLOW_QUERY_WARNING_DELTA 必须大于 0。")
+        if self.DB_MONITOR_INTEGRITY_INTERVAL_SECONDS < 3600:
+            raise ValueError(
+                "配置错误: DB_MONITOR_INTEGRITY_INTERVAL_SECONDS 必须至少为 3600。"
+            )
         self.JOB_WORKERS = self._get_int_config("JOB_WORKERS", default=2)
         self.JOB_POLL_INTERVAL_SECONDS = self._get_float_config("JOB_POLL_INTERVAL_SECONDS", default=1.0)
         self.JOB_HEARTBEAT_INTERVAL_SECONDS = self._get_int_config(
@@ -205,6 +278,20 @@ class AppConfig:
             return float(value)
         except ValueError as exc:
             raise ValueError(f"配置错误: 环境变量 '{key}' 必须是数字，当前值为 '{value}'。") from exc
+
+    def _get_bool_config(self, key, default):
+        """严格解析布尔环境变量，避免非空字符串被错误视为启用。"""
+        value = os.environ.get(key)
+        if value in (None, ""):
+            return default
+        normalized = value.strip().lower()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+        raise ValueError(
+            f"配置错误: 环境变量 '{key}' 只能是 true、false、1 或 0，当前值为 '{value}'。"
+        )
 
     @staticmethod
     def _parse_csv_config(value):
