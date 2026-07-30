@@ -56,6 +56,7 @@ CausalAgent
 - [快速开始 | Quick Start](#快速开始--quick-start)
   - [Docker部署](#docker部署)
     - [数据库生产化配置](#数据库生产化配置)
+  - [后端单元测试](#后端单元测试)
   - [windows部署](#windows部署)
 - [贡献](#贡献)
 - [Star 趋势](#star-趋势)
@@ -334,6 +335,36 @@ docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.adm
 
 更深入的数据库治理、读写一致性和恢复规则见 [`setting/database_governance.md`](setting/database_governance.md)。
 
+### 后端单元测试
+
+仓库提供独立的 `docker-compose.test.yml`，用于按需创建一次性单元测试容器。测试镜像预装项目 Python 依赖和 `pytest`，不连接 MySQL，禁用网络；当前源码以只读方式挂载到容器，因此修改代码后可以直接重新运行测试，无需重建镜像。
+
+首次使用或测试依赖变化后构建测试镜像：
+
+```bash
+docker compose -f docker-compose.test.yml build unit-test
+```
+
+运行全部后端单元测试，测试结束后自动删除本次容器：
+
+```bash
+docker compose -f docker-compose.test.yml run --rm unit-test
+```
+
+运行指定测试文件：
+
+```bash
+docker compose -f docker-compose.test.yml run --rm unit-test python -m pytest -p no:cacheprovider tests/unit/agent/test_agent_state_routing.py
+```
+
+需要在相同环境内排查导入或依赖问题时，可以临时进入 Shell；退出后容器仍会自动删除：
+
+```bash
+docker compose -f docker-compose.test.yml run --rm unit-test sh
+```
+
+当前测试只保证 `tests/unit`；集成测试和隔离主从 E2E 的执行边界见 [`tests/README.md`](tests/README.md)。
+
 
 
 ### windows部署
@@ -516,10 +547,12 @@ python Run_causal.py
 ├── Run_causal.py           # 桌面端启动入口（pywebview）
 ├── requirements.txt        # 完整依赖
 ├── requirements-base.txt   # 基础依赖（docker/生产使用）
+├── requirements-test.txt   # Docker 单元测试依赖
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
+├── docker-compose.test.yml # 按需创建的一次性单元测试环境
 ├── .github/workflows/       # GitHub Actions 工作流
 ├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收端口/容器覆盖
 ├── README.md               # 项目说明
