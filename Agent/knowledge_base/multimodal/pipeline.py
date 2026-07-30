@@ -16,7 +16,7 @@ from typing import Any, Callable
 from .assets import AssetStore
 from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, OutboundImageRecord, UnitStatus, canonical_json, render_retrieval_text, sha256_bytes, stable_id
 from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, file_sha256
-from .parsers import IMAGE_SUFFIXES, TEXT_SPLIT, ParsedDocument, ParsedItem, inspect_source, parse_document_page
+from .parsers import IMAGE_SUFFIXES, PAGE_QUALITY_GATE_VERSION, PAGE_QUALITY_MIN_TEXT_COVERAGE, TEXT_SPLIT, ParsedDocument, ParsedItem, decide_page_route, inspect_source, parse_document_page
 from .remote_policy import RemoteSamplePolicy
 from .vision import PROMPT_VERSION, REQUIRED_MODEL, VisionAnalyzer
 
@@ -38,6 +38,73 @@ class MultimodalKnowledgeBaseMaintenance:
         """生成确定性来源 manifest，不调用远程服务且不写 Chroma。"""
         entries, issues = self._scan(sources)
         return {"status": "inspected", "manifest": self._manifest(entries), "configuration": self._configuration_status(), "issues": [issue.model_dump(mode="json") for issue in issues]}
+
+    def prepare_outbound_manifest(self, sources: list[str], output_path: str | Path, *, max_images: int | None = None, max_pages: int | None = None) -> dict[str, Any]:
+        """仅本地解析批准来源并生成供人工审阅的远程图片清单。"""
+        if max_images is not None and max_images < 1:
+            raise ValueError("--max-images must be positive when preparing an outbound manifest")
+        if max_pages is not None and max_pages < 1:
+            raise ValueError("--max-pages must be positive when preparing an outbound manifest")
+        entries, issues = self._scan(sources)
+        if any(issue.severity is IssueSeverity.ERROR for issue in issues):
+            raise ValueError("source scan contains blocking issues")
+        analyzer = VisionAnalyzer(self.asset_root / "vision_cache", allow_remote_data=False, remote_policy_sha256=self.remote_policy.policy_sha256, model=REQUIRED_MODEL)
+        records: list[OutboundImageRecord] = []
+        prepared_pages = 0
+        parser_name = os.getenv("MULTIMODAL_PARSER", "docling")
+        for entry in entries:
+            path = Path(entry["path"])
+            document_id = stable_id("doc", {"path": entry["relative_path"], "content_hash": entry["content_hash"]})
+            for page_number in range(1, self._source_page_count(path) + 1):
+                if not self._remote_resource_allowed(path, page_number):
+                    continue
+                if max_pages is not None and prepared_pages >= max_pages:
+                    break
+                parsed = parse_document_page(path, parser_name, page_number)
+                prepared_pages += 1
+                issues.extend(parsed.issues)
+                if any(issue.severity is IssueSeverity.ERROR for issue in parsed.issues):
+                    raise ValueError(f"local parsing failed before outbound manifest preparation: {path.name} page {page_number}")
+                decision = decide_page_route(path, page_number, parsed)
+                if decision.route == "blocked":
+                    raise ValueError(f"local page quality gate blocked outbound manifest preparation: {path.name} page {page_number}")
+                page_items, _ = self._prepare_page_items(self._routed_page_items(parsed.items, decision.route))
+                for item_index, item in enumerate(page_items, 1):
+                    if not item.asset_bytes:
+                        continue
+                    prepared = analyzer.prepare_image(item.asset_bytes)
+                    records.append(OutboundImageRecord(
+                        source_relative_path=entry["relative_path"], source_sha256=entry["content_hash"],
+                        document_id=document_id, page_number=item.page_number or page_number,
+                        image_index=max(1, (page_number * 10000 + item_index) % 10000),
+                        original_sha256=prepared.original_sha256, normalized_sha256=prepared.normalized_sha256,
+                        media_type=prepared.media_type, width=prepared.width, height=prepared.height,
+                        original_bytes=prepared.original_bytes, normalized_bytes=len(prepared.payload),
+                        transformation=prepared.transformation,
+                        context_sha256=sha256_bytes(self._same_page_context(item, page_items).encode("utf-8")),
+                        provider="wcode", model=analyzer.model, prompt_version=PROMPT_VERSION,
+                        remote_policy_sha256=self.remote_policy.policy_sha256,
+                        route=decision.route,
+                        quality_gate_version=decision.quality_gate_version,
+                        route_reason=decision.reason,
+                        quality_summary=decision.input_summary,
+                    ))
+                    if max_images is not None and len(records) >= max_images:
+                        break
+                if max_images is not None and len(records) >= max_images:
+                    break
+            if (max_images is not None and len(records) >= max_images) or (max_pages is not None and prepared_pages >= max_pages):
+                break
+        output = Path(output_path)
+        self._write_outbound_manifest(output, records)
+        return {
+            "status": "prepared",
+            "outbound_manifest": str(output),
+            "outbound_manifest_sha256": sha256_bytes(output.read_bytes()),
+            "outbound_image_count": len(records),
+            "prepared_page_count": prepared_pages,
+            "issues": [issue.model_dump(mode="json") for issue in issues],
+        }
 
     def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None) -> dict[str, Any]:
         """逐页解析、原子保存 checkpoint，并分批写入不可变暂存索引。"""
@@ -109,7 +176,16 @@ class MultimodalKnowledgeBaseMaintenance:
                             {"name": name, "asset_uri": store.put(document_id, name, payload, category="parsed"), "content_hash": sha256_bytes(payload)}
                             for name, payload in parsed.raw_artifacts
                         ]
-                        page_items, filtered = self._prepare_page_items(parsed.items)
+                        decision = decide_page_route(path, page_number, parsed)
+                        if decision.route == "blocked":
+                            page_issues.append(IngestionIssue(
+                                code="page_quality_gate_failed",
+                                message=f"第 {page_number} 页无法安全路由：{decision.reason}",
+                                severity=IssueSeverity.ERROR,
+                                blocking=True,
+                                source_path=str(path),
+                            ))
+                        page_items, filtered = self._prepare_page_items(self._routed_page_items(parsed.items, decision.route))
                         page_quality["filtered_short_text_units"] = filtered
                         page_units: list[KnowledgeUnit] = []
                         for item_index, item in enumerate(page_items, 1):
@@ -124,7 +200,7 @@ class MultimodalKnowledgeBaseMaintenance:
                             )
                             if unit is not None:
                                 page_units.append(unit)
-                        checkpoint = {"document_id": document_id, "page_number": page_number, "parser_name": parsed.parser_name, "parser_version": parsed.parser_version, "parser_artifacts": page_artifacts, "issues": [issue.model_dump(mode="json") for issue in page_issues], "quality": page_quality, "unit_count": len(page_units)}
+                        checkpoint = {"document_id": document_id, "page_number": page_number, "parser_name": parsed.parser_name, "parser_version": parsed.parser_version, "parser_artifacts": page_artifacts, "route": decision.route, "quality_gate_version": decision.quality_gate_version, "route_reason": decision.reason, "quality_input_summary": decision.input_summary, "issues": [issue.model_dump(mode="json") for issue in page_issues], "quality": page_quality, "unit_count": len(page_units)}
                         self._write_page_checkpoint(version_dir, document_id, page_number, checkpoint, page_units)
                     attempted_pages += 1
                     parsed_name, parsed_version = checkpoint["parser_name"], checkpoint["parser_version"]
@@ -137,7 +213,11 @@ class MultimodalKnowledgeBaseMaintenance:
                     unit_count += page_units
                     document_units += page_units
                     self._write_build_state(version_dir, {"status": "building", "unit_count": unit_count, "attempted_pages": attempted_pages})
-                documents.append({"document_id": document_id, "relative_path": entry["relative_path"], "content_hash": entry["content_hash"], "source_asset_uri": source_asset_uri, "parser_artifact_uris": [artifact["asset_uri"] for artifact in parser_artifacts], "parser_artifacts": parser_artifacts, "parser_name": parsed_name, "parser_version": parsed_version, "expected_page_count": expected_pages, "attempted_page_count": expected_pages, "unit_count": document_units})
+                page_routes = []
+                for page_number in range(1, expected_pages + 1):
+                    page_checkpoint = self._read_page_checkpoint(version_dir, document_id, page_number) or {}
+                    page_routes.append({key: page_checkpoint.get(key) for key in ("page_number", "route", "quality_gate_version", "route_reason", "quality_input_summary")})
+                documents.append({"document_id": document_id, "relative_path": entry["relative_path"], "content_hash": entry["content_hash"], "source_asset_uri": source_asset_uri, "parser_artifact_uris": [artifact["asset_uri"] for artifact in parser_artifacts], "parser_artifacts": parser_artifacts, "parser_name": parsed_name, "parser_version": parsed_version, "expected_page_count": expected_pages, "attempted_page_count": expected_pages, "unit_count": document_units, "page_routes": page_routes})
             self._materialize_units(version_dir, documents)
             (version_dir / "issues.jsonl").write_text("".join(issue.model_dump_json() + "\n" for issue in issues), encoding="utf-8")
             self._write_outbound_manifest(outbound_manifest_path, outbound_records)
@@ -299,6 +379,7 @@ class MultimodalKnowledgeBaseMaintenance:
                 "embedding": embedding_fingerprint(),
                 "pdf_parser": {"page_range_mode": "single_page", "process_isolation": "spawn_per_page", "page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "do_ocr": False},
                 "text_split": dict(TEXT_SPLIT),
+                "page_quality_gate": {"version": PAGE_QUALITY_GATE_VERSION, "min_text_coverage": PAGE_QUALITY_MIN_TEXT_COVERAGE, "native_text_min_chars": 80},
                 "remote_policy_hash": self.remote_policy.policy_sha256,
                 "vision": {"enabled": allow_remote_data, "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", "16000000")), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation},
             },
@@ -419,7 +500,7 @@ class MultimodalKnowledgeBaseMaintenance:
                 "source_content_hash": entry["content_hash"],
                 "page_count": page_count,
                 "parser": {"name": parsed.parser_name, "version": parsed.parser_version},
-                "docling_config": {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True, "do_ocr": False},
+                "docling_config": {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True, "generate_page_images": True, "do_ocr": False},
                 "image_text_strategy": "remote-vision-v2",
             },
         }
@@ -453,7 +534,7 @@ class MultimodalKnowledgeBaseMaintenance:
             return None
         if contract.get("page_count") != page_count:
             return None
-        expected_docling = {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True, "do_ocr": False}
+        expected_docling = {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True, "generate_page_images": True, "do_ocr": False}
         if contract.get("docling_config") != expected_docling:
             return None
         if contract.get("image_text_strategy") != "remote-vision-v2":
@@ -611,19 +692,35 @@ class MultimodalKnowledgeBaseMaintenance:
         """把短标题并入同页后续正文，避免产生孤立标题向量。"""
         prepared: list[ParsedItem] = []
         pending: list[str] = []
+        pending_item: ParsedItem | None = None
         filtered = 0
         for item in items:
             short_text = item.modality == "text" and 0 < len(item.raw_text.strip()) < 30
             heading = item.content_kind in {"title", "section_header", "page_header", "page_footer"}
             if short_text or heading:
                 pending.append(item.raw_text.strip())
+                pending_item = item
                 filtered += 1
                 continue
             if pending and item.raw_text:
                 item = replace(item, raw_text="\n".join(pending + [item.raw_text]))
                 pending.clear()
+                pending_item = None
             prepared.append(item)
+        if pending and pending_item is not None:
+            prepared.append(replace(pending_item, content_kind="paragraph", raw_text="\n".join(pending)))
         return prepared, filtered
+
+    @staticmethod
+    def _routed_page_items(items: tuple[ParsedItem, ...], route: str) -> tuple[ParsedItem, ...]:
+        """按已冻结页路由保留唯一候选集合，避免整页与逐图重复外发。"""
+        if route == "remote_page_fallback":
+            return tuple(item for item in items if item.content_kind == "page_render" and item.asset_bytes)
+        if route == "remote_pictures":
+            return tuple(item for item in items if item.content_kind != "page_render")
+        if route == "local_objects":
+            return tuple(item for item in items if not item.asset_bytes)
+        return ()
 
     def _build_unit(
         self,
@@ -875,7 +972,7 @@ class MultimodalKnowledgeBaseMaintenance:
         return {
             "embedding": embedding_fingerprint(),
             "vision_provider": "wcode",
-            "vision_model": os.getenv("VISION_MODEL", "qwen/qwen3-vl-flash"),
+            "vision_model": os.getenv("VISION_MODEL", REQUIRED_MODEL),
             "vision_api_key_configured": bool(os.getenv("VISION_API_KEY")),
             "vision_base_url_configured": bool(os.getenv("VISION_BASE_URL")),
             "allowed_remote_sources": ["Pearl fixed samples", "OmniDocBench fixed subset"],

@@ -22,6 +22,10 @@ TABLE_SUFFIXES = {".csv", ".xlsx"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
 PDF_SUFFIXES = {".pdf"}
 SUPPORTED_SUFFIXES = TEXT_SUFFIXES | TABLE_SUFFIXES | IMAGE_SUFFIXES | PDF_SUFFIXES
+PAGE_QUALITY_GATE_VERSION = "page-quality-v1"
+PAGE_QUALITY_MIN_TEXT_COVERAGE = 0.25
+# ponytail: 固定常量进 manifest；以后要可配再读 env，不要现在抽象成配置系统
+TEXT_SPLIT = {"target_chars": 800, "max_chars": 1200, "overlap_chars": 120}
 _RAPID_OCR_ENGINE: object | None = None
 _OCR_FINGERPRINT: dict[str, str] | None = None
 _RAPIDOCR_MODEL_NAMES = (
@@ -108,6 +112,16 @@ class ParsedDocument:
     raw_artifacts: tuple[tuple[str, bytes], ...] = ()
 
 
+@dataclass(frozen=True)
+class PageRouteDecision:
+    """页级质量门的固定输出；不会调用模型或依赖运行时随机状态。"""
+
+    route: str
+    reason: str
+    quality_gate_version: str
+    input_summary: dict[str, int]
+
+
 def inspect_source(path: Path) -> IngestionIssue | None:
     """只检查输入文件的格式、存在性和大小，不执行解析或远程调用。"""
     if not path.is_file():
@@ -116,7 +130,84 @@ def inspect_source(path: Path) -> IngestionIssue | None:
         return IngestionIssue(code="unsupported_format", message="首期不支持该资料格式", severity=IssueSeverity.ERROR, blocking=False, source_path=str(path))
     if path.stat().st_size == 0:
         return IngestionIssue(code="empty_source", message="资料为空", severity=IssueSeverity.ERROR, blocking=False, source_path=str(path))
+    if not _source_signature_matches(path):
+        return IngestionIssue(code="source_format_mismatch", message="文件扩展名与文件签名或容器格式不一致", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path))
     return None
+
+
+def decide_page_route(path: Path, page_number: int, parsed: ParsedDocument) -> PageRouteDecision:
+    """按本地页证据选择唯一处理路线，无法安全判定时明确阻断。"""
+    summary = _page_quality_summary(path, page_number, parsed)
+    if any(issue.severity is IssueSeverity.ERROR or issue.blocking for issue in parsed.issues):
+        return PageRouteDecision("blocked", "parser_error", PAGE_QUALITY_GATE_VERSION, summary)
+    if summary["native_text_chars"] < 0:
+        return PageRouteDecision("blocked", "native_page_inspection_failed", PAGE_QUALITY_GATE_VERSION, summary)
+    if summary["native_text_chars"] == 0 and summary["xobject_count"] == 0 and summary["item_count"] == 0:
+        return PageRouteDecision("blank_page", "physical_page_has_no_content", PAGE_QUALITY_GATE_VERSION, summary)
+    has_page_render = any(item.content_kind == "page_render" and item.asset_bytes for item in parsed.items)
+    if has_page_render and (summary["item_count"] == 1 or summary["coverage_gap"]):
+        return PageRouteDecision("remote_page_fallback", "page_render_required_by_quality_gate", PAGE_QUALITY_GATE_VERSION, summary)
+    if summary["native_text_chars"] >= 80 and summary["docling_text_chars"] < summary["native_text_chars"] * PAGE_QUALITY_MIN_TEXT_COVERAGE:
+        return PageRouteDecision("blocked", "text_coverage_below_fixed_threshold", PAGE_QUALITY_GATE_VERSION, summary)
+    if summary["image_items"]:
+        return PageRouteDecision("remote_pictures", "picture_items_present", PAGE_QUALITY_GATE_VERSION, summary)
+    if summary["item_count"]:
+        return PageRouteDecision("local_objects", "structured_local_objects_present", PAGE_QUALITY_GATE_VERSION, summary)
+    return PageRouteDecision("blocked", "nonempty_page_has_no_safe_route", PAGE_QUALITY_GATE_VERSION, summary)
+
+
+def _source_signature_matches(path: Path) -> bool:
+    """以文件头和 XLSX 容器条目校验允许来源，不依赖外部 MIME 数据库。"""
+    suffix = path.suffix.lower()
+    header = path.read_bytes()[:16]
+    if suffix in TEXT_SUFFIXES or suffix == ".csv":
+        return b"\x00" not in header
+    if suffix == ".pdf":
+        return header.startswith(b"%PDF-")
+    if suffix == ".png":
+        return header.startswith(b"\x89PNG\r\n\x1a\n")
+    if suffix in {".jpg", ".jpeg"}:
+        return header.startswith(b"\xff\xd8\xff")
+    if suffix == ".webp":
+        return len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP"
+    if suffix in {".tif", ".tiff"}:
+        return header.startswith((b"II*\x00", b"MM\x00*"))
+    if suffix == ".xlsx":
+        if not header.startswith(b"PK\x03\x04"):
+            return False
+        try:
+            import zipfile
+            with zipfile.ZipFile(path) as archive:
+                return "[Content_Types].xml" in archive.namelist() and any(name.startswith("xl/") for name in archive.namelist())
+        except (OSError, zipfile.BadZipFile):
+            return False
+    return False
+
+
+def _page_quality_summary(path: Path, page_number: int, parsed: ParsedDocument) -> dict[str, int]:
+    """汇总质量门需要的稳定页证据；pypdf 读取失败会以负值使路由阻断。"""
+    native_text = ""
+    xobjects = 0
+    if path.suffix.lower() == ".pdf":
+        try:
+            from pypdf import PdfReader
+            page = PdfReader(path).pages[page_number - 1]
+            native_text = (page.extract_text() or "").strip()
+            resources = page.get("/Resources") or {}
+            xobject_map = resources.get("/XObject") if hasattr(resources, "get") else None
+            xobjects = len(xobject_map or {})
+        except Exception:
+            return {"native_text_chars": -1, "xobject_count": -1, "docling_text_chars": 0, "item_count": len(parsed.items), "image_items": 0, "coverage_gap": 1}
+    text_chars = sum(len(item.raw_text.strip()) for item in parsed.items if item.modality in {"text", "table", "equation"})
+    image_items = sum(1 for item in parsed.items if item.modality == "image" and item.content_kind != "page_render")
+    return {
+        "native_text_chars": len(native_text),
+        "xobject_count": xobjects,
+        "docling_text_chars": text_chars,
+        "item_count": len(parsed.items),
+        "image_items": image_items,
+        "coverage_gap": int(len(native_text) >= 80 and text_chars < len(native_text) * PAGE_QUALITY_MIN_TEXT_COVERAGE),
+    }
 
 
 def parse_document(path: Path, preferred_parser: str) -> ParsedDocument:
@@ -130,8 +221,7 @@ def parse_document(path: Path, preferred_parser: str) -> ParsedDocument:
         return _parse_xlsx(path)
     if suffix in IMAGE_SUFFIXES:
         payload = path.read_bytes()
-        probe = _rapidocr_probe(payload)
-        return ParsedDocument("image", "builtin-1", (ParsedItem("image", "image", raw_text=probe.text, asset_bytes=payload, asset_name=path.name),), issues=_ocr_issues(probe, path))
+        return ParsedDocument("image", "builtin-2", (ParsedItem("image", "image", asset_bytes=payload, asset_name=path.name),))
     if suffix in PDF_SUFFIXES:
         return _parse_pdf(path, preferred_parser)
     raise ValueError(f"unsupported source suffix: {suffix}")
@@ -161,13 +251,95 @@ def parse_document_page(path: Path, preferred_parser: str, page_number: int) -> 
     return _parse_docling_page_isolated(path, page_number)
 
 
+def split_text_units(text: str, *, target_chars: int | None = None, max_chars: int | None = None, overlap_chars: int | None = None) -> list[str]:
+    """按标题/段落优先、字符上限兜底的确定性切分；参数写入 manifest 的 TEXT_SPLIT。"""
+    target = target_chars if target_chars is not None else TEXT_SPLIT["target_chars"]
+    maximum = max_chars if max_chars is not None else TEXT_SPLIT["max_chars"]
+    overlap = overlap_chars if overlap_chars is not None else TEXT_SPLIT["overlap_chars"]
+    if maximum < 1 or target < 1:
+        raise ValueError("text split sizes must be positive")
+    if overlap < 0 or overlap >= maximum:
+        raise ValueError("overlap_chars must be in [0, max_chars)")
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return []
+    if len(normalized) <= target:
+        return [normalized]
+    pieces = _structured_pieces(normalized)
+    chunks: list[str] = []
+    for piece in pieces:
+        if len(piece) <= maximum:
+            _append_with_budget(chunks, piece, target=target, maximum=maximum)
+        else:
+            for hard in _hard_split(piece, maximum=maximum, overlap=overlap):
+                _append_with_budget(chunks, hard, target=target, maximum=maximum)
+    return chunks or [normalized[:maximum]]
+
+
+def _structured_pieces(text: str) -> list[str]:
+    """先按 ATX 标题，再按空行段落，产出可合并的结构化片段。"""
+    lines = text.split("\n")
+    sections: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line.lstrip().startswith("#") and current:
+            sections.append("\n".join(current).strip())
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        sections.append("\n".join(current).strip())
+    pieces: list[str] = []
+    for section in sections:
+        paragraphs = [part.strip() for part in section.split("\n\n") if part.strip()]
+        pieces.extend(paragraphs or ([section] if section else []))
+    return pieces
+
+
+def _hard_split(text: str, *, maximum: int, overlap: int) -> list[str]:
+    """在无结构边界时按字符窗口切分，保留重叠。"""
+    if len(text) <= maximum:
+        return [text]
+    pieces: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + maximum)
+        if end < len(text):
+            window = text[start:end]
+            break_at = max(window.rfind("\n"), window.rfind("。"), window.rfind(". "), window.rfind("；"), window.rfind("; "))
+            if break_at >= maximum // 2:
+                end = start + break_at + 1
+        pieces.append(text[start:end].strip())
+        if end >= len(text):
+            break
+        start = max(end - overlap, start + 1)
+    return [piece for piece in pieces if piece]
+
+
+def _append_with_budget(chunks: list[str], piece: str, *, target: int, maximum: int) -> None:
+    """尽量把相邻段落合并到 target 附近，超过 max 或已达 target 再开新块。"""
+    piece = piece.strip()
+    if not piece:
+        return
+    if not chunks:
+        chunks.append(piece)
+        return
+    candidate = f"{chunks[-1]}\n\n{piece}"
+    if len(chunks[-1]) < target and len(candidate) <= maximum:
+        chunks[-1] = candidate
+        return
+    chunks.append(piece)
+
+
 def _parse_text(path: Path) -> ParsedDocument:
-    """使用确定性的 UTF-8 文本解析作为无外部依赖路径。"""
+    """使用确定性的 UTF-8 文本解析与切分，作为无外部依赖路径。"""
     try:
         text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError:
         text = path.read_text(encoding="utf-8", errors="replace")
-    return ParsedDocument("text", "builtin-1", (ParsedItem("text", "paragraph", raw_text=text),))
+    units = split_text_units(text)
+    items = tuple(ParsedItem("text", "paragraph", raw_text=chunk) for chunk in units) or (ParsedItem("text", "paragraph", raw_text=""),)
+    return ParsedDocument("text", "builtin-1", items)
 
 
 def _parse_csv(path: Path) -> ParsedDocument:
@@ -292,20 +464,12 @@ def _docling_page_worker(path_value: str, page_number: int, sender: object) -> N
 
         artifacts_path = Path(os.getenv("MULTIMODAL_DOCLING_ARTIFACTS_DIR", Path.home() / ".cache" / "docling" / "models"))
         options = PdfPipelineOptions(artifacts_path=artifacts_path)
+        options.do_ocr = False
         options.generate_picture_images = True
+        options.generate_page_images = True
         converter = _new_docling_converter(options)
         result, _ = _convert_docling_page(path, page_number, options, converter)
-        items_list, ocr_issues = _docling_items(result.document, path)
-        issues: tuple[IngestionIssue, ...] = tuple(ocr_issues)
-        if not items_list:
-            content_exists = _pdf_page_has_content(path, page_number)
-            issues = issues + (IngestionIssue(
-                code="pdf_page_content_missing" if content_exists else "pdf_page_empty",
-                message=f"Docling 第 {page_number} 页未返回可索引内容",
-                severity=IssueSeverity.ERROR if content_exists else IssueSeverity.WARNING,
-                blocking=content_exists,
-                source_path=str(path),
-            ),)
+        items_list, issues = _docling_page_items(result.document, path, page_number)
         artifact = (
             f"docling_page_{page_number:04d}.json",
             json.dumps(result.document.export_to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8"),
@@ -359,7 +523,7 @@ def _convert_docling_page(path: Path, page_number: int, options: object, convert
 
 
 def _docling_items(document: object, source_path: Path) -> tuple[list[ParsedItem], list[IngestionIssue]]:
-    """将 Docling 项映射为项目契约，不暴露其第三方对象。"""
+    """将 Docling 项映射为项目契约；图片只保留本地 caption 与原始资源。"""
     from docling_core.types.doc import FormulaItem, PictureItem, TableItem, TextItem
 
     items: list[ParsedItem] = []
@@ -378,16 +542,35 @@ def _docling_items(document: object, source_path: Path) -> tuple[list[ParsedItem
             asset_bytes = _docling_image_bytes(item, document)
             if asset_bytes:
                 caption = (item.caption_text(document) or "").strip()
-                probe = _rapidocr_probe(asset_bytes)
-                raw_text = "\n".join(dict.fromkeys(part for part in (caption, probe.text) if part))
-                items.append(ParsedItem("image", "image", raw_text=raw_text, page_number=page_number, bbox=bbox, asset_bytes=asset_bytes, asset_name=f"page_{page_number or 0:04d}_image_{index:04d}.png", parent_key=f"page_{page_number}" if page_number else None))
-                ocr_issues.extend(_ocr_issues(probe, source_path))
+                items.append(ParsedItem("image", "image", raw_text=caption, page_number=page_number, bbox=bbox, asset_bytes=asset_bytes, asset_name=f"page_{page_number or 0:04d}_image_{index:04d}.png", parent_key=f"page_{page_number}" if page_number else None))
             else:
                 ocr_issues.append(IngestionIssue(code="image_asset_missing", message=f"第 {page_number or 0} 页图片资源无法提取", severity=IssueSeverity.WARNING, blocking=False, source_path=str(source_path)))
         elif isinstance(item, TextItem) and (item.text or "").strip():
             label = str(getattr(getattr(item, "label", None), "value", getattr(item, "label", "paragraph")))
             items.append(ParsedItem("text", label or "paragraph", raw_text=item.text.strip(), page_number=page_number, bbox=bbox, parent_key=f"page_{page_number}" if page_number else None))
     return items, ocr_issues
+
+
+def _docling_page_items(document: object, source_path: Path, page_number: int) -> tuple[list[ParsedItem], tuple[IngestionIssue, ...]]:
+    """将无结构化项但含 PDF 内容的页作为 Docling 整页图像保留给远程图片链。"""
+    items, issues = _docling_items(document, source_path)
+    if items:
+        return items, tuple(issues)
+    if not _pdf_page_has_content(source_path, page_number):
+        return items, tuple(issues) + (IngestionIssue(
+            code="pdf_page_empty", message=f"Docling 第 {page_number} 页未返回可索引内容",
+            severity=IssueSeverity.WARNING, blocking=False, source_path=str(source_path),
+        ),)
+    page_image = _docling_page_image_bytes(document, page_number)
+    if page_image is not None:
+        return [ParsedItem(
+            "image", "page_render", page_number=page_number, asset_bytes=page_image,
+            asset_name=f"page_{page_number:04d}_render.png", parent_key=f"page_{page_number}",
+        )], tuple(issues)
+    return items, tuple(issues) + (IngestionIssue(
+        code="pdf_page_content_missing", message=f"Docling 第 {page_number} 页未返回可索引内容",
+        severity=IssueSeverity.ERROR, blocking=True, source_path=str(source_path),
+    ),)
 
 
 def _docling_locator(item: object, document: object) -> tuple[int | None, dict[str, float] | None]:
@@ -415,6 +598,20 @@ def _docling_image_bytes(item: object, document: object) -> bytes | None:
     """把可用图片渲染为 PNG；没有可靠图片时返回空而非猜测资源。"""
     try:
         image = item.get_image(document)
+        if image is None:
+            return None
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
+    except Exception:
+        return None
+
+
+def _docling_page_image_bytes(document: object, page_number: int) -> bytes | None:
+    """导出 Docling 已生成的整页图像，不引入额外 PDF 解析器。"""
+    try:
+        page = getattr(document, "pages", {}).get(page_number)
+        image = getattr(getattr(page, "image", None), "pil_image", None)
         if image is None:
             return None
         output = BytesIO()

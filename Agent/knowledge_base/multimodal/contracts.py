@@ -111,6 +111,10 @@ class OutboundImageRecord(BaseModel):
     model: str = Field(min_length=1)
     prompt_version: str = Field(pattern=r"^vision-v2$")
     remote_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    route: Literal["remote_pictures", "remote_page_fallback"] = "remote_pictures"
+    quality_gate_version: str = "page-quality-v1"
+    route_reason: str = "picture_items_present"
+    quality_summary: dict[str, int] = Field(default_factory=dict)
 
     @field_validator("source_relative_path")
     @classmethod
