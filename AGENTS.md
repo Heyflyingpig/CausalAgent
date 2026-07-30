@@ -35,10 +35,12 @@
 ├── Run_causal.py           # 桌面端启动入口（pywebview）
 ├── requirements.txt        # 完整依赖
 ├── requirements-base.txt   # 基础依赖（docker/生产使用）
+├── requirements-test.txt   # Docker 单元测试依赖
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
+├── docker-compose.test.yml # 按需创建的一次性单元测试环境
 ├── .github/workflows/       # GitHub Actions 工作流
 ├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收覆盖
 ├── README.md               # 项目说明
@@ -160,6 +162,7 @@
 - Docker 是当前首选开发方式；`docker-compose.replica.yml` 中 `app` 和 `worker` 都会挂载以下知识库目录：
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
+- 后端单元测试使用独立 `docker-compose.test.yml`：`unit-test` 服务基于 Dockerfile 的 `test` 目标预装 `requirements-test.txt`，不依赖数据库，以 `tests/unit-test.env` 屏蔽项目 `.env` 并关闭 LangSmith 追踪，禁用网络，只读挂载当前仓库；通过 `docker compose ... run --rm` 按需创建和删除测试容器，测试镜像继续复用。
 - RAG 启动期只检查知识库目录是否可用，不会在启动时完整加载向量库；若 `Agent/knowledge_base/db` 不存在，worker 会记录 warning，并以“无知识库模式”继续运行。
 
 
@@ -200,14 +203,14 @@ npm run test:e2e:mock
 npm run build
 ```
 
-后端快速测试按层级执行：
+后端单元测试默认使用按需 Docker 环境：
 
 ```bash
-python -m pytest tests/unit
-python -m pytest tests/integration
+docker compose -f docker-compose.test.yml build unit-test
+docker compose -f docker-compose.test.yml run --rm unit-test
 ```
 
-完整分类与执行顺序见 `tests/README.md`。
+指定测试可以在服务名后覆盖默认命令；只有依赖变化时才需要重新构建测试镜像。集成测试、本地 Python 回退和完整分类见 `tests/README.md`。
 
 真实隔离环境 E2E 还需提供 `PLAYWRIGHT_BASE_URL`、管理员/普通用户测试凭据后运行
 `npm run test:e2e`；本机仅有 Edge 时可显式设置 `PLAYWRIGHT_CHANNEL=msedge`，
