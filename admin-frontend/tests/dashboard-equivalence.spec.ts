@@ -159,10 +159,19 @@ describe('旧看板到 Vue 的数据驱动等价矩阵', () => {
     )).toBe(false)
   })
 
-  it('最后采集时间支持毫秒时间戳，并让成功提示在 5 秒后消失', () => {
+  it('管理员时间统一按北京时间显示，并兼容既有输入和失败降级', () => {
     const timestamp = Date.parse('2026-07-25T12:00:01.000Z')
-    expect(formatDate(timestamp)).not.toBe(String(timestamp))
-    expect(formatDate(timestamp)).toContain('2026')
+    const beijingTime = formatDate('2026-07-25T12:00:01.000')
+
+    expect(beijingTime).toBe(formatDate('2026-07-25T12:00:01.000Z'))
+    expect(beijingTime).toBe(formatDate('2026-07-25T20:00:01.000+08:00'))
+    expect(beijingTime).toBe(formatDate(timestamp))
+    expect(beijingTime).toContain('20:00:01')
+    expect(formatDate(null)).toBe('时间未知')
+    expect(formatDate('invalid-date')).toBe('invalid-date')
+  })
+
+  it('成功提示在 5 秒后消失', () => {
     expect(SUCCESS_NOTICE_DURATION_MS).toBe(5_000)
     expect(dashboardSource).toContain('scheduleNoticeDismiss()')
   })

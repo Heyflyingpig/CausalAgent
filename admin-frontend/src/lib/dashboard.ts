@@ -4,6 +4,8 @@ export const REFRESH_GROUP_KEYS = ['realtime', 'sql_performance', 'capacity'] as
 export const MANUAL_REFRESH_TIMEOUT_MS = 60_000
 export const MANUAL_POLL_INTERVAL_MS = 1_500
 export const SUCCESS_NOTICE_DURATION_MS = 5_000
+const ADMIN_DISPLAY_TIME_ZONE = 'Asia/Shanghai'
+const UTC_DATE_TIME_WITHOUT_ZONE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/
 
 /** 判断未知值是否为可安全索引的普通对象。 */
 export function isObject(value: unknown): value is Record<string, unknown> {
@@ -20,15 +22,22 @@ export function displayValue(value: unknown, fallback = '—'): string {
   return value === null || value === undefined || value === '' ? fallback : String(value)
 }
 
-/** 把 ISO 时间转换为中文 24 小时本地时间。 */
+/** 把 UTC 时间转换为中文 24 小时北京时间，无时区日期时间按 UTC 解释。 */
 export function formatDate(value: unknown): string {
   if (!value) return '时间未知'
+  const rawValue = String(value).trim()
+  const normalizedValue = UTC_DATE_TIME_WITHOUT_ZONE.test(rawValue)
+    ? `${rawValue.replace(' ', 'T')}Z`
+    : rawValue
   const parsed = value instanceof Date
     ? value
-    : typeof value === 'number' ? new Date(value) : new Date(String(value))
+    : typeof value === 'number' ? new Date(value) : new Date(normalizedValue)
   return Number.isNaN(parsed.getTime())
     ? String(value)
-    : parsed.toLocaleString('zh-CN', { hour12: false })
+    : parsed.toLocaleString('zh-CN', {
+      hour12: false,
+      timeZone: ADMIN_DISPLAY_TIME_ZONE,
+    })
 }
 
 /** 把字节数格式化为适合容量表展示的单位。 */
