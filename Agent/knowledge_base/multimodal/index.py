@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import gc
+import time
 from pathlib import Path
 from collections.abc import Iterable
 from typing import Any
@@ -14,6 +15,19 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from .defaults import resolve_production_embedding_config
 
 from .contracts import KnowledgeUnit, canonical_json
+
+
+def replace_with_retry(temporary: Path, target: Path) -> None:
+    """原子替换文件，并重试 Windows 短暂文件占用。"""
+    for delay in (0.0, 0.05, 0.1, 0.2, 0.4):
+        if delay:
+            time.sleep(delay)
+        try:
+            temporary.replace(target)
+            return
+        except PermissionError:
+            if delay == 0.4:
+                raise
 
 
 def embedding_fingerprint() -> dict[str, Any]:
@@ -117,7 +131,7 @@ class ActiveIndexRegistry:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(self.path)
+        replace_with_retry(temporary, self.path)
 
 
 def file_sha256(path: Path) -> str:

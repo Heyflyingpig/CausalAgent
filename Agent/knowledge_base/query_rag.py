@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from Agent.knowledge_base.sparse_retriever import (
     SparseRetriever,
+    candidate_identity,
     normalize_scores,
     tokenize_text,
 )
@@ -21,8 +22,7 @@ from Agent.llm_structured_output import with_compatible_structured_output
 from config.settings import settings
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
-PERSIST_DIRECTORY = os.environ.get("RAG_VECTOR_DB_DIR", os.path.join(base_dir, "db"))
-COLLECTION_NAME = os.environ.get("RAG_COLLECTION_NAME", "pubmedqa_clean")
+COLLECTION_NAME = os.environ.get("RAG_COLLECTION_NAME", "")
 PRODUCTION_RAG_CONFIG_PATH = os.environ.get(
     "RAG_PRODUCTION_CONFIG_PATH",
     os.path.join(base_dir, "rag", "runtime", "production_rag_config.json"),
@@ -54,12 +54,19 @@ class RagRetrievalConfig:
     dense_score_threshold: float = DENSE_SCORE_THRESHOLD
     final_rerank_threshold: float = FINAL_RERANK_THRESHOLD
     mmr_lambda: float = MMR_LAMBDA
-    official_only_when_available: bool = True
     max_evidence_chars: int = MAX_EVIDENCE_CHARS
 
     def to_dict(self) -> Dict[str, Any]:
         """返回可写入评测报告的普通 dict。"""
         return asdict(self)
+
+
+def build_retrieval_config(raw_config: Optional[Dict[str, Any]] = None) -> RagRetrievalConfig:
+    """Build retrieval settings while ignoring fields owned by a source adapter."""
+    if not raw_config:
+        return RagRetrievalConfig()
+    allowed = set(RagRetrievalConfig.__dataclass_fields__)
+    return RagRetrievalConfig(**{key: value for key, value in raw_config.items() if key in allowed})
 
 
 def get_production_rag_config_status() -> Dict[str, Any]:
@@ -116,69 +123,53 @@ class RagAnswer(BaseModel):
     )
 
 
-_COMPATIBILITY_SERVICE = None
-_COMPATIBILITY_SERVICE_LOCK = threading.Lock()
+_RAG_SERVICE = None
+_RAG_SERVICE_LOCK = threading.Lock()
 
 
-def _create_compatibility_service():
-    """严格创建供评测、CLI 和遗留调用使用的独立 compatibility Service。"""
+def _create_rag_service():
+    """按 Runtime 配置创建进程内共享的 RAG Service。"""
     from Agent.knowledge_base.rag_runtime import RagRuntimeConfig, create_rag_runtime
-    from Agent.knowledge_base.rag_service import CompatibilityRagService
+    from Agent.knowledge_base.rag_service import RagService
 
-    def create_runtime():
-        """在 compatibility Service 首次需要资源时创建严格 Runtime。"""
-        answer_llm = ChatOpenAI(
-            api_key=settings.API_KEY,
-            base_url=settings.BASE_URL,
-            model=settings.MODEL,
-        )
-        return create_rag_runtime(RagRuntimeConfig.from_environment(), answer_llm)
-
-    return CompatibilityRagService(create_runtime)
+    answer_llm = ChatOpenAI(
+        api_key=settings.API_KEY,
+        base_url=settings.BASE_URL,
+        model=settings.MODEL,
+    )
+    return RagService(create_rag_runtime(RagRuntimeConfig.from_environment(), answer_llm))
 
 
-def _get_compatibility_service():
-    """延迟创建并复用唯一 compatibility Service。"""
-    global _COMPATIBILITY_SERVICE
-    if _COMPATIBILITY_SERVICE is None:
-        with _COMPATIBILITY_SERVICE_LOCK:
-            if _COMPATIBILITY_SERVICE is None:
-                _COMPATIBILITY_SERVICE = _create_compatibility_service()
-    return _COMPATIBILITY_SERVICE
+def _get_rag_service():
+    """延迟创建并复用唯一 RAG Service。"""
+    global _RAG_SERVICE
+    if _RAG_SERVICE is None:
+        with _RAG_SERVICE_LOCK:
+            if _RAG_SERVICE is None:
+                _RAG_SERVICE = _create_rag_service()
+    return _RAG_SERVICE
 
 
 def _get_llm() -> ChatOpenAI:
-    """兼容入口：返回 compatibility Runtime 持有的回答 LLM。"""
-    return _get_compatibility_service().runtime.answer_llm
+    """返回共享 Runtime 持有的回答 LLM。"""
+    return _get_rag_service().runtime.answer_llm
 
 
 def _get_embedding_function() -> Any:
-    """兼容入口：返回 compatibility Runtime 持有的 embedding。"""
-    return _get_compatibility_service().runtime.embedding
+    """返回共享 Runtime 持有的 embedding。"""
+    return _get_rag_service().runtime.embedding
 
 
 def _get_vector_db() -> Any:
-    """兼容入口：返回 compatibility Runtime 持有的 Chroma。"""
-    return _get_compatibility_service().runtime.vector_db
+    """返回共享 Runtime 持有的向量库。"""
+    return _get_rag_service().runtime.vector_db
 
 
 def get_vector_db_metadata_summary(limit: int = 10000) -> Dict[str, Any]:
-    """兼容入口：通过 compatibility Service 汇总 metadata。"""
-    return _get_compatibility_service().get_vector_db_metadata_summary(limit=limit)
+    """通过共享 RAG Service 汇总 Runtime metadata。"""
+    return _get_rag_service().get_vector_db_metadata_summary(limit=limit)
 
 
-def _slugify(value: str) -> str:
-    value = re.sub(r"[^\w\u4e00-\u9fff]+", "_", value.strip().lower())
-    return value.strip("_") or "unknown_doc"
-
-
-def _safe_int(value: Any) -> Optional[int]:
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 ## 截取证据文本，减少污染
 def _truncate_text(text: str, max_chars: int = MAX_EVIDENCE_CHARS) -> str:
@@ -193,68 +184,9 @@ def _normalize_chunk_metadata(
     page_content: str,
     fallback_index: int = 0,
 ) -> Dict[str, Any]:
-    normalized = dict(metadata or {})
-    source = (
-        normalized.get("source")
-        or normalized.get("file_path")
-        or normalized.get("asset_uri")
-        or "unknown_source"
-    )
-    source_name = (
-        os.path.basename(source.replace("/", os.sep))
-        if normalized.get("asset_uri") or os.path.isabs(source)
-        else source
-    )
-    title = normalized.get("title") or os.path.splitext(source_name)[0]
-    page = _safe_int(normalized.get("page"))
-    if page is None:
-        page = _safe_int(normalized.get("page_number"))
-    chunk_index = _safe_int(normalized.get("chunk_index"))
-    if chunk_index is None:
-        chunk_index = fallback_index
-
-    doc_type = normalized.get("doc_type") or normalized.get("content_kind")
-    if not doc_type:
-        if source_name.lower().endswith(".pdf"):
-            doc_type = "reference_pdf"
-        elif source_name.lower().endswith(".txt"):
-            doc_type = "note"
-        else:
-            doc_type = "text"
-
-    corpus = normalized.get("corpus")
-    if not corpus:
-        corpus = (
-            "multimodal"
-            if normalized.get("document_id") or normalized.get("modality")
-            else "test" if "test" in source_name.lower() else "official"
-        )
-
-    doc_id = normalized.get("doc_id") or normalized.get("document_id") or _slugify(title or source_name)
-    chunk_hash = hashlib.md5(page_content.encode("utf-8")).hexdigest()[:8]
-    page_fragment = page if page is not None else "na"
-    chunk_id = (
-        normalized.get("chunk_id")
-        or normalized.get("unit_id")
-        or normalized.get("content_hash")
-        or f"{doc_id}#p{page_fragment}#c{chunk_index}_{chunk_hash}"
-    )
-
-    normalized.update(
-        {
-            "source": source,
-            "source_name": source_name,
-            "title": title,
-            "page": page,
-            "doc_id": doc_id,
-            "chunk_index": chunk_index,
-            "chunk_id": chunk_id,
-            "doc_type": doc_type,
-            "corpus": corpus,
-            "section": normalized.get("section", ""),
-        }
-    )
-    return normalized
+    """Copy source metadata without interpreting or enriching its fields."""
+    del page_content, fallback_index
+    return dict(metadata or {})
 
 
 def _tokenize_text(text: str) -> List[str]:
@@ -290,6 +222,7 @@ def _dense_retrieve(
             {
                 "page_content": doc.page_content,
                 "metadata": metadata,
+                "candidate_key": candidate_identity(doc.page_content, metadata),
                 "dense_score": float(score),
                 "sparse_score": 0.0,
                 "retrieval_sources": {"dense"},
@@ -298,15 +231,6 @@ def _dense_retrieve(
 
     _normalize_scores(candidates, "dense_score", "dense_score_norm")
     return candidates
-
-
-def _requested_modality(question: str) -> Optional[str]:
-    """只识别用户明确提出的图或表请求，避免把“表达式/表示”误判为表格。"""
-    if re.search(r"(?:^|[，。；：、\s])表\s*\d+(?:\.\d+)?|表格|表中", question):
-        return "table"
-    if re.search(r"(?:^|[，。；：、\s])图\s*\d+(?:\.\d+)?|图中|图示|因果图", question):
-        return "image"
-    return None
 
 
 def _select_mmr_candidates(
@@ -359,11 +283,11 @@ def _sparse_retrieve(
     *,
     sparse_retriever: Optional[SparseRetriever] = None,
 ) -> List[Dict[str, Any]]:
-    """通过显式或 compatibility Runtime 的只读 sparse 检索器查询。"""
+    """通过显式或共享 Runtime 的只读 sparse 检索器查询。"""
     active_retriever = (
         sparse_retriever
         if sparse_retriever is not None
-        else _get_compatibility_service().runtime.sparse_retriever
+        else _get_rag_service().runtime.sparse_retriever
     )
     return active_retriever.search(question, fetch_k)
 
@@ -373,16 +297,18 @@ def _merge_candidates(
     sparse_candidates: List[Dict[str, Any]],
     final_top_k: int = FINAL_TOP_K,
     final_rerank_threshold: float = FINAL_RERANK_THRESHOLD,
-    official_only_when_available: bool = True,
     return_before_final: bool = False,
 ) -> List[Dict[str, Any]]:
     merged: Dict[str, Dict[str, Any]] = {}
     for candidate in dense_candidates + sparse_candidates:
-        key = candidate["metadata"]["chunk_id"]
+        key = candidate.get("candidate_key") or candidate_identity(
+            candidate.get("page_content", ""), candidate.get("metadata", {})
+        )
         if key not in merged:
             merged[key] = {
                 "page_content": candidate["page_content"],
                 "metadata": candidate["metadata"],
+                "candidate_key": key,
                 "dense_score": float(candidate.get("dense_score", 0.0)),
                 "dense_score_norm": float(candidate.get("dense_score_norm", 0.0)),
                 "sparse_score": float(candidate.get("sparse_score", 0.0)),
@@ -405,19 +331,11 @@ def _merge_candidates(
         merged_candidate["retrieval_sources"].update(candidate.get("retrieval_sources", set()))
 
     merged_candidates = list(merged.values())
-    official_candidates = [
-        candidate for candidate in merged_candidates if candidate["metadata"].get("corpus") == "official"
-    ]
-    if official_candidates and official_only_when_available:
-        merged_candidates = official_candidates
-
     for candidate in merged_candidates:
-        metadata_bonus = 1.0 if candidate["metadata"].get("corpus") == "official" else 0.0
         hybrid_bonus = 0.1 if len(candidate["retrieval_sources"]) > 1 else 0.0
         candidate["rerank_score"] = (
             0.55 * candidate["dense_score_norm"]
             + 0.25 * candidate["sparse_score_norm"]
-            + 0.1 * metadata_bonus
             + hybrid_bonus
         )
         candidate["retrieval_source"] = "+".join(sorted(candidate["retrieval_sources"]))
@@ -442,23 +360,12 @@ def _build_evidence_payloads(
         evidence_payloads.append(
             {
                 "evidence_id": f"E{index}",
-                "chunk_id": metadata["chunk_id"],
-                "doc_id": metadata["doc_id"],
-                "source": metadata["source_name"],
-                "title": metadata.get("title", ""),
-                "page": metadata.get("page"),
-                "section": metadata.get("section", ""),
-                "doc_type": metadata.get("doc_type", ""),
-                "corpus": metadata.get("corpus", ""),
+                "metadata": dict(metadata),
                 "dense_score": round(float(candidate.get("dense_score", 0.0)), 4),
                 "sparse_score": round(float(candidate.get("sparse_score", 0.0)), 4),
                 "rerank_score": round(float(candidate.get("rerank_score", 0.0)), 4),
                 "retrieval_source": candidate.get("retrieval_source", ""),
                 "content": _truncate_text(candidate["page_content"], max_chars=max_chars),
-                "modality": metadata.get("modality", "text"),
-                "content_kind": metadata.get("content_kind", ""),
-                "asset_uri": metadata.get("asset_uri", ""),
-                "locator_json": metadata.get("locator_json", ""),
             }
         )
     return evidence_payloads
@@ -470,13 +377,15 @@ def _format_evidence_blocks(evidence_payloads: List[Dict[str, Any]]) -> str:
 
     blocks = []
     for evidence in evidence_payloads:
+        metadata = json.dumps(
+            evidence.get("metadata", {}),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
         block = (
             f"[{evidence['evidence_id']}]\n"
-            f"source: {evidence['source']}\n"
-            f"title: {evidence['title']}\n"
-            f"page: {evidence['page']}\n"
-            f"doc_type: {evidence['doc_type']}\n"
-            f"corpus: {evidence['corpus']}\n"
+            f"metadata: {metadata}\n"
             f"retrieval_source: {evidence['retrieval_source']}\n"
             f"rerank_score: {evidence['rerank_score']}\n"
             f"content: {evidence['content']}"
@@ -739,8 +648,14 @@ def format_rag_summary_for_prompt(
         if include_evidence and question_result.get("retrieved_docs"):
             evidence_lines = []
             for evidence in question_result["retrieved_docs"][:2]:
+                metadata = json.dumps(
+                    evidence.get("metadata", {}),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
                 evidence_lines.append(
-                    f"- {evidence['evidence_id']} | {evidence['source']} | page={evidence['page']} | score={evidence['rerank_score']}"
+                    f"- {evidence['evidence_id']} | metadata={metadata} | score={evidence.get('rerank_score', 0.0)}"
                 )
             block.append("证据摘要：\n" + "\n".join(evidence_lines))
         summaries.append("\n".join(block))
@@ -800,8 +715,8 @@ def build_retrieval_trace(
     question_text: str,
     config: Optional[RagRetrievalConfig] = None,
 ) -> Dict[str, Any]:
-    """兼容入口：通过唯一 compatibility Service 执行检索 trace。"""
-    return _get_compatibility_service().build_retrieval_trace(question_text, config=config)
+    """通过共享 RAG Service 执行检索 trace。"""
+    return _get_rag_service().build_retrieval_trace(question_text, config=config)
 
 
 def _build_retrieval_trace_with_resources(
@@ -830,14 +745,6 @@ def _build_retrieval_trace_with_resources(
         score_threshold=0.0,
         vector_db=vector_db,
     )
-    requested_modality = _requested_modality(question_text)
-    modality_dense = _dense_retrieve(
-        question_text,
-        fetch_k=1,
-        score_threshold=0.0,
-        vector_db=vector_db,
-        metadata_filter={"modality": requested_modality},
-    ) if requested_modality else []
     timings_ms["dense_raw"] = round((time.perf_counter() - started) * 1000, 3)
 
     started = time.perf_counter()
@@ -872,25 +779,12 @@ def _build_retrieval_trace_with_resources(
         sparse,
         final_top_k=active_config.final_top_k,
         final_rerank_threshold=active_config.final_rerank_threshold,
-        official_only_when_available=active_config.official_only_when_available,
         return_before_final=True,
     )
     timings_ms["merge_rerank"] = round((time.perf_counter() - started) * 1000, 3)
 
     started = time.perf_counter()
     final_candidates = _select_final_candidates(reranked, active_config)
-    if modality_dense:
-        modality_candidate = dict(modality_dense[0])
-        modality_candidate["retrieval_sources"] = {"dense_modality"}
-        modality_candidate["retrieval_source"] = "dense_modality"
-        modality_candidate["rerank_score"] = float(modality_candidate.get("dense_score", 0.0))
-        modality_unit_id = modality_candidate["metadata"]["chunk_id"]
-        final_candidates = [modality_candidate] + [
-            candidate
-            for candidate in final_candidates
-            if candidate["metadata"]["chunk_id"] != modality_unit_id
-        ]
-        final_candidates = final_candidates[: active_config.final_top_k]
     evidence_payloads = _build_evidence_payloads(
         final_candidates,
         max_chars=active_config.max_evidence_chars,
@@ -930,7 +824,7 @@ def get_rag_response(questions: List[Union[str, Dict[str, Any]]]) -> Dict[str, A
     接收一个问题列表，对每个问题执行混合检索、证据重排和结构化回答。
     返回结构化的RAG结果，供报告与后处理模块使用。
     """
-    return _get_compatibility_service().get_response(
+    return _get_rag_service().get_response(
         questions,
         retrieve_candidates=_retrieve_candidates,
         answer_question=_answer_question,

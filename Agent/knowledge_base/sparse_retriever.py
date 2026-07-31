@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import time
@@ -13,6 +15,18 @@ LOGGER = logging.getLogger(__name__)
 BM25_K1 = 1.5
 BM25_B = 0.75
 LEGACY_RAW_SCORE_SCALE = BM25_K1 + 1.0
+
+
+def candidate_identity(page_content: str, metadata: Mapping[str, Any]) -> str:
+    """Create a source-neutral identity without modifying source metadata."""
+    payload = json.dumps(
+        {"content": page_content, "metadata": dict(metadata)},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class SparseRetriever(Protocol):
@@ -67,6 +81,7 @@ class _SparseDocument:
 
     page_content: str
     metadata: Mapping[str, Any]
+    candidate_key: str
 
 
 @dataclass(frozen=True)
@@ -81,28 +96,21 @@ class Bm25sSparseRetriever:
         """一次读取完整 Chroma collection 并构建 BM25s 内存索引。"""
         import bm25s
 
-        from Agent.knowledge_base.query_rag import _normalize_chunk_metadata
-
         started = time.perf_counter()
         raw = vector_db.get(include=["documents", "metadatas"])
         documents = raw.get("documents", [])
         metadatas = raw.get("metadatas", [])
-        ids = raw.get("ids", [])
         entries: List[_SparseDocument] = []
         corpus_tokens: List[List[str]] = []
 
         for index, page_content in enumerate(documents):
-            metadata = _normalize_chunk_metadata(
-                metadatas[index] if index < len(metadatas) else {},
-                page_content,
-                fallback_index=index,
-            )
-            metadata["vector_id"] = ids[index] if index < len(ids) else None
+            metadata = dict(metadatas[index] if index < len(metadatas) else {})
             corpus_tokens.append(tokenize_text(page_content))
             entries.append(
                 _SparseDocument(
                     page_content=page_content,
                     metadata=MappingProxyType(dict(metadata)),
+                    candidate_key=candidate_identity(page_content, metadata),
                 )
             )
 
@@ -162,6 +170,7 @@ class Bm25sSparseRetriever:
                 {
                     "page_content": sparse_document.page_content,
                     "metadata": dict(sparse_document.metadata),
+                    "candidate_key": sparse_document.candidate_key,
                     "dense_score": 0.0,
                     "sparse_score": score,
                     "retrieval_sources": {"sparse"},

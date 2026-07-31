@@ -9,10 +9,11 @@ import hashlib
 import json
 import multiprocessing
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from io import BytesIO
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from .contracts import IngestionIssue, IssueSeverity
@@ -33,6 +34,39 @@ _RAPIDOCR_MODEL_NAMES = (
     "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
     "PP-OCRv6_rec_small.onnx",
 )
+_DOCLING_BATCH_CACHE: dict[tuple[str, str, int, int, int], dict[int, "ParsedDocument"]] = {}
+_DOCLING_BATCH_CACHE_LOCK = threading.Lock()
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """读取布尔环境变量，未知值按默认值处理。"""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def docling_configuration() -> dict[str, object]:
+    """返回 Docling 运行配置，确保 manifest 与实际解析器使用同一份设置。"""
+    return {
+        "page_range_mode": "single_page",
+        "process_isolation": "spawn_per_batch",
+        "batch_size": max(1, int(os.getenv("MULTIMODAL_DOCLING_BATCH_SIZE", "8"))),
+        "page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")),
+        "do_ocr": False,
+        "do_table_structure": _env_bool("MULTIMODAL_DOCLING_TABLE_STRUCTURE", False),
+        "generate_picture_images": _env_bool("MULTIMODAL_DOCLING_PICTURE_IMAGES", False),
+        "generate_page_images": _env_bool("MULTIMODAL_DOCLING_PAGE_IMAGES", False),
+        "layout_batch_size": max(1, int(os.getenv("MULTIMODAL_DOCLING_LAYOUT_BATCH_SIZE", "1"))),
+        "table_batch_size": max(1, int(os.getenv("MULTIMODAL_DOCLING_TABLE_BATCH_SIZE", "1"))),
+        "ocr_batch_size": max(1, int(os.getenv("MULTIMODAL_DOCLING_OCR_BATCH_SIZE", "1"))),
+    }
+
+
+def clear_docling_batch_cache() -> None:
+    """清理当前进程中的批量页结果，防止隔离运行之间复用解析产物。"""
+    with _DOCLING_BATCH_CACHE_LOCK:
+        _DOCLING_BATCH_CACHE.clear()
 
 
 @dataclass(frozen=True)
@@ -240,7 +274,7 @@ def iter_document_pages(path: Path, preferred_parser: str) -> Iterator[ParsedDoc
     yield from _iter_pdf_with_docling(path, preferred_parser)
 
 
-def parse_document_page(path: Path, preferred_parser: str, page_number: int) -> ParsedDocument:
+def parse_document_page(path: Path, preferred_parser: str, page_number: int, cancel_check: Callable[[], bool] | None = None) -> ParsedDocument:
     """解析指定物理页，供可恢复摄取按页调度。"""
     if page_number < 1:
         raise ValueError("page_number must be positive")
@@ -250,7 +284,7 @@ def parse_document_page(path: Path, preferred_parser: str, page_number: int) -> 
         return parse_document(path, preferred_parser)
     if importlib.util.find_spec("docling") is None:
         return _parse_pdf(path, preferred_parser)
-    return _parse_docling_page_isolated(path, page_number)
+    return _parse_docling_page_batched(path, preferred_parser, page_number, cancel_check=cancel_check)
 
 
 def split_text_units(text: str, *, target_chars: int | None = None, max_chars: int | None = None, overlap_chars: int | None = None) -> list[str]:
@@ -435,7 +469,7 @@ def _iter_pdf_with_docling(path: Path, preferred_parser: str) -> Iterator[Parsed
         yield _parse_docling_page_isolated(path, page_number)
 
 
-def _parse_docling_page_isolated(path: Path, page_number: int) -> ParsedDocument:
+def _parse_docling_page_isolated(path: Path, page_number: int, *, cancel_check: Callable[[], bool] | None = None) -> ParsedDocument:
     """在 spawn 子进程中解析一页，超时或崩溃时返回阻断 issue。"""
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
@@ -444,6 +478,10 @@ def _parse_docling_page_isolated(path: Path, page_number: int) -> ParsedDocument
     sender.close()
     timeout = int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900"))
     try:
+        if cancel_check and cancel_check():
+            process.terminate()
+            process.join(30)
+            raise InterruptedError("docling page parsing was cancelled")
         if receiver.poll(timeout):
             parsed = receiver.recv()
             process.join(30)
@@ -458,17 +496,81 @@ def _parse_docling_page_isolated(path: Path, page_number: int) -> ParsedDocument
         receiver.close()
 
 
+def _parse_docling_page_batched(path: Path, preferred_parser: str, page_number: int, *, cancel_check: Callable[[], bool] | None = None) -> ParsedDocument:
+    """在一个常驻 Docling 子进程中预取一小批页面，保留页面级结果和失败边界。"""
+    batch_size = max(1, int(os.getenv("MULTIMODAL_DOCLING_BATCH_SIZE", "8")))
+    if batch_size == 1:
+        return _parse_docling_page_isolated(path, page_number, cancel_check=cancel_check)
+    stat = path.stat()
+    batch_start = ((page_number - 1) // batch_size) * batch_size + 1
+    from pypdf import PdfReader
+
+    batch_end = min(batch_start + batch_size - 1, len(PdfReader(path).pages))
+    key = (str(path.resolve()), preferred_parser, stat.st_size, stat.st_mtime_ns, batch_start)
+    with _DOCLING_BATCH_CACHE_LOCK:
+        cached = _DOCLING_BATCH_CACHE.get(key)
+        if cached is not None and page_number in cached:
+            parsed = cached.pop(page_number)
+            if not cached:
+                _DOCLING_BATCH_CACHE.pop(key, None)
+            return parsed
+
+    if cancel_check is None:
+        results = _parse_docling_batch_isolated(path, batch_start, batch_end)
+    else:
+        results = _parse_docling_batch_isolated(path, batch_start, batch_end, cancel_check=cancel_check)
+    with _DOCLING_BATCH_CACHE_LOCK:
+        _DOCLING_BATCH_CACHE[key] = results
+        parsed = _DOCLING_BATCH_CACHE[key].pop(page_number, None)
+        if not _DOCLING_BATCH_CACHE[key]:
+            _DOCLING_BATCH_CACHE.pop(key, None)
+    return parsed or _parse_docling_page_isolated(path, page_number, cancel_check=cancel_check)
+
+
+def _parse_docling_batch_isolated(path: Path, start_page: int, end_page: int, *, cancel_check: Callable[[], bool] | None = None) -> dict[int, ParsedDocument]:
+    """批量运行 Docling；批次异常时只对缺失页回退单页隔离解析。"""
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_docling_batch_worker, args=(str(path), start_page, end_page, sender))
+    process.start()
+    sender.close()
+    expected = end_page - start_page + 1
+    results: dict[int, ParsedDocument] = {}
+    timeout = int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900"))
+    try:
+        deadline = time.monotonic() + timeout
+        while len(results) < expected:
+            if cancel_check and cancel_check():
+                raise InterruptedError("docling batch parsing was cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if not receiver.poll(min(remaining, 1.0)):
+                continue
+            page_number, parsed = receiver.recv()
+            results[int(page_number)] = parsed
+    except (EOFError, OSError, ValueError):
+        pass
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join(30)
+        receiver.close()
+    for page_number in range(start_page, end_page + 1):
+        if cancel_check and cancel_check():
+            raise InterruptedError("docling batch parsing was cancelled")
+        if page_number not in results:
+            results[page_number] = _parse_docling_page_isolated(path, page_number, cancel_check=cancel_check)
+    return results
+
+
 def _docling_page_worker(path_value: str, page_number: int, sender: object) -> None:
     """子进程入口：解析单页并通过管道返回纯本地结果。"""
     path = Path(path_value)
     try:
-        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        # PdfPipelineOptions is constructed by _new_docling_options().
 
-        artifacts_path = Path(os.getenv("MULTIMODAL_DOCLING_ARTIFACTS_DIR", Path.home() / ".cache" / "docling" / "models"))
-        options = PdfPipelineOptions(artifacts_path=artifacts_path)
-        options.do_ocr = False
-        options.generate_picture_images = True
-        options.generate_page_images = True
+        options = _new_docling_options()
         converter = _new_docling_converter(options)
         result, _ = _convert_docling_page(path, page_number, options, converter)
         items_list, issues = _docling_page_items(result.document, path, page_number)
@@ -478,7 +580,33 @@ def _docling_page_worker(path_value: str, page_number: int, sender: object) -> N
         )
         sender.send(ParsedDocument("docling", "2.115.0", tuple(items_list), issues, (artifact,)))
     except Exception as exc:
-        sender.send(_page_failure(path, page_number, type(exc).__name__))
+        sender.send(_page_failure(path, page_number, f"{type(exc).__name__}:{str(exc)[:160]}"))
+    finally:
+        sender.close()
+
+
+def _docling_batch_worker(path_value: str, start_page: int, end_page: int, sender: object) -> None:
+    """批量子进程入口：只初始化一次 Docling converter，再逐页发送结果。"""
+    path = Path(path_value)
+    try:
+        # PdfPipelineOptions is constructed by _new_docling_options().
+
+        options = _new_docling_options()
+        converter = _new_docling_converter(options)
+        for page_number in range(start_page, end_page + 1):
+            try:
+                result, converter = _convert_docling_page(path, page_number, options, converter)
+                items_list, issues = _docling_page_items(result.document, path, page_number)
+                artifact = (
+                    f"docling_page_{page_number:04d}.json",
+                    json.dumps(result.document.export_to_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8"),
+                )
+                sender.send((page_number, ParsedDocument("docling", "2.115.0", tuple(items_list), issues, (artifact,))))
+            except Exception as exc:
+                sender.send((page_number, _page_failure(path, page_number, f"{type(exc).__name__}:{str(exc)[:160]}")))
+    except Exception:
+        # 整批转换失败时不发送伪造的页级完成结果；父进程会逐页回退。
+        return
     finally:
         sender.close()
 
@@ -515,6 +643,26 @@ def _new_docling_converter(options: object) -> object:
     return DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)})
 
 
+def _new_docling_options() -> object:
+    """创建低内存 Docling PDF 配置，图片由 PDF bbox 渲染补齐。"""
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+
+    artifacts_path = Path(os.getenv("MULTIMODAL_DOCLING_ARTIFACTS_DIR", Path.home() / ".cache" / "docling" / "models"))
+    configuration = docling_configuration()
+    options = PdfPipelineOptions(artifacts_path=artifacts_path)
+    for name in (
+        "do_ocr",
+        "do_table_structure",
+        "generate_picture_images",
+        "generate_page_images",
+        "layout_batch_size",
+        "table_batch_size",
+        "ocr_batch_size",
+    ):
+        setattr(options, name, configuration[name])
+    return options
+
+
 def _convert_docling_page(path: Path, page_number: int, options: object, converter: object) -> tuple[object, object]:
     """转换单页；converter 状态异常时仅重建并重试一次。"""
     try:
@@ -524,7 +672,7 @@ def _convert_docling_page(path: Path, page_number: int, options: object, convert
         return replacement.convert(path, page_range=(page_number, page_number)), replacement
 
 
-def _docling_items(document: object, source_path: Path) -> tuple[list[ParsedItem], list[IngestionIssue]]:
+def _docling_items(document: object, source_path: Path, target_page: int | None = None) -> tuple[list[ParsedItem], list[IngestionIssue]]:
     """将 Docling 项映射为项目契约；图片只保留本地 caption 与原始资源。"""
     from docling_core.types.doc import FormulaItem, PictureItem, TableItem, TextItem
 
@@ -532,6 +680,8 @@ def _docling_items(document: object, source_path: Path) -> tuple[list[ParsedItem
     ocr_issues: list[IngestionIssue] = []
     for index, (item, _) in enumerate(document.iterate_items(), 1):
         page_number, bbox = _docling_locator(item, document)
+        if target_page is not None and page_number != target_page:
+            continue
         if isinstance(item, TableItem):
             text = item.export_to_markdown(doc=document).strip()
             if text:
@@ -567,7 +717,7 @@ def _docling_items(document: object, source_path: Path) -> tuple[list[ParsedItem
             if formula:
                 items.append(ParsedItem("equation", "formula", raw_text=formula, page_number=page_number, bbox=bbox, parent_key=f"page_{page_number}" if page_number else None))
         elif isinstance(item, PictureItem):
-            asset_bytes = _docling_image_bytes(item, document)
+            asset_bytes = _docling_image_bytes(item, document) or _render_pdf_region(source_path, page_number, bbox)
             if asset_bytes:
                 caption = (item.caption_text(document) or "").strip()
                 items.append(ParsedItem("image", "image", raw_text=caption, page_number=page_number, bbox=bbox, asset_bytes=asset_bytes, asset_name=f"page_{page_number or 0:04d}_image_{index:04d}.png", parent_key=f"page_{page_number}" if page_number else None))
@@ -581,7 +731,7 @@ def _docling_items(document: object, source_path: Path) -> tuple[list[ParsedItem
 
 def _docling_page_items(document: object, source_path: Path, page_number: int) -> tuple[list[ParsedItem], tuple[IngestionIssue, ...]]:
     """将无结构化项但含 PDF 内容的页作为 Docling 整页图像保留给远程图片链。"""
-    items, issues = _docling_items(document, source_path)
+    items, issues = _docling_items(document, source_path, target_page=page_number)
     if items:
         return items, tuple(issues)
     if not _pdf_page_has_content(source_path, page_number):
@@ -589,7 +739,7 @@ def _docling_page_items(document: object, source_path: Path, page_number: int) -
             code="pdf_page_empty", message=f"Docling 第 {page_number} 页未返回可索引内容",
             severity=IssueSeverity.WARNING, blocking=False, source_path=str(source_path),
         ),)
-    page_image = _docling_page_image_bytes(document, page_number)
+    page_image = _docling_page_image_bytes(document, page_number) or _render_pdf_region(source_path, page_number)
     if page_image is not None:
         return [ParsedItem(
             "image", "page_render", page_number=page_number, asset_bytes=page_image,
@@ -645,6 +795,37 @@ def _docling_page_image_bytes(document: object, page_number: int) -> bytes | Non
         output = BytesIO()
         image.save(output, format="PNG")
         return output.getvalue()
+    except Exception:
+        return None
+
+
+def _render_pdf_region(path: Path, page_number: int, bbox: dict[str, float] | None = None) -> bytes | None:
+    """用轻量 PDF 渲染器按页或 bbox 生成图片，避免 Docling 保存整页位图。"""
+    if path.suffix.lower() != ".pdf":
+        return None
+    try:
+        try:
+            import pymupdf as pdf
+        except ImportError:
+            import fitz as pdf  # type: ignore
+
+        document = pdf.open(str(path))
+        try:
+            page = document.load_page(page_number - 1)
+            page_rect = page.rect
+            clip = page_rect
+            if bbox:
+                clip = pdf.Rect(
+                    page_rect.x0 + bbox["x0"] * page_rect.width,
+                    page_rect.y0 + bbox["y0"] * page_rect.height,
+                    page_rect.x0 + bbox["x1"] * page_rect.width,
+                    page_rect.y0 + bbox["y1"] * page_rect.height,
+                ) & page_rect
+            scale = max(1.0, float(os.getenv("MULTIMODAL_PDF_RENDER_SCALE", "1.5")))
+            pixmap = page.get_pixmap(matrix=pdf.Matrix(scale, scale), clip=clip, alpha=False)
+            return pixmap.tobytes("png")
+        finally:
+            document.close()
     except Exception:
         return None
 

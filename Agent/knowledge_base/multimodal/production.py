@@ -9,6 +9,7 @@ from typing import Any, Callable
 from langchain_chroma import Chroma
 
 from .defaults import ROOT, load_production_defaults, production_source_paths
+from .contracts import stable_id
 from .index import _embeddings
 
 def load_evaluation_cases(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -166,8 +167,20 @@ def is_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | No
     """判断 manifest 是否精确对应冻结的两项正式资料。"""
     config = config or load_production_defaults()
     expected = {(Path(source["path"]).name, source["sha256"]) for source in config["sources"]}
-    actual = {(source.get("relative_path"), source.get("content_hash")) for source in manifest.get("sources", [])}
+    actual = {(Path(source.get("relative_path", "")).name, source.get("content_hash")) for source in manifest.get("sources", [])}
     return actual == expected
+
+
+def _production_document_id_aliases(manifest: dict[str, Any]) -> dict[str, str]:
+    """将目录布局无关的来源身份映射到冻结评测集使用的稳定文档 ID。"""
+    aliases: dict[str, str] = {}
+    for document in manifest.get("documents", []):
+        document_id = document.get("document_id")
+        relative_path = document.get("relative_path")
+        content_hash = document.get("content_hash")
+        if all(isinstance(value, str) for value in (document_id, relative_path, content_hash)):
+            aliases[document_id] = stable_id("doc", {"path": Path(relative_path).name, "content_hash": content_hash})
+    return aliases
 
 
 def validate_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | None = None) -> list[str]:
@@ -200,6 +213,9 @@ def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[
         if line
         for unit in [json.loads(line)]
     }
+    document_id_aliases = _production_document_id_aliases(
+        json.loads((version_dir / "manifest.json").read_text(encoding="utf-8"))
+    )
     embedding = _embeddings()
     database = Chroma(
         persist_directory=str(version_dir / "chroma"),
@@ -225,7 +241,7 @@ def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[
             evidence.append(
                 {
                     "unit_id": unit.get("unit_id") or metadata.get("unit_id") or metadata.get("chunk_id"),
-                    "document_id": unit.get("document_id") or metadata.get("document_id") or metadata.get("doc_id"),
+                    "document_id": document_id_aliases.get(unit.get("document_id") or metadata.get("document_id") or metadata.get("doc_id"), unit.get("document_id") or metadata.get("document_id") or metadata.get("doc_id")),
                     "page_number": unit.get("page_number") or metadata.get("page_number") or metadata.get("page"),
                     "modality": unit.get("modality") or metadata.get("modality"),
                 }
@@ -233,7 +249,8 @@ def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[
         return evidence
 
     cases = load_evaluation_cases(config)
-    coverage = audit_production_coverage(list(units.values()), cases)
+    coverage_units = [unit | {"document_id": document_id_aliases.get(unit.get("document_id"), unit.get("document_id"))} for unit in units.values()]
+    coverage = audit_production_coverage(coverage_units, cases)
     if coverage["passed"]:
         report = evaluate_with_search(search, config=config)
     else:

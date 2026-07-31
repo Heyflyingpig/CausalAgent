@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .assets import AssetStore
-from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, OutboundImageRecord, UnitStatus, canonical_json, render_retrieval_text, sha256_bytes, stable_id
+from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, OutboundImageRecord, UnitStatus, VisionAnalysis, canonical_json, render_retrieval_text, sha256_bytes, stable_id
 from .defaults import load_production_defaults, production_source_paths
-from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, file_sha256
-from .parsers import IMAGE_SUFFIXES, PAGE_QUALITY_GATE_VERSION, PAGE_QUALITY_MIN_TEXT_COVERAGE, TEXT_SPLIT, ParsedDocument, ParsedItem, decide_page_route, inspect_source, parse_document_page
+from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, file_sha256, replace_with_retry
+from .parsers import IMAGE_SUFFIXES, PAGE_QUALITY_GATE_VERSION, PAGE_QUALITY_MIN_TEXT_COVERAGE, TEXT_SPLIT, ParsedDocument, ParsedItem, clear_docling_batch_cache, decide_page_route, docling_configuration, inspect_source, parse_document_page
 from .remote_policy import RemoteSamplePolicy
 from .table_recovery import TABLE_RECOVERY_ADAPTER_VERSION, RemoteVlmTableRecoveryProvider, TableRecoveryProvider, TableRecoveryResult, looks_like_markdown_table
 from .vision import PROMPT_VERSION, REQUIRED_MODEL, RESPONSE_ADAPTER_VERSION, VisionAnalyzer
@@ -29,6 +29,7 @@ LOCAL_PARSE_CHECKPOINT_SCHEMA = "local-parse-v2"
 R3_DISCOVERY_CHECKPOINT_SCHEMA = "r3-discovery-v2"
 MAX_RETRY_GENERATION = 2
 CHECKPOINT_DATABASE_NAME = "checkpoints.sqlite3"
+_MISSING_VISION_RESULT = object()
 
 class MultimodalKnowledgeBaseMaintenance:
     """为 CLI 与未来 HTTP adapter 提供单一维护入口。"""
@@ -272,7 +273,7 @@ class MultimodalKnowledgeBaseMaintenance:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        replace_with_retry(temporary, path)
 
     def run_r2_smoke(self, sources: list[str], outbound_manifest: str | Path, output_path: str | Path, *, concurrency_levels: tuple[int, ...] = (4, 8, 16)) -> dict[str, Any]:
         """只对预冻结图片执行远程 smoke，不创建候选、索引或 active pointer 变更。"""
@@ -339,15 +340,40 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("R2 manifest images do not match the current local parser output")
         return targets
 
-    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None) -> dict[str, Any]:
+    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, auto_outbound_manifest: bool = False, progress_callback: Callable[[dict[str, Any]], None] | None = None, cancel_check: Callable[[], bool] | None = None, max_pages: int | None = None, page_ranges: dict[str, tuple[int, int]] | None = None) -> dict[str, Any]:
         """逐页解析、原子保存 checkpoint，并分批写入不可变暂存索引。"""
         if retry_from_index_version is not None and reuse_local_from_index_version is not None:
             raise ValueError("--reuse-local-checkpoints-from cannot be combined with --retry-from-index-version")
+        if auto_outbound_manifest and (not allow_remote_data or outbound_manifest is not None):
+            raise ValueError("auto outbound manifest requires remote data without an external manifest")
+        if max_pages is not None and max_pages < 1:
+            raise ValueError("max_pages must be positive")
+        if max_pages is not None and page_ranges is not None:
+            raise ValueError("max_pages and page_ranges cannot be combined")
+        clear_docling_batch_cache()
         entries, issues = self._scan(sources)
+        normalized_page_ranges = {
+            str(Path(path).resolve()): (int(start), int(end))
+            for path, (start, end) in (page_ranges or {}).items()
+        }
         outbound_records = self._frozen_outbound_records(outbound_manifest, entries) if allow_remote_data else []
         if allow_remote_data and max_images is not None and max_images < len(outbound_records):
             raise ValueError("--max-images cannot be smaller than the frozen outbound manifest")
-        manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records)
+        total_pages = 0
+        for entry in entries:
+            source_key = str(Path(entry["path"]).resolve())
+            start_page, end_page = normalized_page_ranges.get(source_key, (1, self._source_page_count(Path(entry["path"]))))
+            total_pages += end_page - start_page + 1
+        progress_total_pages = min(total_pages, max_pages) if max_pages is not None else total_pages
+        self._check_cancel(cancel_check)
+        self._notify_progress(progress_callback, {
+            "stage": "scan",
+            "completed_pages": 0,
+            "total_pages": progress_total_pages,
+            "unit_count": 0,
+            "message": "知识源扫描完成，开始逐页解析",
+        })
+        manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records, max_pages=max_pages, auto_outbound_manifest=auto_outbound_manifest, page_ranges=normalized_page_ranges)
         version = self._index_version(manifest)
         version_dir = self.index_root / version
         retry_source = self._retry_source_directory(retry_from_index_version, manifest, retry_failed)
@@ -364,6 +390,8 @@ class MultimodalKnowledgeBaseMaintenance:
         quality = {key: 0 for key in quality_keys}
         documents: list[dict[str, Any]] = []
         outbound_manifest_path = version_dir / "outbound_manifest.json"
+        if auto_outbound_manifest and outbound_manifest_path.exists():
+            outbound_records = self._read_outbound_manifest(outbound_manifest_path)
         self._write_outbound_manifest(outbound_manifest_path, outbound_records)
         parser_name = os.getenv("MULTIMODAL_PARSER", "docling")
         unit_count = 0
@@ -375,10 +403,18 @@ class MultimodalKnowledgeBaseMaintenance:
                 source_asset_uri = store.put(document_id, path.name, path.read_bytes(), category="source")
                 parser_artifacts: list[dict[str, str]] = []
                 document_units = 0
+                document_page_count = 0
+                document_page_numbers: list[int] = []
                 expected_pages = self._source_page_count(path)
                 parsed_name = parser_name
                 parsed_version = "unknown"
-                for page_number in range(1, expected_pages + 1):
+                selected_range = normalized_page_ranges.get(str(path.resolve()), (1, expected_pages))
+                if page_ranges is not None and str(path.resolve()) not in normalized_page_ranges:
+                    raise ValueError(f"missing page range for source: {entry['relative_path']}")
+                for page_number in range(selected_range[0], selected_range[1] + 1):
+                    if max_pages is not None and attempted_pages >= max_pages:
+                        break
+                    self._check_cancel(cancel_check)
                     checkpoint = self._read_page_checkpoint(version_dir, document_id, page_number)
                     if checkpoint is None and retry_source is not None:
                         checkpoint = self._reusable_retry_checkpoint(retry_source, document_id, page_number)
@@ -399,7 +435,8 @@ class MultimodalKnowledgeBaseMaintenance:
                         if local_checkpoint is not None:
                             parsed = self._parsed_document_from_local_checkpoint(local_checkpoint, store)
                         else:
-                            parsed = parse_document_page(path, parser_name, page_number)
+                            parse_kwargs = {"cancel_check": cancel_check} if cancel_check is not None else {}
+                            parsed = parse_document_page(path, parser_name, page_number, **parse_kwargs)
                             local_checkpoint = self._build_local_parse_checkpoint(path, document_id, page_number, parsed, entry, expected_pages, store)
                             self._write_local_parse_checkpoint(version_dir, document_id, page_number, local_checkpoint)
                         page_quality = {key: 0 for key in quality_keys}
@@ -418,8 +455,30 @@ class MultimodalKnowledgeBaseMaintenance:
                                 source_path=str(path),
                             ))
                         page_items, filtered = self._prepare_page_items(self._routed_page_items(parsed.items, decision.route))
+                        if auto_outbound_manifest:
+                            self._ensure_auto_outbound_records(
+                                outbound_records,
+                                page_items,
+                                path,
+                                document_id,
+                                entry["relative_path"],
+                                entry["content_hash"],
+                                analyzer,
+                                route=decision.route,
+                                route_reason=decision.reason,
+                                quality_gate_version=decision.quality_gate_version,
+                                quality_summary=decision.input_summary,
+                            )
                         page_quality["filtered_short_text_units"] = filtered
                         page_units: list[KnowledgeUnit] = []
+                        prefetched_vision = self._prefetch_remote_analyses(
+                            page_items,
+                            path,
+                            document_id,
+                            analyzer,
+                            allow_remote_data,
+                            outbound_records,
+                        )
                         for item_index, item in enumerate(page_items, 1):
                             unit = self._build_unit(
                                 item, path, document_id, page_number * 10000 + item_index,
@@ -430,6 +489,7 @@ class MultimodalKnowledgeBaseMaintenance:
                                 source_sha256=entry["content_hash"],
                                 outbound_records=outbound_records,
                                 table_recovery_provider=table_recovery_provider,
+                                prefetched_vision=prefetched_vision.get(item_index, _MISSING_VISION_RESULT),
                             )
                             if unit is not None:
                                 page_units.append(unit)
@@ -445,24 +505,74 @@ class MultimodalKnowledgeBaseMaintenance:
                     page_units = int(checkpoint["unit_count"])
                     unit_count += page_units
                     document_units += page_units
+                    document_page_count += 1
+                    document_page_numbers.append(page_number)
                     self._write_build_state(version_dir, {"status": "building", "unit_count": unit_count, "attempted_pages": attempted_pages})
+                    if auto_outbound_manifest:
+                        self._write_outbound_manifest(outbound_manifest_path, outbound_records)
+                    self._notify_progress(progress_callback, {
+                        "stage": "parse_embed",
+                        "completed_pages": attempted_pages,
+                        "total_pages": progress_total_pages,
+                        "unit_count": unit_count,
+                        "message": f"已完成第 {attempted_pages}/{progress_total_pages} 页解析",
+                    })
+                    self._check_cancel(cancel_check)
                 page_routes = []
-                for page_number in range(1, expected_pages + 1):
+                for page_number in document_page_numbers:
                     page_checkpoint = self._read_page_checkpoint(version_dir, document_id, page_number) or {}
                     page_routes.append({key: page_checkpoint.get(key) for key in ("page_number", "route", "quality_gate_version", "route_reason", "quality_input_summary")})
-                documents.append({"document_id": document_id, "relative_path": entry["relative_path"], "content_hash": entry["content_hash"], "source_asset_uri": source_asset_uri, "parser_artifact_uris": [artifact["asset_uri"] for artifact in parser_artifacts], "parser_artifacts": parser_artifacts, "parser_name": parsed_name, "parser_version": parsed_version, "expected_page_count": expected_pages, "attempted_page_count": expected_pages, "unit_count": document_units, "page_routes": page_routes})
+                documents.append({"document_id": document_id, "relative_path": entry["relative_path"], "content_hash": entry["content_hash"], "source_asset_uri": source_asset_uri, "parser_artifact_uris": [artifact["asset_uri"] for artifact in parser_artifacts], "parser_artifacts": parser_artifacts, "parser_name": parsed_name, "parser_version": parsed_version, "source_page_count": expected_pages, "page_start": selected_range[0], "page_end": selected_range[1], "page_numbers": document_page_numbers, "expected_page_count": document_page_count, "attempted_page_count": document_page_count, "unit_count": document_units, "page_routes": page_routes})
+                if max_pages is not None and attempted_pages >= max_pages:
+                    break
+            self._check_cancel(cancel_check)
             self._materialize_units(version_dir, documents)
             (version_dir / "issues.jsonl").write_text("".join(issue.model_dump_json() + "\n" for issue in issues), encoding="utf-8")
             self._write_outbound_manifest(outbound_manifest_path, outbound_records)
-            manifest.update({"index_version": version, "embedding": embedding, "unit_count": unit_count, "issues_count": len(issues), "quality_policy": self._quality_policy(), "quality_observations": quality, "documents": documents, "outbound_manifest_sha256": sha256_bytes(outbound_manifest_path.read_bytes()), "outbound_image_count": len(outbound_records)})
+            manifest.update({"index_version": version, "embedding": embedding, "unit_count": unit_count, "issues_count": len(issues), "quality_policy": self._quality_policy(), "quality_observations": quality, "documents": documents, "source_page_limit": max_pages, "partial_ingestion": page_ranges is not None or (max_pages is not None and max_pages < total_pages), "outbound_manifest_sha256": sha256_bytes(outbound_manifest_path.read_bytes()), "outbound_image_count": len(outbound_records)})
             (version_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._notify_progress(progress_callback, {
+                "stage": "chroma",
+                "completed_pages": attempted_pages,
+                "total_pages": progress_total_pages,
+                "unit_count": unit_count,
+                "message": "解析完成，开始写入 Chroma",
+            })
+            self._check_cancel(cancel_check)
             vector_count = self._build_staged_vectors(version_dir, version, unit_count)
+            self._check_cancel(cancel_check)
             self._write_build_state(version_dir, {"status": "staged_complete", "unit_count": unit_count, "vector_count": vector_count, "attempted_pages": attempted_pages})
+            self._notify_progress(progress_callback, {
+                "stage": "staged",
+                "completed_pages": attempted_pages,
+                "total_pages": progress_total_pages,
+                "unit_count": unit_count,
+                "vector_count": vector_count,
+                "message": "Chroma 写入完成，staged index 已就绪",
+            })
             return {"status": "staged", "index_version": version, "unit_count": unit_count, "vector_count": vector_count, "issues": [issue.model_dump(mode="json") for issue in issues]}
         except Exception as exc:
             (version_dir / "issues.jsonl").write_text("".join(issue.model_dump_json() + "\n" for issue in issues), encoding="utf-8")
             self._write_build_state(version_dir, {"status": "failed", "unit_count": unit_count, "attempted_pages": attempted_pages, "error_type": type(exc).__name__})
             raise
+        finally:
+            clear_docling_batch_cache()
+
+    @staticmethod
+    def _notify_progress(callback: Callable[[dict[str, Any]], None] | None, event: dict[str, Any]) -> None:
+        """发送可选摄取进度；观察者异常不能破坏知识库构建。"""
+        if callback is None:
+            return
+        try:
+            callback(dict(event))
+        except Exception:
+            return
+
+    @staticmethod
+    def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
+        """在页级和索引阶段边界执行协作式取消检查。"""
+        if cancel_check and cancel_check():
+            raise InterruptedError("multimodal ingestion was cancelled")
 
     def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
         """以版本锁执行 ingest 和评测；仅在显式授权时发布。"""
@@ -517,6 +627,8 @@ class MultimodalKnowledgeBaseMaintenance:
         issues = [IngestionIssue.model_validate_json(line) for line in (directory / "issues.jsonl").read_text(encoding="utf-8").splitlines() if line]
         collection = f"{self.collection_prefix}_{index_version}"
         failures: list[str] = []
+        if manifest.get("partial_ingestion"):
+            failures.append("partial_ingestion")
         if not units: failures.append("no_valid_units")
         if StagedIndex(directory, collection).count() != len(units): failures.append("vector_count_mismatch")
         gate_issues = [issue for issue in issues if issue.code != "remote_image_failed"]
@@ -603,24 +715,36 @@ class MultimodalKnowledgeBaseMaintenance:
                 entries.append({"path": str(item.resolve()), "relative_path": relative_path, "content_hash": sha256_bytes(item.read_bytes())})
         return sorted(entries, key=lambda item: (item["relative_path"].casefold(), item["content_hash"])), issues
 
-    def _manifest(self, entries: list[dict[str, str]], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, outbound_records: list[OutboundImageRecord] | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _docling_configuration() -> dict[str, Any]:
+        """返回 Docling 页级超时、批量进程和图像输出的不可变配置。"""
+        return dict(docling_configuration())
+
+    def _manifest(self, entries: list[dict[str, str]], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, outbound_records: list[OutboundImageRecord] | None = None, max_pages: int | None = None, auto_outbound_manifest: bool = False, page_ranges: dict[str, tuple[int, int]] | None = None) -> dict[str, Any]:
         """构造不包含宿主绝对路径的来源清单。"""
         if retry_generation < 0 or retry_generation > MAX_RETRY_GENERATION:
             raise ValueError(f"retry generation must be between 0 and {MAX_RETRY_GENERATION}")
         public = [{"relative_path": entry["relative_path"], "content_hash": entry["content_hash"]} for entry in entries]
+        source_page_ranges = [
+            {"relative_path": entry["relative_path"], "start_page": page_ranges[str(Path(entry["path"]).resolve())][0], "end_page": page_ranges[str(Path(entry["path"]).resolve())][1]}
+            for entry in entries
+            if page_ranges and str(Path(entry["path"]).resolve()) in page_ranges
+        ]
         return {
             "schema_version": 4,
             "sources": public,
+            "source_page_limit": max_pages,
+            "source_page_ranges": source_page_ranges,
             "parser": os.getenv("MULTIMODAL_PARSER", "docling"),
             "build_configuration": {
                 "ingestion_schema": "streaming-page-v1",
                 "embedding": embedding_fingerprint(),
-                "pdf_parser": {"page_range_mode": "single_page", "process_isolation": "spawn_per_page", "page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "do_ocr": False},
+                "pdf_parser": self._docling_configuration(),
                 "text_split": dict(TEXT_SPLIT),
                 "page_quality_gate": {"version": PAGE_QUALITY_GATE_VERSION, "min_text_coverage": PAGE_QUALITY_MIN_TEXT_COVERAGE, "native_text_min_chars": 80},
                 "remote_policy_hash": self.remote_policy.policy_sha256,
                 "table_recovery": self._table_recovery_configuration(),
-                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "response_adapter_version": RESPONSE_ADAPTER_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", "16000000")), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation},
+                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "response_adapter_version": RESPONSE_ADAPTER_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", "16000000")), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation, "outbound_manifest_mode": "auto_frozen_production" if auto_outbound_manifest else "external_or_empty"},
             },
             "outbound_manifest_sha256": sha256_bytes(self._outbound_manifest_payload(outbound_records or [])),
             "outbound_image_count": len(outbound_records or []),
@@ -651,7 +775,7 @@ class MultimodalKnowledgeBaseMaintenance:
         """原子写入当前构建阶段，供崩溃诊断和复用判定使用。"""
         temporary = directory / "build_state.tmp"
         temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(directory / "build_state.json")
+        replace_with_retry(temporary, directory / "build_state.json")
 
     def _is_resumable_build(self, directory: Path) -> bool:
         """判断目录是否为本 schema 可安全续跑的未完成构建。"""
@@ -798,7 +922,7 @@ class MultimodalKnowledgeBaseMaintenance:
                 "source_content_hash": entry["content_hash"],
                 "page_count": page_count,
                 "parser": {"name": parsed.parser_name, "version": parsed.parser_version},
-                "docling_config": {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True, "generate_page_images": True, "do_ocr": False},
+                "docling_config": self._docling_configuration(),
                 "image_text_strategy": "remote-vision-v2",
                 "table_recovery_adapter_version": TABLE_RECOVERY_ADAPTER_VERSION,
             },
@@ -833,7 +957,7 @@ class MultimodalKnowledgeBaseMaintenance:
             return None
         if contract.get("page_count") != page_count:
             return None
-        expected_docling = {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True, "generate_page_images": True, "do_ocr": False}
+        expected_docling = self._docling_configuration()
         if contract.get("docling_config") != expected_docling:
             return None
         if contract.get("image_text_strategy") != "remote-vision-v2":
@@ -953,10 +1077,11 @@ class MultimodalKnowledgeBaseMaintenance:
         temporary = directory / "units.tmp"
         with temporary.open("w", encoding="utf-8") as output:
             for document in documents:
-                for page_number in range(1, int(document["expected_page_count"]) + 1):
+                page_numbers = document.get("page_numbers") or range(1, int(document["expected_page_count"]) + 1)
+                for page_number in page_numbers:
                     for unit in self._read_page_units(directory, document["document_id"], page_number):
                         output.write(unit.model_dump_json() + "\n")
-        temporary.replace(directory / "units.jsonl")
+        replace_with_retry(temporary, directory / "units.jsonl")
 
     def _build_staged_vectors(self, directory: Path, version: str, unit_count: int) -> int:
         """在独立 attempt 目录构建 Chroma，成功后再提交为正式目录。"""
@@ -972,7 +1097,7 @@ class MultimodalKnowledgeBaseMaintenance:
         if attempt_path.exists():
             if final_path.exists():
                 raise ValueError("completed chroma directory already exists")
-            attempt_path.replace(final_path)
+            replace_with_retry(attempt_path, final_path)
         return count
 
     def _source_page_count(self, path: Path) -> int:
@@ -1026,6 +1151,101 @@ class MultimodalKnowledgeBaseMaintenance:
             return tuple(item for item in items if not item.asset_bytes)
         return ()
 
+    def _ensure_auto_outbound_records(
+        self,
+        records: list[OutboundImageRecord],
+        page_items: list[ParsedItem],
+        path: Path,
+        document_id: str,
+        source_relative_path: str,
+        source_sha256: str,
+        analyzer: VisionAnalyzer,
+        *,
+        route: str,
+        route_reason: str,
+        quality_gate_version: str,
+        quality_summary: dict[str, int],
+    ) -> None:
+        """为冻结生产来源的当前页生成远程调用绑定，避免重复 Docling 预扫描。"""
+        if not self._is_frozen_production_source(path):
+            return
+        known = {(record.document_id, record.page_number, record.image_index) for record in records}
+        for item_index, item in enumerate(page_items, 1):
+            if not item.asset_bytes:
+                continue
+            page_number = item.page_number or 1
+            image_index = max(1, (page_number * 10000 + item_index) % 10000)
+            identity = (document_id, page_number, image_index)
+            if identity in known:
+                continue
+            prepared = analyzer.prepare_image(item.asset_bytes)
+            context = self._same_page_context(item, page_items)
+            records.append(OutboundImageRecord(
+                source_relative_path=source_relative_path,
+                source_sha256=source_sha256,
+                document_id=document_id,
+                page_number=page_number,
+                image_index=image_index,
+                original_sha256=prepared.original_sha256,
+                normalized_sha256=prepared.normalized_sha256,
+                media_type=prepared.media_type,
+                width=prepared.width,
+                height=prepared.height,
+                original_bytes=prepared.original_bytes,
+                normalized_bytes=len(prepared.payload),
+                transformation=prepared.transformation,
+                context_sha256=sha256_bytes(context.encode("utf-8")),
+                provider="wcode",
+                model=analyzer.model,
+                prompt_version=PROMPT_VERSION,
+                response_adapter_version=analyzer.response_adapter_version,
+                remote_policy_sha256=self.remote_policy.policy_sha256,
+                route=route,
+                quality_gate_version=quality_gate_version,
+                route_reason=route_reason,
+                quality_summary=quality_summary,
+            ))
+            known.add(identity)
+
+    def _prefetch_remote_analyses(
+        self,
+        page_items: list[ParsedItem],
+        path: Path,
+        document_id: str,
+        analyzer: VisionAnalyzer,
+        allow_remote_data: bool,
+        records: list[OutboundImageRecord],
+    ) -> dict[int, VisionAnalysis | Exception]:
+        """并发执行当前页图片 VLM 调用，返回按页内 item 序号绑定的结果。"""
+        if not allow_remote_data:
+            return {}
+        candidates: dict[int, tuple[ParsedItem, OutboundImageRecord, str]] = {}
+        for item_index, item in enumerate(page_items, 1):
+            if not item.asset_bytes or item.content_kind == "table_recovery":
+                continue
+            page_number = item.page_number or 1
+            image_index = max(1, (page_number * 10000 + item_index) % 10000)
+            record = next((candidate for candidate in records if (candidate.document_id, candidate.page_number, candidate.image_index) == (document_id, page_number, image_index)), None)
+            if record is None or not self._is_frozen_production_source(path) and not self._remote_resource_allowed(path, page_number):
+                continue
+            candidates[item_index] = (item, record, self._same_page_context(item, page_items))
+        if not candidates:
+            return {}
+        max_workers = min(max(1, int(getattr(analyzer, "max_concurrency", 1))), len(candidates))
+        results: dict[int, VisionAnalysis | Exception] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(analyzer.analyze, item.asset_bytes, record.media_type, context, outbound_record=record): item_index
+                for item_index, (item, record, context) in candidates.items()
+            }
+            for future in as_completed(futures):
+                item_index = futures[future]
+                try:
+                    results[item_index] = future.result()
+                except Exception as exc:
+                    results[item_index] = exc
+        return results
+
     def _build_unit(
         self,
         item: ParsedItem,
@@ -1046,6 +1266,7 @@ class MultimodalKnowledgeBaseMaintenance:
         source_sha256: str | None = None,
         outbound_records: list[OutboundImageRecord] | None = None,
         table_recovery_provider: TableRecoveryProvider | None = None,
+        prefetched_vision: VisionAnalysis | Exception | object = _MISSING_VISION_RESULT,
     ) -> KnowledgeUnit | None:
         """把解析项转为单索引单元；获准图片必须完整通过远程 OCR+VLM。"""
         analysis = None
@@ -1096,7 +1317,12 @@ class MultimodalKnowledgeBaseMaintenance:
                         raise PermissionError("image is absent from the frozen outbound manifest")
                     if record.source_relative_path != source_relative_path or record.source_sha256 != source_sha256:
                         raise PermissionError("outbound manifest source does not match the current source")
-                    analysis = analyzer.analyze(item.asset_bytes, record.media_type, context, outbound_record=record)
+                    if isinstance(prefetched_vision, Exception):
+                        raise prefetched_vision
+                    if prefetched_vision is _MISSING_VISION_RESULT:
+                        analysis = analyzer.analyze(item.asset_bytes, record.media_type, context, outbound_record=record)
+                    else:
+                        analysis = prefetched_vision
                     outbound_record = record
                 except Exception as exc:
                     quality["vision_failed_images"] += 1
@@ -1192,7 +1418,7 @@ class MultimodalKnowledgeBaseMaintenance:
         payload = MultimodalKnowledgeBaseMaintenance._outbound_manifest_payload(records).decode("utf-8")
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(payload, encoding="utf-8")
-        temporary.replace(path)
+        replace_with_retry(temporary, path)
 
     @staticmethod
     def _read_outbound_manifest(path: Path) -> list[OutboundImageRecord]:

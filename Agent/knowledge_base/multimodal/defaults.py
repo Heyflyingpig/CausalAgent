@@ -20,6 +20,8 @@ def load_production_defaults(path: Path = DEFAULTS_PATH) -> dict[str, Any]:
         raise ValueError("unsupported multimodal production defaults schema")
     if not config.get("sources") or not config.get("evaluation", {}).get("dataset_path"):
         raise ValueError("production defaults require sources and an evaluation dataset")
+    if any(not isinstance(source.get("page_count"), int) or source["page_count"] < 1 for source in config["sources"]):
+        raise ValueError("production defaults require positive source page counts")
     return config
 
 
