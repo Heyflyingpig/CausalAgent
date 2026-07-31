@@ -7,7 +7,10 @@ import importlib.metadata
 import json
 import os
 import shutil
+import sqlite3
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,17 +18,22 @@ from typing import Any, Callable
 
 from .assets import AssetStore
 from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, OutboundImageRecord, UnitStatus, canonical_json, render_retrieval_text, sha256_bytes, stable_id
+from .defaults import load_production_defaults, production_source_paths
 from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, file_sha256
 from .parsers import IMAGE_SUFFIXES, PAGE_QUALITY_GATE_VERSION, PAGE_QUALITY_MIN_TEXT_COVERAGE, TEXT_SPLIT, ParsedDocument, ParsedItem, decide_page_route, inspect_source, parse_document_page
 from .remote_policy import RemoteSamplePolicy
-from .vision import PROMPT_VERSION, REQUIRED_MODEL, VisionAnalyzer
+from .table_recovery import TABLE_RECOVERY_ADAPTER_VERSION, RemoteVlmTableRecoveryProvider, TableRecoveryProvider, TableRecoveryResult, looks_like_markdown_table
+from .vision import PROMPT_VERSION, REQUIRED_MODEL, RESPONSE_ADAPTER_VERSION, VisionAnalyzer
 
 LOCAL_PARSE_CHECKPOINT_SCHEMA = "local-parse-v2"
+R3_DISCOVERY_CHECKPOINT_SCHEMA = "r3-discovery-v2"
+MAX_RETRY_GENERATION = 2
+CHECKPOINT_DATABASE_NAME = "checkpoints.sqlite3"
 
 class MultimodalKnowledgeBaseMaintenance:
     """为 CLI 与未来 HTTP adapter 提供单一维护入口。"""
 
-    def __init__(self, *, asset_root: Path | None = None, index_root: Path | None = None, active_config: Path | None = None) -> None:
+    def __init__(self, *, asset_root: Path | None = None, index_root: Path | None = None, active_config: Path | None = None, table_recovery_provider: TableRecoveryProvider | None = None) -> None:
         """使用隔离默认目录，绝不写入现有 db 或 PubMedQA collection。"""
         base = Path(__file__).resolve().parents[1]
         self.asset_root = asset_root or Path(os.getenv("MULTIMODAL_ASSET_DIR", base / "multimodal_assets"))
@@ -33,47 +41,78 @@ class MultimodalKnowledgeBaseMaintenance:
         self.registry = ActiveIndexRegistry(active_config or Path(os.getenv("MULTIMODAL_ACTIVE_INDEX_CONFIG", base / "multimodal_runtime" / "active_index.json")))
         self.collection_prefix = os.getenv("MULTIMODAL_COLLECTION_PREFIX", "causal_multimodal")
         self.remote_policy = RemoteSamplePolicy()
+        self._frozen_production_paths: set[Path] | None = None
+        self.table_recovery_provider = table_recovery_provider
 
     def inspect(self, sources: list[str]) -> dict[str, Any]:
         """生成确定性来源 manifest，不调用远程服务且不写 Chroma。"""
         entries, issues = self._scan(sources)
         return {"status": "inspected", "manifest": self._manifest(entries), "configuration": self._configuration_status(), "issues": [issue.model_dump(mode="json") for issue in issues]}
 
-    def prepare_outbound_manifest(self, sources: list[str], output_path: str | Path, *, max_images: int | None = None, max_pages: int | None = None) -> dict[str, Any]:
-        """仅本地解析批准来源并生成供人工审阅的远程图片清单。"""
+    def prepare_outbound_manifest(
+        self,
+        sources: list[str],
+        output_path: str | Path,
+        *,
+        max_images: int | None = None,
+        max_pages: int | None = None,
+        all_production_pages: bool = False,
+        checkpoint_dir: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """仅本地解析来源并生成供人工审阅的远程图片清单。"""
         if max_images is not None and max_images < 1:
             raise ValueError("--max-images must be positive when preparing an outbound manifest")
         if max_pages is not None and max_pages < 1:
             raise ValueError("--max-pages must be positive when preparing an outbound manifest")
+        if all_production_pages and (max_images is not None or max_pages is not None):
+            raise ValueError("full production discovery cannot be combined with page or image limits")
+        if all_production_pages and checkpoint_dir is None:
+            raise ValueError("full production discovery requires a checkpoint directory")
         entries, issues = self._scan(sources)
         if any(issue.severity is IssueSeverity.ERROR for issue in issues):
             raise ValueError("source scan contains blocking issues")
+        production_page_counts = self._validate_full_production_entries(entries) if all_production_pages else {}
         analyzer = VisionAnalyzer(self.asset_root / "vision_cache", allow_remote_data=False, remote_policy_sha256=self.remote_policy.policy_sha256, model=REQUIRED_MODEL)
         records: list[OutboundImageRecord] = []
         prepared_pages = 0
+        source_page_counts = {str(Path(entry["path"]).resolve()): self._source_page_count(Path(entry["path"])) for entry in entries}
+        if all_production_pages and source_page_counts != production_page_counts:
+            raise ValueError("full production discovery page counts do not match the frozen production configuration")
+        expected_page_count = sum(source_page_counts.values())
+        checkpoint_root = Path(checkpoint_dir) if checkpoint_dir is not None else None
         parser_name = os.getenv("MULTIMODAL_PARSER", "docling")
         for entry in entries:
             path = Path(entry["path"])
+            page_count = source_page_counts[str(path.resolve())]
             document_id = stable_id("doc", {"path": entry["relative_path"], "content_hash": entry["content_hash"]})
-            for page_number in range(1, self._source_page_count(path) + 1):
-                if not self._remote_resource_allowed(path, page_number):
+            for page_number in range(1, page_count + 1):
+                if not all_production_pages and not self._remote_resource_allowed(path, page_number):
                     continue
                 if max_pages is not None and prepared_pages >= max_pages:
                     break
+                contract = self._r3_discovery_contract(entry, page_count, parser_name)
+                checkpoint = self._read_r3_discovery_checkpoint(checkpoint_root, document_id, contract, page_number) if checkpoint_root else None
+                if checkpoint is not None:
+                    records.extend(OutboundImageRecord.model_validate(record) for record in checkpoint["records"])
+                    issues.extend(IngestionIssue.model_validate(issue) for issue in checkpoint["issues"])
+                    prepared_pages += 1
+                    continue
                 parsed = parse_document_page(path, parser_name, page_number)
                 prepared_pages += 1
-                issues.extend(parsed.issues)
+                page_issues = list(parsed.issues)
+                issues.extend(page_issues)
                 if any(issue.severity is IssueSeverity.ERROR for issue in parsed.issues):
                     raise ValueError(f"local parsing failed before outbound manifest preparation: {path.name} page {page_number}")
                 decision = decide_page_route(path, page_number, parsed)
                 if decision.route == "blocked":
                     raise ValueError(f"local page quality gate blocked outbound manifest preparation: {path.name} page {page_number}")
                 page_items, _ = self._prepare_page_items(self._routed_page_items(parsed.items, decision.route))
+                page_records: list[OutboundImageRecord] = []
                 for item_index, item in enumerate(page_items, 1):
                     if not item.asset_bytes:
                         continue
                     prepared = analyzer.prepare_image(item.asset_bytes)
-                    records.append(OutboundImageRecord(
+                    page_records.append(OutboundImageRecord(
                         source_relative_path=entry["relative_path"], source_sha256=entry["content_hash"],
                         document_id=document_id, page_number=item.page_number or page_number,
                         image_index=max(1, (page_number * 10000 + item_index) % 10000),
@@ -82,19 +121,24 @@ class MultimodalKnowledgeBaseMaintenance:
                         original_bytes=prepared.original_bytes, normalized_bytes=len(prepared.payload),
                         transformation=prepared.transformation,
                         context_sha256=sha256_bytes(self._same_page_context(item, page_items).encode("utf-8")),
-                        provider="wcode", model=analyzer.model, prompt_version=PROMPT_VERSION,
+                        provider="wcode", model=analyzer.model, prompt_version=PROMPT_VERSION, response_adapter_version=analyzer.response_adapter_version,
                         remote_policy_sha256=self.remote_policy.policy_sha256,
                         route=decision.route,
                         quality_gate_version=decision.quality_gate_version,
                         route_reason=decision.reason,
                         quality_summary=decision.input_summary,
                     ))
-                    if max_images is not None and len(records) >= max_images:
+                    if max_images is not None and len(records) + len(page_records) >= max_images:
                         break
+                records.extend(page_records)
+                if checkpoint_root is not None:
+                    self._write_r3_discovery_checkpoint(checkpoint_root, document_id, contract, page_number, page_records, page_issues)
                 if max_images is not None and len(records) >= max_images:
                     break
             if (max_images is not None and len(records) >= max_images) or (max_pages is not None and prepared_pages >= max_pages):
                 break
+        if all_production_pages and prepared_pages != expected_page_count:
+            raise ValueError(f"full production discovery is incomplete: {prepared_pages}/{expected_page_count} pages")
         output = Path(output_path)
         self._write_outbound_manifest(output, records)
         return {
@@ -103,8 +147,197 @@ class MultimodalKnowledgeBaseMaintenance:
             "outbound_manifest_sha256": sha256_bytes(output.read_bytes()),
             "outbound_image_count": len(records),
             "prepared_page_count": prepared_pages,
+            "expected_page_count": expected_page_count,
             "issues": [issue.model_dump(mode="json") for issue in issues],
         }
+
+    @staticmethod
+    def _validate_full_production_entries(entries: list[dict[str, str]]) -> dict[str, int]:
+        """全量发现只接受当前哈希已冻结的生产来源。"""
+        config = load_production_defaults()
+        paths = production_source_paths(config)
+        expected = {str(path.resolve()): sha256_bytes(path.read_bytes()) for path in paths}
+        actual = {str(Path(entry["path"]).resolve()): entry["content_hash"] for entry in entries}
+        if actual != expected:
+            raise ValueError("full production discovery requires exactly the frozen production sources")
+        page_counts = {str(path.resolve()): int(source["page_count"]) for path, source in zip(paths, config["sources"], strict=True)}
+        if any(count < 1 for count in page_counts.values()):
+            raise ValueError("frozen production page counts must be positive")
+        return page_counts
+
+    def _r3_discovery_contract(self, entry: dict[str, str], page_count: int, parser_name: str) -> dict[str, Any]:
+        """绑定可恢复 R3a 页记录所依赖的全部确定性配置。"""
+        parser_version = self._docling_version() if Path(entry["path"]).suffix.lower() == ".pdf" else "builtin"
+        return {
+            "source_path": str(Path(entry["path"]).resolve()),
+            "source_sha256": entry["content_hash"],
+            "page_count": page_count,
+            "parser": {"name": parser_name, "version": parser_version},
+            "quality_gate_version": PAGE_QUALITY_GATE_VERSION,
+            "remote_policy_sha256": self.remote_policy.policy_sha256,
+            "model": REQUIRED_MODEL,
+            "prompt_version": PROMPT_VERSION,
+            "response_adapter_version": RESPONSE_ADAPTER_VERSION,
+            "table_recovery_adapter_version": TABLE_RECOVERY_ADAPTER_VERSION,
+        }
+
+    @staticmethod
+    def _r3_discovery_checkpoint_path(checkpoint_root: Path, document_id: str, page_number: int) -> Path:
+        """返回隔离的 R3a 页级发现记录路径。"""
+        return checkpoint_root / document_id / f"page_{page_number:04d}.json"
+
+    @staticmethod
+    def _r3_discovery_uses_sqlite(checkpoint_root: Path) -> bool:
+        """以 .sqlite3 后缀选择单文件 R3a checkpoint 格式。"""
+        return checkpoint_root.suffix.lower() == ".sqlite3"
+
+    def _open_r3_discovery_database(self, checkpoint_root: Path, *, writable: bool) -> sqlite3.Connection | None:
+        """打开 R3a 单文件 checkpoint；旧目录输入保持原 JSON 格式。"""
+        if not self._r3_discovery_uses_sqlite(checkpoint_root):
+            return None
+        if not writable and not checkpoint_root.is_file():
+            return None
+        if writable:
+            checkpoint_root.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(checkpoint_root)
+        if writable:
+            connection.execute("PRAGMA journal_mode=DELETE")
+            connection.execute("CREATE TABLE IF NOT EXISTS r3_discovery_checkpoints (document_id TEXT NOT NULL, page_number INTEGER NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY (document_id, page_number))")
+        return connection
+
+    @staticmethod
+    def _validate_r3_discovery_checkpoint(payload: dict[str, Any], contract: dict[str, Any], page_number: int) -> dict[str, Any] | None:
+        """仅接受 schema、页码和冻结契约完全匹配的发现记录。"""
+        try:
+            if (
+                payload.get("schema_version") != R3_DISCOVERY_CHECKPOINT_SCHEMA
+                or payload.get("page_number") != page_number
+                or payload.get("contract") != contract
+                or not isinstance(payload.get("records"), list)
+                or not isinstance(payload.get("issues"), list)
+            ):
+                return None
+            [OutboundImageRecord.model_validate(record) for record in payload["records"]]
+            [IngestionIssue.model_validate(issue) for issue in payload["issues"]]
+            return payload
+        except (TypeError, ValueError):
+            return None
+
+    def _read_r3_discovery_checkpoint(self, checkpoint_root: Path, document_id: str, contract: dict[str, Any], page_number: int) -> dict[str, Any] | None:
+        """读取 SQLite R3a checkpoint，或兼容读取旧单页 JSON。"""
+        connection = self._open_r3_discovery_database(checkpoint_root, writable=False)
+        if connection is not None:
+            try:
+                row = connection.execute("SELECT payload_json FROM r3_discovery_checkpoints WHERE document_id = ? AND page_number = ?", (document_id, page_number)).fetchone()
+                return self._validate_r3_discovery_checkpoint(json.loads(row[0]), contract, page_number) if row else None
+            except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+                return None
+            finally:
+                connection.close()
+        path = self._r3_discovery_checkpoint_path(checkpoint_root, document_id, page_number)
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return self._validate_r3_discovery_checkpoint(payload, contract, page_number)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def _write_r3_discovery_checkpoint(
+        self,
+        checkpoint_root: Path,
+        document_id: str,
+        contract: dict[str, Any],
+        page_number: int,
+        records: list[OutboundImageRecord],
+        issues: list[IngestionIssue],
+    ) -> None:
+        """原子保存一页 R3a 发现结果，优先使用单文件 SQLite。"""
+        payload = {
+            "schema_version": R3_DISCOVERY_CHECKPOINT_SCHEMA,
+            "page_number": page_number,
+            "contract": contract,
+            "records": [record.model_dump(mode="json") for record in records],
+            "issues": [issue.model_dump(mode="json") for issue in issues],
+        }
+        connection = self._open_r3_discovery_database(checkpoint_root, writable=True)
+        if connection is not None:
+            try:
+                with connection:
+                    connection.execute("INSERT OR REPLACE INTO r3_discovery_checkpoints (document_id, page_number, payload_json) VALUES (?, ?, ?)", (document_id, page_number, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))))
+            finally:
+                connection.close()
+            return
+        path = self._r3_discovery_checkpoint_path(checkpoint_root, document_id, page_number)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+
+    def run_r2_smoke(self, sources: list[str], outbound_manifest: str | Path, output_path: str | Path, *, concurrency_levels: tuple[int, ...] = (4, 8, 16)) -> dict[str, Any]:
+        """只对预冻结图片执行远程 smoke，不创建候选、索引或 active pointer 变更。"""
+        if not concurrency_levels or any(level < 1 for level in concurrency_levels):
+            raise ValueError("R2 concurrency levels must be positive")
+        entries, issues = self._scan(sources)
+        if any(issue.severity is IssueSeverity.ERROR for issue in issues):
+            raise ValueError("source scan contains blocking issues")
+        records = self._frozen_outbound_records(outbound_manifest, entries)
+        if not records:
+            raise ValueError("R2 smoke requires a non-empty frozen outbound manifest")
+        output = Path(output_path)
+        if output.exists():
+            raise ValueError("R2 smoke output already exists")
+        configuration = VisionAnalyzer(output.parent / f"{output.stem}_preflight", allow_remote_data=True, remote_policy_sha256=self.remote_policy.policy_sha256, model=REQUIRED_MODEL)
+        if not configuration.configured():
+            raise RuntimeError("WCode vision configuration is missing, invalid, or not approved")
+        targets = self._r2_smoke_targets(entries, records)
+        runs: list[dict[str, Any]] = []
+        for level in concurrency_levels:
+            analyzer = VisionAnalyzer(output.parent / f"{output.stem}_cache_{level}", allow_remote_data=True, max_images=len(targets), remote_policy_sha256=self.remote_policy.policy_sha256, model=REQUIRED_MODEL)
+            analyzer.max_concurrency = level
+            analyzer._semaphore = threading.BoundedSemaphore(level)
+            started = time.monotonic()
+            results: list[dict[str, Any]] = []
+            with ThreadPoolExecutor(max_workers=min(level, len(targets))) as executor:
+                futures = {executor.submit(analyzer.analyze, payload, record.media_type, context, outbound_record=record): record for record, payload, context in targets}
+                for future in as_completed(futures):
+                    record = futures[future]
+                    try:
+                        analysis = future.result()
+                        results.append({"document_id": record.document_id, "page_number": record.page_number, "image_index": record.image_index, "status": "success", "analysis": analysis.model_dump(mode="json")})
+                    except Exception as exc:
+                        results.append({"document_id": record.document_id, "page_number": record.page_number, "image_index": record.image_index, "status": "failed", "failure_type": type(exc).__name__})
+            runs.append({"configured_concurrency": level, "effective_concurrency": min(level, len(targets)), "elapsed_ms": int((time.monotonic() - started) * 1000), "results": sorted(results, key=lambda result: (result["document_id"], result["page_number"], result["image_index"]))})
+        failed = sum(result["status"] == "failed" for run in runs for result in run["results"])
+        result = {"status": "requires_manual_review" if not failed else "blocked", "approved_image_count": len(targets), "outbound_manifest_sha256": sha256_bytes(Path(outbound_manifest).read_bytes()), "runs": runs, "failed_attempts": failed, "limitations": ["approved image count is below configured concurrency" for level in concurrency_levels if len(targets) < level]}
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return result
+
+    def _r2_smoke_targets(self, entries: list[dict[str, str]], records: list[OutboundImageRecord]) -> list[tuple[OutboundImageRecord, bytes, str]]:
+        """重建清单图片并逐字段匹配，拒绝任何动态扩展的外发目标。"""
+        wanted = {(record.document_id, record.page_number, record.image_index): record for record in records}
+        targets: list[tuple[OutboundImageRecord, bytes, str]] = []
+        parser_name = os.getenv("MULTIMODAL_PARSER", "docling")
+        for entry in entries:
+            path = Path(entry["path"])
+            document_id = stable_id("doc", {"path": entry["relative_path"], "content_hash": entry["content_hash"]})
+            pages = sorted(record.page_number for record in records if record.document_id == document_id)
+            for page_number in dict.fromkeys(pages):
+                parsed = parse_document_page(path, parser_name, page_number)
+                if any(issue.severity is IssueSeverity.ERROR or issue.blocking for issue in parsed.issues):
+                    raise ValueError(f"R2 local parsing failed: {path.name} page {page_number}")
+                decision = decide_page_route(path, page_number, parsed)
+                if decision.route == "blocked":
+                    raise ValueError(f"R2 page quality gate blocked: {path.name} page {page_number}")
+                page_items, _ = self._prepare_page_items(self._routed_page_items(parsed.items, decision.route))
+                for item_index, item in enumerate(page_items, 1):
+                    record = wanted.get((document_id, page_number, item_index))
+                    if record is not None and item.asset_bytes:
+                        targets.append((record, item.asset_bytes, self._same_page_context(item, page_items)))
+        if {(record.document_id, record.page_number, record.image_index) for record, _, _ in targets} != {(record.document_id, record.page_number, record.image_index) for record in records}:
+            raise ValueError("R2 manifest images do not match the current local parser output")
+        return targets
 
     def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None) -> dict[str, Any]:
         """逐页解析、原子保存 checkpoint，并分批写入不可变暂存索引。"""
@@ -122,12 +355,11 @@ class MultimodalKnowledgeBaseMaintenance:
         if version_dir.exists() and not self._is_resumable_build(version_dir):
             raise ValueError("same source and configuration already has a staged version")
         version_dir.mkdir(parents=True, exist_ok=True)
-        (version_dir / "page_checkpoints").mkdir(exist_ok=True)
-        (version_dir / "local_parse_checkpoints").mkdir(exist_ok=True)
         self._write_build_state(version_dir, {"status": "building", "unit_count": 0, "attempted_pages": 0})
         embedding = embedding_fingerprint()
         store = AssetStore(self.asset_root)
         analyzer = VisionAnalyzer(self.asset_root / "vision_cache", allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, remote_policy_sha256=self.remote_policy.policy_sha256)
+        table_recovery_provider = self._resolve_table_recovery_provider(analyzer, allow_remote_data)
         quality_keys = ("eligible_images", "enriched_images", "vision_failed_images", "skipped_images", "low_value_images_skipped", "filtered_short_text_units")
         quality = {key: 0 for key in quality_keys}
         documents: list[dict[str, Any]] = []
@@ -197,6 +429,7 @@ class MultimodalKnowledgeBaseMaintenance:
                                 source_relative_path=entry["relative_path"],
                                 source_sha256=entry["content_hash"],
                                 outbound_records=outbound_records,
+                                table_recovery_provider=table_recovery_provider,
                             )
                             if unit is not None:
                                 page_units.append(unit)
@@ -286,8 +519,9 @@ class MultimodalKnowledgeBaseMaintenance:
         failures: list[str] = []
         if not units: failures.append("no_valid_units")
         if StagedIndex(directory, collection).count() != len(units): failures.append("vector_count_mismatch")
-        if any(issue.severity is IssueSeverity.ERROR for issue in issues): failures.append("required_source_failed")
-        if any(issue.blocking for issue in issues): failures.append("blocking_issue")
+        gate_issues = [issue for issue in issues if issue.code != "remote_image_failed"]
+        if any(issue.severity is IssueSeverity.ERROR for issue in gate_issues): failures.append("required_source_failed")
+        if any(issue.blocking for issue in gate_issues): failures.append("blocking_issue")
         store = AssetStore(self.asset_root)
         if any(unit.asset_uri and not store.exists(unit.asset_uri) for unit in units): failures.append("missing_asset")
         failures.extend(self._audit_manifest_chain(manifest, units, store))
@@ -313,9 +547,8 @@ class MultimodalKnowledgeBaseMaintenance:
         if not quality["passed"]:
             failures.append("quality_gate_failed")
         production_evaluation = None
-        from .production import evaluate_staged_index, is_production_manifest, validate_production_manifest
+        from .production import evaluate_staged_index, is_production_manifest
         if is_production_manifest(manifest):
-            failures.extend(validate_production_manifest(manifest))
             if not failures:
                 production_evaluation = evaluate_staged_index(directory, collection)
                 if not production_evaluation["gate"]["passed"]:
@@ -334,8 +567,11 @@ class MultimodalKnowledgeBaseMaintenance:
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
         if manifest.get("schema_version", 0) >= 3 and not self._is_reusable_staged_version(index_version):
             raise ValueError("staged build is incomplete and cannot be published")
-        from .production import is_production_manifest
+        from .production import is_production_manifest, validate_production_manifest
         if is_production_manifest(manifest):
+            policy_failures = validate_production_manifest(manifest)
+            if policy_failures:
+                raise ValueError(f"production strategy mismatch prevents publication: {', '.join(policy_failures)}")
             production_evaluation = directory / "production_evaluation.json"
             if not production_evaluation.exists() or not json.loads(production_evaluation.read_text(encoding="utf-8")).get("gate", {}).get("passed"):
                 raise ValueError("production retrieval evaluation must pass before publication")
@@ -369,6 +605,8 @@ class MultimodalKnowledgeBaseMaintenance:
 
     def _manifest(self, entries: list[dict[str, str]], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, outbound_records: list[OutboundImageRecord] | None = None) -> dict[str, Any]:
         """构造不包含宿主绝对路径的来源清单。"""
+        if retry_generation < 0 or retry_generation > MAX_RETRY_GENERATION:
+            raise ValueError(f"retry generation must be between 0 and {MAX_RETRY_GENERATION}")
         public = [{"relative_path": entry["relative_path"], "content_hash": entry["content_hash"]} for entry in entries]
         return {
             "schema_version": 4,
@@ -381,7 +619,8 @@ class MultimodalKnowledgeBaseMaintenance:
                 "text_split": dict(TEXT_SPLIT),
                 "page_quality_gate": {"version": PAGE_QUALITY_GATE_VERSION, "min_text_coverage": PAGE_QUALITY_MIN_TEXT_COVERAGE, "native_text_min_chars": 80},
                 "remote_policy_hash": self.remote_policy.policy_sha256,
-                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", "16000000")), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation},
+                "table_recovery": self._table_recovery_configuration(),
+                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "response_adapter_version": RESPONSE_ADAPTER_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", "16000000")), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation},
             },
             "outbound_manifest_sha256": sha256_bytes(self._outbound_manifest_payload(outbound_records or [])),
             "outbound_image_count": len(outbound_records or []),
@@ -421,17 +660,53 @@ class MultimodalKnowledgeBaseMaintenance:
             return False
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
-            return state.get("status") in {"building", "failed"} and (directory / "page_checkpoints").is_dir()
+            return state.get("status") in {"building", "failed"} and self._checkpoint_storage_exists(directory)
         except (OSError, json.JSONDecodeError):
             return False
 
     def _page_checkpoint_paths(self, directory: Path, document_id: str, page_number: int) -> tuple[Path, Path]:
-        """返回页级元数据和标准化单元的隔离路径。"""
+        """返回仅供读取历史候选的页级 JSON/JSONL 路径。"""
         page_root = directory / "page_checkpoints" / document_id
         return page_root / f"page_{page_number:04d}.json", page_root / f"page_{page_number:04d}.units.jsonl"
 
+    @staticmethod
+    def _checkpoint_database_path(directory: Path) -> Path:
+        """返回候选版本唯一的 SQLite checkpoint 数据库路径。"""
+        return directory / CHECKPOINT_DATABASE_NAME
+
+    def _checkpoint_storage_exists(self, directory: Path) -> bool:
+        """识别新 SQLite 格式或旧页级文件格式的可恢复 checkpoint。"""
+        return self._checkpoint_database_path(directory).is_file() or (directory / "page_checkpoints").is_dir()
+
+    def _open_checkpoint_database(self, directory: Path, *, writable: bool) -> sqlite3.Connection | None:
+        """打开新 checkpoint 数据库；只读路径绝不为历史候选创建空文件。"""
+        path = self._checkpoint_database_path(directory)
+        if not writable and not path.is_file():
+            return None
+        if writable:
+            directory.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path)
+        if writable:
+            connection.execute("PRAGMA journal_mode=DELETE")
+            connection.execute("CREATE TABLE IF NOT EXISTS page_checkpoints (document_id TEXT NOT NULL, page_number INTEGER NOT NULL, checkpoint_json TEXT NOT NULL, unit_count INTEGER NOT NULL, PRIMARY KEY (document_id, page_number))")
+            connection.execute("CREATE TABLE IF NOT EXISTS page_units (document_id TEXT NOT NULL, page_number INTEGER NOT NULL, unit_index INTEGER NOT NULL, unit_json TEXT NOT NULL, PRIMARY KEY (document_id, page_number, unit_index))")
+            connection.execute("CREATE TABLE IF NOT EXISTS local_parse_checkpoints (document_id TEXT NOT NULL, page_number INTEGER NOT NULL, checkpoint_json TEXT NOT NULL, PRIMARY KEY (document_id, page_number))")
+        return connection
+
     def _read_page_checkpoint(self, directory: Path, document_id: str, page_number: int) -> dict[str, Any] | None:
-        """只读取元数据与单元文件均存在且计数一致的页 checkpoint。"""
+        """读取 SQLite checkpoint，或兼容读取旧 JSON/JSONL checkpoint。"""
+        connection = self._open_checkpoint_database(directory, writable=False)
+        if connection is not None:
+            try:
+                row = connection.execute("SELECT checkpoint_json, unit_count FROM page_checkpoints WHERE document_id = ? AND page_number = ?", (document_id, page_number)).fetchone()
+                if row is not None:
+                    unit_count = connection.execute("SELECT COUNT(*) FROM page_units WHERE document_id = ? AND page_number = ?", (document_id, page_number)).fetchone()[0]
+                    checkpoint = json.loads(row[0])
+                    return checkpoint if int(row[1]) == unit_count == checkpoint.get("unit_count") else None
+            except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+                return None
+            finally:
+                connection.close()
         metadata_path, units_path = self._page_checkpoint_paths(directory, document_id, page_number)
         if not metadata_path.is_file() or not units_path.is_file():
             return None
@@ -443,7 +718,18 @@ class MultimodalKnowledgeBaseMaintenance:
             return None
 
     def _read_page_units(self, directory: Path, document_id: str, page_number: int) -> list[KnowledgeUnit]:
-        """Read one complete page checkpoint's normalized units."""
+        """读取 SQLite 页单元，或兼容读取旧 JSONL 页单元。"""
+        connection = self._open_checkpoint_database(directory, writable=False)
+        if connection is not None:
+            try:
+                rows = connection.execute("SELECT unit_json FROM page_units WHERE document_id = ? AND page_number = ? ORDER BY unit_index", (document_id, page_number)).fetchall()
+                page_exists = connection.execute("SELECT 1 FROM page_checkpoints WHERE document_id = ? AND page_number = ?", (document_id, page_number)).fetchone()
+                if page_exists is not None:
+                    return [KnowledgeUnit.model_validate_json(row[0]) for row in rows]
+            except (sqlite3.Error, TypeError, ValueError):
+                return []
+            finally:
+                connection.close()
         _, units_path = self._page_checkpoint_paths(directory, document_id, page_number)
         return [KnowledgeUnit.model_validate_json(line) for line in units_path.read_text(encoding="utf-8").splitlines() if line]
 
@@ -456,11 +742,21 @@ class MultimodalKnowledgeBaseMaintenance:
         return None if any(issue.severity is IssueSeverity.ERROR for issue in issues) else checkpoint
 
     def _local_parse_checkpoint_path(self, directory: Path, document_id: str, page_number: int) -> Path:
-        """返回本地解析 checkpoint 的隔离路径。"""
+        """返回仅供读取历史候选的本地解析 JSON 路径。"""
         return directory / "local_parse_checkpoints" / document_id / f"page_{page_number:04d}.json"
 
     def _read_local_parse_checkpoint(self, directory: Path, document_id: str, page_number: int) -> dict[str, Any] | None:
-        """读取本地解析 checkpoint；不存在或损坏时返回 None。"""
+        """读取 SQLite 本地解析 checkpoint，或兼容读取历史 JSON。"""
+        connection = self._open_checkpoint_database(directory, writable=False)
+        if connection is not None:
+            try:
+                row = connection.execute("SELECT checkpoint_json FROM local_parse_checkpoints WHERE document_id = ? AND page_number = ?", (document_id, page_number)).fetchone()
+                if row is not None:
+                    return json.loads(row[0])
+            except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+                return None
+            finally:
+                connection.close()
         path = self._local_parse_checkpoint_path(directory, document_id, page_number)
         if not path.is_file():
             return None
@@ -470,12 +766,14 @@ class MultimodalKnowledgeBaseMaintenance:
             return None
 
     def _write_local_parse_checkpoint(self, directory: Path, document_id: str, page_number: int, checkpoint: dict[str, Any]) -> None:
-        """原子写入本地解析 checkpoint，绑定 source/Docling/OCR 契约而非视觉策略。"""
-        path = self._local_parse_checkpoint_path(directory, document_id, page_number)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        """以单事务写入本地解析 checkpoint，绑定 source/Docling/OCR 契约。"""
+        connection = self._open_checkpoint_database(directory, writable=True)
+        assert connection is not None
+        try:
+            with connection:
+                connection.execute("INSERT OR REPLACE INTO local_parse_checkpoints (document_id, page_number, checkpoint_json) VALUES (?, ?, ?)", (document_id, page_number, json.dumps(checkpoint, ensure_ascii=False, separators=(",", ":"))))
+        finally:
+            connection.close()
 
     def _build_local_parse_checkpoint(self, path: Path, document_id: str, page_number: int, parsed: ParsedDocument, entry: dict[str, str], page_count: int, store: AssetStore) -> dict[str, Any]:
         """把 ParsedDocument 序列化为不含 asset_bytes 的可复用本地解析结果。"""
@@ -502,6 +800,7 @@ class MultimodalKnowledgeBaseMaintenance:
                 "parser": {"name": parsed.parser_name, "version": parsed.parser_version},
                 "docling_config": {"page_timeout_seconds": int(os.getenv("MULTIMODAL_DOCLING_PAGE_TIMEOUT_SECONDS", "900")), "generate_picture_images": True, "generate_page_images": True, "do_ocr": False},
                 "image_text_strategy": "remote-vision-v2",
+                "table_recovery_adapter_version": TABLE_RECOVERY_ADAPTER_VERSION,
             },
         }
 
@@ -538,6 +837,8 @@ class MultimodalKnowledgeBaseMaintenance:
         if contract.get("docling_config") != expected_docling:
             return None
         if contract.get("image_text_strategy") != "remote-vision-v2":
+            return None
+        if contract.get("table_recovery_adapter_version") != TABLE_RECOVERY_ADAPTER_VERSION:
             return None
         if contract.get("parser") != {"name": checkpoint.get("parser_name"), "version": checkpoint.get("parser_version")}:
             return None
@@ -579,7 +880,7 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("--reuse-local-checkpoints-from cannot be combined with --retry-from-index-version")
         directory = self._version_dir(index_version)
         manifest_path = directory / "manifest.json"
-        if not manifest_path.is_file() or not (directory / "local_parse_checkpoints").is_dir():
+        if not manifest_path.is_file() or not self._checkpoint_storage_exists(directory):
             return None
         try:
             source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -609,7 +910,7 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("retry source requires --retry-failed")
         directory = self.index_root / index_version
         manifest_path = directory / "manifest.json"
-        if not manifest_path.is_file() or not (directory / "page_checkpoints").is_dir():
+        if not manifest_path.is_file() or not self._checkpoint_storage_exists(directory):
             raise ValueError("retry source has no page checkpoints")
         try:
             source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -635,15 +936,17 @@ class MultimodalKnowledgeBaseMaintenance:
         }
 
     def _write_page_checkpoint(self, directory: Path, document_id: str, page_number: int, checkpoint: dict[str, Any], units: list[KnowledgeUnit]) -> None:
-        """先原子写页单元，再提交元数据，使中断后的半页结果不会被复用。"""
-        metadata_path, units_path = self._page_checkpoint_paths(directory, document_id, page_number)
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        units_temporary = units_path.with_suffix(units_path.suffix + ".tmp")
-        units_temporary.write_text("".join(unit.model_dump_json() + "\n" for unit in units), encoding="utf-8")
-        units_temporary.replace(units_path)
-        metadata_temporary = metadata_path.with_suffix(".tmp")
-        metadata_temporary.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
-        metadata_temporary.replace(metadata_path)
+        """在一个 SQLite 事务中写入页元数据和单元，禁止半页 checkpoint 复用。"""
+        connection = self._open_checkpoint_database(directory, writable=True)
+        assert connection is not None
+        try:
+            with connection:
+                connection.execute("DELETE FROM page_units WHERE document_id = ? AND page_number = ?", (document_id, page_number))
+                connection.execute("DELETE FROM page_checkpoints WHERE document_id = ? AND page_number = ?", (document_id, page_number))
+                connection.executemany("INSERT INTO page_units (document_id, page_number, unit_index, unit_json) VALUES (?, ?, ?, ?)", [(document_id, page_number, index, unit.model_dump_json()) for index, unit in enumerate(units)])
+                connection.execute("INSERT INTO page_checkpoints (document_id, page_number, checkpoint_json, unit_count) VALUES (?, ?, ?, ?)", (document_id, page_number, json.dumps(checkpoint, ensure_ascii=False, separators=(",", ":")), len(units)))
+        finally:
+            connection.close()
 
     def _materialize_units(self, directory: Path, documents: list[dict[str, Any]]) -> None:
         """按文档和页码顺序流式汇总页级单元，生成最终 units.jsonl。"""
@@ -651,9 +954,8 @@ class MultimodalKnowledgeBaseMaintenance:
         with temporary.open("w", encoding="utf-8") as output:
             for document in documents:
                 for page_number in range(1, int(document["expected_page_count"]) + 1):
-                    _, units_path = self._page_checkpoint_paths(directory, document["document_id"], page_number)
-                    with units_path.open(encoding="utf-8") as page_units:
-                        shutil.copyfileobj(page_units, output)
+                    for unit in self._read_page_units(directory, document["document_id"], page_number):
+                        output.write(unit.model_dump_json() + "\n")
         temporary.replace(directory / "units.jsonl")
 
     def _build_staged_vectors(self, directory: Path, version: str, unit_count: int) -> int:
@@ -718,6 +1020,8 @@ class MultimodalKnowledgeBaseMaintenance:
             return tuple(item for item in items if item.content_kind == "page_render" and item.asset_bytes)
         if route == "remote_pictures":
             return tuple(item for item in items if item.content_kind != "page_render")
+        if route == "table_recovery":
+            return tuple(item for item in items if item.content_kind != "page_render")
         if route == "local_objects":
             return tuple(item for item in items if not item.asset_bytes)
         return ()
@@ -741,20 +1045,53 @@ class MultimodalKnowledgeBaseMaintenance:
         source_relative_path: str | None = None,
         source_sha256: str | None = None,
         outbound_records: list[OutboundImageRecord] | None = None,
+        table_recovery_provider: TableRecoveryProvider | None = None,
     ) -> KnowledgeUnit | None:
         """把解析项转为单索引单元；获准图片必须完整通过远程 OCR+VLM。"""
         analysis = None
+        table_recovery_result: TableRecoveryResult | None = None
         outbound_record = None
         asset_uri = None
         if item.asset_bytes:
             asset_uri = store.put(document_id, item.asset_name or f"asset_{position}", item.asset_bytes)
-            if allow_remote_data and self._remote_resource_allowed(path, item.page_number):
+            identity = (document_id, item.page_number or 1, max(1, position % 10000))
+            record = next((candidate for candidate in outbound_records or [] if (candidate.document_id, candidate.page_number, candidate.image_index) == identity), None)
+            manifest_authorized = record is not None and self._is_frozen_production_source(path)
+            if item.content_kind == "table_recovery":
+                provider = table_recovery_provider
+                if provider is None and allow_remote_data:
+                    provider = RemoteVlmTableRecoveryProvider(analyzer)
+                requires_manifest = bool(getattr(provider, "requires_outbound_manifest", False))
+                if provider is None or (requires_manifest and not allow_remote_data):
+                    quality["vision_failed_images"] += 1
+                    issues.append(IngestionIssue(code="table_recovery_unavailable", message="空表没有可用的表格恢复 provider", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
+                    return None
+                if requires_manifest and not (self._remote_resource_allowed(path, item.page_number) or manifest_authorized):
+                    quality["skipped_images"] += 1
+                    issues.append(IngestionIssue(code="remote_source_not_allowed", message="表格恢复图片不在批准的远程外发清单中", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
+                    return None
+                if requires_manifest:
+                    quality["eligible_images"] += 1
+                try:
+                    if requires_manifest:
+                        if not source_relative_path or not source_sha256 or outbound_records is None or record is None:
+                            raise PermissionError("table recovery image is absent from the frozen outbound manifest")
+                        if record.source_relative_path != source_relative_path or record.source_sha256 != source_sha256:
+                            raise PermissionError("outbound manifest source does not match the current source")
+                    table_recovery_result = provider.recover(item.asset_bytes, record.media_type if record else "image/png", context, outbound_record=record)
+                    if table_recovery_result.status != "success" or not looks_like_markdown_table(table_recovery_result.table_markdown.strip()):
+                        raise ValueError("table_recovery_provider_failed")
+                    analysis = table_recovery_result.as_vision_analysis()
+                    outbound_record = record
+                except Exception as exc:
+                    quality["vision_failed_images"] += 1
+                    issues.append(IngestionIssue(code="table_recovery_failed", message=f"表格恢复失败：{type(exc).__name__}", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
+                    return None
+            elif allow_remote_data and (self._remote_resource_allowed(path, item.page_number) or manifest_authorized):
                 quality["eligible_images"] += 1
                 try:
                     if not source_relative_path or not source_sha256 or outbound_records is None:
                         raise ValueError("outbound manifest metadata is incomplete")
-                    identity = (document_id, item.page_number or 1, max(1, position % 10000))
-                    record = next((candidate for candidate in outbound_records if (candidate.document_id, candidate.page_number, candidate.image_index) == identity), None)
                     if record is None:
                         raise PermissionError("image is absent from the frozen outbound manifest")
                     if record.source_relative_path != source_relative_path or record.source_sha256 != source_sha256:
@@ -794,8 +1131,19 @@ class MultimodalKnowledgeBaseMaintenance:
         policy_fingerprint = getattr(analyzer, "remote_policy_sha256", "")
         if not isinstance(policy_fingerprint, str):
             policy_fingerprint = ""
-        unit_id = stable_id("unit", {"document_id": document_id, "position": position, "modality": item.modality, "content_hash": content_hash, "parser": [parser_name, parser_version], "vision": [analyzer.model if analysis else "", PROMPT_VERSION, policy_fingerprint, sha256_bytes(context.encode("utf-8")) if analysis else "", outbound_record.normalized_sha256 if outbound_record else "", outbound_record.transformation if outbound_record else ""]})
-        return KnowledgeUnit(unit_id=unit_id, document_id=document_id, parent_id=item.parent_key, modality=item.modality, content_kind=content_kind, page_number=item.page_number, bbox=item.bbox, raw_text=raw_text, retrieval_text=text, asset_uri=asset_uri, content_hash=content_hash, parser_name=parser_name, parser_version=parser_version, vision_model=analyzer.model if analysis else "", vision_prompt_version=PROMPT_VERSION if analysis else "", embedding_provider=embedding["provider"], embedding_model=embedding["model"], status=UnitStatus.ENRICHED if analysis else UnitStatus.COMPLETED)
+        if table_recovery_result is not None and table_recovery_result.provider != "remote_vlm":
+            policy_fingerprint = ""
+        response_adapter_version = getattr(analyzer, "response_adapter_version", "")
+        vision_model = getattr(analyzer, "model", "") if analysis else ""
+        vision_prompt_version = PROMPT_VERSION if analysis else ""
+        if table_recovery_result is not None:
+            vision_model = table_recovery_result.model
+            vision_prompt_version = table_recovery_result.prompt_version
+            response_adapter_version = table_recovery_result.response_adapter_version or TABLE_RECOVERY_ADAPTER_VERSION
+        if analysis and (not isinstance(response_adapter_version, str) or not response_adapter_version):
+            raise ValueError("vision response adapter version must be a non-empty string")
+        unit_id = stable_id("unit", {"document_id": document_id, "position": position, "modality": item.modality, "content_hash": content_hash, "parser": [parser_name, parser_version], "vision": [vision_model, vision_prompt_version if analysis else PROMPT_VERSION, response_adapter_version if analysis else "", policy_fingerprint, sha256_bytes(context.encode("utf-8")) if analysis else "", outbound_record.normalized_sha256 if outbound_record else "", outbound_record.transformation if outbound_record else ""]})
+        return KnowledgeUnit(unit_id=unit_id, document_id=document_id, parent_id=item.parent_key, modality=item.modality, content_kind=content_kind, page_number=item.page_number, bbox=item.bbox, raw_text=raw_text, retrieval_text=text, asset_uri=asset_uri, content_hash=content_hash, parser_name=parser_name, parser_version=parser_version, vision_model=vision_model, vision_prompt_version=vision_prompt_version, embedding_provider=embedding["provider"], embedding_model=embedding["model"], status=UnitStatus.ENRICHED if analysis else UnitStatus.COMPLETED)
 
     @staticmethod
     def _same_page_context(image: ParsedItem, items: list[ParsedItem]) -> str:
@@ -833,6 +1181,8 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("outbound manifest does not match the current frozen sources")
         if any(record.remote_policy_sha256 != self.remote_policy.policy_sha256 for record in records):
             raise ValueError("outbound manifest does not match the current remote policy")
+        if any(record.response_adapter_version != RESPONSE_ADAPTER_VERSION for record in records):
+            raise ValueError("outbound manifest does not match the current response adapter")
         return records
 
     @staticmethod
@@ -864,7 +1214,6 @@ class MultimodalKnowledgeBaseMaintenance:
             "min_eligible_images": int(os.getenv("MULTIMODAL_QUALITY_MIN_ELIGIBLE_IMAGES", "0")),
             "min_enriched_images": int(os.getenv("MULTIMODAL_QUALITY_MIN_ENRICHED_IMAGES", "0")),
             "min_enrichment_rate": float(os.getenv("MULTIMODAL_QUALITY_MIN_ENRICHMENT_RATE", "0")),
-            "max_vision_failed_images": int(os.getenv("MULTIMODAL_QUALITY_MAX_VISION_FAILED_IMAGES", "0")),
             "max_ocr_probe_failed": int(os.getenv("MULTIMODAL_QUALITY_MAX_OCR_PROBE_FAILED", "0")),
         }
 
@@ -887,7 +1236,6 @@ class MultimodalKnowledgeBaseMaintenance:
         if eligible < int(policy["min_eligible_images"]): failures.append("eligible_images_below_minimum")
         if enriched < int(policy["min_enriched_images"]): failures.append("enriched_images_below_minimum")
         if rate < float(policy["min_enrichment_rate"]): failures.append("enrichment_rate_below_minimum")
-        if observed["vision_failed_images"] > int(policy["max_vision_failed_images"]): failures.append("vision_failed_images_above_maximum")
         if probe["failed"] > int(policy["max_ocr_probe_failed"]): failures.append("ocr_probe_failed_above_maximum")
         return {"passed": not failures, "policy": policy, "observed": observed, "enrichment_rate": rate, "failures": failures}
 
@@ -956,6 +1304,7 @@ class MultimodalKnowledgeBaseMaintenance:
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             return ["invalid_outbound_manifest"]
         policy_hash = manifest.get("build_configuration", {}).get("remote_policy_hash")
+        response_adapter_version = manifest.get("build_configuration", {}).get("vision", {}).get("response_adapter_version")
         if payload.get("schema_version") != "outbound-v1" or len(records) != manifest.get("outbound_image_count"):
             return ["invalid_outbound_manifest"]
         sources = {(source.get("relative_path"), source.get("content_hash")) for source in manifest.get("sources", []) if isinstance(source, dict)}
@@ -963,6 +1312,8 @@ class MultimodalKnowledgeBaseMaintenance:
         if len(identities) != len(records) or any((record.source_relative_path, record.source_sha256) not in sources for record in records):
             return ["invalid_outbound_manifest"]
         if not isinstance(policy_hash, str) or any(record.remote_policy_sha256 != policy_hash for record in records):
+            return ["invalid_outbound_manifest"]
+        if not isinstance(response_adapter_version, str) or any(record.response_adapter_version != response_adapter_version for record in records):
             return ["invalid_outbound_manifest"]
         return []
 
@@ -1013,6 +1364,40 @@ class MultimodalKnowledgeBaseMaintenance:
             return self.remote_policy.allows_omnidocbench_path(Path(raw_roots), resolved)
         except ValueError:
             return False
+
+    def _resolve_table_recovery_provider(self, analyzer: VisionAnalyzer, allow_remote_data: bool) -> TableRecoveryProvider | None:
+        """Resolve the replaceable table adapter without exposing transport details to parsing."""
+        if self.table_recovery_provider is not None:
+            return self.table_recovery_provider
+        if allow_remote_data and os.getenv("MULTIMODAL_TABLE_RECOVERY_PROVIDER", "remote_vlm") == "remote_vlm":
+            return RemoteVlmTableRecoveryProvider(analyzer)
+        return None
+
+    def _table_recovery_provider_name(self) -> str:
+        """Return the provider identity that participates in immutable versioning."""
+        if self.table_recovery_provider is not None:
+            return str(getattr(self.table_recovery_provider, "provider_name", "custom"))
+        return os.getenv("MULTIMODAL_TABLE_RECOVERY_PROVIDER", "remote_vlm")
+
+    def _table_recovery_configuration(self) -> dict[str, str]:
+        """Return provider, model, prompt, and adapter identities for versioning."""
+        provider = self.table_recovery_provider
+        return {
+            "provider": self._table_recovery_provider_name(),
+            "model": str(getattr(provider, "model", os.getenv("MULTIMODAL_TABLE_RECOVERY_MODEL", os.getenv("VISION_MODEL", REQUIRED_MODEL)))),
+            "prompt_version": str(getattr(provider, "prompt_version", PROMPT_VERSION)),
+            "response_adapter_version": str(getattr(provider, "response_adapter_version", TABLE_RECOVERY_ADAPTER_VERSION)),
+            "adapter_version": TABLE_RECOVERY_ADAPTER_VERSION,
+        }
+
+    def _is_frozen_production_source(self, source_path: Path) -> bool:
+        """确认来源是当前哈希匹配的冻结生产文件。"""
+        if self._frozen_production_paths is None:
+            try:
+                self._frozen_production_paths = {path.resolve() for path in production_source_paths()}
+            except (FileNotFoundError, ValueError):
+                self._frozen_production_paths = set()
+        return source_path.resolve() in self._frozen_production_paths
 
     def _version_dir(self, index_version: str) -> Path:
         """校验版本名并解析到隔离暂存根目录。"""

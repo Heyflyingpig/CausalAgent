@@ -23,7 +23,8 @@ from .contracts import OutboundImageRecord, VisionAnalysis, canonical_json, sha2
 from .remote_policy import RemoteSamplePolicy
 
 PROMPT_VERSION = "vision-v2"
-REQUIRED_MODEL = "qwen/qwen3-vl-flash"
+RESPONSE_ADAPTER_VERSION = "response-ocr-lines-v1"
+REQUIRED_MODEL = "qwen/qwen3-vl-8b-instruct"
 DEFAULT_MAX_PIXELS = 16_000_000
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 _PROMPT = """只转写和描述图片中直接可见的内容，不得根据邻近正文补画面中不存在的事实或箭头方向。返回一个 JSON 对象且必须完整包含：content_kind（causal_graph|chart|table|formula|illustration|other）、ocr_text（逐行可见文字，不确定字符不要猜）、visible_facts、summary、entities、table_markdown、formula_latex、directed_relations（source/target/condition）、uncertain_relations、confidence（0 到 1）、informative。方向不清晰的关系只能写入 uncertain_relations。"""
@@ -56,18 +57,21 @@ class VisionResponseError(ValueError):
 class VisionAnalyzer:
     """限制外发范围、重试次数与预算的 WCode 视觉客户端。"""
 
-    def __init__(self, cache_dir: Path, *, allow_remote_data: bool, max_images: int | None = None, retry_failed: bool = False, remote_policy_sha256: str | None = None) -> None:
+    def __init__(self, cache_dir: Path, *, allow_remote_data: bool, max_images: int | None = None, retry_failed: bool = False, remote_policy_sha256: str | None = None, model: str | None = None) -> None:
         """仅读取环境配置，不持久化密钥或原始响应。"""
         self.cache_dir = cache_dir
         self.allow_remote_data = allow_remote_data
-        self.model = os.getenv("VISION_MODEL", REQUIRED_MODEL)
+        self.model = model or os.getenv("VISION_MODEL", REQUIRED_MODEL)
         self.timeout = int(os.getenv("VISION_TIMEOUT_SECONDS", "30"))
         self.max_retries = int(os.getenv("VISION_MAX_RETRIES", "2"))
-        self.max_images = max_images
+        self.max_images = max_images if max_images is not None else max(
+            1, int(os.getenv("VISION_MAX_IMAGES_PER_RUN", "100"))
+        )
         self.max_concurrency = max(1, int(os.getenv("VISION_MAX_CONCURRENCY", "2")))
         self.max_pixels = max(1, int(os.getenv("VISION_MAX_PIXELS", str(DEFAULT_MAX_PIXELS))))
         self.max_bytes = max(1, int(os.getenv("VISION_MAX_IMAGE_BYTES", str(DEFAULT_MAX_BYTES))))
         self.retry_failed = retry_failed
+        self.response_adapter_version = RESPONSE_ADAPTER_VERSION
         self.remote_policy_sha256 = remote_policy_sha256 or RemoteSamplePolicy().policy_sha256
         self._semaphore = threading.BoundedSemaphore(self.max_concurrency)
         self._calls_lock = threading.Lock()
@@ -132,7 +136,7 @@ class VisionAnalyzer:
         record = OutboundImageRecord.model_validate(outbound_record) if outbound_record is not None else None
         if record is None or not self._record_matches(record, prepared, context):
             raise PermissionError("image is not bound to the approved outbound manifest")
-        key = sha256_bytes(canonical_json({"outbound": record.model_dump(mode="json"), "model": self.model, "prompt": PROMPT_VERSION}).encode())
+        key = sha256_bytes(canonical_json({"outbound": record.model_dump(mode="json"), "model": self.model, "prompt": PROMPT_VERSION, "response_adapter": self.response_adapter_version}).encode())
         cache_path = self.cache_dir / f"{key}.json"
         failure_path = self.cache_dir / f"{key}.failure.json"
         if cache_path.exists():
@@ -221,6 +225,7 @@ class VisionAnalyzer:
             and record.context_sha256 == sha256_bytes(context[:2000].encode("utf-8"))
             and record.model == self.model
             and record.prompt_version == PROMPT_VERSION
+            and record.response_adapter_version == self.response_adapter_version
             and record.remote_policy_sha256 == self.remote_policy_sha256
         )
 
@@ -235,7 +240,10 @@ class VisionAnalyzer:
         if start < 0 or end < start:
             raise VisionResponseError("invalid_json")
         try:
-            return VisionAnalysis.model_validate_json(candidate[start:end + 1])
+            payload = json.loads(candidate[start:end + 1])
+            if isinstance(payload, dict) and isinstance(payload.get("ocr_text"), list) and all(isinstance(line, str) for line in payload["ocr_text"]):
+                payload = {**payload, "ocr_text": "\n".join(payload["ocr_text"])}
+            return VisionAnalysis.model_validate(payload)
         except (ValidationError, ValueError, json.JSONDecodeError) as exc:
             raise VisionResponseError("invalid_schema") from exc
 

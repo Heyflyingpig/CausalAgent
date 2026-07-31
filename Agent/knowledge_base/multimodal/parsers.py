@@ -147,6 +147,8 @@ def decide_page_route(path: Path, page_number: int, parsed: ParsedDocument) -> P
     has_page_render = any(item.content_kind == "page_render" and item.asset_bytes for item in parsed.items)
     if has_page_render and (summary["item_count"] == 1 or summary["coverage_gap"]):
         return PageRouteDecision("remote_page_fallback", "page_render_required_by_quality_gate", PAGE_QUALITY_GATE_VERSION, summary)
+    if any(item.content_kind == "table_recovery" and item.asset_bytes for item in parsed.items):
+        return PageRouteDecision("table_recovery", "empty_docling_table_requires_recovery", PAGE_QUALITY_GATE_VERSION, summary)
     if summary["native_text_chars"] >= 80 and summary["docling_text_chars"] < summary["native_text_chars"] * PAGE_QUALITY_MIN_TEXT_COVERAGE:
         return PageRouteDecision("blocked", "text_coverage_below_fixed_threshold", PAGE_QUALITY_GATE_VERSION, summary)
     if summary["image_items"]:
@@ -534,6 +536,32 @@ def _docling_items(document: object, source_path: Path) -> tuple[list[ParsedItem
             text = item.export_to_markdown(doc=document).strip()
             if text:
                 items.append(ParsedItem("table", "table", raw_text=text, page_number=page_number, bbox=bbox, parent_key=f"page_{page_number}" if page_number else None))
+            elif page_number and bbox:
+                page_image = _docling_page_image_bytes(document, page_number)
+                cropped = _crop_page_image(page_image, bbox) if page_image else None
+                if cropped:
+                    items.append(ParsedItem(
+                        "table", "table_recovery", page_number=page_number, bbox=bbox,
+                        asset_bytes=cropped,
+                        asset_name=f"page_{page_number:04d}_table_recovery_{index:04d}.png",
+                        parent_key=f"page_{page_number}",
+                    ))
+                else:
+                    ocr_issues.append(IngestionIssue(
+                        code="table_recovery_asset_missing",
+                        message=f"Docling 第 {page_number} 页的空表无法提取裁剪图",
+                        severity=IssueSeverity.ERROR,
+                        blocking=True,
+                        source_path=str(source_path),
+                    ))
+            else:
+                ocr_issues.append(IngestionIssue(
+                    code="table_recovery_bbox_missing",
+                    message=f"Docling 第 {page_number or 0} 页的空表缺少可恢复定位",
+                    severity=IssueSeverity.ERROR,
+                    blocking=True,
+                    source_path=str(source_path),
+                ))
         elif isinstance(item, FormulaItem):
             formula = (item.text or "").strip()
             if formula:
@@ -617,6 +645,26 @@ def _docling_page_image_bytes(document: object, page_number: int) -> bytes | Non
         output = BytesIO()
         image.save(output, format="PNG")
         return output.getvalue()
+    except Exception:
+        return None
+
+
+def _crop_page_image(page_image: bytes, bbox: dict[str, float]) -> bytes | None:
+    """Crop a normalized top-left-origin table box from a rendered page."""
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(page_image)) as source:
+            image = source.convert("RGB")
+            left = max(0, min(image.width - 1, int(round(bbox["x0"] * image.width))))
+            top = max(0, min(image.height - 1, int(round(bbox["y0"] * image.height))))
+            right = max(left + 1, min(image.width, int(round(bbox["x1"] * image.width))))
+            bottom = max(top + 1, min(image.height, int(round(bbox["y1"] * image.height))))
+            if right <= left or bottom <= top:
+                return None
+            output = BytesIO()
+            image.crop((left, top, right, bottom)).save(output, format="PNG")
+            return output.getvalue()
     except Exception:
         return None
 
