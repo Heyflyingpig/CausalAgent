@@ -43,7 +43,7 @@
 
 所有 GET 只读取 MySQL 中最近的共享快照，不在 Web 请求中执行完整采集。刷新接口只登记请求，实际采集由独立 monitor 完成。
 
-SQL 性能摘要按 Performance Schema 的累计 `SUM_TIMER_WAIT` 排序，不等同于单次查询超过 `long_query_time`。慢查询告警优先使用采集窗口内 `Slow_queries` 增量。
+SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序选取和展示，平均耗时相同时按累计 `SUM_TIMER_WAIT` 降序次排序，不等同于单次查询超过 `long_query_time`。慢查询告警优先使用采集窗口内 `Slow_queries` 增量。
 
 ## 在线采集配置
 

@@ -151,6 +151,7 @@ class SqlPerformanceCursor:
         self.server_uuid = server_uuid
         self.statements = statements or [{"digest_text": "SELECT ?", "total_seconds": 3.5}]
         self.rows = []
+        self.digest_sql = None
 
     def execute(self, sql, params=None):
         """根据采集语句切换结果集。"""
@@ -168,6 +169,7 @@ class SqlPerformanceCursor:
                 {"Variable_name": "long_query_time", "Value": "2.0"},
             ]
         elif "performance_schema.events_statements_summary_by_digest" in normalized:
+            self.digest_sql = normalized
             self.rows = self.statements
         else:
             raise AssertionError(normalized)
@@ -615,6 +617,32 @@ class DatabaseInspectionTests(unittest.TestCase):
         self.assertEqual(value["slow_queries_total"], 12)
         self.assertEqual(value["Slow_queries"], 12)
         self.assertEqual(value["high_load_statements"], value["top_statements"])
+
+    def test_sql_performance_orders_digest_by_average_then_total_duration(self):
+        """Digest 先按平均耗时降序选取，并用累计耗时稳定处理同值。"""
+        statements = [{
+            "digest_text": "SELECT * FROM users WHERE id = ?",
+            "count_star": 2,
+            "total_seconds": 0.5,
+            "avg_seconds": 0.25,
+            "rows_examined": 2,
+            "rows_sent": 2,
+        }]
+        cursor = SqlPerformanceCursor(slow_queries=12, uptime=500, statements=statements)
+        connection = ContextConnection(cursor)
+        with patch(
+            "app.db.get_read_connection_with_source",
+            return_value=(connection, {"source_role": "primary", "source_alias": "primary"}),
+        ):
+            report = inspect_slow_queries(limit=20)
+
+        self.assertIn(
+            "ORDER BY AVG_TIMER_WAIT DESC, SUM_TIMER_WAIT DESC",
+            cursor.digest_sql,
+        )
+        self.assertEqual(cursor.params, (20,))
+        self.assertEqual(report["value"]["high_load_statements"], statements)
+        self.assertEqual(report["value"]["top_statements"], statements)
 
     def test_sql_performance_calculates_delta_window_and_threshold_warning(self):
         """同一主库计数增长按窗口计算，并在达到阈值时告警。"""
