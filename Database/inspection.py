@@ -503,7 +503,7 @@ def inspect_slow_queries(
                     FROM performance_schema.events_statements_summary_by_digest
                     WHERE SCHEMA_NAME = DATABASE()
                       AND DIGEST_TEXT IS NOT NULL
-                    ORDER BY SUM_TIMER_WAIT DESC
+                    ORDER BY AVG_TIMER_WAIT DESC, SUM_TIMER_WAIT DESC
                     LIMIT %s
                     """,
                     (normalized_limit,),
