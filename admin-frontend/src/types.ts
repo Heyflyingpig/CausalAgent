@@ -141,8 +141,19 @@ export interface UserOperationPreview {
 export interface AdminOperationResult {
   operation_id: string
   operation_type: string
+  status?: 'running' | 'succeeded' | 'failed'
   target_count: number
+  succeeded_count?: number
+  failed_count?: number
   replayed: boolean
+  completed_at?: string | null
+  checkpoint_cleanup?: {
+    status: 'pending' | 'succeeded' | 'failed'
+    total: number
+    succeeded: number
+    failed: number
+    pending: number
+  }
   items?: Array<{
     id: number
     username: string

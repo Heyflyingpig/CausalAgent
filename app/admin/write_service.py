@@ -25,6 +25,7 @@ from app.auth.service import (
     managed_password_error,
     verify_password,
 )
+from app.agent.checkpoint_cleanup import enqueue_checkpoint_cleanup_many
 from app.db import get_read_connection, get_write_connection
 from app.request_context import get_request_id
 from config.settings import settings
@@ -290,6 +291,12 @@ def _decode_existing_operation(
             "该 Idempotency-Key 已用于不同请求",
             status=409,
         )
+    if row.get("status") in {"running", "failed"}:
+        result = _json_loads(row.get("result_json")) or {}
+        result["operation_id"] = row["operation_id"]
+        result["status"] = row["status"]
+        result["replayed"] = True
+        return result
     if row.get("status") != "succeeded" or row.get("result_json") is None:
         raise AdminApiError(
             "operation_incomplete",
@@ -833,27 +840,17 @@ def _user_impact(cursor, user: dict[str, Any]) -> dict[str, Any]:
             (SELECT COUNT(*) FROM archived_sessions WHERE user_id = %s) AS archived_sessions,
             (
                 SELECT COUNT(*)
-                FROM checkpoints AS c
-                JOIN sessions AS s ON s.id = c.thread_id
-                WHERE s.user_id = %s
-            ) AS checkpoints,
-            (
-                SELECT COUNT(*)
-                FROM checkpoint_writes AS w
-                JOIN checkpoints AS c
-                  ON c.thread_id = w.thread_id
-                 AND c.checkpoint_ns = w.checkpoint_ns
-                 AND c.checkpoint_id = w.checkpoint_id
-                JOIN sessions AS s ON s.id = c.thread_id
-                WHERE s.user_id = %s
-            ) AS checkpoint_writes,
+                FROM checkpoint_cleanup_outbox AS o
+                JOIN sessions AS s ON s.id = o.thread_id
+                WHERE s.user_id = %s AND o.status <> 'succeeded'
+            ) AS checkpoint_cleanup_pending,
             (
                 SELECT COUNT(*)
                 FROM analysis_jobs
                 WHERE user_id = %s AND status IN ('queued', 'running')
             ) AS active_jobs
         """,
-        (user_id,) * 10,
+        (user_id,) * 9,
     )
     counts = {
         key: int(value or 0)
@@ -867,8 +864,6 @@ def _user_impact(cursor, user: dict[str, Any]) -> dict[str, Any]:
         "jobs",
         "events",
         "archived_sessions",
-        "checkpoints",
-        "checkpoint_writes",
     ]
     counts["total_related_rows"] = sum(counts.get(key, 0) for key in related_keys)
     return counts
@@ -935,7 +930,7 @@ def delete_user(
     actor: dict[str, Any],
     idempotency_key: str | None,
 ) -> dict[str, Any]:
-    """在单一主库事务中删除用户、归档与 session checkpoint。"""
+    """在主库事务中删除用户业务数据，并登记 PostgreSQL checkpoint 清理。"""
     request_body = _require_body(body)
     if request_body.get("confirmed") is not True:
         raise AdminApiError(
@@ -1037,6 +1032,11 @@ def delete_user(
                 "关联记录超过同步删除安全上限",
                 status=409,
             )
+        cursor.execute(
+            "SELECT id FROM sessions WHERE user_id = %s ORDER BY id FOR UPDATE",
+            (user_id,),
+        )
+        session_ids = [str(row["id"]) for row in cursor.fetchall()]
         _insert_operation(
             cursor,
             operation_id=operation_id,
@@ -1046,16 +1046,11 @@ def delete_user(
             fingerprint=fingerprint,
             target_count=1,
         )
-        cursor.execute(
-            """
-            DELETE c
-            FROM checkpoints AS c
-            JOIN sessions AS s ON s.id = c.thread_id
-            WHERE s.user_id = %s
-            """,
-            (user_id,),
+        cleanup_count = enqueue_checkpoint_cleanup_many(
+            cursor,
+            session_ids,
+            operation_id=operation_id,
         )
-        deleted_checkpoints = cursor.rowcount
         cursor.execute(
             "DELETE FROM archived_sessions WHERE user_id = %s",
             (user_id,),
@@ -1072,8 +1067,14 @@ def delete_user(
         }
         new_values = {
             "deleted": True,
-            "deleted_checkpoints": deleted_checkpoints,
             "deleted_archived_sessions": deleted_archives,
+            "checkpoint_cleanup": {
+                "status": "pending" if cleanup_count else "succeeded",
+                "total": cleanup_count,
+                "succeeded": 0,
+                "failed": 0,
+                "pending": cleanup_count,
+            },
         }
         _insert_operation_item(
             cursor,
@@ -1104,14 +1105,31 @@ def delete_user(
             "username": user["username"],
             "deleted": True,
             "impact": impact,
+            "status": "running" if cleanup_count else "succeeded",
+            "checkpoint_cleanup": {
+                "status": "pending" if cleanup_count else "succeeded",
+                "total": cleanup_count,
+                "succeeded": 0,
+                "failed": 0,
+                "pending": cleanup_count,
+            },
             "replayed": False,
         }
-        _complete_operation(
-            cursor,
-            operation_id=operation_id,
-            result=result,
-            target_count=1,
+        cursor.execute(
+            """
+            UPDATE admin_operations
+            SET result_json = %s
+            WHERE operation_id = %s AND status = 'running'
+            """,
+            (_json_dumps(result), operation_id),
         )
+        if not cleanup_count:
+            _complete_operation(
+                cursor,
+                operation_id=operation_id,
+                result=result,
+                target_count=1,
+            )
         connection.commit()
         return result
     except mysql.connector.Error as exc:
@@ -1131,6 +1149,60 @@ def delete_user(
         raise
     finally:
         connection.close()
+
+
+def get_operation(operation_id: str, *, actor: dict[str, Any]) -> dict[str, Any]:
+    """读取当前管理员发起的受控操作及其 cleanup 聚合状态。"""
+    with get_read_connection(consistency="strong") as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT operation_id, operation_type, status, target_count,
+                   succeeded_count, failed_count, result_json,
+                   created_at, completed_at
+            FROM admin_operations
+            WHERE operation_id = %s AND actor_user_id = %s
+            """,
+            (operation_id, actor["id"]),
+        )
+        operation = cursor.fetchone()
+        if not operation:
+            raise AdminApiError("not_found", "管理员操作不存在", status=404)
+        cursor.execute(
+            """
+            SELECT target_type, target_id, target_label, result,
+                   error_code, old_values_json, new_values_json, created_at
+            FROM admin_operation_items
+            WHERE operation_id = %s
+            ORDER BY id ASC
+            """,
+            (operation_id,),
+        )
+        items = cursor.fetchall()
+
+    result = _json_loads(operation.get("result_json")) or {}
+    result.update(
+        {
+            "operation_id": operation["operation_id"],
+            "operation_type": operation["operation_type"],
+            "status": operation["status"],
+            "target_count": int(operation["target_count"] or 0),
+            "succeeded_count": int(operation["succeeded_count"] or 0),
+            "failed_count": int(operation["failed_count"] or 0),
+            "created_at": operation["created_at"],
+            "completed_at": operation["completed_at"],
+            "items": [
+                {
+                    **item,
+                    "old_values": _json_loads(item.pop("old_values_json", None)),
+                    "new_values": _json_loads(item.pop("new_values_json", None)),
+                }
+                for item in items
+            ],
+            "replayed": True,
+        }
+    )
+    return result
 
 
 def get_file_delete_impact(file_id: int) -> dict[str, Any]:

@@ -115,6 +115,27 @@ function newIdempotencyKey(): string {
   return `admin-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
+/** 轮询跨库 cleanup 操作，避免把 MySQL 已完成误报成 PostgreSQL 已完成。 */
+async function waitForCheckpointCleanup(operationId: string): Promise<void> {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise(resolve => window.setTimeout(resolve, 1000))
+    try {
+      const operation = await adminApi.operation(operationId)
+      if (operation.status === 'succeeded') {
+        ElMessage.success('用户删除及 checkpoint 清理已完成')
+        return
+      }
+      if (operation.status === 'failed') {
+        ElMessage.error('用户业务数据已删除，但 checkpoint 清理失败，请查看操作状态')
+        return
+      }
+    } catch {
+      // 短暂读取失败不改变已提交的删除结果，下一轮继续查询。
+    }
+  }
+  ElMessage.warning('用户业务数据已删除，checkpoint 仍在后台清理')
+}
+
 /** 把统一用户操作转换为管理员可读标签。 */
 function operationLabel(action = operationAction.value): string {
   if (action === 'set_password') return '设置同一新密码'
@@ -233,7 +254,12 @@ async function submitDelete(): Promise<void> {
       },
       deleteIdempotencyKey.value,
     )
-    ElMessage.success(`用户已删除${result.replayed ? '（幂等重放）' : ''}`)
+    if (result.status === 'running') {
+      ElMessage.info('用户业务数据已删除，checkpoint 正在后台清理')
+      void waitForCheckpointCleanup(result.operation_id)
+    } else {
+      ElMessage.success(`用户已删除${result.replayed ? '（幂等重放）' : ''}`)
+    }
     deleteVisible.value = false
     selectedUsers.value = []
     tableRef.value?.clearSelection()

@@ -326,6 +326,11 @@ export const adminApi = {
       body: JSON.stringify(body),
     },
   ),
+  /** 查询受控操作及异步 checkpoint cleanup 聚合状态。 */
+  operation: (operationId: string) => apiRequest<AdminOperationResult>(
+    `/api/admin/operations/${encodeURIComponent(operationId)}`,
+    { cache: 'no-store' },
+  ),
   /** 读取用户物理删除的完整生命周期影响。 */
   userDeleteImpact: (userId: number) => apiRequest<UserDeleteImpact>(
     `/api/admin/business/users/${userId}/delete-impact`,
