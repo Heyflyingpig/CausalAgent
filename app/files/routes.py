@@ -112,6 +112,19 @@ def upload_file():
     try:
         with get_write_connection() as conn:
             cursor = conn.cursor(dictionary=True) # 使用字典游标
+
+            cursor.execute(
+                "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
+                (session_id, user_id),
+            )
+            if not cursor.fetchone():
+                conn.rollback()
+                logging.warning(
+                    "用户 %s 上传文件时引用了不存在或无权访问的会话 %s",
+                    user_id,
+                    session_id,
+                )
+                return jsonify({'success': False, 'error': '会话不存在或无权访问'}), 404
             
             # 检查是否已存在相同哈希的文件
             cursor.execute("""

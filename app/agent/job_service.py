@@ -16,7 +16,6 @@ from typing import Any
 import mysql.connector
 from mysql.connector import errorcode
 
-from app.chat.session_title import build_session_title
 from app.db import get_read_connection, get_read_connection_with_source, get_write_connection
 from config.settings import settings
 
@@ -91,16 +90,7 @@ def create_job(user_id: int, session_id: str, message: str) -> tuple[dict[str, A
     try:
         cursor = conn.cursor(dictionary=True)
         conn.start_transaction()
-        # 如果主键重复，直接忽略，确保数据库里绝对有这一行数据，同时避免主键sessionid，延迟创建而重复插入崩溃。
-        cursor.execute(
-            """
-            INSERT INTO sessions (id, user_id, title, created_at, last_activity_at, message_count)
-            VALUES (%s, %s, %s, %s, %s, 0)
-            ON DUPLICATE KEY UPDATE id = id
-            """,
-            (session_id, user_id, build_session_title(message), now, now),
-        )
-        # 增加悲观锁，查看当前session属于当前用户
+        # 锁定并校验服务端已经创建的 session，禁止未知 ID 自动建行。
         cursor.execute(
             "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
             (session_id, user_id),
