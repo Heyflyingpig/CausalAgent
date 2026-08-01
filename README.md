@@ -288,6 +288,11 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/databa
 docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head
 ```
 
+PostgreSQL checkpoint 使用独立服务。请先在 `.env` 设置非空的
+`CHECKPOINT_POSTGRES_PASSWORD`；`docker-compose ... up -d` 会自动运行一次
+`checkpoint-setup` 创建官方 LangGraph schema，并启动独立的
+`checkpoint-cleanup` worker。
+
 全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 
 ```bash
@@ -310,7 +315,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 - 复制状态检查账号：`MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`，只用于读取 `SHOW REPLICA STATUS`；缺失或不可用时，`eventual` 读安全回退主库读连接。
 - 复制通道账号：`MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`，只用于 MySQL 主从复制链路，不参与应用业务查询。
 
-删除已经创建的会话时，应用会在同一个主库事务内删除会话、聊天消息、附件和同一 `session_id` 对应的 LangGraph MySQL checkpoint；`checkpoint_writes` 由其到 `checkpoints` 的外键级联删除。当前 `thread_id` 使用会话 ID，但不额外建立 `checkpoints.thread_id → sessions.id` 外键。
+`/api/new_chat` 生成 ID 后会立即在 MySQL 主库创建会话记录；创建 job、保存聊天、修改标题和上传文件都要求该会话已经存在且属于当前用户，不会根据未知 ID 自动重建。删除已经创建的会话时，主库事务会删除会话、聊天消息和附件，并写入 `checkpoint_cleanup_outbox`；独立 cleanup worker 随后调用 PostgreSQL `adelete_thread()` 清理同一 `session_id` 对应的 LangGraph checkpoint。两个数据库之间不伪造分布式事务，用户接口会明确返回后台清理状态。
 
 #### 管理员后台
 
@@ -481,6 +486,10 @@ alembic upgrade head
 ```
 `Database/database_init.py` 负责确保数据库存在和连接可用；业务表结构由 Alembic 迁移脚本维护。全新空库直接执行 `alembic upgrade head`，不要先运行 preflight。旧库只有在目标外键尚未建立、且即将执行添加外键的迁移时，才先执行 `python Database/audit_before_db_upgrade.py`；审计会依据当前 schema 跳过尚不存在或已经受约束保护的关系。
 
+本次 checkpoint 迁移是两个历史 head 的合并点，因此不要使用含糊的
+`alembic downgrade -1`；需要回退时必须指定明确目标 revision，例如
+`alembic downgrade e4f5a6b7c8d9`。这只恢复 MySQL checkpoint 空表结构，不能恢复已经删除的数据。
+
 9. 启动后端服务
 
 在项目根目录下打开一个终端，运行 Web 层：
@@ -493,6 +502,12 @@ python Causalchat.py
 
 ```bash
 python -m app.agent.worker
+```
+
+再打开一个终端，运行 PostgreSQL checkpoint 清理 worker：
+
+```bash
+python -m Database.checkpoint_cleanup_worker
 ```
 
 再打开一个终端，运行数据库监控采集器：
@@ -596,6 +611,8 @@ python Run_causal.py
 │   ├── inspection.py       # 管理员看板统一只读检查服务
 │   ├── deep_audit.py       # 3.1 手动 deep 数据库事实审计
 │   ├── lifecycle_repair.py # 3.2 孤立关系 dry-run/人工确认修复 CLI
+│   ├── checkpoint_setup.py # PostgreSQL LangGraph schema 一次性 setup
+│   ├── checkpoint_cleanup_worker.py # 跨库 checkpoint cleanup outbox worker
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口
 │   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
 │   ├── monitor_worker.py   # 数据库看板分层采集进程
