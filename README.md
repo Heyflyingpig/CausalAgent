@@ -365,8 +365,8 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 │   ├── database_init.py    # 数据库初始化引导脚本
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
 │   ├── inspection.py       # 管理员看板统一只读检查服务
-│   ├── deep_audit.py       # 3.1 手动 deep 数据库事实审计
-│   ├── lifecycle_repair.py # 3.2 孤立关系 dry-run/人工确认修复 CLI
+│   ├── deep_audit.py       # 手动 deep 数据库事实审计
+│   ├── lifecycle_repair.py # 孤立关系 dry-run/人工确认修复 CLI
 │   ├── checkpoint_setup.py # PostgreSQL LangGraph schema 一次性 setup
 │   ├── checkpoint_cleanup_worker.py # 跨库 checkpoint cleanup outbox worker
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口

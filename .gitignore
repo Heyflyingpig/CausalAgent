@@ -186,6 +186,7 @@ config.json
 .cursor/
 .augment/
 .vscode/
+.codegraph/
 
 # causalcopliot
 causalcopliot/
@@ -208,3 +209,6 @@ admin-frontend/playwright-report/
 
 # docs
 docs/
+
+# 构建产物
+admin-frontend/dist/
