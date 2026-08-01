@@ -6,6 +6,7 @@ from app.auth.session_guard import get_current_session_user
 import logging
 import json
 from app.chat.response_storage import render_summary_for_display
+from app.agent.checkpoint_cleanup import enqueue_checkpoint_cleanup
 
 chat_bp = Blueprint('chat', __name__, url_prefix='/api')
 import uuid
@@ -250,11 +251,10 @@ def change_session():
 ## 删除会话
 @chat_bp.route('/delete_session', methods=['POST'])
 def delete_session():
-    """在同一事务中删除用户会话及其消息、附件和 MySQL checkpoint。"""
+    """删除会话业务数据，并在同一事务中登记 PostgreSQL checkpoint 清理。"""
     import mysql.connector
     from app.db import get_write_connection
 
-    #  核心修改：安全和完整的删除逻辑，支持延迟创建 
     current_user = get_current_session_user()
     if not current_user:
         return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
@@ -299,12 +299,8 @@ def delete_session():
                 return jsonify({"success": False, "error": "当前会话仍有任务正在运行，请等待完成后再删除"}), 409
 
             try:
-                # 1. 删除该会话对应的 LangGraph checkpoint。
-                # checkpoint_writes 通过 fk_checkpoint_writes_checkpoint 级联删除，
-                # 不能调用 MySQLSaver.delete_thread()，否则会脱离当前事务。
-                cursor.execute("DELETE FROM checkpoints WHERE thread_id = %s", (session_id,))
-                deleted_checkpoints = cursor.rowcount
-                logging.info(f"为会话 {session_id} 删除了 {deleted_checkpoints} 条 checkpoint")
+                # 跨库删除不能加入 MySQL 事务；outbox 与会话删除同事务提交。
+                enqueue_checkpoint_cleanup(cursor, session_id)
 
                 # 2. 删除与该会话相关的附件 (通过连接 chat_messages)
                 # 这是为了处理 chat_attachments 和 chat_messages 之间没有直接外键的情况
@@ -329,7 +325,11 @@ def delete_session():
 
                 conn.commit()
                 logging.info(f"用户 {user_id} 成功删除了会话 {session_id} 及其所有数据")
-                return jsonify({"success": True, "message": "会话已成功删除"})
+                return jsonify({
+                    "success": True,
+                    "message": "会话已删除，checkpoint 正在后台清理",
+                    "checkpoint_cleanup": "pending",
+                }), 202
             except Exception:
                 conn.rollback()
                 raise

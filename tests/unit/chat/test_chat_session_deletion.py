@@ -86,7 +86,7 @@ def build_app():
 
 
 class DeleteSessionTests(unittest.TestCase):
-    """验证会话、checkpoint 和数据库事务的删除边界。"""
+    """验证会话业务删除与 PostgreSQL checkpoint outbox 的事务边界。"""
 
     def _post_delete(self, connection, current_user=None):
         """用指定登录用户和数据库连接调用删除会话接口。"""
@@ -99,18 +99,18 @@ class DeleteSessionTests(unittest.TestCase):
         ):
             return client.post("/api/delete_session", json={"session_id": "session-1"})
 
-    def test_delete_session_deletes_checkpoints_in_the_same_transaction(self):
-        """正常删除按锁定、任务检查、checkpoint、业务数据的顺序提交一次。"""
-        connection = FakeConnection(fetch_results=[("session-1",), None])
+    def test_delete_session_enqueues_checkpoint_cleanup_in_the_same_transaction(self):
+        """正常删除按锁定、任务检查、outbox、业务数据的顺序提交一次。"""
+        connection = FakeConnection(fetch_results=[("session-1",), None, {"status": "pending"}])
 
         response = self._post_delete(connection)
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         self.assertTrue(connection.transaction_started)
         self.assertTrue(connection.committed)
         self.assertFalse(connection.rolled_back)
         statements = connection.fake_cursor.statements
-        self.assertEqual(len(statements), 6)
+        self.assertEqual(len(statements), 7)
         self.assertEqual(
             statements[0],
             (
@@ -119,17 +119,15 @@ class DeleteSessionTests(unittest.TestCase):
             ),
         )
         self.assertIn("FROM analysis_jobs", statements[1][0])
+        self.assertIn("INSERT INTO checkpoint_cleanup_outbox", statements[2][0])
+        self.assertIn("SELECT status FROM checkpoint_cleanup_outbox", statements[3][0])
+        self.assertTrue(statements[4][0].startswith("DELETE ca FROM chat_attachments"))
         self.assertEqual(
-            statements[2],
-            ("DELETE FROM checkpoints WHERE thread_id = %s", ("session-1",)),
-        )
-        self.assertTrue(statements[3][0].startswith("DELETE ca FROM chat_attachments"))
-        self.assertEqual(
-            statements[4],
+            statements[5],
             ("DELETE FROM chat_messages WHERE session_id = %s AND user_id = %s", ("session-1", 7)),
         )
         self.assertEqual(
-            statements[5],
+            statements[6],
             ("DELETE FROM sessions WHERE id = %s AND user_id = %s", ("session-1", 7)),
         )
 
@@ -147,11 +145,11 @@ class DeleteSessionTests(unittest.TestCase):
             any(statement.startswith("DELETE") for statement, _ in connection.fake_cursor.statements)
         )
 
-    def test_checkpoint_delete_failure_rolls_back_the_whole_transaction(self):
-        """checkpoint 删除异常时，不提交消息或会话的后续删除。"""
+    def test_checkpoint_outbox_failure_rolls_back_the_whole_transaction(self):
+        """outbox 写入异常时，不提交消息或会话的后续删除。"""
         connection = FakeConnection(
             fetch_results=[("session-1",), None],
-            raise_on_prefix="DELETE FROM checkpoints",
+            raise_on_prefix="INSERT INTO checkpoint_cleanup_outbox",
         )
 
         response = self._post_delete(connection)
