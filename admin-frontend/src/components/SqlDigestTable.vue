@@ -9,7 +9,35 @@ const props = defineProps<{
 
 const detailVisible = ref(false)
 const selectedStatement = ref<SqlDigestView | null>(null)
-const rows = computed(() => props.statements.map(toSqlDigestView))
+
+/** 将可能来自 JSON 数字或字符串的耗时转换为可排序数值，异常值统一视为空值。 */
+function numericDuration(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const duration = Number(value)
+  return Number.isFinite(duration) ? duration : null
+}
+
+/** 按降序比较两个可选耗时，并把缺失或非法值稳定放到有效数值之后。 */
+function compareDurationDescending(left: unknown, right: unknown): number {
+  const leftDuration = numericDuration(left)
+  const rightDuration = numericDuration(right)
+  if (leftDuration === null) return rightDuration === null ? 0 : 1
+  if (rightDuration === null) return -1
+  return rightDuration - leftDuration
+}
+
+/** 按平均耗时降序排列 Digest，同值时使用累计耗时作为次排序。 */
+function compareSqlDigestLoad(left: SqlDigestView, right: SqlDigestView): number {
+  return compareDurationDescending(left.averageSeconds, right.averageSeconds)
+    || compareDurationDescending(left.totalSeconds, right.totalSeconds)
+}
+
+/** 以秒为单位格式化有效耗时，缺失或非法值显示统一占位符。 */
+function formatDurationSeconds(value: unknown): string {
+  return numericDuration(value) === null ? '—' : `${displayValue(value)} 秒`
+}
+
+const rows = computed(() => props.statements.map(toSqlDigestView).sort(compareSqlDigestLoad))
 
 /** 打开指定 SQL 摘要的业务解释和原始字段详情。 */
 function openDetails(row: SqlDigestView): void {
@@ -33,6 +61,11 @@ function clearDetails(): void {
     <el-table-column label="功能" min-width="240">
       <template #default="{ row }">
         <strong class="sql-business-action">{{ row.meaning.action }}</strong>
+      </template>
+    </el-table-column>
+    <el-table-column label="平均耗时" min-width="130" align="right">
+      <template #default="{ row }">
+        <strong>{{ formatDurationSeconds(row.averageSeconds) }}</strong>
       </template>
     </el-table-column>
     <el-table-column label="业务说明" min-width="360">
@@ -106,11 +139,11 @@ function clearDetails(): void {
           </div>
           <div>
             <dt>累计总耗时</dt>
-            <dd>{{ displayValue(selectedStatement.totalSeconds) }} 秒</dd>
+            <dd>{{ formatDurationSeconds(selectedStatement.totalSeconds) }}</dd>
           </div>
           <div>
             <dt>平均耗时</dt>
-            <dd>{{ displayValue(selectedStatement.averageSeconds) }} 秒</dd>
+            <dd>{{ formatDurationSeconds(selectedStatement.averageSeconds) }}</dd>
           </div>
           <div>
             <dt>扫描行</dt>

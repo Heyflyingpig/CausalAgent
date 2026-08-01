@@ -222,10 +222,16 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
   await expect(page.getByText('推断：查询 custom_table 数据', { exact: true })).toBeVisible()
   await expect(page.getByText(mappedDigestText, { exact: true })).toHaveCount(0)
   await expect(page.locator('.sql-business-table th.is-center').first()).toContainText('业务模块')
-  await expect(page.locator('.sql-business-table td.is-center').first()).toContainText('用户与权限')
+  const digestRows = page.locator('.sql-business-table .el-table__body-wrapper tbody tr')
+  await expect(digestRows).toHaveCount(2)
+  await expect(digestRows.nth(0)).toContainText('推断：查询 custom_table 数据')
+  await expect(digestRows.nth(0)).toContainText('0.25 秒')
+  await expect(digestRows.nth(1)).toContainText('读取用户身份或权限')
+  await expect(digestRows.nth(1)).toContainText('0.12 秒')
+  await expect(digestRows.nth(1).locator('td.is-center').first()).toContainText('用户与权限')
 
   await page.setViewportSize({ width: 1180, height: 900 })
-  await page.locator('.sql-business-table').getByRole('button', { name: '查看详情' }).first().click()
+  await digestRows.nth(1).getByRole('button', { name: '查看详情' }).click()
   await expect(page.getByRole('heading', { name: 'SQL详情' })).toBeVisible()
   await expect(page.locator('.sql-detail-drawer').getByText('代码确认', { exact: true })).toBeVisible()
   await expect(page.getByText('判断依据', { exact: true })).toBeVisible()
@@ -239,13 +245,13 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
     '扫描行',
     '返回行',
   ]) {
-    await expect(page.getByText(label, { exact: true })).toBeVisible()
+    await expect(page.locator('.sql-detail-drawer').getByText(label, { exact: true })).toBeVisible()
   }
   await page.getByRole('button', { name: '关闭详情' }).click()
   await expect(page.getByText(mappedDigestText, { exact: true })).toBeHidden()
 
   await page.setViewportSize({ width: 740, height: 900 })
-  await page.locator('.sql-business-table').getByRole('button', { name: '查看详情' }).nth(1).click()
+  await digestRows.nth(0).getByRole('button', { name: '查看详情' }).click()
   const mobileDrawer = page.locator('.sql-detail-drawer')
   await expect(mobileDrawer).toBeVisible()
   await expect(mobileDrawer.getByText('推断', { exact: true })).toBeVisible()
