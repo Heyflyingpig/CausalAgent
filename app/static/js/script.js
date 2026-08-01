@@ -619,7 +619,7 @@ async function sendMessage() {
         return;
     }
 
-    //  核心修改：如果会话ID不存在，则先在后端获取一个 
+    // 新会话由后端创建并持久化，这里只负责取得其 ID。
     if (!currentSessionId) {
         console.log("检测到新对话（无会话ID），正在后端获取ID...");
         try {
@@ -1023,8 +1023,7 @@ async function handleNewChatRequest() {
             addMessage('ai', getText('newChatGreeting'));
             document.getElementById('userInput').focus();
 
-            // 注意：此时不调用loadHistory，因为新会话还不在数据库里
-            // await loadHistory(); // 重新加载历史列表以显示新会话
+            // 继续保留临时条目，避免为一条空会话刷新整个历史列表。
         } else {
             showError(data.error || "创建新对话失败。");
         }
