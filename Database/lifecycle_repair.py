@@ -1,4 +1,4 @@
-"""阶段一数据生命周期孤立记录修复 CLI。
+"""阶段一数据生命周期与 checkpoint cleanup outbox 修复 CLI。
 
 默认只生成有限修复清单；只有同时提供 ``--apply`` 和精确数据库名确认时，
 才会在单个主库事务中删除本批已再次验证仍然孤立的记录。migration 不调用
@@ -22,7 +22,7 @@ MAX_BATCH_LIMIT = 1000
 def _parse_args() -> argparse.Namespace:
     """解析 dry-run、有限批次和显式数据库确认参数。"""
     parser = argparse.ArgumentParser(
-        description="列出或修复 archived session/checkpoint 生命周期孤立记录",
+    description="列出 archived session 孤立记录或重置失败的 checkpoint cleanup outbox",
     )
     parser.add_argument("--limit", type=int, default=DEFAULT_BATCH_LIMIT)
     parser.add_argument(
@@ -44,7 +44,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _scan(cursor, *, limit: int, for_update: bool) -> dict[str, list[Any]]:
-    """扫描当前缺少外键保护的三类孤立关系，并只返回主键。"""
+    """扫描 archived session 孤立记录和失败/过期的 cleanup outbox 主键。"""
     lock_clause = " FOR UPDATE" if for_update else ""
     cursor.execute(
         f"""
@@ -60,42 +60,21 @@ def _scan(cursor, *, limit: int, for_update: bool) -> dict[str, list[Any]]:
     archived_sessions = [row["id"] for row in cursor.fetchall()]
     cursor.execute(
         f"""
-        SELECT c.thread_id, c.checkpoint_ns, c.checkpoint_id
-        FROM checkpoints AS c
-        LEFT JOIN sessions AS s ON s.id = c.thread_id
-        WHERE s.id IS NULL
-        ORDER BY c.thread_id, c.checkpoint_ns, c.checkpoint_id
+        SELECT id
+        FROM checkpoint_cleanup_outbox
+        WHERE status = 'failed'
+           OR (status = 'processing'
+               AND lease_expires_at IS NOT NULL
+               AND lease_expires_at < UTC_TIMESTAMP(6))
+        ORDER BY id
         LIMIT %s{lock_clause}
         """,
         (limit,),
     )
-    checkpoints = [
-        {
-            "thread_id": row["thread_id"],
-            "checkpoint_ns": row["checkpoint_ns"],
-            "checkpoint_id": row["checkpoint_id"],
-        }
-        for row in cursor.fetchall()
-    ]
-    cursor.execute(
-        f"""
-        SELECT w.id
-        FROM checkpoint_writes AS w
-        LEFT JOIN checkpoints AS c
-          ON c.thread_id = w.thread_id
-         AND c.checkpoint_ns = w.checkpoint_ns
-         AND c.checkpoint_id = w.checkpoint_id
-        WHERE c.thread_id IS NULL
-        ORDER BY w.id
-        LIMIT %s{lock_clause}
-        """,
-        (limit,),
-    )
-    checkpoint_writes = [int(row["id"]) for row in cursor.fetchall()]
+    checkpoint_cleanup_outbox = [int(row["id"]) for row in cursor.fetchall()]
     return {
         "archived_sessions": archived_sessions,
-        "checkpoints": checkpoints,
-        "checkpoint_writes": checkpoint_writes,
+        "checkpoint_cleanup_outbox": checkpoint_cleanup_outbox,
     }
 
 
@@ -123,41 +102,24 @@ def apply_repair_plan(limit: int) -> dict[str, Any]:
         connection.start_transaction(isolation_level="READ COMMITTED")
         candidates = _scan(cursor, limit=limit, for_update=True)
 
-        deleted_writes = 0
-        for write_id in candidates["checkpoint_writes"]:
+        reset_cleanup = 0
+        for outbox_id in candidates["checkpoint_cleanup_outbox"]:
             cursor.execute(
                 """
-                DELETE w
-                FROM checkpoint_writes AS w
-                LEFT JOIN checkpoints AS c
-                  ON c.thread_id = w.thread_id
-                 AND c.checkpoint_ns = w.checkpoint_ns
-                 AND c.checkpoint_id = w.checkpoint_id
-                WHERE w.id = %s AND c.thread_id IS NULL
+                UPDATE checkpoint_cleanup_outbox
+                SET status = 'pending', attempts = 0,
+                    available_at = UTC_TIMESTAMP(6),
+                    lease_expires_at = NULL, last_error = NULL,
+                    completed_at = NULL
+                WHERE id = %s
+                  AND (status = 'failed'
+                       OR (status = 'processing'
+                           AND lease_expires_at IS NOT NULL
+                           AND lease_expires_at < UTC_TIMESTAMP(6)))
                 """,
-                (write_id,),
+                (outbox_id,),
             )
-            deleted_writes += cursor.rowcount
-
-        deleted_checkpoints = 0
-        for checkpoint in candidates["checkpoints"]:
-            cursor.execute(
-                """
-                DELETE c
-                FROM checkpoints AS c
-                LEFT JOIN sessions AS s ON s.id = c.thread_id
-                WHERE c.thread_id = %s
-                  AND c.checkpoint_ns = %s
-                  AND c.checkpoint_id = %s
-                  AND s.id IS NULL
-                """,
-                (
-                    checkpoint["thread_id"],
-                    checkpoint["checkpoint_ns"],
-                    checkpoint["checkpoint_id"],
-                ),
-            )
-            deleted_checkpoints += cursor.rowcount
+            reset_cleanup += cursor.rowcount
 
         deleted_archives = 0
         for archived_id in candidates["archived_sessions"]:
@@ -178,8 +140,7 @@ def apply_repair_plan(limit: int) -> dict[str, Any]:
             "limit_per_category": limit,
             "deleted": {
                 "archived_sessions": deleted_archives,
-                "checkpoints": deleted_checkpoints,
-                "checkpoint_writes": deleted_writes,
+                "checkpoint_cleanup_outbox_reset": reset_cleanup,
             },
         }
     except Exception:

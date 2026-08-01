@@ -421,7 +421,7 @@ class DatabaseInspectionTests(unittest.TestCase):
         self.assertTrue(all("observed_at" in check for check in checks))
 
     def test_runtime_integrity_avoids_fk_protected_full_table_joins(self):
-        """运行期审计不扫描已有外键关系，但保留无外键的 checkpoint 孤立检查。"""
+        """运行期审计不扫描已有外键关系，并检查 cleanup outbox 状态。"""
         definitions = _integrity_definitions(3000)
         keys = {definition["key"] for definition in definitions}
         sql_by_key = {
@@ -440,15 +440,14 @@ class DatabaseInspectionTests(unittest.TestCase):
         }
 
         self.assertTrue(removed_keys.isdisjoint(keys))
-        self.assertIn("orphan_checkpoints_thread", keys)
-        self.assertIn("left join sessions", sql_by_key["orphan_checkpoints_thread"])
+        self.assertIn("checkpoint_cleanup_failed", keys)
+        self.assertIn("checkpoint_cleanup_outbox", sql_by_key["checkpoint_cleanup_failed"])
         self.assertTrue(any("information_schema" in sql for sql in sql_by_key.values()))
-        checkpoint_fk_sql = sql_by_key["constraint_fk_checkpoint_writes_checkpoint"]
+        checkpoint_fk_sql = sql_by_key["constraint_fk_checkpoint_cleanup_outbox_operation"]
         self.assertIn("information_schema.key_column_usage", checkpoint_fk_sql)
         self.assertIn("ordinal_position = 1", checkpoint_fk_sql)
-        self.assertIn("column_name = 'thread_id'", checkpoint_fk_sql)
-        self.assertIn("ordinal_position = 3", checkpoint_fk_sql)
-        self.assertIn("referenced_column_name = 'checkpoint_id'", checkpoint_fk_sql)
+        self.assertIn("column_name = 'operation_id'", checkpoint_fk_sql)
+        self.assertIn("referenced_column_name = 'operation_id'", checkpoint_fk_sql)
 
     def test_migration_preflight_skips_tables_not_present_in_current_schema(self):
         """新库或较早 schema 尚无未来表时，预检标为不适用而不是失败。"""
@@ -469,7 +468,6 @@ class DatabaseInspectionTests(unittest.TestCase):
             ("chat_messages", "fk_chat_messages_session"),
             ("chat_messages", "fk_chat_messages_user"),
             ("chat_attachments", "fk_chat_attachments_message"),
-            ("checkpoint_writes", "fk_checkpoint_writes_checkpoint"),
         }
         cursor = PreflightCursor(
             tables={
@@ -477,8 +475,6 @@ class DatabaseInspectionTests(unittest.TestCase):
                 "sessions",
                 "chat_messages",
                 "chat_attachments",
-                "checkpoints",
-                "checkpoint_writes",
             },
             foreign_keys=foreign_keys,
         )
@@ -498,8 +494,6 @@ class DatabaseInspectionTests(unittest.TestCase):
                 "sessions",
                 "chat_messages",
                 "chat_attachments",
-                "checkpoints",
-                "checkpoint_writes",
             },
             revision="b1c2d3e4f5a6",
         )
@@ -519,8 +513,6 @@ class DatabaseInspectionTests(unittest.TestCase):
                 "sessions",
                 "chat_messages",
                 "chat_attachments",
-                "checkpoints",
-                "checkpoint_writes",
             },
             revision="d876b980dc9a",
         )

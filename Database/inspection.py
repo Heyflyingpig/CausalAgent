@@ -608,23 +608,13 @@ EXPECTED_FOREIGN_KEYS = (
     ("analysis_jobs", "fk_analysis_jobs_session", (("session_id", "sessions", "id"),)),
     ("analysis_job_events", "fk_analysis_job_events_job", (("job_id", "analysis_jobs", "job_id"),)),
     (
-        "checkpoint_writes",
-        "fk_checkpoint_writes_checkpoint",
-        (
-            ("thread_id", "checkpoints", "thread_id"),
-            ("checkpoint_ns", "checkpoints", "checkpoint_ns"),
-            ("checkpoint_id", "checkpoints", "checkpoint_id"),
-        ),
+        "checkpoint_cleanup_outbox",
+        "fk_checkpoint_cleanup_outbox_operation",
+        (("operation_id", "admin_operations", "operation_id"),),
     ),
 )
 
-EXPECTED_UNIQUE_INDEXES = (
-    (
-        "checkpoint_writes",
-        "uq_checkpoint_writes_task_idx",
-        ("write_identity_hash",),
-    ),
-)
+EXPECTED_UNIQUE_INDEXES = ()
 
 
 def _foreign_key_definition_sql(
@@ -724,27 +714,25 @@ def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
                   AND column_type LIKE '%''visualization''%'""",
         },
         {
-            "key": "constraint_checkpoint_write_identity_hash",
-            "label": "约束 checkpoint_writes 完整业务键摘要列",
+            "key": "constraint_checkpoint_cleanup_outbox_claim",
+            "label": "约束 checkpoint cleanup outbox 领取索引",
             "severity": "blocking",
             "healthy_when": "one",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value
-                FROM information_schema.columns
+            "sql": f"""SELECT {hint} CASE WHEN COUNT(DISTINCT index_name) = 1
+                    THEN 1 ELSE 0 END AS count_value
+                FROM information_schema.statistics
                 WHERE table_schema = DATABASE()
-                  AND table_name = 'checkpoint_writes'
-                  AND column_name = 'write_identity_hash'
-                  AND data_type = 'binary'
-                  AND character_octet_length = 32
-                  AND is_nullable = 'NO'
-                  AND generation_expression = ''""",
+                  AND table_name = 'checkpoint_cleanup_outbox'
+                  AND index_name = 'idx_checkpoint_cleanup_outbox_claim'""",
         },
         {
-            "key": "orphan_checkpoints_thread",
-            "label": "孤立 checkpoints.thread_id",
-            "severity": "blocking",
+            "key": "checkpoint_cleanup_failed",
+            "label": "失败的 PostgreSQL checkpoint 清理任务",
+            "severity": "warning",
             "healthy_when": "zero",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM checkpoints cp
-                LEFT JOIN sessions s ON s.id = cp.thread_id WHERE s.id IS NULL""",
+            "sql": f"""SELECT {hint} COUNT(*) AS count_value
+                FROM checkpoint_cleanup_outbox
+                WHERE status = 'failed'""",
         },
     ])
     return definitions
@@ -854,7 +842,6 @@ def _not_applicable_check(key: str, label: str, reason: str) -> dict[str, Any]:
 
 
 FK_MIGRATION_REVISION = "f6b8c9d0e1a2"
-PENDING_WRITES_IDEMPOTENCY_REVISION = "e4f5a6b7c8d9"
 
 
 def _current_schema_revision(cursor, tables: set[str]) -> str | None:
@@ -957,19 +944,6 @@ def execute_migration_preflight_checks(
             "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM chat_attachments ca
                 LEFT JOIN chat_messages cm ON cm.id = ca.message_id WHERE cm.id IS NULL""",
         },
-        {
-            "key": "orphan_checkpoint_writes",
-            "label": "迁移前孤立 checkpoint_writes.checkpoint_id",
-            "child": "checkpoint_writes",
-            "parent": "checkpoints",
-            "constraint": "fk_checkpoint_writes_checkpoint",
-            "sql": f"""SELECT {hint} COUNT(*) AS count_value FROM checkpoint_writes cw
-                LEFT JOIN checkpoints cp
-                  ON cp.thread_id = cw.thread_id
-                 AND cp.checkpoint_ns = cw.checkpoint_ns
-                 AND cp.checkpoint_id = cw.checkpoint_id
-                WHERE cp.checkpoint_id IS NULL""",
-        },
     ]
     checks: list[dict[str, Any]] = []
     definitions: list[dict[str, Any]] = []
@@ -1031,58 +1005,6 @@ def execute_migration_preflight_checks(
             "生产升级外键已存在或表尚未创建，无需检查旧分区结构",
         ))
 
-    idempotency_migration_pending = not _revision_contains_migration(
-        current_revision,
-        PENDING_WRITES_IDEMPOTENCY_REVISION,
-    )
-    cursor.execute("""
-        SELECT index_name
-        FROM information_schema.statistics
-        WHERE table_schema = DATABASE()
-          AND table_name = 'checkpoint_writes'
-          AND index_name = 'uq_checkpoint_writes_task_idx'
-          AND non_unique = 0
-    """)
-    idempotency_index_exists = cursor.fetchone() is not None
-    duplicate_key = "duplicate_checkpoint_write_key"
-    duplicate_label = "迁移前重复 checkpoint pending write 幂等键"
-    if not idempotency_migration_pending:
-        checks.append(_not_applicable_check(
-            duplicate_key,
-            duplicate_label,
-            f"当前 revision {current_revision} 已包含 pending writes 幂等迁移",
-        ))
-    elif "checkpoint_writes" not in tables:
-        checks.append(_not_applicable_check(
-            duplicate_key,
-            duplicate_label,
-            "checkpoint_writes 尚未创建，跳过迁移前扫描",
-        ))
-    elif idempotency_index_exists:
-        checks.append(_not_applicable_check(
-            duplicate_key,
-            duplicate_label,
-            "目标唯一约束已经存在，跳过重复数据扫描",
-        ))
-    else:
-        checks.extend(_execute_integrity_definitions(
-            connection,
-            [{
-                "key": duplicate_key,
-                "label": duplicate_label,
-                "severity": "blocking",
-                "healthy_when": "zero",
-                "sql": f"""SELECT {hint} COUNT(*) AS count_value
-                    FROM (
-                        SELECT 1
-                        FROM checkpoint_writes
-                        GROUP BY thread_id, checkpoint_ns, checkpoint_id, task_id, idx
-                        HAVING COUNT(*) > 1
-                    ) AS duplicate_keys""",
-            }],
-            source_role=source_role,
-            source_alias=source_alias,
-        ))
     return checks
 
 
