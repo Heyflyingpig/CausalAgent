@@ -1,6 +1,7 @@
 # CausalAgent AGENTS.md
 
 本文件适用于仓库根目录及其所有子目录；如果更深层目录存在新的 `AGENTS.md`，以更近的文件为准。
+R5 评测策略 profile 统一包含 retrieval 与 Ragas 配置：`active_current`、`quick_cached`、`reviewed_5_core_metrics` 等内置 profile 来自代码且只读；用户自定义 profile 持久化在 MySQL 的 `rag_eval_profiles` 表，可通过 `/api/rag_eval/profiles` 创建、更新、删除和发布。发布只写入 `Agent/knowledge_base/rag/runtime/production_rag_config.json` 的正式 retrieval 快照；每次隔离评测仍把完整策略 profile 快照写入自己的 `run_manifest.json`。
 
 ## 1. 工作规则
 
@@ -130,10 +131,8 @@
 - Pydantic 结构化输出统一通过 `Agent/llm_structured_output.py` 的同步/异步入口执行，固定使用普通 `function_calling`；调用器仅对结构化请求发送 `thinking.type=disabled`，避免 DeepSeek Thinking 与固定 `tool_choice` 冲突。MCP 继续使用原生 Tool Calls；只有 MCP planner 使用关闭 Thinking 的 LLM 副本和 `tool_choice="required"`，确保模型必须自行选择一个已加载工具。
 - `agent` 与 `fold` 的条件路由只读取 `route_decision`、`fold_decision` 显式 State 字段；展示消息仅用于用户可见内容和审计，不参与控制流。
 - 配置统一由 `config/settings.py` 从系统环境变量读取；若项目根目录存在 `.env`，会先通过 `python-dotenv` 加载到环境变量。
-- 普通用户前端仍是 Flask 静态资源方案，聊天 API/SSE 契约不变；关键文件是：
-  - `app/static/chat.html`
-  - `app/static/css/style.css`
-  - `app/static/js/script.js`
+- 聊天页面仍是 Flask 静态资源方案，关键文件是 `app/static/chat.html`、`app/static/css/style.css` 和 `app/static/js/script.js`；`/rag_eval` 使用 `app/rag_eval/frontend/` 下的 Vue 3 + Vite + TypeScript 工程，生产构建输出到 `app/static/rag_eval_app/`，由 `app/main/routes.py` 提供。
+- 旧版 `app/static/rag_eval.html`、`app/static/css/rag_eval.css`、`app/static/js/rag_eval.js` 及其 `/run`、`/runs/*` 兼容接口已移除；RAG 运行台页面可通过 `/rag_eval` 或 `/rag-eval` 访问。
 - 管理员前端独立位于 `admin-frontend/`，使用 Vue 3、严格 TypeScript、Vue Router、Element Plus、Vite、Vitest 和 Playwright；路由为 `/admin/database` 与 `/admin/database/settings`，Vite base 固定为 `/admin/`。
 - 管理员 Vue 生产构建默认从 `admin-frontend/dist` 读取；Docker 镜像使用 Node 24 构建阶段，并把产物复制到 `/opt/causalagent-admin`。最终 Python 运行镜像不包含 Node、不启动 Vite、不开放 Node 端口。开发期只有显式设置 `ADMIN_VITE_DEV_SERVER_URL` 时，Flask 在完成页面鉴权后才跳转到 Vite。
 - `admin-frontend/dist/` 是需要随管理员 Vue 源码同步更新并提交的发布产物；根 `.gitignore` 只忽略仓库根目录 `/dist/`。`.dockerignore` 继续排除本地前端产物，因为 Dockerfile 会在 Node 构建阶段从当前源码重新构建并复制到 `/opt/causalagent-admin`。
@@ -183,28 +182,38 @@
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
 - 后端单元测试使用独立 `docker-compose.test.yml`：`unit-test` 服务基于 Dockerfile 的 `test` 目标预装 `requirements-test.txt`，不依赖数据库，以 `tests/unit-test.env` 屏蔽项目 `.env` 并关闭 LangSmith 追踪，禁用网络，只读挂载当前仓库；通过 `docker compose ... run --rm` 按需创建和删除测试容器，测试镜像继续复用。
+- `docker-compose.replica.yml` 是本地主从开发拓扑，当前包含 `mysql-primary`、`mysql-replica`、`app`、`worker` 和 `rag-eval-worker` 五个服务；本轮仍不提供自动故障切换。`rag-eval-worker` 专门领取 R5 隔离评测任务。
+- Docker 是当前首选开发方式；`docker-compose.replica.yml` 中 `app`、`worker` 和 `rag-eval-worker` 都会挂载以下知识库目录：
+  - `Agent/knowledge_base/models`
+  - `Agent/knowledge_base/db`
+- `docker-compose.replica.yml` 中 `app`、`worker` 和 `rag-eval-worker` 的 `MULTIMODAL_DOCLING_ARTIFACTS_DIR` 指向 `/app/Agent/knowledge_base/models/docling`；Docling 模型必须放在工作区该子目录，宿主机原始缓存可保留作为回滚副本。
 - 默认生产 RAG 使用 `RagRuntime -> RagService -> rag 普通节点` 链路；Runtime 默认从多模态 active pointer 解析不可变 Chroma collection，并校验 pointer、manifest 和运行时 embedding 指纹；失败时绑定不可用 Service，绝不回退到 PubMedQA。`rag_enrichment_search` 仅保留为兼容工具入口，不参与父图默认执行。
 - `query_rag.py` 的 dense + BM25s + rerank + answer 流程继续作为默认检索实现，并已兼容 `document_id`、`page_number`、`asset_uri`、`modality` 和 `content_kind` 等多模态 metadata。PubMedQA 构建与专用评测入口暂作为医疗兼容代码保留，后续分阶段清理。
-- 多模态公共知识库维护模块位于 `Agent/knowledge_base/multimodal/`，其 assets、暂存索引、active pointer 和 OmniDocBench 下载资料分别使用独立目录，严禁写入或清理 `Agent/knowledge_base/db/` 与 PubMedQA collection。PDF 当前默认 Docling；manifest 必须保存 source、parser 原始产物、标准化单元与资源的 URI/内容哈希关联，发布门禁必须回读校验。WCode 仅可接收 `remote_samples.json` 中固定 Pearl 页或 OmniDocBench 精确文件路径，模型固定 `qwen/qwen3-vl-flash`、域名必须为 `wcode.net`，默认预算不超过 100 且 smoke 应显式限制；审计日志不得记录图片、提示词、响应正文或密钥。
-- 正式 PDF 摄取按物理页在独立子进程中运行 Docling + RapidOCR，并保存页级 checkpoint；失败续跑不得重复解析已完成页面。Chroma 必须分批写入独立 attempt 目录，成功后才能提交为版本的 `chroma/`。生产评测命中必须同时匹配文档、页码和 `expected_modality`；`run` 默认不发布，只有显式 `--publish` 才允许切换 active pointer。
+- 多模态公共知识库维护模块位于 `Agent/knowledge_base/multimodal/`，其 assets、暂存索引、active pointer 和 OmniDocBench 下载资料分别使用独立目录，严禁写入或清理 `Agent/knowledge_base/db/` 与 PubMedQA collection。PDF 当前默认 Docling；manifest 必须保存 source、parser 原始产物、标准化单元与资源的 URI/内容哈希关联，发布门禁必须回读校验。WCode 仅可接收固定批准来源的精确页面，模型固定 `qwen/qwen3-vl-8b-instruct`、域名必须为 `wcode.net`，默认预算不超过 100 且 smoke 应显式限制；审计日志不得记录图片、提示词、响应正文或密钥。R5 隔离运行默认开启远程 VLM，并为本次显式选中的冻结来源和用户上传来源生成隔离 outbound manifest；设置 `VISION_ALLOW_REMOTE_DATA=false` 可关闭，用户上传来源的默认远程行为仅适用于内测，正式环境仍需独立授权策略。
+- R5 `/rag_eval` 的知识源上传接口为 `POST /api/rag_eval/isolated/sources`，支持 `.pdf`、`.txt`、`.md`、`.markdown`、`.csv`、`.xlsx`、`.png`、`.jpg`、`.jpeg`、`.webp`、`.tif`、`.tiff`，默认保存到 `tmp/r5_sources/`，可通过 `R5_SOURCE_ROOT` 覆盖；上传只登记来源并刷新目录，不自动摄取。用户上传来源可通过 `DELETE /api/rag_eval/isolated/sources/<source_id>` 删除，但固定来源、运行中的摄取和已生成的 staged index/评测产物不会被删除。用户手动启动摄取后，上传来源可在内测远程开关开启时走自动 outbound manifest 和远程 VLM。
+- 新的正式 PDF 摄取按物理页运行关闭 OCR 的 Docling，并保存页级 checkpoint；当前默认使用 `spawn_per_batch`、批量大小 8、关闭 Docling 图像/表格生成、布局/表格/OCR batch size 为 1，以控制内存峰值。图片必须先通过 outbound manifest、解码/RGB 归一化和像素/字节上限，再由 provider adapter 返回远程 OCR 与视觉语义；`PictureItem` 和页级图片资产由 PDF bbox 渲染器生成，不把图片识别改回本地 OCR。Docling 空 `TableItem` 会按 bbox 裁剪为 `table_recovery` 资产，由可替换的 `TableRecoveryProvider` 生成 `table_markdown`；当前远程实现只是一个 WCode adapter，未来可替换为本地 VLM。远程失败不得回退 RapidOCR 或生成伪完成图片单元。当前 active 仍是迁移前本地 OCR 回滚基线。Chroma 必须分批写入独立 attempt 目录，成功后才能提交为版本的 `chroma/`。生产评测命中必须同时匹配文档、页码和 `expected_modality`；`run` 默认停在可发布 staged 状态，只有显式通过发布门禁并调用 publish 才切换 active pointer。
 - `Agent/knowledge_base/build_knowledge.py` 当前支持 `--profile default` 和 `--profile medical`：
   - `default` 从 `Agent/knowledge_base/source/` 读取 Pearl/因果资料，并使用本地 `bge-small-zh-v1.5`。
   - `medical` 从 `rag_config.py` 的 `MEDICAL_KNOWLEDGE_BUILD_CONFIG["corpus_path"]` 读取当前 active 医疗语料；当前指向 PubMedQA processed corpus，embedding provider 由 `RAG_EMBEDDING_PROVIDER` 控制：`auto` 保持旧兼容行为（存在 `MEDICAL_EMBEDDING_API_KEY` 或 `KNOWLEDGE_BUILD_PROFILE=medical` 时使用 OpenAI-compatible API，否则使用本地模型），`openai_compatible` 强制使用 `MEDICAL_EMBEDDING_API_KEY`、`MEDICAL_EMBEDDING_BASE_URL`、`MEDICAL_EMBEDDING_MODEL`，`local` 强制使用 `RAG_LOCAL_EMBEDDING_MODEL_PATH` 或默认 `Agent/knowledge_base/models/bge-small-zh-v1.5`。
   - 两个 profile 都写入原 `Agent/knowledge_base/db` 持久化目录；切换 profile 前如果要清空旧索引，必须先获得用户明确确认。
 - 旧医疗兼容 benchmark 是 PubMedQA labeled；其 processed corpus/eval 均为 1000 条，不再属于默认 RAG 测试链路。
 - 当前本地 `Agent/knowledge_base/db` 已替换为 PubMedQA 医疗知识库，医疗查询与 medical 构建默认 collection 为 `pubmedqa_clean`；`causal_agent_default` 也指向 PubMedQA 但存在重复 chunk，旧 RAGCare 向量库已备份到 `tmp/RAGCare`。
-- 当前医疗知识库应以 PubMedQA corpus 为准；若本地 `Agent/knowledge_base/db` 与 active benchmark 不一致，retrieval_eval 会通过向量库/benchmark mismatch 防护阻止误跑。
+- PubMedQA 构建与专用评测入口仍是显式 medical 工具；R5 `/rag_eval` 不读取其 corpus，也不使用 source-specific mismatch 防护。
 - `build_knowledge.py` 的旧构建入口仍支持 `RAG_VECTOR_DB_DIR`、`RAG_COLLECTION_NAME` 等显式覆盖；默认查询 Runtime 不再读取这两个旧医疗路径变量，而是通过 `MULTIMODAL_INDEX_ROOT` 与 `MULTIMODAL_ACTIVE_INDEX_CONFIG` 定位已发布多模态索引。embedding provider 仍由 `RAG_EMBEDDING_PROVIDER` 与 `RAG_LOCAL_EMBEDDING_MODEL_PATH` 等现有配置控制。
 - 默认多模态 RAG 查询继续读取 `Agent/knowledge_base/rag/runtime/production_rag_config.json` 中的 dense、BM25s、rerank 和证据长度参数。
 - `build_knowledge.py` 默认拒绝向非空 Chroma collection 追加写入，并记录到 `Agent/knowledge_base/build_knowledge.log`；只有明确传 `--allow-append` 才允许追加，避免重复 chunk 污染默认库。
-- retrieval_eval 已增加向量库/benchmark mismatch 防护：若 active gold doc 前缀与当前向量库 doc 前缀不一致，会在检索前失败。
+- R5 `/rag_eval` 使用 `rag_eval_v1` 通用题集契约；题集必须通过 `RAG_EVAL_DATASET_PATH` 显式提供，未配置时校验失败，不读取当前知识库路径。
 - `run_rag_eval.py` 默认步骤是 `validate_datasets -> retrieval_eval -> ragas_eval -> trace_export -> summary`；`claim_eval` 已从默认链路和前端工作台调参入口屏蔽，坏例链路只统计 retrieval/Ragas 相关问题。
 - RAG 评测已移除 CLI 调参备份层；前端不再展示 CLI 等价字段，后端不再提供 `GET /api/rag_eval/cli-params`，也不再接受 `cli_overrides`。
-- 当前 `pubmedqa_pipeline` 默认跑前 30 条，样本数通过前端动态调整；Ragas generation 默认使用 6 个 context、单 context 1600 字符、回答 1100 字符、PubMedQA prompt v6；100 条 `pubmedqa_eval100` profile 默认使用 `ragas_max_workers=4`、`ragas_max_retries=3`、`ragas_max_wait=20` 控制 Ragas judge 并发和限流等待；Ragas 运行会先校验 `rag_eval_result.json` 的样本数、问题顺序、检索配置和向量库摘要，不一致则自动刷新 retrieval latest，避免不同样本规模的 cross-metric 误报；默认 `trace_export` 产物在前端按 Bad Case Traces / 坏例链路展示；前端取消会在 `retrieval_eval` 和 Ragas dataset 构建/refresh 的当前样本结束后停止，并用 `step_progress` 展示样本进度。
+- 当前 R5 使用 `generic_pipeline`：Ragas generation 默认使用通用回答 prompt；题集可包含 `reference_answer`、`expected_claims` 和可选 `gold_evidence`，没有 gold 时检索指标为 `unscored`，不会伪造为 0。Ragas 运行会记录题集 identity 和 Runtime 提供的向量库 identity；评测层不读取多模态 active pointer，也不绑定 Pearl、PubMedQA 或具体文件格式。
+- `rag_eval_v1` 题集按 `dataset_kind` 区分 `gold_regression`、`generated_candidate` 和 `reference_free`；Pearl 与 PubMedQA 的正式转换产物位于 `Agent/knowledge_base/rag/data/eval/`，生成入口为 `python -m Agent.knowledge_base.rag.operation_datasets.build_eval_datasets`。不同题集 kind/id 不得合并写入同一文件。
+- R5 的隔离评测入口为 `POST /api/rag_eval/isolated/evaluation-runs`；它必须绑定 `ingestion_run_id + index_version`，按本次评测目录生成 retrieval、Ragas、trace 和 summary 产物。评测创建后先写入 `rag_eval_jobs` SQL 队列并返回 `queued`，由 `python -m app.rag_eval.worker`（Docker 服务 `rag-eval-worker`）领取执行；worker 以 SQL heartbeat 租约和独立 `worker_heartbeat.json` 保活，进程异常退出后由下一次 worker 启动将超时 `running` 任务标记为 `failed`，不自动重跑 Ragas。跨进程 SSE 从 `run.json` 轮询事件。`retrieval` 支持显式 profile/overrides 及 sweep，`ragas` 支持显式 profile、prepare-only 或 judge 运行；评测接口不得读取旧 latest 输出、默认知识库路径或 active pointer。`DELETE /api/rag_eval/isolated/evaluation-runs/<run_id>` 默认只允许删除已结束的 evaluation run；若运行中任务超过无事件活动窗口（默认 1800 秒，支持 `R5_EVALUATION_STALE_AFTER_SECONDS` 覆盖），history 会自动收敛为失败，前端确认后用 `{"force":true}` 清理其 `tmp/r5_isolated_runs/<run_id>/` 目录。不删除关联 ingestion run、staged index 或共享知识库。对比接口同时按 `run_manifest.json` 的路径返回两次 run 的配置差异。隔离摄取接口支持可选 `page_ranges`，按每个选中来源校验并执行 1-based、首尾包含的物理页范围；旧 `max_pages` 仍表示按来源顺序累计的总上限，两者不能同时提交。
 - `ragas_eval.py` 和 `claim_eval.py` 会在导入 LangChain/Ragas 前用 `os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")` 做 Windows OpenMP 进程级兜底；不要写入 `.env`，命令行显式设置仅用于覆盖默认值。
-- Active benchmark 测试集使用通用 `benchmark_v2` schema，`gold_doc_ids` 是通用 doc-level 检索 gold；旧因果数据集仍可继续使用 `gold_chunk_ids`。
+- R5 题集使用通用 `rag_eval_v1` schema；`gold_regression` 必须同时提供 `reference_answer`、`expected_claims` 和 `gold_evidence`，后者是由 Runtime metadata 严格匹配的 locator 列表。`generated_candidate` 可由 Ragas 生成并在唯一映射后获得 gold，`reference_free` 只用于未评分观测；旧 source-specific 字段不属于 `/rag_eval` 契约。
 - 当前 LLM 若不支持 `response_format` 结构化输出，`query_rag.py` 会退回普通 JSON answer 生成路径。
 
+
+- R5 摄取状态持久化在 tmp/r5_isolated_runs/<ingestion_run_id>/run.json，页级 checkpoint 持久化在每个 staged index 的 checkpoints.sqlite3，GET /api/rag_eval/isolated/ingestion-runs 可枚举并恢复最近状态；前端首次恢复失败后，顶部刷新会再次读取历史并恢复 staged index。评测状态同样写入 run.json，但执行队列位于 `rag_eval_jobs` 表，Ragas 不再由 Web 进程线程执行。tmp/r5_isolated_runs 和 tmp/r5_sources 属于本地运行产物，已加入 Git 忽略。后端进程重启不会自动续跑已中断的摄取线程；已入队的评测由 resident `rag-eval-worker` 继续处理或在 heartbeat 超时后标记失败。
 
 ### 3.2 常用命令
 
@@ -264,6 +273,11 @@ powershell -ExecutionPolicy Bypass -File tests/run_admin_32_e2e.ps1
 
 该脚本不会触碰当前开发库，覆盖空库升级、3.2 migration 往返、受控写入/删除、主从追平和普通用户回归；不会自动删除隔离容器和卷，清理仍需单独明确确认。物理删除种子不能通过 `KeepSeededData` 重放。
 
+本地启动 R5 隔离评测 worker：
+
+```bash
+python -m app.rag_eval.worker
+```
 本地启动桌面端：
 
 ```bash
@@ -277,7 +291,9 @@ Docker 主从开发启动（推荐）：
 docker compose -f docker-compose.yml up -d
 ```
 
-首次启动、空卷重建或数据库环境重建后，推荐按下面顺序执行；全新空库不要先运行 preflight：
+R3 maintenance worker is an on-demand service and must not be substituted for the resident `worker`. It keeps code, embedding models, Docling artifacts, and the active pointer read-only while allowing writes only to multimodal staging roots and `tmp/` manifest output. Run `scripts/run-r3-maintenance-preflight.ps1` before R3a; it performs no image egress. Before R3b remote calls, rerun it with `-RequireVisionConfiguration`. R3a uses `scripts/prepare-r3-outbound-manifest.ps1` to scan all 889 frozen Pearl pages with resumable page-level discovery checkpoints; the R2 sample policy must not limit this local discovery. It creates the review manifest without `--allow-remote-data`. A human-approved immutable manifest and separate explicit authorization remain mandatory before `run --allow-remote-data`, and R3b may call pages outside the R2 sample only when an exact approved record matches.
+
+首次启动、空卷重建或数据库环境重建后，推荐按下面顺序执行：
 
 ```bash
 docker compose -f docker-compose.yml up -d

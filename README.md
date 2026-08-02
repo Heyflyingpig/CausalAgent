@@ -9,6 +9,8 @@
 CausalAgent
 </h1>
 
+当前 `/rag_eval` 的策略 profile 将 retrieval 与 Ragas 配置统一管理：内置 profile 只读；用户自定义 profile 存储在 MySQL 的 `rag_eval_profiles` 表，可从评测中心另存、保存、删除和发布。正式发布生成 `Agent/knowledge_base/rag/runtime/production_rag_config.json` 快照，历史评测使用各自 `run_manifest.json` 中的完整配置。
+
 <p align="center">
 <em>新一代因果分析智能体</em>
 </p>
@@ -155,20 +157,44 @@ graph TD;
 *通过嵌入论文与书籍构建因果推断领域知识库，为报告和问答提供专业支撑*
 
 - **嵌入模型**：目前采用 `bge-small-zh-v1.5` 作为中文向量化模型，兼顾性能与效果。
-- **知识来源**：使用大量因果推断相关书籍与论文的 PDF / TXT 文档构建，涵盖经典因果图论、干预推断、工具变量、面板因果等主题。
+- **知识来源**：支持 PDF、TXT、Markdown、CSV、XLSX 以及 PNG/JPG/JPEG/WEBP/TIF/TIFF 图片；知识源先经过多模态解析与标准化，再进入统一检索链路，涵盖经典因果图论、干预推断、工具变量、面板因果等主题。
 - **典型能力**：
   - 在生成报告时，自动检索相关理论和方法描述，为结论补充严谨的文献背景；
   - 支持面向初学者的「概念解释」，例如“什么是混杂变量”“为什么需要随机试验”等。
 - **默认生产链路**：使用 `RagRuntime -> RagService -> rag 普通节点`；该节点直接生成问题、调用 Service 并写回结果，不再经过 RAG ToolNode 子图。`rag_enrichment_search` 仅作为兼容工具入口保留。worker 启动时从多模态 active pointer 初始化共享 Runtime，RAG 问题的默认且唯一 corpus 是 `multimodal`。
-- **多模态公共知识库**：维护者可通过 `python -m Agent.knowledge_base.multimodal.cli` 对离线公共 TXT、Markdown、图片和已配置解析器支持的 PDF 创建隔离暂存索引；独立图片与 PDF 图片均使用本地 RapidOCR 生成可检索文本。生产默认固定为本地 `bge-small-zh-v1.5`（512 维、L2 归一化）、两本已哈希锁定的 Pearl 资料与关闭的远程视觉；版本还须通过 24 条人工页级 gold 的 Hit@5、MRR、引用定位准确率和空结果率门禁，才可切换 active pointer。Runtime 会校验来源、manifest 与 embedding 指纹，漂移时拒绝初始化且绝不回退到 PubMedQA。
-- **全量摄取与发布**：正式 PDF 使用独立子进程逐页运行 Docling + RapidOCR，并原子保存页级 checkpoint；中断后复用已完成页面，Chroma 分批写入独立 attempt 目录，成功后才提交。24 题命中同时要求文档、页码和 `expected_modality` 一致。`run` 默认停在 `ready_to_publish`，只有显式传 `--publish` 或单独执行 `publish` 才切换 active pointer。
+- **多模态公共知识库**：维护者可通过 `python -m Agent.knowledge_base.multimodal.cli` 对离线公共文本、表格、图片和已配置解析器支持的 PDF 创建隔离暂存索引。解析层会识别正文、版面、表格、公式和图片等内容，并转为带来源定位的多模态知识单元，再写入同一 collection；新图片链只接受冻结公共来源，Runtime 仍会校验来源、manifest 与 embedding 指纹，漂移时拒绝初始化且绝不回退到 PubMedQA。
+- **全量摄取与发布**：正式 PDF 使用 `spawn_per_batch` 的低内存 Docling 批处理，并原子保存到候选版本的 `checkpoints.sqlite3`：其中分表保存经 SHA-256 校验的本地版面解析、页元数据和最终单元，支持按页恢复而不产生大量小文件；默认关闭 Docling 图像/表格生成，页面和 `PictureItem` 图片由 PDF bbox 渲染器生成后进入远程 VLM 链路。传入外部 `outbound_manifest.json` 时，远程运行开始前会把它复制并冻结到候选目录；R5 两份冻结 Pearl 来源在远程授权开启时可自动生成本次不可变清单，其他来源仍需显式批准清单。只有完整匹配 source/page/图片哈希/context/策略指纹的记录允许外发。远程失败不回退本地 OCR。Chroma 成功构建后才提交，`run` 默认停在 `ready_to_publish`，只有显式发布才切换 active pointer。
+- **空表恢复**：Docling 发现但无法导出的空 `TableItem` 会按页面 bbox 裁剪为 `table_recovery` 资产，与同页正文一起进入同一索引；摄取层依赖 provider-neutral 的 `TableRecoveryProvider`，当前 `RemoteVlmTableRecoveryProvider` 复用已存在的远程视觉 adapter，未来可替换为本地 VLM。恢复失败记录阻断 issue，不生成伪表格单元。
+- **Checkpoint 查询**：日常使用 `python scripts/query-multimodal-checkpoints.py --checkpoint-db <候选目录>/checkpoints.sqlite3` 输出概要；加 `--document-id <ID> --page-number <页码>` 查询单页，只有需要查看单元详情时再加 `--include-units`。脚本通过 SQLite 只读连接打开文件，不需要图形化数据库工具。
+- **图片链路迁移状态（2026-07-31）**：R3a 已完成两份冻结 Pearl PDF 的 `889/889` 页本地发现，275 条冻结记录已人工审核；R3b 已在单独外发授权下构建候选 `mm_587799887fc8efb68409`，其页覆盖、route、unit/vector/asset/hash 链和 270/275 的远程成功记录均已审计。R4 已从“固定 gold 的通用前置条件”调整为“索引可用性与 RAG 评测解耦”：新知识源先通过页覆盖、资产、hash、unit/vector 与解析错误门禁，再在独立 `/rag_eval` 工作流中以已有问题集或真实用户问题运行 Ragas。固定 Pearl 的 24 条人工题仅作为该公共语料的回归集；当前候选在 `why-003` 发现表格内容未进入 `retrieval_text`，故该回归集未通过，未发布。任一来源、图片哈希、context 或远程策略漂移仍须重新发现、审核和取得外发授权。当前 active `mm_74b5aef2f5e7322b5a79` 未改变。
+- **R5/R6 隔离运行台（2026-07-31）**：`/rag_eval` 当前使用 `app/rag_eval/frontend/` 下的 Vue 3 + Vite + TypeScript 页面，生产构建输出到 `app/static/rag_eval_app/`；先提交来源目录 `source_ids` 或显式 `sources`，再在本次 `ingestion_run_id + index_version` 上运行单问题或内联 `rag_eval_v1` 题集。摄取与 RAG 测试分别拥有独立运行目录、状态、SSE 和取消接口；页面不拼接宿主路径，不读取旧评测产物，不打开 active pointer，也不把本次 staged index 发布为生产索引。旧版 `app/static/rag_eval.html`、`app/static/css/rag_eval.css`、`app/static/js/rag_eval.js` 及其旧 `/run`、`/runs/*` 兼容接口已移除；原聊天页仍使用 Flask 静态资源。
+- **R5 Evaluation Run（2026-08-02）**：后端新增 `POST /api/rag_eval/isolated/evaluation-runs`，显式绑定 `ingestion_run_id + index_version`，先把任务写入 `rag_eval_jobs` SQL 队列并由独立 `rag-eval-worker` 执行，不再依赖 Web 进程 daemon 线程。worker 通过 heartbeat 租约保活；进程异常退出后，下一次 worker 启动会将超时的 `running` 任务标记为 `failed`，不自动重跑可能产生外部模型调用的 Ragas。结果与 Markdown/JSON 产物通过评测任务结果和 artifact 接口读取，不复用旧 latest 输出；SSE 从运行目录轮询事件，支持 Web 与 worker 跨进程。
+- **R5 前端工作台（2026-07-31）**：`/rag_eval` 增加左侧产品导航和“评测中心”面板；面板只绑定当前 staged index，默认先执行 prepare-only 流程，用户显式打开 Ragas judge 后才进入完整评测，报告、事件和产物仍通过隔离 evaluation run 展示。
+- **R5 前端评测导航（2026-07-31）**：评测中心拆分为“评测配置、流程报告与指标、评测流程事件、对比分析”四个二级页面；对比页提供时间跨度、粒度、时间趋势/运行 A/B/策略对比三种交互和快捷操作流程，但在隔离评测历史接口与测试源确定前不展示伪造指标。工作台改为纵向分区，左侧导航支持收起并持久化用户偏好。
+- **R5 报告编辑与清理**：报告入口统一命名为“报告编辑”，可在同一页面切换流程、检索和 Ragas Markdown；删除已结束评测后，后端会移除对应 `tmp/r5_isolated_runs/<run_id>/` 目录，历史与对比接口不再返回该运行。对超过无事件活动窗口的失活评测，用户确认后可强制删除；仍有活动迹象的运行禁止删除，摄取运行和 staged index 保留。
+- **R5 运行配置对比**：对比分析除了指标和样本结果，还会读取两次 evaluation run 各自的 `run_manifest.json`，按路径展示 retrieval、Ragas、策略 profile 和执行步骤的配置差异；不会依赖特定题目或固定 dataset 字段。
+- **R5 来源页范围（2026-07-31）**：`/rag_eval` 的运行范围支持按每个来源分别设置 1-based、首尾包含的物理页段，并通过 `page_ranges` 传给隔离摄取接口；快速联调/Smoke 的 `max_pages` 仍是按选中来源顺序累计的总上限。范围会写入 staged manifest，不能绕过隔离目录或发布门禁。
+- **R5 知识源上传与删除（2026-08-02）**：工作台支持上传 PDF、TXT、Markdown、CSV、XLSX 和 PNG/JPG/JPEG/WEBP/TIF/TIFF 图片；后端通过 `POST /api/rag_eval/isolated/sources` 按解析器已有格式校验、大小、可读性和 SHA-256，并将来源登记到独立的 `tmp/r5_sources/`（可用 `R5_SOURCE_ROOT` 覆盖）。上传不会自动摄取；用户上传来源可通过 `DELETE /api/rag_eval/isolated/sources/<source_id>` 删除，固定来源、运行中的摄取和已生成的 staged index/评测产物不会被删除。用户选择来源并启动摄取后，R5 内测默认开启远程 VLM；设置 `VISION_ALLOW_REMOTE_DATA=false` 可关闭。
+- **Docker Docling 模型路径（2026-07-31）**：`docker-compose.replica.yml` 的 `app`、`worker` 与 `rag-eval-worker` 复用工作区 `Agent/knowledge_base/models/docling`，通过 `MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling` 加载 Docling 模型；宿主机原始缓存保留为回滚副本。
 - **医疗兼容边界**：PubMedQA 构建、数据和专用评测入口暂时保留，但已退出默认生产与默认测试链路，供后续分阶段清理。
-- PDF 当前默认使用已通过本地 smoke 的 Docling；MinerU 仅保留为显式选择时的兼容回退。原始资料、Docling 原始输出、标准化单元与本地资源 URI/内容哈希都写入版本 manifest，并在发布门禁中回读核验。远程视觉仅接受 `wcode.net` 的 `qwen/qwen3-vl-flash` 配置和固定 allowlist 资料。
+- **正式 RAG 测试集契约**：`rag_eval_v1` 现在区分 `gold_regression`、`generated_candidate` 和 `reference_free` 三类题集。Pearl 题集已转换为 `Agent/knowledge_base/rag/data/eval/pearl_gold_v1.json`（24 条），PubMedQA 保留为独立的 `medical_gold_v1.json`（1000 条），两者不能混作同一条默认回归线。可用 `python -m Agent.knowledge_base.rag.operation_datasets.build_eval_datasets` 从历史源文件重新生成。
+- **字段含义**：`reference_answer` 是用于回答质量与 Ragas 对比的规范答案；`expected_claims` 是应覆盖的原子事实列表；`gold_evidence` 是由 Runtime metadata 定位的 locator 列表，按已提供字段做严格匹配，推荐使用 `document_id`、`page_number`、`unit_id`、`modality`、`content_kind`、`asset_uri` 等稳定字段。`gold_regression` 必须同时具备三者；缺少 `gold_evidence` 的题集只能作为 `generated_candidate` 或 `reference_free`，检索指标显示为未评分而不是 0。
+- **用户自有知识源**：先为本次知识源保存版本/hash 快照，再用 Ragas 生成候选问题和参考答案。只有候选 context 能通过 metadata 或唯一的原文记录映射到 `gold_evidence` 时才具备自动检索 gold；其余保留为候选或 reference-free 观测，不自动提升为正式回归集。正式发布前仍需做去重、证据蕴含校验和少量人工抽查。
+- PDF 当前默认使用已通过本地 smoke 的 Docling；MinerU 仅保留为显式选择时的兼容回退。原始资料、Docling 原始输出、标准化单元与本地资源 URI/内容哈希都写入版本 manifest，并在发布门禁中回读核验。远程视觉仅接受 `wcode.net` 的 `qwen/qwen3-vl-8b-instruct` 配置和固定 allowlist 资料。
 
 ```bash
 python -m Agent.knowledge_base.multimodal.cli inspect --source <path>
-python -m Agent.knowledge_base.multimodal.cli ingest --source <path> --allow-remote-data
-python -m Agent.knowledge_base.multimodal.cli run --source <path> --allow-remote-data --timeout-seconds 600
+# 在实际 Docker worker 中准备 R2 固定 12 页清单（推荐）：
+.\scripts\prepare-r2-outbound-manifest.ps1 -MaxPages 12
+# R3a: first run the local-only maintenance preflight, then create the full review manifest.
+# Neither command sends images or creates a candidate index.
+.\scripts\run-r3-maintenance-preflight.ps1
+.\scripts\prepare-r3-outbound-manifest.ps1 -OutputFile tmp\r3-review-manifest.json
+# R3b only, after manual approval and a separate data-egress authorization:
+.\scripts\run-r3-maintenance-preflight.ps1 -RequireVisionConfiguration
+# 经人工审阅和数据外发授权后：
+python -m Agent.knowledge_base.multimodal.cli run --source <path> --allow-remote-data --outbound-manifest .\tmp\r2-review-manifest.json --max-images 12 --timeout-seconds 600
+python -m Agent.knowledge_base.multimodal.cli run --source <path> --allow-remote-data --outbound-manifest <approved-manifest.json> --reuse-local-checkpoints-from <index-version>
 python -m Agent.knowledge_base.multimodal.cli evaluate --index-version <version>
 python -m Agent.knowledge_base.multimodal.cli publish --index-version <version>
 python -m Agent.knowledge_base.multimodal.cli omnidocbench-audit --root Agent/knowledge_base/multimodal_benchmarks/omnidocbench
@@ -190,6 +216,10 @@ OmniDocBench 本地固定子集只用于研究验证，当前覆盖 6 页代表�
 
 - **自动生成结构化报告**：围绕「分析背景 → 数据概况 → 方法说明 → 因果发现 → 结论与建议 → 局限性」等章节自动撰写自然语言报告。
 - **交互式因果图谱**：基于 vis-network 等前端组件生成可交互的因果图，支持节点拖拽、缩放、查看变量说明、点击追问等操作。
+
+### R5 摄取状态恢复
+
+摄取状态持久化在 tmp/r5_isolated_runs/<ingestion_run_id>/run.json，staged index、图片、Chroma 和 manifest 保存在同一运行目录；页级 checkpoint 使用该 index 下的 checkpoints.sqlite3，便于失败后按页复用。GET /api/rag_eval/isolated/ingestion-runs 会枚举这些状态，页面在 localStorage 丢失、首次请求失败或点击顶部刷新后，都会尝试恢复最近的运行中或 staged 状态。评测任务的队列状态在 MySQL `rag_eval_jobs`，具体产物仍在各自的 `tmp/r5_isolated_runs/<run_id>/`；运行目录和上传来源目录已加入 Git 忽略，不应提交到仓库。后端进程重启不会自动续跑已中断的摄取线程；已入队的评测由 `rag-eval-worker` 继续处理，worker 失联则按 heartbeat 超时失败收敛。
 
 ## 快速开始 | Quick Start
 ### Docker部署
@@ -435,9 +465,11 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 │   ├── admin/              # 管理 API、审计服务与受保护 Vue 入口
 │   ├── chat/               # 聊天 & 会话相关路由与服务
 │   ├── files/              # 文件上传/管理相关路由
+│   ├── rag_eval/           # RAG 评测后端与 Vue 前端源码
+│   │   └── frontend/       # Vue 3 + Vite + TypeScript 工程
 │   └── static/             # 前端静态资源
 │       ├── chat.html       # 主聊天界面
-│       ├── rag_eval.html   # RAG评测控制台
+│       ├── rag_eval_app/   # RAG 评测生产构建产物
 │       ├── css/
 │       ├── js/
 │       └── generated_graphs/ # 因果图等生成图像
