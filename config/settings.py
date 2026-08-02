@@ -267,6 +267,19 @@ class AppConfig:
         )
         self.JOB_STALE_AFTER_SECONDS = self._get_int_config("JOB_STALE_AFTER_SECONDS", default=120)
         self.JOB_MAX_ATTEMPTS = self._get_int_config("JOB_MAX_ATTEMPTS", default=3)
+        self.R5_EVALUATION_WORKERS = self._get_int_config("R5_EVALUATION_WORKERS", default=1)
+        self.R5_EVALUATION_POLL_INTERVAL_SECONDS = self._get_float_config(
+            "R5_EVALUATION_POLL_INTERVAL_SECONDS",
+            default=1.0,
+        )
+        self.R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS = self._get_int_config(
+            "R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS",
+            default=10,
+        )
+        self.R5_EVALUATION_JOB_STALE_AFTER_SECONDS = self._get_int_config(
+            "R5_EVALUATION_JOB_STALE_AFTER_SECONDS",
+            default=120,
+        )
         self.SSE_POLL_INTERVAL_SECONDS = self._get_float_config("SSE_POLL_INTERVAL_SECONDS", default=1.0)
         self.SSE_HEARTBEAT_INTERVAL_SECONDS = self._get_int_config(
             "SSE_HEARTBEAT_INTERVAL_SECONDS",

@@ -325,6 +325,8 @@ def check_database_readiness():
                 "admin_audit_events",
                 "admin_operations",
                 "admin_operation_items",
+                "rag_eval_profiles",
+                "rag_eval_jobs",
             ]
             cursor.execute(
                 """

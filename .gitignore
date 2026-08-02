@@ -25,6 +25,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+node_modules/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -193,11 +194,17 @@ causalcopliot/
 
 #knowledge
 Agent/knowledge_base/db/
+Agent/knowledge_base/models/
 Agent/knowledge_base/source/
 Agent/knowledge_base/unfinish_source/
 
 # skils
 skills/
+
+# test
+tests/*
+!tests/test_multimodal_*.py
+!tests/test_isolated_rag_runs.py
 
 # study
 study/
@@ -206,6 +213,10 @@ study/
 /docs/
 !/docs/
 !docs/难题.md
+# R5 local runtime state and generated ingestion artifacts
+tmp/r5_isolated_runs/
+tmp/r5_sources/
+
 Agent/knowledge_base/rag/docs/
 Agent/knowledge_base/rag/output/reports/
 Agent/knowledge_base/multimodal_assets/

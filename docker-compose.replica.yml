@@ -132,12 +132,18 @@ services:
       - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
+      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-1}
+      - R5_EVALUATION_POLL_INTERVAL_SECONDS=${R5_EVALUATION_POLL_INTERVAL_SECONDS:-1}
+      - R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - R5_EVALUATION_JOB_STALE_AFTER_SECONDS=${R5_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
+      - R5_EVALUATION_STALE_AFTER_SECONDS=${R5_EVALUATION_STALE_AFTER_SECONDS:-1800}
       - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-20}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
       - SECRET_KEY=${SECRET_KEY}
       - FLASK_ENV=development
+      - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
     ports:
@@ -145,7 +151,7 @@ services:
     volumes:
       - .:/app
       - /app/__pycache__
-      - /app/杂项
+      - /app/鏉傞」
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
     depends_on:
@@ -199,11 +205,17 @@ services:
       - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
+      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-1}
+      - R5_EVALUATION_POLL_INTERVAL_SECONDS=${R5_EVALUATION_POLL_INTERVAL_SECONDS:-1}
+      - R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - R5_EVALUATION_JOB_STALE_AFTER_SECONDS=${R5_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
+      - R5_EVALUATION_STALE_AFTER_SECONDS=${R5_EVALUATION_STALE_AFTER_SECONDS:-1800}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
       - SECRET_KEY=${SECRET_KEY}
       - FLASK_ENV=development
+      - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
     volumes:
@@ -362,6 +374,58 @@ services:
         condition: service_completed_successfully
     networks:
       - causalagent_replica_network
+    restart: unless-stopped
+
+  rag-eval-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: causalchat_rag_eval_worker
+    command: python -m app.rag_eval.worker
+    environment:
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_READ_HOSTS=mysql-replica
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_REPLICA_STATUS_USER=${MYSQL_REPLICA_STATUS_USER:-}
+      - MYSQL_REPLICA_STATUS_PASSWORD=${MYSQL_REPLICA_STATUS_PASSWORD:-}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-5}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
+      - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
+      - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
+      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-1}
+      - R5_EVALUATION_POLL_INTERVAL_SECONDS=${R5_EVALUATION_POLL_INTERVAL_SECONDS:-1}
+      - R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - R5_EVALUATION_JOB_STALE_AFTER_SECONDS=${R5_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
+      - R5_EVALUATION_STALE_AFTER_SECONDS=${R5_EVALUATION_STALE_AFTER_SECONDS:-1800}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - LLM_STRUCTURED_OUTPUT_METHOD=${LLM_STRUCTURED_OUTPUT_METHOD:-json_mode}
+      - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=development
+      - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
+    volumes:
+      - .:/app
+      - /app/__pycache__
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+    networks:
+      - causalchat_replica_network
     restart: unless-stopped
 
 networks:

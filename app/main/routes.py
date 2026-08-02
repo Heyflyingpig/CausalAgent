@@ -44,5 +44,5 @@ def index():
 @main_bp.route('/rag_eval')
 @main_bp.route('/rag-eval')
 def rag_eval_page():
-    """返回RAG评测控制台页面。"""
-    return send_from_directory("static", 'rag_eval.html')
+    """返回 Vue RAG 运行台页面。"""
+    return send_from_directory("static/rag_eval_app", "index.html")

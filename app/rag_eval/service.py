@@ -4,6 +4,7 @@ RAG评测服务层 —— 封装配置读写、pipeline触发、SSE进度推送�
 该模块不重复实现评测逻辑，只桥接 Agent/knowledge_base/rag 中已有的评测模块。
 """
 import json
+import copy
 import os
 import queue
 import re
@@ -21,8 +22,9 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from Agent.knowledge_base.rag.rag_config import (
-    ACTIVE_EVAL_DATASET_PATH,
     MACHINE_OUTPUT_DIR,
+    RAG_EVAL_DATASET_NAME,
+    RAG_EVAL_DATASET_PATH,
     REPORT_OUTPUT_DIR,
     RUNS_DIR,
     RETRIEVAL_PROFILES,
@@ -35,33 +37,77 @@ from Agent.knowledge_base.rag.rag_config import (
     VISIBLE_RAGAS_PROFILES,
     RAGAS_BASE_CONFIG,
     RUN_PIPELINE_CONFIG,
-    VECTOR_DB_DIR,
-    ACTIVE_BENCHMARK_NAME,
 )
+from Agent.knowledge_base.rag.rag_eval.contracts import evaluation_identity, load_eval_dataset
 from Agent.knowledge_base.embedding_runtime import resolve_embedding_runtime_config
 from Agent.knowledge_base.rag.rag_eval.run_rag_eval import run_pipeline_from_code_config
 from Agent.knowledge_base.query_rag import (
-    COLLECTION_NAME,
     PRODUCTION_RAG_CONFIG_PATH,
     RagRetrievalConfig,
     get_production_rag_config_status,
 )
+from app.rag_eval.profile_store import list_strategy_profiles
 from config.settings import settings
 
 CLAIM_BAD_CASE_SOURCES = {"claim_eval_bad_case"}
 
 
+# 评测工作台只允许修改这组公开参数；allowed 是硬边界，recommended 只用于提示复核。
+RAG_EVAL_PARAMETER_META: Dict[str, Dict[str, Any]] = {
+    "dense_fetch_k": {"label": "稠密检索候选数", "meaning": "稠密向量检索阶段先召回的候选 chunk 数。", "allowed": [1, 200], "recommended": [10, 80], "integer": True},
+    "dense_mmr_k": {"label": "稠密 MMR 保留数", "meaning": "稠密候选经过 MMR 去重后保留的数量。", "allowed": [1, 100], "recommended": [5, 30], "integer": True},
+    "sparse_fetch_k": {"label": "稀疏检索候选数", "meaning": "关键词/稀疏检索阶段先召回的候选 chunk 数。", "allowed": [0, 200], "recommended": [5, 50], "integer": True},
+    "final_top_k": {"label": "最终证据数", "meaning": "最终送入回答或评测的证据数量。", "allowed": [1, 20], "recommended": [3, 8], "integer": True},
+    "dense_score_threshold": {"label": "稠密分数阈值", "meaning": "稠密检索候选的最低分数阈值。", "allowed": [0, 1], "recommended": [0.3, 0.7]},
+    "final_rerank_threshold": {"label": "最终重排阈值", "meaning": "融合重排后进入最终证据的最低分数阈值。", "allowed": [0, 1], "recommended": [0, 0.4]},
+    "mmr_lambda": {"label": "MMR 相关性权重", "meaning": "MMR 中相关性相对多样性的权重。", "allowed": [0, 1], "recommended": [0.5, 0.85]},
+    "limit": {"label": "样本数上限", "meaning": "本次评测最多处理的样本数；null 表示不截断。", "allowed": [1, 1000], "recommended": [30, 100], "integer": True, "allow_null": True},
+    "max_contexts": {"label": "最大上下文数", "meaning": "构造 Ragas 样本时最多送入的上下文段数。", "allowed": [1, 12], "recommended": [4, 8], "integer": True},
+    "max_context_chars": {"label": "单段上下文最大字符数", "meaning": "单段上下文送入 Ragas 的最大字符数。", "allowed": [300, 4000], "recommended": [1200, 2000], "integer": True},
+    "max_response_chars": {"label": "回答最大字符数", "meaning": "送入 Ragas 的回答最大字符数。", "allowed": [200, 3000], "recommended": [800, 1500], "integer": True},
+    "ragas_timeout": {"label": "Ragas 超时时间", "meaning": "单个 Ragas 任务允许等待的最长时间，单位秒。", "allowed": [60, 3600], "recommended": [300, 900], "integer": True},
+    "ragas_max_workers": {"label": "Ragas 最大并发数", "meaning": "Ragas judge 并发 worker 数。", "allowed": [1, 16], "recommended": [1, 8], "integer": True},
+    "ragas_max_retries": {"label": "Ragas 最大重试次数", "meaning": "Ragas 单任务失败后的最大重试次数。", "allowed": [0, 10], "recommended": [2, 5], "integer": True},
+    "ragas_max_wait": {"label": "Ragas 最长重试等待", "meaning": "Ragas 重试退避的最长等待时间，单位秒。", "allowed": [1, 300], "recommended": [10, 60], "integer": True},
+    "repeat_count": {"label": "重复评测次数", "meaning": "同一配置重复评测次数。", "allowed": [1, 10], "recommended": [1, 3], "integer": True},
+    "low_score_threshold": {"label": "低分坏例阈值", "meaning": "Ragas 分数低于该值时标记为低分坏例。", "allowed": [0, 1], "recommended": [0.4, 0.7]},
+    "retrieval_recall_low_threshold": {"label": "检索召回低分阈值", "meaning": "跨指标坏例中判断检索召回偏低的阈值。", "allowed": [0, 1], "recommended": [0.5, 0.8]},
+    "retrieval_mrr_low_threshold": {"label": "检索 MRR 低分阈值", "meaning": "跨指标坏例中判断检索排序偏低的阈值。", "allowed": [0, 1], "recommended": [0.3, 0.7]},
+}
+
+
+class ConfigValidationError(ValueError):
+    """评测配置不满足工作台硬边界时抛出的可识别错误。"""
+
+
+def _validate_config_value(path: str, value: Any, key: str) -> None:
+    """校验一个公开数值参数，拒绝类型错误和超出硬边界的值。"""
+    meta = RAG_EVAL_PARAMETER_META.get(key)
+    if not meta:
+        return
+    if value is None and meta.get("allow_null"):
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigValidationError(f"{path} 必须是数字" + ("或 null" if meta.get("allow_null") else ""))
+    if meta.get("integer") and not isinstance(value, int):
+        raise ConfigValidationError(f"{path} 必须是整数")
+    lower, upper = meta["allowed"]
+    if value < lower or value > upper:
+        raise ConfigValidationError(f"{path} 超出允许范围 [{lower}, {upper}]")
+
+
 def get_rag_eval_status() -> Dict[str, Any]:
-    """返回当前基准、向量库和最新评测结果的汇总状态。"""
+    """返回通用题集、Runtime 向量库和最新评测结果的汇总状态。"""
     latest_summary = _load_latest_summary()
     vector_db_info = _get_vector_db_info()
     model_info = _get_model_runtime_info()
     benchmark_info = {
-        "name": ACTIVE_BENCHMARK_NAME,
-        "dataset_path": str(Path(ACTIVE_EVAL_DATASET_PATH).resolve()),
-        "dataset_exists": Path(ACTIVE_EVAL_DATASET_PATH).exists(),
+        "name": RAG_EVAL_DATASET_NAME,
+        "dataset_path": str(RAG_EVAL_DATASET_PATH.resolve()) if RAG_EVAL_DATASET_PATH else "",
+        "dataset_exists": bool(RAG_EVAL_DATASET_PATH and RAG_EVAL_DATASET_PATH.is_file()),
         "sample_count": _get_benchmark_sample_count(),
     }
+    benchmark_info.update(_get_evaluation_identity_status())
     return {
         "benchmark": benchmark_info,
         "vector_db": vector_db_info,
@@ -73,6 +119,7 @@ def get_rag_eval_status() -> Dict[str, Any]:
 
 def get_rag_eval_config() -> Dict[str, Any]:
     """返回所有可调参数，按类别分组。"""
+    retrieval_fields = set(RagRetrievalConfig.__dataclass_fields__)
     visible_retrieval_profiles = [
         name for name in VISIBLE_RETRIEVAL_PROFILES
         if name in RETRIEVAL_PROFILES
@@ -82,8 +129,9 @@ def get_rag_eval_config() -> Dict[str, Any]:
         if name in RAGAS_RUN_PROFILES
     ] or list(RAGAS_RUN_PROFILES.keys())
     return {
+        "strategy_profiles": list_strategy_profiles(),
         "retrieval_profiles": {
-            name: dict(cfg)
+            name: {key: value for key, value in cfg.items() if key in retrieval_fields}
             for name, cfg in RETRIEVAL_PROFILES.items()
             if name in visible_retrieval_profiles
         },
@@ -92,6 +140,14 @@ def get_rag_eval_config() -> Dict[str, Any]:
             for name in visible_retrieval_profiles
         },
         "active_retrieval_profile": RETRIEVAL_EVAL_CONFIG.get("retrieval_profile", "active_current"),
+        "retrieval_current": {
+            key: value
+            for key, value in RETRIEVAL_PROFILES.get(
+                RETRIEVAL_EVAL_CONFIG.get("retrieval_profile", "active_current"),
+                {},
+            ).items()
+            if key in retrieval_fields
+        },
         "retrieval_eval": {
             "mode": RETRIEVAL_EVAL_CONFIG.get("mode", "single"),
             "limit": RETRIEVAL_EVAL_CONFIG.get("limit"),
@@ -122,12 +178,14 @@ def get_rag_eval_config() -> Dict[str, Any]:
             "run_ragas": RAGAS_RUN_CONFIG.get("run_ragas", True),
             "include_reference_metrics": RAGAS_RUN_CONFIG.get("include_reference_metrics", True),
         },
+        "parameter_meta": copy.deepcopy(RAG_EVAL_PARAMETER_META),
         "pipeline": {
             "steps": RUN_PIPELINE_CONFIG.get("steps", []),
             "run_name": RUN_PIPELINE_CONFIG.get("run_name", "active_benchmark_full_pipeline"),
             "thresholds": RUN_PIPELINE_CONFIG.get("thresholds", {}),
             "copy_latest_outputs_to_run_dir": RUN_PIPELINE_CONFIG.get("copy_latest_outputs_to_run_dir", True),
         },
+        "evaluation": _get_evaluation_identity_status(),
     }
 
 
@@ -178,61 +236,103 @@ def update_rag_eval_config(overrides: Dict[str, Any]) -> Dict[str, Any]:
     注意：这里只修改 Python module 级别的配置对象（内存中），不会持久化到 rag_config.py。
     restart 后恢复默认。
     """
-    updated: Dict[str, List[str]] = {"updated_fields": [], "warnings": []}
+    if not isinstance(overrides, dict):
+        raise ConfigValidationError("配置必须是 JSON 对象")
 
-    # 更新 retrieval profile 参数
-    if "retrieval_profiles" in overrides:
-        for profile_name, profile_cfg in overrides["retrieval_profiles"].items():
-            if profile_name in RETRIEVAL_PROFILES:
-                RETRIEVAL_PROFILES[profile_name].update(profile_cfg)
-                updated["updated_fields"].append(f"retrieval_profiles.{profile_name}")
-            else:
-                updated["warnings"].append(f"unknown retrieval profile: {profile_name}")
+    # 所有输入先写入副本并完整校验，避免某个字段失败后留下半更新状态。
+    candidate_profiles = copy.deepcopy(RETRIEVAL_PROFILES)
+    candidate_retrieval_eval = copy.deepcopy(RETRIEVAL_EVAL_CONFIG)
+    candidate_ragas = copy.deepcopy(RAGAS_RUN_CONFIG)
+    candidate_pipeline = copy.deepcopy(RUN_PIPELINE_CONFIG)
+    warnings: List[str] = []
 
-    # 更新 active retrieval profile
-    if "active_retrieval_profile" in overrides:
-        RETRIEVAL_EVAL_CONFIG["retrieval_profile"] = overrides["active_retrieval_profile"]
-        updated["updated_fields"].append("active_retrieval_profile")
-        default_limit = VISIBLE_RETRIEVAL_PROFILE_LIMITS.get(overrides["active_retrieval_profile"])
-        if default_limit is not None:
-            RETRIEVAL_EVAL_CONFIG["limit"] = default_limit
-            updated["updated_fields"].append("retrieval_eval.limit")
+    profile_overrides = overrides.get("retrieval_profiles", {})
+    if profile_overrides is not None and not isinstance(profile_overrides, dict):
+        raise ConfigValidationError("retrieval_profiles 必须是对象")
+    for profile_name, profile_cfg in (profile_overrides or {}).items():
+        if profile_name not in candidate_profiles:
+            warnings.append(f"unknown retrieval profile: {profile_name}")
+            continue
+        if not isinstance(profile_cfg, dict):
+            raise ConfigValidationError(f"retrieval_profiles.{profile_name} 必须是对象")
+        for key, value in profile_cfg.items():
+            _validate_config_value(f"retrieval_profiles.{profile_name}.{key}", value, key)
+        candidate_profiles[profile_name].update(profile_cfg)
 
-    # 更新 retrieval_eval 配置
-    if "retrieval_eval" in overrides:
-        for key, value in overrides["retrieval_eval"].items():
-            if key in RETRIEVAL_EVAL_CONFIG:
-                RETRIEVAL_EVAL_CONFIG[key] = value
-                updated["updated_fields"].append(f"retrieval_eval.{key}")
+    active_retrieval = overrides.get("active_retrieval_profile", candidate_retrieval_eval.get("retrieval_profile", "active_current"))
+    if active_retrieval not in candidate_profiles:
+        raise ConfigValidationError(f"未知 retrieval profile: {active_retrieval}")
+    candidate_retrieval_eval["retrieval_profile"] = active_retrieval
 
+    retrieval_eval = overrides.get("retrieval_eval", {})
+    if retrieval_eval is not None and not isinstance(retrieval_eval, dict):
+        raise ConfigValidationError("retrieval_eval 必须是对象")
+    for key, value in (retrieval_eval or {}).items():
+        if key in candidate_retrieval_eval:
+            _validate_config_value(f"retrieval_eval.{key}", value, key)
+            candidate_retrieval_eval[key] = value
+
+    active_ragas = str(overrides.get("active_ragas_profile", candidate_ragas.get("active_profile", RAGAS_ACTIVE_PROFILE)))
+    if active_ragas not in RAGAS_RUN_PROFILES:
+        raise ConfigValidationError(f"未知 ragas profile: {active_ragas}")
     if "active_ragas_profile" in overrides:
-        profile_name = str(overrides["active_ragas_profile"])
-        if profile_name in RAGAS_RUN_PROFILES:
-            _apply_ragas_profile(profile_name)
-            updated["updated_fields"].append("ragas.active_profile")
+        candidate_ragas = {
+            **RAGAS_BASE_CONFIG,
+            **RAGAS_RUN_PROFILES[active_ragas],
+            "active_profile": active_ragas,
+        }
+    ragas_overrides = overrides.get("ragas", {})
+    if ragas_overrides is not None and not isinstance(ragas_overrides, dict):
+        raise ConfigValidationError("ragas 必须是对象")
+    for key, value in (ragas_overrides or {}).items():
+        if key not in candidate_ragas:
+            warnings.append(f"unknown ragas field: {key}")
+            continue
+        _validate_config_value(f"ragas.{key}", value, key)
+        if key == "selected_metrics":
+            allowed_metrics = {"faithfulness", "answer_relevancy", "context_utilization", "context_recall"}
+            if not isinstance(value, list) or any(item not in allowed_metrics for item in value):
+                raise ConfigValidationError("ragas.selected_metrics 包含不支持的指标")
+        candidate_ragas[key] = value
+
+    pipeline_overrides = overrides.get("pipeline", {})
+    if pipeline_overrides is not None and not isinstance(pipeline_overrides, dict):
+        raise ConfigValidationError("pipeline 必须是对象")
+    for key, value in (pipeline_overrides or {}).items():
+        if key not in candidate_pipeline:
+            continue
+        if key == "steps":
+            if not isinstance(value, list):
+                raise ConfigValidationError("pipeline.steps 必须是数组")
+            filtered_steps = [str(step) for step in value if str(step) != "claim_eval"]
+            if len(filtered_steps) != len(value):
+                warnings.append("claim_eval is temporarily disabled and was removed from pipeline.steps.")
+            candidate_pipeline[key] = filtered_steps
         else:
-            updated["warnings"].append(f"unknown ragas profile: {profile_name}")
+            candidate_pipeline[key] = value
 
-    # 更新 ragas 配置
-    if "ragas" in overrides:
-        for key, value in overrides["ragas"].items():
-            if key in RAGAS_RUN_CONFIG:
-                RAGAS_RUN_CONFIG[key] = value
-                updated["updated_fields"].append(f"ragas.{key}")
+    thresholds = candidate_pipeline.get("thresholds")
+    if isinstance(thresholds, dict):
+        for key, value in thresholds.items():
+            _validate_config_value(f"pipeline.thresholds.{key}", value, key)
 
-    # 更新 pipeline 配置
-    if "pipeline" in overrides:
-        for key, value in overrides["pipeline"].items():
-            if key in RUN_PIPELINE_CONFIG:
-                if key == "steps" and isinstance(value, list):
-                    filtered_steps = [str(step) for step in value if str(step) != "claim_eval"]
-                    if len(filtered_steps) != len(value):
-                        updated["warnings"].append("claim_eval is temporarily disabled and was removed from pipeline.steps.")
-                    RUN_PIPELINE_CONFIG[key] = filtered_steps
-                    updated["updated_fields"].append(f"pipeline.{key}")
-                    continue
-                RUN_PIPELINE_CONFIG[key] = value
-                updated["updated_fields"].append(f"pipeline.{key}")
+    updated: Dict[str, List[str]] = {"updated_fields": [], "warnings": warnings}
+    if candidate_profiles != RETRIEVAL_PROFILES:
+        RETRIEVAL_PROFILES.clear()
+        RETRIEVAL_PROFILES.update(candidate_profiles)
+        updated["updated_fields"].append("retrieval_profiles")
+    if candidate_retrieval_eval != RETRIEVAL_EVAL_CONFIG:
+        RETRIEVAL_EVAL_CONFIG.clear()
+        RETRIEVAL_EVAL_CONFIG.update(candidate_retrieval_eval)
+        updated["updated_fields"].append("retrieval_eval")
+    if candidate_ragas != RAGAS_RUN_CONFIG:
+        RAGAS_RUN_CONFIG.clear()
+        RAGAS_RUN_CONFIG.update(candidate_ragas)
+        updated["updated_fields"].append("ragas")
+    if candidate_pipeline != RUN_PIPELINE_CONFIG:
+        RUN_PIPELINE_CONFIG.clear()
+        RUN_PIPELINE_CONFIG.update(candidate_pipeline)
+        updated["updated_fields"].append("pipeline")
 
     _sync_ragas_retrieval_config(updated)
     return updated
@@ -828,13 +928,13 @@ def _compact_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
     """压缩单条证据，保留前端分析需要的字段。"""
     content = evidence.get("content") or ""
     return {
-        "evidence_id": evidence.get("evidence_id"),
-        "chunk_id": evidence.get("chunk_id"),
-        "doc_id": evidence.get("doc_id"),
+        "metadata": dict(evidence.get("metadata") or {}),
+        "scores": {
+            key: evidence.get(key)
+            for key in ("dense_score", "sparse_score", "rerank_score")
+            if evidence.get(key) is not None
+        },
         "retrieval_source": evidence.get("retrieval_source"),
-        "dense_score": evidence.get("dense_score"),
-        "sparse_score": evidence.get("sparse_score"),
-        "rerank_score": evidence.get("rerank_score"),
         "content_preview": content[:700] + ("..." if len(content) > 700 else ""),
     }
 
@@ -867,7 +967,8 @@ def _compact_trace(trace: Dict[str, Any]) -> Dict[str, Any]:
         "trace_id": trace.get("trace_id"),
         "question_index": trace.get("question_index"),
         "question": trace.get("question"),
-        "question_type": trace.get("question_type"),
+        "sample_id": trace.get("sample_id"),
+        "source": trace.get("source", {}),
         "reference_answer": trace.get("reference_answer"),
         "answer": generation.get("answer"),
         "answer_preview": generation.get("answer_preview"),
@@ -878,9 +979,9 @@ def _compact_trace(trace: Dict[str, Any]) -> Dict[str, Any]:
             "recall": retrieval.get("recall"),
             "reciprocal_rank": retrieval.get("reciprocal_rank"),
             "loss_reasons": retrieval.get("loss_reasons", []),
-            "gold_doc_ids": retrieval.get("gold_doc_ids", []),
-            "retrieved_chunk_ids": retrieval.get("retrieved_chunk_ids", []),
-            "matched_chunk_ids": retrieval.get("matched_chunk_ids", []),
+            "gold_evidence": retrieval.get("gold_evidence", []),
+            "retrieved_evidence": retrieval.get("retrieved_evidence", []),
+            "matched_evidence": retrieval.get("matched_evidence", []),
         },
         "ragas_scores": trace.get("ragas_scores", {}),
         "evidence": [
@@ -1215,28 +1316,33 @@ def _load_latest_summary() -> Dict[str, Any]:
 
 
 def _get_vector_db_info() -> Dict[str, Any]:
-    """获取向量库基本信息。"""
-    db_dir = Path(VECTOR_DB_DIR)
-    exists = db_dir.exists()
-    info: Dict[str, Any] = {
-        "path": str(db_dir.resolve()),
-        "exists": exists,
-        "size_mb": 0,
-        "collection_count": 0,
-    }
-    if exists:
-        total_size = sum(f.stat().st_size for f in db_dir.rglob("*") if f.is_file())
-        info["size_mb"] = round(total_size / (1024 * 1024), 2)
-        # 尝试从ChromaDB获取更多信息
-        try:
-            from Agent.knowledge_base.query_rag import get_vector_db_metadata_summary
-            meta = get_vector_db_metadata_summary()
-            info["doc_count"] = meta.get("doc_count", 0)
-            info["prefix_counts"] = meta.get("doc_id_prefix_counts", {})
-            info["collection_name"] = meta.get("collection_name", "")
-        except Exception:
-            info["doc_count"] = "unavailable"
-    return info
+    """读取 Runtime 暴露的向量库身份，不解析题集或 active pointer。"""
+    try:
+        from Agent.knowledge_base.query_rag import get_vector_db_metadata_summary
+
+        info = dict(get_vector_db_metadata_summary())
+        path = Path(str(info.get("persist_directory", ""))) if info.get("persist_directory") else None
+        info.update(
+            {
+                "path": str(path.resolve()) if path else "",
+                "exists": bool(path and path.is_dir()),
+                "status": "ready",
+                "doc_count": info.get("doc_count", info.get("vector_count", 0)),
+            }
+        )
+        if path and path.is_dir():
+            info["size_mb"] = round(
+                sum(file.stat().st_size for file in path.rglob("*") if file.is_file()) / (1024 * 1024),
+                2,
+            )
+        return info
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "exists": False,
+            "path": "",
+            "error": str(exc),
+        }
 
 
 def _get_model_runtime_info() -> Dict[str, Any]:
@@ -1258,14 +1364,12 @@ def _get_embedding_runtime_info() -> Dict[str, Any]:
             "mode": os.environ.get("RAG_EMBEDDING_PROVIDER", "auto"),
             "provider": "invalid",
             "model": "--",
-            "collection_name": COLLECTION_NAME,
             "message": str(exc),
         }
     info = dict(embedding_config)
     if info.get("base_url"):
         info["endpoint"] = _safe_base_url_label(str(info.get("base_url") or ""))
         info.pop("base_url", None)
-    info["collection_name"] = COLLECTION_NAME
     return info
 
 
@@ -1309,16 +1413,39 @@ def _safe_base_url_label(base_url: str) -> str:
 
 
 def _get_benchmark_sample_count() -> int:
-    """获取benchmark样本数。"""
-    path = Path(ACTIVE_EVAL_DATASET_PATH)
-    if not path.exists():
+    """获取显式通用题集的样本数。"""
+    if not RAG_EVAL_DATASET_PATH or not RAG_EVAL_DATASET_PATH.exists():
         return 0
     try:
-        with path.open("r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-        return len(data) if isinstance(data, list) else 0
-    except (json.JSONDecodeError, OSError):
+        return len(load_eval_dataset(RAG_EVAL_DATASET_PATH))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return 0
+
+
+def _get_evaluation_identity_status() -> Dict[str, Any]:
+    """返回通用题集的只读身份摘要。"""
+    path = RAG_EVAL_DATASET_PATH
+    result: Dict[str, Any] = {
+        "dataset_name": RAG_EVAL_DATASET_NAME,
+        "dataset_path": str(path.resolve()) if path else "",
+        "dataset_exists": bool(path and path.is_file()),
+    }
+    if not path or not path.is_file():
+        result["status"] = "not_configured"
+        return result
+    try:
+        identity = evaluation_identity(path)
+        result.update(
+            {
+                "status": "ready",
+                "dataset_sha256": identity.get("dataset_sha256", ""),
+                "dataset_schema": identity.get("schema_version", ""),
+                "sample_count": identity.get("sample_count", 0),
+            }
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        result.update({"status": "blocked", "error": str(exc)})
+    return result
 
 
 def get_step_descriptions() -> Dict[str, str]:
