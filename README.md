@@ -305,6 +305,8 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 
 轻量 CI 不连接数据库、不加载知识库或模型，也不调用外部 API。GitHub 分支保护需要在仓库 `Settings -> Rules -> Rulesets` 中单独启用，并将上述三个检查设置为必需检查。
 
+新建 Issue 时请使用仓库提供的 [`Issue Form`](.github/ISSUE_TEMPLATE/issue.yml)，按模板填写背景、问题描述、预期结果、复现步骤、验收标准和环境信息。除附件外的字段为 GitHub 原生必填项，但不限制填写内容；普通贡献者不能选择空白 Issue。
+
 ## Star 趋势
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Heyflyingpig/CausalAgent&type=Date)](https://star-history.com/#Heyflyingpig/CausalAgent&Date)
@@ -324,7 +326,9 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # 旧路径兼容副本，不作为默认开发入口
 ├── docker-compose.test.yml # 按需创建的一次性单元测试环境
-├── .github/workflows/       # GitHub Actions 工作流
+├── .github/                 # GitHub Actions 与 Issue 模板
+│   ├── workflows/           # GitHub Actions 工作流
+│   └── ISSUE_TEMPLATE/      # Issue Form 模板
 ├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收端口/容器覆盖
 ├── README.md               # 项目说明
 ├── README/                 # README 图片与更新日志

@@ -41,7 +41,9 @@
 ├── docker-compose.prod.yml
 ├── docker-compose.replica.yml # 旧路径兼容副本，不作为默认开发入口
 ├── docker-compose.test.yml # 按需创建的一次性单元测试环境
-├── .github/workflows/       # GitHub Actions 工作流
+├── .github/                 # GitHub Actions 与 Issue 模板
+│   ├── workflows/           # GitHub Actions 工作流
+│   └── ISSUE_TEMPLATE/      # Issue Form 模板
 ├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收覆盖
 ├── README.md               # 项目说明
 ├── Document/
@@ -104,6 +106,7 @@
 ## 3. 开发环境与项目事实
 
 - GitHub Actions 轻量 CI 位于 `.github/workflows/lightweight-ci.yml`，对 `main`、`develop` 的 push 和 Pull Request 生效；它只执行 Python 语法编译、无外部服务依赖的轻量测试以及 Pull Request 策略检查。
+- GitHub Issue 使用 `.github/ISSUE_TEMPLATE/issue.yml` 统一填写背景、问题描述、预期结果、复现步骤、验收标准和环境信息；除附件外的字段启用原生必填校验，但不限制填写内容。普通贡献者不能选择空白 Issue。
 - 功能分支应向 `develop` 发起 Pull Request，只有 `develop` 可以向 `main` 发起 Pull Request；分支保护需要在 GitHub Rulesets 中启用，并把 `Python syntax`、`Light tests`、`Pull request policy` 设置为必需检查。
 - 桌面端入口是 `Run_causal.py`，它固定加载 `http://127.0.0.1:5001`；桌面模式本质上仍依赖先启动后端。
 - Web 后端入口是 `CausalAgent.py`，它导入 `app/__init__.py` 中的 `create_app()` 生成 Flask app；本地直接运行时使用 `app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)`，Docker 镜像默认通过 `gunicorn ... CausalAgent:app` 启动。
