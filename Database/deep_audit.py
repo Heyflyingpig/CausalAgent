@@ -43,13 +43,10 @@ EXPECTED_COLUMNS = {
     "archived_sessions": {
         "id", "user_id", "original_session_data", "message_count", "archived_at",
     },
-    "checkpoints": {
-        "thread_id", "checkpoint_ns", "checkpoint_id", "checkpoint",
-        "metadata_data", "created_at",
-    },
-    "checkpoint_writes": {
-        "id", "thread_id", "checkpoint_ns", "checkpoint_id", "task_id",
-        "idx", "channel", "value", "created_at", "write_identity_hash",
+    "checkpoint_cleanup_outbox": {
+        "id", "thread_id", "operation_id", "status", "attempts",
+        "available_at", "lease_expires_at", "last_error", "created_at",
+        "completed_at",
     },
     "analysis_jobs": {
         "id", "job_id", "user_id", "session_id", "status", "worker_id",
@@ -84,8 +81,11 @@ EXPECTED_INDEXES = {
     "analysis_jobs": {"PRIMARY", "idx_analysis_jobs_admin_created"},
     "uploaded_files": {"PRIMARY", "idx_uploaded_files_admin_uploaded"},
     "admin_audit_events": {"PRIMARY", "idx_admin_audit_target_created"},
-    "checkpoints": {"PRIMARY", "idx_checkpoints_thread_ns_created_id"},
-    "checkpoint_writes": {"PRIMARY", "uq_checkpoint_writes_task_idx"},
+    "checkpoint_cleanup_outbox": {
+        "PRIMARY",
+        "uq_checkpoint_cleanup_outbox_thread",
+        "idx_checkpoint_cleanup_outbox_claim",
+    },
     "admin_operations": {
         "PRIMARY",
         "uq_admin_operations_operation_id",
@@ -103,7 +103,7 @@ EXPECTED_FOREIGN_KEYS = {
     "fk_analysis_jobs_user",
     "fk_analysis_jobs_session",
     "fk_analysis_job_events_job",
-    "fk_checkpoint_writes_checkpoint",
+    "fk_checkpoint_cleanup_outbox_operation",
     "fk_admin_operations_actor",
     "fk_admin_operation_items_operation",
 }
@@ -353,29 +353,20 @@ def _relationship_check() -> dict[str, Any]:
             WHERE j.job_id IS NULL
             LIMIT %s
         """,
-        "checkpoint_without_session": """
-            SELECT c.thread_id AS sample_id
-            FROM checkpoints AS c
-            LEFT JOIN sessions AS s ON s.id = c.thread_id
-            WHERE s.id IS NULL
-            GROUP BY c.thread_id
+        "checkpoint_cleanup_failed": """
+            SELECT id AS sample_id
+            FROM checkpoint_cleanup_outbox
+            WHERE status = 'failed'
+            ORDER BY id
             LIMIT %s
         """,
-        "checkpoint_write_without_checkpoint": """
-            SELECT w.id AS sample_id
-            FROM checkpoint_writes AS w
-            LEFT JOIN checkpoints AS c
-              ON c.thread_id = w.thread_id
-             AND c.checkpoint_ns = w.checkpoint_ns
-             AND c.checkpoint_id = w.checkpoint_id
-            WHERE c.thread_id IS NULL
-            LIMIT %s
-        """,
-        "duplicate_checkpoint_write_key": """
-            SELECT MIN(id) AS sample_id
-            FROM checkpoint_writes
-            GROUP BY thread_id, checkpoint_ns, checkpoint_id, task_id, idx
-            HAVING COUNT(*) > 1
+        "checkpoint_cleanup_expired_lease": """
+            SELECT id AS sample_id
+            FROM checkpoint_cleanup_outbox
+            WHERE status = 'processing'
+              AND lease_expires_at IS NOT NULL
+              AND lease_expires_at < UTC_TIMESTAMP(6)
+            ORDER BY id
             LIMIT %s
         """,
         "archived_session_without_user": """

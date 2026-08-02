@@ -3,6 +3,8 @@ import logging
 import sys
 from pathlib import Path
 
+from config.checkpoint_settings import CheckpointPostgresConfig
+
 # 计算项目根目录
 # __file__ -> D:/.../CausalChat/config/settings.py
 # os.path.dirname(__file__) -> D:/.../CausalChat/config
@@ -106,6 +108,15 @@ class AppConfig:
         if missing_database_credentials:
             raise ValueError(f"配置错误: 缺少数据库账号配置 {missing_database_credentials}")
         self.MYSQL_DATABASE = self._get_config("MYSQL_DATABASE")
+        checkpoint_postgres = CheckpointPostgresConfig.from_env()
+        self.CHECKPOINT_POSTGRES_HOST = checkpoint_postgres.host
+        self.CHECKPOINT_POSTGRES_PORT = checkpoint_postgres.port
+        self.CHECKPOINT_POSTGRES_DATABASE = checkpoint_postgres.database
+        self.CHECKPOINT_POSTGRES_USER = checkpoint_postgres.user
+        self.CHECKPOINT_POSTGRES_PASSWORD = checkpoint_postgres.password
+        self.CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS = checkpoint_postgres.connect_timeout_seconds
+        self.CHECKPOINT_POSTGRES_POOL_MIN_SIZE = checkpoint_postgres.pool_min_size
+        self.CHECKPOINT_POSTGRES_POOL_MAX_SIZE = checkpoint_postgres.pool_max_size
         self.MYSQL_POOL_SIZE_WRITE = self._get_int_config("MYSQL_POOL_SIZE_WRITE", default=5)
         self.MYSQL_POOL_SIZE_READ = self._get_int_config("MYSQL_POOL_SIZE_READ", default=5)
         self.MYSQL_CONNECT_TIMEOUT_SECONDS = self._get_int_config(
@@ -198,6 +209,9 @@ class AppConfig:
             "MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS": self.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS,
             "MYSQL_POOL_ACQUIRE_RETRY_MS": self.MYSQL_POOL_ACQUIRE_RETRY_MS,
             "MYSQL_REPLICA_STATUS_CACHE_SECONDS": self.MYSQL_REPLICA_STATUS_CACHE_SECONDS,
+            "CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS": self.CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS,
+            "CHECKPOINT_POSTGRES_POOL_MIN_SIZE": self.CHECKPOINT_POSTGRES_POOL_MIN_SIZE,
+            "CHECKPOINT_POSTGRES_POOL_MAX_SIZE": self.CHECKPOINT_POSTGRES_POOL_MAX_SIZE,
             "ADMIN_BATCH_MAX_TARGETS": self.ADMIN_BATCH_MAX_TARGETS,
             "ADMIN_DELETE_MAX_RELATED_ROWS": self.ADMIN_DELETE_MAX_RELATED_ROWS,
             "ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS": self.ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS,
@@ -211,6 +225,7 @@ class AppConfig:
             raise ValueError(
                 "配置错误: MySQL Connector/Python 单连接池大小不能超过 32。"
             )
+        checkpoint_postgres.validate()
         if self.DB_INSPECTION_QUERY_TIMEOUT_MS <= 0:
             raise ValueError("配置错误: DB_INSPECTION_QUERY_TIMEOUT_MS 必须大于 0。")
         if not (

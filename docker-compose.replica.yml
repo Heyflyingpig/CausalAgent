@@ -32,6 +32,25 @@ services:
       retries: 5
       start_period: 30s
 
+  postgres-checkpoint:
+    image: postgres:16-alpine
+    container_name: causalagent_postgres_checkpoint
+    environment:
+      POSTGRES_DB: ${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      POSTGRES_USER: ${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      POSTGRES_PASSWORD: ${CHECKPOINT_POSTGRES_PASSWORD:?CHECKPOINT_POSTGRES_PASSWORD must be set}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_checkpoint_data:/var/lib/postgresql/data
+    networks:
+      - causalagent_replica_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   mysql-replica:
     build:
       context: ./Database/mysql
@@ -84,6 +103,14 @@ services:
       - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
       - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
       - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalchat_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalchat_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=${CHECKPOINT_POSTGRES_POOL_MAX_SIZE:-5}
       - ADMIN_BATCH_MAX_TARGETS=${ADMIN_BATCH_MAX_TARGETS:-20}
       - ADMIN_DELETE_MAX_RELATED_ROWS=${ADMIN_DELETE_MAX_RELATED_ROWS:-10000}
       - ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS=${ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS:-5}
@@ -158,6 +185,14 @@ services:
       - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
       - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
       - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalchat_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalchat_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=${CHECKPOINT_POSTGRES_POOL_MAX_SIZE:-5}
       - JOB_WORKERS=${JOB_WORKERS:-2}
       - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
@@ -180,6 +215,77 @@ services:
         condition: service_healthy
       mysql-replica:
         condition: service_healthy
+      checkpoint-setup:
+        condition: service_completed_successfully
+    networks:
+      - causalchat_replica_network
+    restart: unless-stopped
+
+  checkpoint-setup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: causalchat_checkpoint_setup
+    command: python -m Database.checkpoint_setup
+    environment:
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalchat_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalchat_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=2
+    volumes:
+      - .:/app
+    depends_on:
+      postgres-checkpoint:
+        condition: service_healthy
+    networks:
+      - causalchat_replica_network
+
+  checkpoint-cleanup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: causalchat_checkpoint_cleanup
+    command: python -m Database.checkpoint_cleanup_worker
+    environment:
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_READ_HOSTS=mysql-replica
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-3}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-1}
+      - MYSQL_CONNECT_TIMEOUT_SECONDS=${MYSQL_CONNECT_TIMEOUT_SECONDS:-5}
+      - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalchat_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalchat_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=2
+      - CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS=${CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS:-1}
+      - CHECKPOINT_CLEANUP_LEASE_SECONDS=${CHECKPOINT_CLEANUP_LEASE_SECONDS:-300}
+    volumes:
+      - .:/app
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+      checkpoint-setup:
+        condition: service_completed_successfully
     networks:
       - causalchat_replica_network
     restart: unless-stopped
@@ -251,4 +357,6 @@ volumes:
   mysql_primary_data:
     driver: local
   mysql_replica_data:
+    driver: local
+  postgres_checkpoint_data:
     driver: local

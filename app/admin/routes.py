@@ -70,6 +70,7 @@ from app.admin.write_service import (
     execute_user_operation,
     get_file_delete_impact,
     get_user_delete_impact,
+    get_operation,
     preview_user_operation,
 )
 from app.auth.authorization import admin_required
@@ -529,13 +530,22 @@ def business_user_delete_impact(user_id: int):
 )
 @admin_write_required
 def business_user_delete(user_id: int):
-    """在主库事务中执行用户及其生命周期数据的物理删除。"""
-    return api_success(delete_managed_user(
+    """在主库事务中执行用户删除，并等待跨库 checkpoint cleanup。"""
+    result = delete_managed_user(
         user_id,
         request.get_json(silent=True),
         actor=g.current_user,
         idempotency_key=request.headers.get("Idempotency-Key"),
-    ))
+    )
+    return api_success(result, status=202 if result.get("status") == "running" else 200)
+
+
+@admin_bp.route("/operations/<operation_id>")
+@admin_api_endpoint
+@admin_required
+def admin_operation(operation_id: str):
+    """返回当前管理员发起的受控操作及异步 checkpoint 清理状态。"""
+    return api_success(get_operation(operation_id, actor=g.current_user))
 
 
 @admin_bp.route("/business/users/<int:user_id>")

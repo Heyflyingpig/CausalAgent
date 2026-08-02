@@ -31,6 +31,22 @@ docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.adm
 
 该命令只做幂等提升，不创建用户，也不负责降级管理员。管理员登录后进入 `/admin/database`。
 
+## PostgreSQL checkpoint
+
+迁移前请在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`。Docker 主从拓扑会启动
+`postgres-checkpoint`、一次性 `checkpoint-setup` 和持续运行的
+`checkpoint-cleanup`；本地运行等价命令为：
+
+```bash
+python -m Database.checkpoint_setup
+python -m Database.checkpoint_cleanup_worker
+```
+
+`alembic upgrade head` 中的 PostgreSQL 迁移会删除 MySQL checkpoint 表和数据；
+`alembic downgrade` 只重建空的兼容表结构，不恢复已删除数据。
+由于该迁移合并了两个历史 head，回退时必须指定明确目标 revision，不能使用
+`alembic downgrade -1`；例如回退到 `e4f5a6b7c8d9`。
+
 ## 启动 monitor
 
 数据库看板读取共享快照。要持续产生新快照，需要独立启动：

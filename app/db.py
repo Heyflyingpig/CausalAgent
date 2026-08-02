@@ -317,8 +317,7 @@ def check_database_readiness():
                 "chat_attachments",
                 "uploaded_files",
                 "archived_sessions",
-                "checkpoints",
-                "checkpoint_writes",
+                "checkpoint_cleanup_outbox",
                 "analysis_jobs",
                 "analysis_job_events",
                 "database_monitor_snapshots",
@@ -390,36 +389,13 @@ def check_database_readiness():
 
             cursor.execute(
                 """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = %s
-                  AND table_name = 'checkpoint_writes'
-                  AND column_name = 'write_identity_hash'
-                """,
-                (settings.MYSQL_DATABASE,),
-            )
-            if cursor.fetchone() is None:
-                error_msg = (
-                    "数据库关键字段缺失: checkpoint_writes.write_identity_hash。"
-                    "请先执行 'alembic upgrade head'。"
-                )
-                logging.error(error_msg)
-                raise RuntimeError(error_msg)
-
-            cursor.execute(
-                """
                 SELECT table_name, index_name
                 FROM information_schema.statistics
                 WHERE table_schema = %s
                   AND (
                     (
-                      table_name = 'checkpoint_writes'
-                      AND index_name = 'uq_checkpoint_writes_task_idx'
-                      AND non_unique = 0
-                    )
-                    OR (
-                      table_name = 'checkpoints'
-                      AND index_name = 'idx_checkpoints_thread_ns_created_id'
+                      table_name = 'checkpoint_cleanup_outbox'
+                      AND index_name = 'idx_checkpoint_cleanup_outbox_claim'
                     )
                     OR (
                       table_name = 'admin_operations'
@@ -432,8 +408,7 @@ def check_database_readiness():
             )
             critical_indexes = {(row[0], row[1]) for row in cursor.fetchall()}
             required_indexes = {
-                ("checkpoint_writes", "uq_checkpoint_writes_task_idx"),
-                ("checkpoints", "idx_checkpoints_thread_ns_created_id"),
+                ("checkpoint_cleanup_outbox", "idx_checkpoint_cleanup_outbox_claim"),
                 (
                     "admin_operations",
                     "uq_admin_operations_actor_idempotency",

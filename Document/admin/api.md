@@ -77,6 +77,7 @@ SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序�
 | `GET` | `/api/admin/business/files/<id>` | 文件详情 |
 | `GET` | `/api/admin/business/files/<id>/preview` | 有界 CSV 文本预览 |
 | `GET` | `/api/admin/business/files/<id>/download` | 下载文件 |
+| `GET` | `/api/admin/operations/<operation_id>` | 查询受控用户删除及 checkpoint cleanup 状态 |
 
 密码哈希、Cookie、Token、文件哈希、数据库账号、host 和 grants 不进入列表 DTO。消息、附件及任务内容最多按 64 KiB 源字节分块读取；成功的敏感读取要求审计可写。CSV 预览最多读取 256 KiB、100 行、50 列，单元格最多 1000 字符，并且只按文本渲染。
 
@@ -91,4 +92,4 @@ SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序�
 | `GET` | `/api/admin/business/files/<id>/delete-impact` | 预览文件删除影响 |
 | `DELETE` | `/api/admin/business/files/<id>` | 物理删除文件和 BLOB |
 
-操作者不能禁用、降级或删除自己，也不能移除最后一个启用管理员。角色、状态或密码实际变化会通过 `users.auth_version` 使目标用户旧 Session 失效。物理删除没有回收站，详细删除/保留矩阵见 [数据库治理文档](../../setting/database_governance.md)。
+操作者不能禁用、降级或删除自己，也不能移除最后一个启用管理员。角色、状态或密码实际变化会通过 `users.auth_version` 使目标用户旧 Session 失效。用户删除先提交 MySQL 业务数据，PostgreSQL checkpoint 清理由 outbox worker 异步完成；接口可能返回 `202`，可通过操作查询接口读取 `running/succeeded/failed`。物理删除没有回收站，详细删除/保留矩阵见 [数据库治理文档](../../setting/database_governance.md)。

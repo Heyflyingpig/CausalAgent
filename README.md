@@ -184,98 +184,10 @@ graph TD;
 git clone https://github.com/Heyflyingpig/CausalAgent
 ```
 
-2. 创建.env文件,并在文件中键入以下值
+2. 创建.env文件
 ```bash
-# Flask 应用密钥（用于会话加密等）
-SECRET_KEY=
-
-# API 基础URL（OpenAI官方或第三方兼容接口）
-BASE_URL=
-MODEL=
-
-# OpenAI API 密钥或兼容 API 的密钥
-API_KEY=
-# Docker环境：使用服务名 'mysql'
-# 本地开发：使用 'localhost' 或 '127.0.0.1'
-MYSQL_HOST=mysql
-
-# 旧版兼容账号。未配置拆分账号时，写/读连接会回退使用它。
-MYSQL_USER=pyramid
-
-MYSQL_ROOT_PASSWORD=
-MYSQL_PASSWORD=
-
-# 数据库名称
-MYSQL_DATABASE=
-
-# 应用写账号：用于主库写入、迁移和数据库就绪检查。
-MYSQL_WRITE_USER=pyramid_writer
-MYSQL_WRITE_PASSWORD=
-
-# 应用读账号：用于业务查询，并只额外读取 Performance Schema digest 摘要。
-MYSQL_READ_USER=pyramid_reader
-MYSQL_READ_PASSWORD=
-
-# 复制状态检查账号：只用于 SHOW REPLICA STATUS，缺失时 eventual 读会回退主库。
-MYSQL_REPLICA_STATUS_USER=replica_status
-MYSQL_REPLICA_STATUS_PASSWORD=
-
-# 复制通道账号：只用于从库拉取主库 binlog。
-MYSQL_REPLICATION_USER=replica
-MYSQL_REPLICATION_PASSWORD=
-
-MYSQL_WRITE_HOST=mysql-primary
-MYSQL_READ_HOSTS=mysql-replica
-
-MYSQL_PORT=3306
-MYSQL_POOL_SIZE_WRITE=5
-MYSQL_POOL_SIZE_READ=5
-MYSQL_CONNECT_TIMEOUT_SECONDS=5
-MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=3
-MYSQL_POOL_ACQUIRE_RETRY_MS=50
-MYSQL_REPLICA_MAX_LAG_SECONDS=2
-MYSQL_REPLICA_STATUS_CACHE_SECONDS=2
-MYSQL_QUERY_WARN_MS=500
-
-# 3.2 受控管理员写入
-ADMIN_BATCH_MAX_TARGETS=20
-ADMIN_DELETE_MAX_RELATED_ROWS=10000
-ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS=5
-
-# 管理员数据库看板、业务后台与 deep 审计
-DB_INSPECTION_QUERY_TIMEOUT_MS=3000
-DB_DASHBOARD_CONNECTION_WARNING_PERCENT=70
-DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=85
-DB_MONITOR_AUTO_REFRESH_ENABLED=true
-DB_MONITOR_REALTIME_INTERVAL_SECONDS=10
-DB_MONITOR_SQL_INTERVAL_SECONDS=60
-DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS=900
-DB_MONITOR_SLOW_QUERY_WARNING_DELTA=1
-DB_MONITOR_INTEGRITY_ENABLED=false
-DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=86400
-
-# 可选，仅本地管理员 Vue 开发使用；生产环境留空。
-ADMIN_VITE_DEV_SERVER_URL=
-
-# Web/后台任务并发配置
-WEB_WORKERS=1
-WEB_THREADS=12
-WEB_TIMEOUT=120
-JOB_WORKERS=2
-JOB_HEARTBEAT_INTERVAL_SECONDS=10
-JOB_STALE_AFTER_SECONDS=120
-JOB_MAX_ATTEMPTS=3
-
-MAX_UPLOAD_SIZE_MB=20
-
-
-# LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
-LANGCHAIN_API_KEY=
-LANGCHAIN_PROJECT=
-
+cp .env.example .env
 ```
-
-结构化输出固定通过 DeepSeek/OpenAI 兼容的普通 Tool Calls（`tools/tool_calls`）完成，不提供 JSON mode 或 `/beta` strict 模式开关。由于 DeepSeek Thinking 默认开启、且固定或必选 `tool_choice` 与 Thinking 不兼容，Pydantic 结构化输出和 MCP planner 都使用关闭 Thinking 的 LLM 副本；自然语言节点与基础 LLM 不受影响。Pydantic 结构化输出由 Schema 固定工具，MCP planner 则通过 `tool_choice="required"` 强制模型从已加载工具中自行选择，绝不使用“选择第一个工具”的兜底。参见 [DeepSeek Thinking Mode 官方文档](https://api-docs.deepseek.com/guides/thinking_mode)。
 
 3. 在项目根目录运行docker-compose
 ```bash
@@ -287,6 +199,11 @@ docker-compose -f docker-compose.replica.yml up -d
 docker-compose -f docker-compose.replica.yml run --rm app python Database/database_init.py
 docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head
 ```
+
+PostgreSQL checkpoint 使用独立服务。请先在 `.env` 设置非空的
+`CHECKPOINT_POSTGRES_PASSWORD`；`docker-compose ... up -d` 会自动运行一次
+`checkpoint-setup` 创建官方 LangGraph schema，并启动独立的
+`checkpoint-cleanup` worker。
 
 全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 
@@ -310,7 +227,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 - 复制状态检查账号：`MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`，只用于读取 `SHOW REPLICA STATUS`；缺失或不可用时，`eventual` 读安全回退主库读连接。
 - 复制通道账号：`MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`，只用于 MySQL 主从复制链路，不参与应用业务查询。
 
-删除已经创建的会话时，应用会在同一个主库事务内删除会话、聊天消息、附件和同一 `session_id` 对应的 LangGraph MySQL checkpoint；`checkpoint_writes` 由其到 `checkpoints` 的外键级联删除。当前 `thread_id` 使用会话 ID，但不额外建立 `checkpoints.thread_id → sessions.id` 外键。
+`/api/new_chat` 生成 ID 后会立即在 MySQL 主库创建会话记录；创建 job、保存聊天、修改标题和上传文件都要求该会话已经存在且属于当前用户，不会根据未知 ID 自动重建。删除已经创建的会话时，主库事务会删除会话、聊天消息和附件，并写入 `checkpoint_cleanup_outbox`；独立 cleanup worker 随后调用 PostgreSQL `adelete_thread()` 清理同一 `session_id` 对应的 LangGraph checkpoint。两个数据库之间不伪造分布式事务，用户接口会明确返回后台清理状态。
 
 #### 管理员后台
 
@@ -369,153 +286,7 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 
 ### windows部署
 
-**不推荐使用windows部署，会有意想不到的问题**
-
-普通用户前端仍由 Flask 直接托管；管理员 Vue 在开发时可单独运行 Vite，生产时由 Flask 托管预构建产物。长任务仍需要独立 worker，数据库看板仍需要独立 monitor。
-
-首先推荐创建一个环境，具体创建方式请自行查阅
-
-1. 打开命令行工具。
-
-2. 导航到您想要存放项目的目录。 （例如，如果您想放在 D 盘的 Projects 文件夹下，可以输入 cd /d D:\Projects）
-
-3. 克隆仓库: 输入以下命令并按回车：
-
-  git clone https://github.com/Heyflyingpig/CausalAgent
-  这将在当前目录下创建一个名为 CausalAgent 的文件夹，并下载所有项目文件。
-
-*备选方案：您也可以在 GitHub 页面上点击 "Code" -> "Download ZIP" 下载项目的压缩包，然后手动解压。*
-
-
-4.  **Python 环境**: 确保你已安装 Python 3.11+。
-
-5.  **MySQL 数据库**: 你需要一个正在运行的 MySQL 8.0+ 实例。请预先创建一个数据库（例如，名为 `causal_chat_db`）并准备好其访问凭据（主机、用户名、密码）。
-
-6.  **安装 Python 依赖**:
-    克隆项目后，在项目根目录运行以下命令：
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-   管理员 Vue 需要 Node 24；首次或锁文件变化后构建一次：
-
-    ```bash
-    cd admin-frontend
-    npm ci
-    npm run build
-    cd ..
-    ```
-7. 项目配置
-
-在首次运行前，你必须在项目根目录下创建一个 `.env` 文件，用于存放所有敏感配置信息。
-
--   创建 `.env` 文件。
--   将以下模板内容复制到文件中，并填入你自己的真实信息。
-
-    ```bash
-    # Flask 应用密钥（用于会话加密等）
-    SECRET_KEY=
-
-    # API 基础URL（OpenAI官方或第三方兼容接口）
-    BASE_URL=
-    MODEL=
-
-    # OpenAI API 密钥或兼容 API 的密钥
-    API_KEY=
-    # Docker环境：使用服务名 'mysql'
-    # 本地开发：使用 'localhost' 或 '127.0.0.1'
-    MYSQL_HOST=mysql
-
-    # 旧版兼容账号。未配置拆分账号时，写/读连接会回退使用它。
-    MYSQL_USER=
-
-    MYSQL_ROOT_PASSWORD=
-    MYSQL_PASSWORD=
-
-    # 数据库名称
-    MYSQL_DATABASE=
-
-    # 应用写账号
-    MYSQL_WRITE_USER=
-    MYSQL_WRITE_PASSWORD=
-
-    # 应用读账号
-    MYSQL_READ_USER=
-    MYSQL_READ_PASSWORD=
-
-    # 复制状态检查账号。缺失时 eventual 读回退主库。
-    MYSQL_REPLICA_STATUS_USER=
-    MYSQL_REPLICA_STATUS_PASSWORD=
-
-    # 复制通道账号
-    MYSQL_REPLICATION_USER=replica
-    MYSQL_REPLICATION_PASSWORD=
-
-    # 管理员数据库看板共享快照
-    DB_INSPECTION_QUERY_TIMEOUT_MS=3000
-    DB_DASHBOARD_CONNECTION_WARNING_PERCENT=70
-    DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=85
-    DB_MONITOR_AUTO_REFRESH_ENABLED=true
-    DB_MONITOR_REALTIME_INTERVAL_SECONDS=10
-    DB_MONITOR_SQL_INTERVAL_SECONDS=60
-    DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS=900
-    DB_MONITOR_SLOW_QUERY_WARNING_DELTA=1
-    DB_MONITOR_INTEGRITY_ENABLED=false
-    DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=86400
-
-    # 可选，仅本地管理员 Vue 开发使用；生产环境留空。
-    ADMIN_VITE_DEV_SERVER_URL=
-
-    # LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
-    LANGCHAIN_API_KEY=
-    LANGCHAIN_PROJECT=
-
-    ```
-
-8. 启动数据库
-需要预先安装mysql数据库
-在项目根目录下打开一个终端，运行以下命令：
-```bash
-python Database/database_init.py
-alembic upgrade head
-```
-`Database/database_init.py` 负责确保数据库存在和连接可用；业务表结构由 Alembic 迁移脚本维护。全新空库直接执行 `alembic upgrade head`，不要先运行 preflight。旧库只有在目标外键尚未建立、且即将执行添加外键的迁移时，才先执行 `python Database/audit_before_db_upgrade.py`；审计会依据当前 schema 跳过尚不存在或已经受约束保护的关系。
-
-9. 启动后端服务
-
-在项目根目录下打开一个终端，运行 Web 层：
-
-```bash
-python Causalchat.py
-```
-
-再打开一个终端，运行后台 worker：
-
-```bash
-python -m app.agent.worker
-```
-
-再打开一个终端，运行数据库监控采集器：
-
-```bash
-python -m Database.monitor_worker
-```
-
-首次运行时，Web 层会检查数据库表结构。Agent/MCP 初始化只在 worker 中执行；如果没有 worker，前端可以创建任务但不会得到最终分析结果。数据库看板的共享快照只由 monitor 更新；如果没有 monitor，管理接口仍可读取已有快照并显示过期状态，但不会得到新的自动或手动采集结果。请保持 Web、worker 和 monitor 三个终端窗口持续运行。
-
-10. 启动前端应用
-
-再打开一个 **新的终端窗口**，同样在项目根目录下，运行以下命令：
-
-```bash
-python Run_causal.py
-```
-
-稍等片刻，一个标题为 "CausalAgent" 的桌面应用窗口将会出现，并加载应用的登录界面。现在，你可以注册并开始使用了。
-
-11. rag和知识库部分
-> [!IMPORTANT]
-> **知识库仍然在构建，所以知识库查询功能暂不可用**
+**目前已不支持windows部署**
 
 ## 贡献
 欢迎提交 Issue 和 Pull Request！
@@ -594,8 +365,10 @@ python Run_causal.py
 │   ├── database_init.py    # 数据库初始化引导脚本
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
 │   ├── inspection.py       # 管理员看板统一只读检查服务
-│   ├── deep_audit.py       # 3.1 手动 deep 数据库事实审计
-│   ├── lifecycle_repair.py # 3.2 孤立关系 dry-run/人工确认修复 CLI
+│   ├── deep_audit.py       # 手动 deep 数据库事实审计
+│   ├── lifecycle_repair.py # 孤立关系 dry-run/人工确认修复 CLI
+│   ├── checkpoint_setup.py # PostgreSQL LangGraph schema 一次性 setup
+│   ├── checkpoint_cleanup_worker.py # 跨库 checkpoint cleanup outbox worker
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口
 │   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
 │   ├── monitor_worker.py   # 数据库看板分层采集进程

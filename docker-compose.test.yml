@@ -19,6 +19,6 @@ services:
         target: /app
         read_only: true
       - type: bind
-        source: ./tests/unit-test.env
+        source: ./tests/unit-test-env
         target: /app/.env
         read_only: true
