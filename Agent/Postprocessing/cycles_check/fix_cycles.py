@@ -4,7 +4,7 @@ import numpy as np
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from Agent.llm_structured_output import invoke_structured
-from Agent.causal_agent.state import CausalChatState
+from Agent.causal_agent.state import CausalAgentState
 from Agent.knowledge_base.query_rag import get_rag_excerpt
 import json
 import logging
@@ -48,7 +48,7 @@ def fix_cycles_with_llm(
         cycles: List[List[str]], 
         node_names: List[str],
         llm: ChatOpenAI, 
-        state: CausalChatState,
+        state: CausalAgentState,
         *,
         matrix_convention: str = "causallearn",
     ) -> Tuple[np.ndarray, List[Tuple[str, str]]]:

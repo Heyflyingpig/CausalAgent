@@ -7,7 +7,7 @@ Web 进程只调用创建 job、读取事件；worker 进程调用领取、心�
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 import uuid
@@ -16,7 +16,7 @@ from typing import Any
 import mysql.connector
 from mysql.connector import errorcode
 
-from app.db import get_read_connection, get_write_connection
+from app.db import get_read_connection, get_read_connection_with_source, get_write_connection
 from config.settings import settings
 
 
@@ -38,11 +38,6 @@ def _json_loads(value: Any) -> Any:
     if isinstance(value, (bytes, bytearray)):
         value = value.decode("utf-8")
     return json.loads(value)
-
-
-def _session_title(message: str) -> str:
-    title = message[:8]
-    return title + ("..." if len(message) > 8 else "")
 
 
 def _row_to_job(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -95,16 +90,7 @@ def create_job(user_id: int, session_id: str, message: str) -> tuple[dict[str, A
     try:
         cursor = conn.cursor(dictionary=True)
         conn.start_transaction()
-        # 如果主键重复，直接忽略，确保数据库里绝对有这一行数据，同时避免主键sessionid，延迟创建而重复插入崩溃。
-        cursor.execute(
-            """
-            INSERT INTO sessions (id, user_id, title, created_at, last_activity_at, message_count)
-            VALUES (%s, %s, %s, %s, %s, 0)
-            ON DUPLICATE KEY UPDATE id = id
-            """,
-            (session_id, user_id, _session_title(message), now, now),
-        )
-        # 增加悲观锁，查看当前session属于当前用户
+        # 锁定并校验服务端已经创建的 session，禁止未知 ID 自动建行。
         cursor.execute(
             "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
             (session_id, user_id),
@@ -327,15 +313,81 @@ def mark_chat_saved(job_id: str) -> bool:
 
 def get_worker_snapshot() -> list[dict[str, Any]]:
     """返回 queued/running job 快照，供轻量管理接口观察 worker 活性。"""
-    with get_read_connection(consistency="strong") as conn:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(
-            """
-            SELECT job_id, status, worker_id, heartbeat_at, attempt_count, max_attempts, created_at
-            FROM analysis_jobs
-            WHERE status IN ('queued', 'running')
-            ORDER BY created_at ASC
-            LIMIT 100
-            """
-        )
-        return cursor.fetchall()
+    return get_worker_snapshot_report()["jobs"]
+
+
+def get_worker_snapshot_report() -> dict[str, Any]:
+    """返回任务总量、异常计数和最多 100 条活动任务，并标明主库来源。"""
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    try:
+        connection, source = get_read_connection_with_source(consistency="strong")
+        stale_after = int(settings.JOB_STALE_AFTER_SECONDS)
+        timeout_ms = int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS)
+        with connection as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                f"""
+                SELECT /*+ MAX_EXECUTION_TIME({timeout_ms}) */
+                    SUM(status = 'queued') AS queued,
+                    SUM(status = 'running') AS running,
+                    SUM(
+                        status = 'running'
+                        AND (
+                            heartbeat_at IS NULL
+                            OR heartbeat_at < (UTC_TIMESTAMP(6) - INTERVAL {stale_after} SECOND)
+                        )
+                    ) AS stale,
+                    SUM(status = 'running' AND attempt_count >= max_attempts) AS max_attempts_running
+                FROM analysis_jobs
+                WHERE status IN ('queued', 'running')
+                """
+            )
+            summary_row = cursor.fetchone() or {}
+            cursor.execute(
+                f"""
+                SELECT /*+ MAX_EXECUTION_TIME({timeout_ms}) */
+                    job_id, status, worker_id, heartbeat_at,
+                    attempt_count, max_attempts, created_at
+                FROM analysis_jobs
+                WHERE status IN ('queued', 'running')
+                ORDER BY created_at ASC
+                LIMIT 100
+                """
+            )
+            jobs = cursor.fetchall()
+
+        summary = {
+            key: int(summary_row.get(key) or 0)
+            for key in ("queued", "running", "stale", "max_attempts_running")
+        }
+        warning = None
+        status = "healthy"
+        if summary["stale"] or summary["max_attempts_running"]:
+            status = "warning"
+            warning = "存在心跳过期或达到最大尝试次数但仍运行的任务"
+        return {
+            "jobs": jobs,
+            "summary": summary,
+            "status": status,
+            "observed_at": observed_at,
+            **source,
+            "is_estimate": False,
+            "warning": warning,
+        }
+    except Exception as exc:
+        logging.warning("读取 worker/job 看板快照失败: %s", exc, exc_info=True)
+        return {
+            "jobs": [],
+            "summary": {
+                "queued": None,
+                "running": None,
+                "stale": None,
+                "max_attempts_running": None,
+            },
+            "status": "unknown",
+            "observed_at": observed_at,
+            "source_role": "primary",
+            "source_alias": "primary",
+            "is_estimate": False,
+            "warning": "读取 worker/job 快照失败",
+        }

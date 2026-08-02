@@ -6,23 +6,38 @@ app.auth.service - 用户认证服务
 - 注册用户
 
 '''
-from app.db import get_write_connection
+from app.db import get_read_connection, get_write_connection
 import mysql.connector
 import logging
 import bcrypt
 from mysql.connector import errorcode       
+
+
+MANAGED_PASSWORD_MIN_CHARS = 15
+MANAGED_PASSWORD_MAX_CHARS = 64
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
 # 查找用户
 def find_user(username):
+    """按用户名从主库读取登录所需的用户、角色和启用状态。"""
     try:
         # with提供一个临时变量，储存这个函数
-        with get_write_connection() as conn:
+        with get_read_connection(consistency="strong") as conn:
             # 使用 dictionary=True 使 cursor 返回字典而不是元组，方便按列名访问
             cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT id, username, password_hash FROM users WHERE username = %s", (username,))
+            cursor.execute(
+                """
+                SELECT id, username, password_hash, role, is_active, auth_version
+                FROM users
+                WHERE username = %s
+                """,
+                (username,),
+            )
             user_row = cursor.fetchone()
             # cursor.close() # 'with' 语句会自动关闭游标和连接
             if user_row:
-                # 返回一个字典，包含 id, username 和 password_hash
+                # 返回包含登录、角色和启用状态的用户字典
                 return user_row # user_row 已经是字典了
             return None
     except mysql.connector.Error as e: 
@@ -34,20 +49,56 @@ def find_user(username):
 
 
 def find_user_by_id(user_id):
-    """按 ID 查找用户；未找到返回 None，数据库异常继续向上抛出。"""
-    with get_write_connection() as conn:
+    """按 ID 从主库读取当前角色、启用状态和认证版本；未找到返回 None。"""
+    with get_read_connection(consistency="strong") as conn:
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("SELECT id, username FROM users WHERE id = %s", (user_id,))
+        cursor.execute(
+            """
+            SELECT id, username, role, is_active, auth_version
+            FROM users
+            WHERE id = %s
+            """,
+            (user_id,),
+        )
         return cursor.fetchone()
 
 
 # 哈希密码
 def hash_password(password):
+    """使用 bcrypt 为明文密码生成不可逆哈希。"""
     hashed_password = bcrypt.hashpw(
         password.encode('utf-8'), 
         bcrypt.gensalt(rounds=12)).decode('utf-8')
     
     return hashed_password
+
+
+def verify_password(plain_password: str, stored_hash: str | bytes) -> bool:
+    """常量时间校验 bcrypt 密码；损坏哈希或异常输入统一视为不匹配。"""
+    if not isinstance(plain_password, str) or not plain_password:
+        return False
+    try:
+        encoded_hash = (
+            stored_hash
+            if isinstance(stored_hash, bytes)
+            else str(stored_hash).encode("utf-8")
+        )
+        return bcrypt.checkpw(plain_password.encode("utf-8"), encoded_hash)
+    except (TypeError, ValueError):
+        return False
+
+
+def managed_password_error(password: object) -> str | None:
+    """校验管理员受控改密口令长度，并避免 bcrypt 72 字节静默截断。"""
+    if not isinstance(password, str):
+        return "新密码必须是字符串"
+    if len(password) < MANAGED_PASSWORD_MIN_CHARS:
+        return f"新密码至少需要 {MANAGED_PASSWORD_MIN_CHARS} 个字符"
+    if len(password) > MANAGED_PASSWORD_MAX_CHARS:
+        return f"新密码不能超过 {MANAGED_PASSWORD_MAX_CHARS} 个字符"
+    if len(password.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
+        return "新密码的 UTF-8 编码不能超过 72 字节"
+    return None
 
 # 注册用户
 def register_user(username, plain_password):

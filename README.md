@@ -56,15 +56,12 @@ CausalAgent
 - [快速开始 | Quick Start](#快速开始--quick-start)
   - [Docker部署](#docker部署)
     - [数据库生产化配置](#数据库生产化配置)
+  - [后端单元测试](#后端单元测试)
   - [windows部署](#windows部署)
 - [贡献](#贡献)
 - [Star 趋势](#star-趋势)
 - [项目结构](#项目结构)
-- [更新日志](./README/CHANGELOG.md)
-- [DirectLiNGAM 算法介绍](./README/DirectLiNGAM算法介绍.html)
-- [DirectLiNGAM 接入需求与实施计划](./README/DirectLiNGAM需求与实施计划.md)
-- [DirectLiNGAM 接口契约](./README/DirectLiNGAM接口契约.md)
-- [DirectLiNGAM 依赖核验记录](./README/DirectLiNGAM依赖核验记录.md)
+- [更新日志](./README/开发日志.md)
 
 
 
@@ -125,7 +122,7 @@ graph TD;
 
     subgraph "Tools & Data"
         MCP --> PC[PC Algorithm]
-        MCP --> Direct[DirectLiNGAM]
+        MCP --> DirectLiNGAM[DirectLiNGAM]
         MCP --> FCI[FCI Algorithm]
         Pre --> Data[(MySQL/Files)]
     end
@@ -133,7 +130,7 @@ graph TD;
 ```
 
 - **Router Agent**：根据用户意图在「预处理 / 因果分析 / 知识库问答 / 报告生成」等节点之间自动路由，无需用户关心底层算法。
-- **Causal Agent**：负责与 MCP 因果算法工具交互（如 PC、DirectLiNGAM、FCI 等），完成因果结构学习与干预效应估计的核心推理。
+- **Causal Agent**：负责与 MCP 因果算法工具交互（如 PC、FCI 等），完成因果结构学习与干预效应估计的核心推理。
 - **Writer Agent**：结合因果结果与 RAG 知识库，自动撰写结构化专业报告（背景、方法、结果、结论与局限性）。
 - **Chat Agent**：面向一般问答与解释型对话，为非专业用户提供自然语言解释与操作指引。
 
@@ -151,7 +148,7 @@ graph TD;
 - **可插拔算法框架**：通过 MCP 将因果发现与估计算法以「工具」形式解耦，便于在不改动 Agent 主逻辑的前提下扩展/更换算法库。
 - **当前支持**：
   - PC 算法（基于条件独立检验的因果结构学习）。
-  - DirectLiNGAM（面向线性、非高斯、DAG、无潜在混杂假设下的带权有向因果图发现）。
+  - DirectLiNGAM（面向连续数值数据的线性非高斯无环因果发现，输出因果顺序与带权有向图）。使用结果时需满足误差相互独立、无潜在混杂等模型假设，边权表示模型估计系数，不等同于实验验证。
 - **规划中**：
   - FCI 等含潜在混杂的结构学习算法；
   - 因果效应估计（ATE/CATE）与反事实分析等模块。
@@ -180,7 +177,7 @@ graph TD;
 
 ## 快速开始 | Quick Start
 ### Docker部署
-当前项目已经提供了完整的 `Dockerfile`，支持通过 Docker 运行后端服务，但暂未在公网镜像仓库发布官方镜像。
+当前项目已经提供了完整的多阶段 `Dockerfile`，会先用 Node 24 构建管理员 Vue，再生成仅包含 Python 运行时与静态产物的应用镜像；暂未在公网镜像仓库发布官方镜像。
 如果你已安装 Docker，可以在本地根据下面的步骤自行构建并运行镜像。
 
 
@@ -189,90 +186,31 @@ graph TD;
 git clone https://github.com/Heyflyingpig/CausalAgent
 ```
 
-2. 创建.env文件,并在文件中键入以下值
+2. 创建.env文件
 ```bash
-# Flask 应用密钥（用于会话加密等）
-SECRET_KEY=
-
-# API 基础URL（OpenAI官方或第三方兼容接口）
-BASE_URL=
-MODEL=
-
-# OpenAI API 密钥或兼容 API 的密钥
-API_KEY=
-# Docker环境：使用服务名 'mysql'
-# 本地开发：使用 'localhost' 或 '127.0.0.1'
-MYSQL_HOST=mysql
-
-# 旧版兼容账号。未配置拆分账号时，写/读连接会回退使用它。
-MYSQL_USER=pyramid
-
-MYSQL_ROOT_PASSWORD=
-MYSQL_PASSWORD=
-
-# 数据库名称
-MYSQL_DATABASE=
-
-# 应用写账号：用于主库写入、迁移和数据库就绪检查。
-MYSQL_WRITE_USER=pyramid_writer
-MYSQL_WRITE_PASSWORD=
-
-# 应用读账号：用于主库/从库业务查询，建议只授予业务库 SELECT。
-MYSQL_READ_USER=pyramid_reader
-MYSQL_READ_PASSWORD=
-
-# 复制状态检查账号：只用于 SHOW REPLICA STATUS，缺失时 eventual 读会回退主库。
-MYSQL_REPLICA_STATUS_USER=replica_status
-MYSQL_REPLICA_STATUS_PASSWORD=
-
-# 复制通道账号：只用于从库拉取主库 binlog。
-MYSQL_REPLICATION_USER=replica
-MYSQL_REPLICATION_PASSWORD=
-
-MYSQL_WRITE_HOST=mysql-primary
-MYSQL_READ_HOSTS=mysql-replica
-
-MYSQL_PORT=3306
-MYSQL_POOL_SIZE_WRITE=5
-MYSQL_POOL_SIZE_READ=5
-MYSQL_REPLICA_MAX_LAG_SECONDS=2
-MYSQL_QUERY_WARN_MS=500
-
-# Web/后台任务并发配置
-WEB_WORKERS=1
-WEB_THREADS=12
-WEB_TIMEOUT=120
-JOB_WORKERS=2
-JOB_HEARTBEAT_INTERVAL_SECONDS=10
-JOB_STALE_AFTER_SECONDS=120
-JOB_MAX_ATTEMPTS=3
-
-MAX_UPLOAD_SIZE_MB=20
-
-
-# LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
-LANGCHAIN_API_KEY=
-LANGCHAIN_PROJECT=
-
+cp .env.example .env
 ```
-
-结构化输出固定通过 DeepSeek/OpenAI 兼容的普通 Tool Calls（`tools/tool_calls`）完成，不提供 JSON mode 或 `/beta` strict 模式开关。由于 DeepSeek Thinking 默认开启、且固定或必选 `tool_choice` 与 Thinking 不兼容，Pydantic 结构化输出和 MCP planner 都使用关闭 Thinking 的 LLM 副本；自然语言节点与基础 LLM 不受影响。Pydantic 结构化输出由 Schema 固定工具，MCP planner 则通过 `tool_choice="required"` 强制模型从已加载工具中自行选择，绝不使用“选择第一个工具”的兜底。参见 [DeepSeek Thinking Mode 官方文档](https://api-docs.deepseek.com/guides/thinking_mode)。
 
 3. 在项目根目录运行docker-compose
 ```bash
-docker-compose -f docker-compose.replica.yml up -d
+docker compose -f docker-compose.yml up -d
 ```
 
-4. 运行数据库迁移
+`docker compose ... up -d` 会在 app、worker、monitor 和 cleanup worker 启动前，
+自动运行一次性 `db-bootstrap`。它依次执行 MySQL 建库、Alembic migration 和
+LangGraph 官方 PostgreSQL setup。若需要手动重跑该初始化入口，可执行：
+
 ```bash
-docker-compose -f docker-compose.replica.yml run --rm app python Database/database_init.py
-docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head
+docker compose -f docker-compose.yml run --rm db-bootstrap
 ```
 
-如果是已有旧数据、准备做生产化升级，再额外先执行：
+请先在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`。
+`checkpoint-cleanup` 仍是独立的常驻 worker，用于消费跨库清理 outbox。
+
+全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 
 ```bash
-docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_before_db_upgrade.py
+docker compose -f docker-compose.yml run --rm app python Database/audit_before_db_upgrade.py
 ```
 
 > [!IMPORTANT]
@@ -287,139 +225,70 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 主从模式下数据库账号按职责拆分：
 
 - 写账号：`MYSQL_WRITE_USER` / `MYSQL_WRITE_PASSWORD`，用于应用写主库、Alembic 迁移和启动就绪检查；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
-- 读账号：`MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`，用于 `get_read_connection()` 的主库强一致读和从库弱一致读；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
+- 读账号：`MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`，用于 `get_read_connection()` 的主库强一致读和从库弱一致读；除业务库 `SELECT` 外，仅额外授予 `performance_schema.events_statements_summary_by_digest` 的表级 `SELECT`，供高负载 SQL digest 摘要使用；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
 - 复制状态检查账号：`MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`，只用于读取 `SHOW REPLICA STATUS`；缺失或不可用时，`eventual` 读安全回退主库读连接。
 - 复制通道账号：`MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`，只用于 MySQL 主从复制链路，不参与应用业务查询。
 
-删除已经创建的会话时，应用会在同一个主库事务内删除会话、聊天消息、附件和同一 `session_id` 对应的 LangGraph MySQL checkpoint；`checkpoint_writes` 由其到 `checkpoints` 的外键级联删除。当前 `thread_id` 使用会话 ID，但不额外建立 `checkpoints.thread_id → sessions.id` 外键。
+`/api/new_chat` 生成 ID 后会立即在 MySQL 主库创建会话记录；创建 job、保存聊天、修改标题和上传文件都要求该会话已经存在且属于当前用户，不会根据未知 ID 自动重建。删除已经创建的会话时，主库事务会删除会话、聊天消息和附件，并写入 `checkpoint_cleanup_outbox`；独立 cleanup worker 随后调用 PostgreSQL `adelete_thread()` 清理同一 `session_id` 对应的 LangGraph checkpoint。两个数据库之间不伪造分布式事务，用户接口会明确返回后台清理状态。
 
-管理接口：
+#### 管理员后台
 
-- `GET /api/admin/db/health`
-- `GET /api/admin/db/slow-queries`
-- `GET /api/admin/jobs/workers`
+管理员后台提供业务概览、用户、会话、任务、文件、数据库看板、采集配置和数据库审计。普通用户仍进入聊天页面，已启用的管理员登录后进入 `/admin/database`。
+
+管理员仍默认进入 `/admin/database`，也可从后台进入普通聊天界面；聊天页只访问当前账号自己的会话、文件和任务，并向管理员提供返回后台的入口。管理员主动访问 `/` 时不会被再次强制送回后台。
+
+未登录管理页面只保留白名单内的安全回跳；普通用户直访管理页面会得到 `403`。`POST /api/login` 仅在内部 `next` 通过服务端白名单校验后返回 `redirect_to`。
+
+首次使用前，先完成数据库迁移和管理员前端构建，然后把一个已经注册且已启用的用户提升为管理员：
+
+```bash
+# Docker 运行
+docker compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli promote <username>
+```
+
+管理员系统的部署、开发、API、安全边界和测试说明统一放在 [`Document/admin/`](Document/admin/README.md)。其中：
+
+- [API 契约](Document/admin/api.md)
+- [开发与部署](Document/admin/development.md)
+- [测试说明](Document/admin/testing.md)
+
+更深入的数据库治理、读写一致性和恢复规则见 [`setting/database_governance.md`](setting/database_governance.md)。
+
+### 后端单元测试
+
+仓库提供独立的 `docker-compose.test.yml`，用于按需创建一次性单元测试容器。测试镜像预装项目 Python 依赖和 `pytest`，不连接 MySQL，禁用网络；当前源码以只读方式挂载到容器，因此修改代码后可以直接重新运行测试，无需重建镜像。
+
+首次使用或测试依赖变化后构建测试镜像：
+
+```bash
+docker compose -f docker-compose.test.yml build unit-test
+```
+
+运行全部后端单元测试，测试结束后自动删除本次容器：
+
+```bash
+docker compose -f docker-compose.test.yml run --rm unit-test
+```
+
+运行指定测试文件：
+
+```bash
+docker compose -f docker-compose.test.yml run --rm unit-test python -m pytest -p no:cacheprovider tests/unit/agent/test_agent_state_routing.py
+```
+
+需要在相同环境内排查导入或依赖问题时，可以临时进入 Shell；退出后容器仍会自动删除：
+
+```bash
+docker compose -f docker-compose.test.yml run --rm unit-test sh
+```
+
+当前测试只保证 `tests/unit`；集成测试和隔离主从 E2E 的执行边界见 [`tests/README.md`](tests/README.md)。
 
 
 
 ### windows部署
 
-**不推荐使用windows部署，会有意想不到的问题**
-
-项目采用前后端分离的设计，需要同时运行后端服务和前端应用。
-
-首先推荐创建一个环境，具体创建方式请自行查阅
-
-1. 打开命令行工具。
-
-2. 导航到您想要存放项目的目录。 （例如，如果您想放在 D 盘的 Projects 文件夹下，可以输入 cd /d D:\Projects）
-
-3. 克隆仓库: 输入以下命令并按回车：
-
-  git clone https://github.com/Heyflyingpig/CausalAgent
-  这将在当前目录下创建一个名为 CausalAgent 的文件夹，并下载所有项目文件。
-
-*备选方案：您也可以在 GitHub 页面上点击 "Code" -> "Download ZIP" 下载项目的压缩包，然后手动解压。*
-
-
-4.  **Python 环境**: 确保你已安装 Python 3.11+。
-
-5.  **MySQL 数据库**: 你需要一个正在运行的 MySQL 8.0+ 实例。请预先创建一个数据库（例如，名为 `causal_chat_db`）并准备好其访问凭据（主机、用户名、密码）。
-
-6.  **安装 Python 依赖**:
-    克隆项目后，在项目根目录运行以下命令：
-    ```bash
-    pip install -r requirements.txt
-    ```
-7. 项目配置
-
-在首次运行前，你必须在项目根目录下创建一个 `.env` 文件，用于存放所有敏感配置信息。
-
--   创建 `.env` 文件。
--   将以下模板内容复制到文件中，并填入你自己的真实信息。
-
-    ```bash
-    # Flask 应用密钥（用于会话加密等）
-    SECRET_KEY=
-
-    # API 基础URL（OpenAI官方或第三方兼容接口）
-    BASE_URL=
-    MODEL=
-
-    # OpenAI API 密钥或兼容 API 的密钥
-    API_KEY=
-    # Docker环境：使用服务名 'mysql'
-    # 本地开发：使用 'localhost' 或 '127.0.0.1'
-    MYSQL_HOST=mysql
-
-    # 旧版兼容账号。未配置拆分账号时，写/读连接会回退使用它。
-    MYSQL_USER=
-
-    MYSQL_ROOT_PASSWORD=
-    MYSQL_PASSWORD=
-
-    # 数据库名称
-    MYSQL_DATABASE=
-
-    # 应用写账号
-    MYSQL_WRITE_USER=
-    MYSQL_WRITE_PASSWORD=
-
-    # 应用读账号
-    MYSQL_READ_USER=
-    MYSQL_READ_PASSWORD=
-
-    # 复制状态检查账号。缺失时 eventual 读回退主库。
-    MYSQL_REPLICA_STATUS_USER=
-    MYSQL_REPLICA_STATUS_PASSWORD=
-
-    # 复制通道账号
-    MYSQL_REPLICATION_USER=replica
-    MYSQL_REPLICATION_PASSWORD=
-
-    # LangSmith API 密钥和项目名称（不强制，兼容原有 LANGCHAIN_* 配置）
-    LANGCHAIN_API_KEY=
-    LANGCHAIN_PROJECT=
-
-    ```
-
-8. 启动数据库
-需要预先安装mysql数据库
-在项目根目录下打开一个终端，运行以下命令：
-```bash
-python Database/database_init.py
-alembic upgrade head
-```
-`Database/database_init.py` 负责确保数据库存在和连接可用；业务表结构由 Alembic 迁移脚本维护。全新空库直接执行 `alembic upgrade head` 即可；已有历史数据的环境应先执行审计脚本，确认无孤立消息、孤立附件和非法附件类型后再升级。
-
-9. 启动后端服务
-
-在项目根目录下打开一个终端，运行 Web 层：
-
-```bash
-python Causalchat.py
-```
-
-再打开一个终端，运行后台 worker：
-
-```bash
-python -m app.agent.worker
-```
-
-首次运行时，Web 层会检查数据库表结构。Agent/MCP 初始化只在 worker 中执行；如果没有 worker，前端可以创建任务但不会得到最终分析结果。请保持 Web 和 worker 两个终端窗口持续运行。
-
-10. 启动前端应用
-
-再打开一个 **新的终端窗口**，同样在项目根目录下，运行以下命令：
-
-```bash
-python Run_causal.py
-```
-
-稍等片刻，一个标题为 "CausalAgent" 的桌面应用窗口将会出现，并加载应用的登录界面。现在，你可以注册并开始使用了。
-
-11. rag和知识库部分
-> [!IMPORTANT]
-> **知识库仍然在构建，所以知识库查询功能暂不可用**
+**目前已不支持windows部署**
 
 ## 贡献
 欢迎提交 Issue 和 Pull Request！
@@ -438,6 +307,8 @@ python Run_causal.py
 
 轻量 CI 不连接数据库、不加载知识库或模型，也不调用外部 API。GitHub 分支保护需要在仓库 `Settings -> Rules -> Rulesets` 中单独启用，并将上述三个检查设置为必需检查。
 
+新建 Issue 时请使用仓库提供的 [`Issue Form`](.github/ISSUE_TEMPLATE/issue.yml)，按模板填写背景、问题描述、预期结果、复现步骤、验收标准和环境信息。除附件外的字段为 GitHub 原生必填项，但不限制填写内容；普通贡献者不能选择空白 Issue。
+
 ## Star 趋势
 
 [![Star History Chart](https://api.star-history.com/svg?repos=Heyflyingpig/CausalAgent&type=Date)](https://star-history.com/#Heyflyingpig/CausalAgent&Date)
@@ -447,23 +318,36 @@ python Run_causal.py
 
 ```
 .
-├── Causalchat.py           # Flask 后端入口
+├── CausalAgent.py          # Flask 后端入口
 ├── Run_causal.py           # 桌面端启动入口（pywebview）
 ├── requirements.txt        # 完整依赖
 ├── requirements-base.txt   # 基础依赖（docker/生产使用）
+├── requirements-test.txt   # Docker 单元测试依赖
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml         # MySQL 主从 + PostgreSQL checkpoint 开发拓扑
 ├── docker-compose.prod.yml
-├── docker-compose.replica.yml # MySQL 主从开发拓扑
-├── .github/workflows/       # GitHub Actions 工作流
+├── docker-compose.replica.yml # 旧路径兼容副本，不作为默认开发入口
+├── docker-compose.test.yml # 按需创建的一次性单元测试环境
+├── .github/                 # GitHub Actions 与 Issue 模板
+│   ├── workflows/           # GitHub Actions 工作流
+│   └── ISSUE_TEMPLATE/      # Issue Form 模板
+├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收端口/容器覆盖
 ├── README.md               # 项目说明
-├── README/                 # README 图片、更新日志与需求计划
+├── README/                 # README 图片与更新日志
+├── Document/
+│   └── admin/              # 管理员 API、开发部署与测试文档
+├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
+│   ├── src/
+│   ├── tests/
+│   ├── package.json
+│   └── package-lock.json
 ├── database_init.log       # 数据库初始化日志
 ├── app/                    # Flask 应用主目录（Blueprint 结构）
 │   ├── __init__.py         # 创建 Flask app，注册蓝图
 │   ├── db.py               # 数据库会话与连接封装
 │   ├── main/               # 通用页面相关路由
 │   ├── auth/               # 登录、注册等认证相关路由
+│   ├── admin/              # 管理 API、审计服务与受保护 Vue 入口
 │   ├── chat/               # 聊天 & 会话相关路由与服务
 │   ├── files/              # 文件上传/管理相关路由
 │   └── static/             # 前端静态资源
@@ -484,9 +368,17 @@ python Run_causal.py
 │   │   └── models/         # 嵌入模型
 │   └── tool_node/          # MCP 工具节点封装（task、rag 调用等）
 ├── Database/               # 数据库初始化与迁移逻辑
-│   ├── database_init.py    # 数据库初始化引导脚本
+│   ├── database_init.py    # MySQL 数据库存在性与连接引导
+│   ├── bootstrap.py        # MySQL/Alembic/PostgreSQL 统一初始化入口
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
-│   ├── monitoring.py       # 数据库轻量监控查询
+│   ├── inspection.py       # 管理员看板统一只读检查服务
+│   ├── deep_audit.py       # 手动 deep 数据库事实审计
+│   ├── lifecycle_repair.py # 孤立关系 dry-run/人工确认修复 CLI
+│   ├── checkpoint_setup.py # PostgreSQL LangGraph schema 一次性 setup
+│   ├── checkpoint_cleanup_worker.py # 跨库 checkpoint cleanup outbox worker
+│   ├── monitoring.py       # 共享快照存取、调度与兼容接口
+│   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
+│   ├── monitor_worker.py   # 数据库看板分层采集进程
 │   ├── agent_connect.py    # Langgraph checkpoint 相关数据库支持
 │   ├── mysql/              # MySQL 主从配置与初始化脚本
 │   └── migrations/         # Alembic 迁移脚本
@@ -495,5 +387,9 @@ python Run_causal.py
 ├── setting/                # 用户可见文档
 │   ├── manual.md           # 用户手册
 │   └── Userprivacy.md      # 用户隐私协议
+├── tests/                  # 后端测试：unit、integration、e2e
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
 ├── openspec/               # 项目规范与变更说明（内部开发用）
 ```

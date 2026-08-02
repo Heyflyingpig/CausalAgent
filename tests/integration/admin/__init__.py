@@ -1,0 +1,1 @@
+"""Administrator integration contract tests."""

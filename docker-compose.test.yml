@@ -1,0 +1,24 @@
+# CausalAgent 按需单元测试环境
+
+services:
+  unit-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    command: ["python", "-m", "pytest", "-p", "no:cacheprovider", "tests/unit"]
+    environment:
+      LANGCHAIN_API_KEY: ""
+      LANGCHAIN_TRACING_V2: "false"
+      LANGSMITH_TRACING: "false"
+      PYTHONDONTWRITEBYTECODE: "1"
+    network_mode: none
+    volumes:
+      - type: bind
+        source: .
+        target: /app
+        read_only: true
+      - type: bind
+        source: ./tests/unit-test-env
+        target: /app/.env
+        read_only: true

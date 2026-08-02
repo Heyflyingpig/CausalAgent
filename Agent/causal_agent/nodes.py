@@ -1,5 +1,5 @@
 import asyncio
-from .state import CausalChatState
+from .state import CausalAgentState
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -55,7 +55,7 @@ class RouteQuery(BaseModel):
     )
 
 # agentnode节点用于做初步的decision
-def _latest_human_text(state: CausalChatState) -> str:
+def _latest_human_text(state: CausalAgentState) -> str:
     """Return the latest human message content from the graph state."""
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):
@@ -81,7 +81,7 @@ def _is_explicit_causal_analysis_request(text: str) -> bool:
     return has_data_target and has_causal_intent and has_action
 
 
-async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
 
     """
     Agent节点，是图的起点，用于判断是否需要进入causal循环，
@@ -103,7 +103,7 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         return {"messages": [response_message], "route_decision": "normal_chat"}
 
     # 检查生成报告所需的有效分析结果是否已存在。
-        has_tool_results = causal_analysis_result.get("success") is True
+    has_tool_results = causal_analysis_result.get("success") is True
 
     latest_human_text = _latest_human_text(state)
     if not has_tool_results and _is_explicit_causal_analysis_request(latest_human_text):
@@ -205,7 +205,7 @@ def _normalize_optional_llm_text(value: str | None) -> str | None:
     return value
 
 
-async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     文件加载、解析与验证节点。
     1.  使用LLM从对话中一次性提取文件名、目标和处理变量。
@@ -390,7 +390,7 @@ async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         }
 
 
-async def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def preprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     项目预处理模块:
     1.  从状态(state)中加载 DataFrame 和数据摘要。
@@ -507,7 +507,7 @@ def _has_mcp_tool(mcp_tools: list, tool_name: str) -> bool:
     return any(_mcp_tool_name(tool) == tool_name for tool in mcp_tools)
 
 
-def _explicit_direct_lingam_requested(state: CausalChatState) -> bool:
+def _explicit_direct_lingam_requested(state: CausalAgentState) -> bool:
     """检测用户是否明确要求使用 DirectLiNGAM。"""
     latest_text = _latest_human_text(state)
     normalized = latest_text.lower()
@@ -518,7 +518,11 @@ def _explicit_direct_lingam_requested(state: CausalChatState) -> bool:
     ) or "directlingam" in compact
 
 
-def _direct_mcp_tool_call(tool_name: str, state: CausalChatState, mcp_tools: list) -> AIMessage:
+def _direct_mcp_tool_call(
+    tool_name: str,
+    state: CausalAgentState,
+    mcp_tools: list,
+) -> AIMessage:
     """为确定性工具选择构造 ToolNode 可消费的标准 AIMessage。"""
     ai_message = AIMessage(
         content="",
@@ -534,7 +538,7 @@ def _direct_mcp_tool_call(tool_name: str, state: CausalChatState, mcp_tools: lis
     return normalize_mcp_tool_call_message(ai_message, state, mcp_tools)
 
 
-async def mcp_planner_node(state: CausalChatState, llm: ChatOpenAI, mcp_tools: list) -> dict:
+async def mcp_planner_node(state: CausalAgentState, llm: ChatOpenAI, mcp_tools: list) -> dict:
     """强制模型从可用 MCP tools 中选择一个，并返回标准 Tool Call。"""
     if not mcp_tools:
         raise RuntimeError("No MCP tools are available for causal analysis.")
@@ -590,7 +594,7 @@ async def mcp_planner_node(state: CausalChatState, llm: ChatOpenAI, mcp_tools: l
     return {"messages": [ai_message]}
 
 
-async def mcp_result_parser_node(state: CausalChatState) -> dict:
+async def mcp_result_parser_node(state: CausalAgentState) -> dict:
     """解析 MCP ToolNode 产生的 ToolMessage，并把结果注入状态。"""
     messages = state.get("messages", [])
     latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
@@ -643,7 +647,7 @@ async def mcp_result_parser_node(state: CausalChatState) -> dict:
     }
 
 
-async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag_tools: list) -> dict:
+async def rag_question_planner_node(state: CausalAgentState, llm: ChatOpenAI, rag_tools: list) -> dict:
     """生成 RAG 问题；结构化失败时写入稳定降级结果并跳过工具调用。"""
     logging.info("正在启动 RAG 问题生成任务...")
 
@@ -687,7 +691,7 @@ async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag
     return {"messages": [ai_message]}
 
 
-async def rag_result_parser_node(state: CausalChatState) -> dict:
+async def rag_result_parser_node(state: CausalAgentState) -> dict:
     """子节点：获取rag返回内容，注入state当中"""
     messages = state.get("messages", [])
     latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
@@ -772,15 +776,16 @@ def _as_revised_graph(
         else:
             arrows = ""
 
-        vis_edges.append(
-            {
-                "from": edge["source"],
-                "to": edge["target"],
-                "arrows": arrows,
-                "dashes": edge_type in {"undirected", "partially_oriented"},
-                "label": edge.get("label", ""),
-            }
-        )
+        vis_edge = {
+            "from": edge["source"],
+            "to": edge["target"],
+            "arrows": arrows,
+            "dashes": edge_type in {"undirected", "partially_oriented"},
+            "label": edge.get("label", ""),
+        }
+        if "weight" in edge:
+            vis_edge["weight"] = edge["weight"]
+        vis_edges.append(vis_edge)
 
     return {"nodes": list(graph_nodes), "edges": vis_edges}
 
@@ -798,7 +803,7 @@ def _without_removed_edges(
     ]
 
 
-async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     后处理模块：
     1. 提取并验证因果图结构
@@ -1003,7 +1008,7 @@ from Agent.Report.Metadata_sum import metadata_summary, metadata_mapping
 
 
 def _causal_method_context_for_report(analysis_result: Dict[str, Any]) -> str:
-    """为报告节点生成算法专用解释边界，避免 LLM 从原始 dict 中遗漏关键假设。"""
+    """为报告节点生成算法专用解释边界。"""
     if not isinstance(analysis_result, dict):
         return "No structured causal analysis result is available."
 
@@ -1015,12 +1020,12 @@ def _causal_method_context_for_report(analysis_result: Dict[str, Any]) -> str:
     parameters = analysis_result.get("parameters", {})
     raw_results = analysis_result.get("raw_results", {})
     diagnostics = analysis_result.get("diagnostics", {})
-
     causal_order_names = raw_results.get("causal_order_names", [])
-    if isinstance(causal_order_names, list) and causal_order_names:
-        causal_order_text = " -> ".join(str(name) for name in causal_order_names)
-    else:
-        causal_order_text = "not available"
+    causal_order_text = (
+        " -> ".join(str(name) for name in causal_order_names)
+        if isinstance(causal_order_names, list) and causal_order_names
+        else "not available"
+    )
 
     return (
         "DirectLiNGAM reporting guidance:\n"
@@ -1035,13 +1040,12 @@ def _causal_method_context_for_report(analysis_result: Dict[str, Any]) -> str:
         "- Required assumptions: continuous numeric variables, linear structural equation model, "
         "non-Gaussian and mutually independent errors, acyclic causal graph, and no unmodeled "
         "latent confounders among the observed variables.\n"
-        "- Interpretation rule: describe weighted directed edges as candidate causal relations under "
-        "these assumptions, not as experimentally verified causal facts. If assumptions are not "
-        "justified by domain knowledge, explicitly state this limitation."
+        "- Interpretation rule: weighted directed edges are candidate causal relations under these "
+        "assumptions, not experimentally verified causal facts."
     )
 
 
-async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     报告模块：
     主要是对所有的参数生成一份报告
@@ -1067,7 +1071,7 @@ async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         - 如果因果分析结果包含 error_type，请明确说明算法未能产生有效因果图，不要声称“没有因果关系”。
         - 如果因果分析结果包含 fallback_from 和 fallback_reason，请说明原算法不适用并已改用 fallback_tool 的结果。
         - 只有当算法 success 为 true 且边列表为空时，才可以表述为“未发现显著因果边/因果关系”。
-        - 如果算法解释补充中出现 DirectLiNGAM，请在方法说明或局限性中明确写出线性、非高斯、误差独立、DAG 和无潜在混杂等假设。
+        - 如果算法解释补充中出现 DirectLiNGAM，请明确说明线性、非高斯、误差独立、DAG 和无潜在混杂假设。
         - DirectLiNGAM 的带权边只能解释为模型假设下的候选因果关系，不得写成实验已验证事实。
          
         ## 报告结构要求
@@ -1163,7 +1167,7 @@ async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         "messages": [report_complete_message]
     }
 
-async def normal_chat_node(state: CausalChatState,llm: ChatOpenAI) -> dict:
+async def normal_chat_node(state: CausalAgentState,llm: ChatOpenAI) -> dict:
     """
     Represents "正常问答".
     This is for when the agent determines it's a simple chat conversation.
@@ -1190,7 +1194,7 @@ async def normal_chat_node(state: CausalChatState,llm: ChatOpenAI) -> dict:
     # 只返回新消息
     return {"messages": [AIMessage(content=response, name="normal_chat")]}
 
-async def inquiry_answer_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def inquiry_answer_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     根据报告追问用户的问题
     """

@@ -10,11 +10,11 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
@@ -180,12 +180,13 @@ config.json
 #  demo
 杂项/
 项目规划/
-Document/
+
 
 # AI
 .cursor/
 .augment/
 .vscode/
+.codegraph/
 
 # causalcopliot
 causalcopliot/
@@ -201,5 +202,13 @@ skills/
 # study
 study/
 
+# Admin Vue
+admin-frontend/node_modules/
+admin-frontend/test-results/
+admin-frontend/playwright-report/
+
 # docs
 docs/
+
+# 构建产物
+admin-frontend/dist/

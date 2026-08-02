@@ -1,4 +1,4 @@
-# CausalChat AGENTS.md
+# CausalAgent AGENTS.md
 
 本文件适用于仓库根目录及其所有子目录；如果更深层目录存在新的 `AGENTS.md`，以更近的文件为准。
 
@@ -23,6 +23,7 @@
 
 ### 文档日志
 1. 当一个功能完成时，补充日志
+2. 不要更改日志的历史文件，当需要新增日志的时候，请在日志后增加
 
 ## 2. 项目目录
 
@@ -30,23 +31,35 @@
 
 ```text
 .
-├── Causalchat.py           # Flask 后端入口
+├── CausalAgent.py          # Flask 后端入口
 ├── Run_causal.py           # 桌面端启动入口（pywebview）
 ├── requirements.txt        # 完整依赖
 ├── requirements-base.txt   # 基础依赖（docker/生产使用）
+├── requirements-test.txt   # Docker 单元测试依赖
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml         # MySQL 主从 + PostgreSQL checkpoint 开发拓扑
 ├── docker-compose.prod.yml
-├── docker-compose.replica.yml # MySQL 主从开发拓扑
-├── .github/workflows/       # GitHub Actions 工作流
+├── docker-compose.replica.yml # 旧路径兼容副本，不作为默认开发入口
+├── docker-compose.test.yml # 按需创建的一次性单元测试环境
+├── .github/                 # GitHub Actions 与 Issue 模板
+│   ├── workflows/           # GitHub Actions 工作流
+│   └── ISSUE_TEMPLATE/      # Issue Form 模板
+├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收覆盖
 ├── README.md               # 项目说明
-├── README/                 # README 图片、更新日志与需求计划
+├── Document/
+│   └── admin/              # 管理员 API、开发部署与测试文档
+├── admin-frontend/         # Vue 3 + TypeScript 管理员后台
+│   ├── src/
+│   ├── tests/
+│   ├── package.json
+│   └── package-lock.json
 ├── database_init.log       # 数据库初始化日志
 ├── app/                    # Flask 应用主目录（Blueprint 结构）
 │   ├── __init__.py         # 创建 Flask app，注册蓝图
 │   ├── db.py               # 数据库会话与连接封装
 │   ├── main/               # 通用页面相关路由
 │   ├── auth/               # 登录、注册等认证相关路由
+│   ├── admin/              # 管理员 API、审计服务与受保护 Vue 入口
 │   ├── chat/               # 聊天与会话相关路由和服务
 │   ├── files/              # 文件上传与管理相关路由
 │   └── static/             # 前端静态资源
@@ -67,13 +80,25 @@
 │   └── tool_node/
 ├── Database/               # 数据库初始化与迁移逻辑
 │   ├── database_init.py
+│   ├── bootstrap.py        # MySQL/Alembic/PostgreSQL 统一初始化入口
 │   ├── audit_before_db_upgrade.py
-│   ├── monitoring.py
+│   ├── inspection.py       # 数据库看板统一只读检查服务
+│   ├── deep_audit.py       # 手动 deep 数据库事实审计
+│   ├── monitoring.py       # 共享快照存取、调度与兼容接口
+│   ├── monitor_worker.py   # 数据库看板分层采集进程
+│   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
+│   ├── lifecycle_repair.py # 3.2 孤立关系有限 dry-run/人工确认修复 CLI
 │   ├── mysql/              # MySQL 主从配置与初始化脚本
 │   ├── agent_connect.py
 │   └── migrations/
 ├── config/
 │   └── settings.py
+├── tests/                  # 后端测试：先按层级、再按业务分类
+│   ├── unit/
+│   ├── integration/
+│   ├── e2e/
+│   ├── run_admin_31_e2e.ps1
+│   └── run_admin_32_e2e.ps1
 └── setting/
     ├── manual.md
     └── Userprivacy.md
@@ -82,11 +107,12 @@
 ## 3. 开发环境与项目事实
 
 - GitHub Actions 轻量 CI 位于 `.github/workflows/lightweight-ci.yml`，对 `main`、`develop` 的 push 和 Pull Request 生效；它只执行 Python 语法编译、无外部服务依赖的轻量测试以及 Pull Request 策略检查。
+- GitHub Issue 使用 `.github/ISSUE_TEMPLATE/issue.yml` 统一填写背景、问题描述、预期结果、复现步骤、验收标准和环境信息；除附件外的字段启用原生必填校验，但不限制填写内容。普通贡献者不能选择空白 Issue。
 - 功能分支应向 `develop` 发起 Pull Request，只有 `develop` 可以向 `main` 发起 Pull Request；分支保护需要在 GitHub Rulesets 中启用，并把 `Python syntax`、`Light tests`、`Pull request policy` 设置为必需检查。
 - 桌面端入口是 `Run_causal.py`，它固定加载 `http://127.0.0.1:5001`；桌面模式本质上仍依赖先启动后端。
-- Web 后端入口是 `Causalchat.py`，它导入 `app/__init__.py` 中的 `create_app()` 生成 Flask app；本地直接运行时使用 `app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)`，Docker 镜像默认通过 `gunicorn ... Causalchat:app` 启动。
+- Web 后端入口是 `CausalAgent.py`，它导入 `app/__init__.py` 中的 `create_app()` 生成 Flask app；本地直接运行时使用 `app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)`，Docker 镜像默认通过 `gunicorn ... CausalAgent:app` 启动。
 - `create_app()` 会先执行 `app/db.py` 中的 `check_database_readiness()`，确认数据库和关键表已就绪，然后再注册蓝图。
-- 当前实际注册的蓝图有 6 个：`auth`、`chat`、`files`、`agent`、`main`、`admin`。
+- 当前实际注册的蓝图有 7 个：`auth`、`chat`、`files`、`agent`、`main`、`admin`、`admin_page`。
 - Web 进程只负责登录态校验、短请求、analysis job 入队和 SSE 推送；Agent/RAG/MCP 长任务不在 Web 进程内执行，而是由独立 worker 进程处理。
 - 后台 worker 入口是 `python -m app.agent.worker`；worker 启动流程是：数据库就绪检查 -> 初始化 LLM -> 检查 RAG 可用性 -> 按 `JOB_WORKERS` 启动多个 slot。
 - 每个 worker slot 会独占一组 MCP server process、一个通过 `MultiServerMCPClient.session("causal")` 打开的持久 `ClientSession`、一组由 `load_mcp_tools(session)` 生成的 LangChain tools，以及一个编译好的 Agent graph；真实执行单元是 slot，不是 Flask 请求线程。旧 `open_mcp_session()` / 手写 `list_tools()` 包装仅保留作历史兼容入口。
@@ -94,46 +120,75 @@
 - Pydantic 结构化输出统一通过 `Agent/llm_structured_output.py` 的同步/异步入口执行，固定使用普通 `function_calling`；调用器仅对结构化请求发送 `thinking.type=disabled`，避免 DeepSeek Thinking 与固定 `tool_choice` 冲突。MCP 继续使用原生 Tool Calls；只有 MCP planner 使用关闭 Thinking 的 LLM 副本和 `tool_choice="required"`，确保模型必须自行选择一个已加载工具。
 - `agent` 与 `fold` 的条件路由只读取 `route_decision`、`fold_decision` 显式 State 字段；展示消息仅用于用户可见内容和审计，不参与控制流。
 - 配置统一由 `config/settings.py` 从系统环境变量读取；若项目根目录存在 `.env`，会先通过 `python-dotenv` 加载到环境变量。
-- 前端当前仍是 Flask 静态资源方案，不是 Node/Vite/React 工程；关键文件是：
+- 普通用户前端仍是 Flask 静态资源方案，聊天 API/SSE 契约不变；关键文件是：
   - `app/static/chat.html`
   - `app/static/css/style.css`
   - `app/static/js/script.js`
-- `Database/database_init.py` 只负责加载环境变量、确保数据库存在并检查连接；业务表结构维护入口是 Alembic，而不是这个脚本。
+- 管理员前端独立位于 `admin-frontend/`，使用 Vue 3、严格 TypeScript、Vue Router、Element Plus、Vite、Vitest 和 Playwright；路由为 `/admin/database` 与 `/admin/database/settings`，Vite base 固定为 `/admin/`。
+- 管理员 Vue 生产构建默认从 `admin-frontend/dist` 读取；Docker 镜像使用 Node 24 构建阶段，并把产物复制到 `/opt/causalagent-admin`。最终 Python 运行镜像不包含 Node、不启动 Vite、不开放 Node 端口。开发期只有显式设置 `ADMIN_VITE_DEV_SERVER_URL` 时，Flask 在完成页面鉴权后才跳转到 Vite。
+- `admin-frontend/dist/` 是需要随管理员 Vue 源码同步更新并提交的发布产物；根 `.gitignore` 只忽略仓库根目录 `/dist/`。`.dockerignore` 继续排除本地前端产物，因为 Dockerfile 会在 Node 构建阶段从当前源码重新构建并复制到 `/opt/causalagent-admin`。
+- 旧管理员 `db_admin.html`、`db_admin.css`、`db_admin.js` 已在等价测试、真实快照和整版回滚演练通过后移除；管理员页面只使用 Vue 生产构建或显式启用的 Vite 开发服务器，普通用户静态前端不受影响。
+- `Database/database_init.py` 只负责加载环境变量、确保 MySQL 数据库存在并检查连接；`Database/bootstrap.py` 负责按顺序编排 MySQL 建库、Alembic migration 和 LangGraph PostgreSQL checkpoint setup；业务表结构维护入口仍是 Alembic，而不是 `database_init.py`。
 - Alembic 迁移目录由 `alembic.ini` 指向 `Database/migrations`；业务 schema 变更应以迁移脚本为准。
-- 数据库生产化升级前应先执行 `Database/audit_before_db_upgrade.py`；它是只读审计，不会修改数据，重点检查孤立消息、孤立附件、非法附件类型和分区状态。
-- `app/db.py` 提供写库连接、业务读连接、复制状态观测连接、慢查询计时和从库延迟回退能力；`get_db_connection()` 仅作为兼容旧代码的主库写入口。
+- LangGraph checkpoint 的运行时真相在 PostgreSQL；`Database/checkpoint_setup.py` 使用官方 `AsyncPostgresSaver.setup()` 创建 schema，`Database/checkpoint_cleanup_worker.py` 消费 MySQL `checkpoint_cleanup_outbox` 并调用 `adelete_thread()`。MySQL 只保存 outbox，不再保存 checkpoint 数据。
+- `Database/audit_before_db_upgrade.py` 是旧库添加外键前的 schema-aware preflight，不是新库初始化步骤：仅当相关表已存在、目标外键尚未建立且待执行迁移需要该约束时才做孤立数据扫描；全新空库直接执行 Alembic。
+- `app/db.py` 提供写库连接、业务读连接、复制状态观测连接、慢查询计时、从库延迟回退和不暴露真实主机名的逻辑来源标记；`get_db_connection()` 仅作为兼容旧代码的主库写入口。
 - `get_read_connection(consistency='strong')` 固定读主库；`consistency='eventual'` 只会在从库复制状态正常且延迟不超过阈值时使用副本，否则安全回退主库。
-- `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoints`、`checkpoint_writes`、`analysis_jobs`、`analysis_job_events` 这些关键表是否已存在。
+- 用户角色采用 `users.role` 的最小两级模型，只允许 `user` / `admin`；登录、会话恢复和管理员授权每次都通过主库强一致读确认 `role` 与 `is_active`，不把 session 中的角色值作为后端授权依据。
+- `/api/admin/*` 由统一管理员装饰器保护：无有效会话返回 `401`，普通登录用户返回 `403`；管理员页面未登录时回到统一登录入口并只保留白名单管理页面的安全回跳，普通用户直访页面先返回真实 `403` 拒绝页，再回普通首页提示“无管理员权限”。初始管理员只通过 `python -m app.auth.admin_cli promote <username>` 提升现有启用用户，不提供公开管理员注册接口。
+- `POST /api/login` 可接收可选的内部 `next`，只在服务端白名单校验后返回 `redirect_to`；没有安全回跳时管理员默认进入 `/admin/database`。登录成功和有效 `check_auth` 会返回 Session 绑定的 CSRF token；管理员刷新、完整性审计、配置保存/重置和全部 3.2 受控写入必须提供匹配的 `X-CSRF-Token`。所有响应都有 `X-Request-ID`，格式合法的上游 request ID 会被沿用。
+- 管理员普通登录后仍以 `/admin/database` 为默认落点，但可通过后台“进入聊天”使用普通用户界面；聊天接口继续只按当前管理员自身的 `user_id` 访问会话、文件和任务，聊天页向管理员提供返回后台入口。管理员主动进入 `/` 时不会被强制送回后台，重新进入任一管理页面时仍由服务端实时复核角色和启用状态。普通用户继续进入聊天页。后台为白色简约 Vue 页面，现开放业务概览、用户、会话、任务、文件、数据库看板、采集配置和 Schema/deep 审计；3.2 只增加受控用户启停/角色/改密以及用户/文件物理删除，不提供聊天、任意 SQL、修复、迁移、账号授权、复制控制或任务控制。桌面左侧导航可在 248px/约 76px 间收缩并持久化，移动端为可关闭抽屉，Logo 通过受保护接口复用 `README/CausalAgent.png`。
+- 3.1 管理列表默认 20、最多 50 条并使用不透明游标；消息/附件正文和任务输入/结果/错误只允许管理员明确点击后按最多 64 KiB 源字节分块读取。成功敏感访问要求审计可写；审计只保存管理员、动作、目标、结果、错误码和 request ID，不保存正文。
+- 3.2 用户/文件写接口固定在 `/api/admin/business/*`：执行前必须主库预览、CSRF、当前管理员密码重新认证、明确确认和 `Idempotency-Key`；批量默认 20、硬上限 50，成功变更与 `admin_operations`、`admin_operation_items` 和逐目标 `admin_audit_events` 同事务提交。操作者不能禁用、降级或删除自己，事务锁保护最后一个启用管理员；角色、状态和密码实际变化通过 `users.auth_version` 使旧 Session 失效。用户删除的 MySQL 业务数据先提交，PostgreSQL checkpoint cleanup 通过 `/api/admin/operations/<operation_id>` 查询并聚合为 `running/succeeded/failed`。
+- 3.2 文件物理删除同时删除 `uploaded_files` 行与 BLOB，不提供回收站；因文件与 job 没有稳定直接关系，归属用户存在 queued/running job 时保守阻断。用户物理删除显式处理 archived session，并为每个会话写入 checkpoint cleanup outbox，其余依赖现有外键级联，并受同步关联行阈值保护。
+- CSV 预览最多读取 256 KiB、100 行、50 列、单元格 1000 字符且只按文本渲染；管理员预览/下载以及 Agent 真正读取文件内容会在同一主库事务原子更新 `last_accessed_at`、`access_count`，重复上传命中已有文件不计为访问。
+- 管理看板新增聚合读取接口 `GET /api/admin/db/dashboard`，以及只登记共享刷新请求的 `POST /api/admin/db/refresh` 和 `POST /api/admin/db/integrity/run`；`/db/health`、`/db/overview`、`/db/integrity`、`/db/slow-queries`、`/jobs/workers` 继续兼容，但所有 GET 都只读取最近快照，不现场执行完整数据库采集。
+- 在线配置接口为 `GET/PUT /api/admin/db/settings`、`POST /api/admin/db/settings/reset` 和 `GET /api/admin/db/settings/history`。七项有效值固定按“数据库覆盖 > 环境变量 > 代码默认值”解析，`NULL` 表示继承；每个进程最多缓存 5 秒，读取失败时先使用最后有效值、再回退环境/默认值并标记降级。保存使用乐观版本锁，成功、拒绝和失败结果写入 `admin_audit_events`。
+- 独立 monitor 入口是 `python -m Database.monitor_worker`；它按 `realtime`、`sql_performance`、`capacity`、`integrity` 四类周期生成 MySQL 共享快照，并通过命名锁避免多个 monitor 或并发手动请求重复采集。默认周期分别为 `10s`、`60s`、`900s`，完整性定时审计默认关闭，启用后默认 `86400s`。
+- monitor 还接受仅手动请求的 `deep_audit` 快照：它永不定时调度，覆盖 revision、关键 schema、字符集/UTC/隔离级别、账号职责结论、Job/Event、checkpoint cleanup outbox、归档关系、`active_session_key` 和逐从库状态；每项有查询超时和异常样本上限，不自动修复，也不返回账号、host 或 grants。
+- 看板连接使用率 warning/error 默认阈值为 `70%`/`85%`，由 `DB_DASHBOARD_CONNECTION_WARNING_PERCENT` 和 `DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT` 配置；快速 SELECT 超时由 `DB_INSPECTION_QUERY_TIMEOUT_MS` 配置，默认 `3000ms`。刷新和采集配置统一由 `DB_MONITOR_AUTO_REFRESH_ENABLED`、`DB_MONITOR_REALTIME_INTERVAL_SECONDS`、`DB_MONITOR_SQL_INTERVAL_SECONDS`、`DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS`、`DB_MONITOR_SLOW_QUERY_WARNING_DELTA`、`DB_MONITOR_INTEGRITY_ENABLED`、`DB_MONITOR_INTEGRITY_INTERVAL_SECONDS` 控制，不得在路由、SQL 或前端硬编码。
+- SQL digest 区块语义是“SQL 性能摘要/高负载 SQL”，按单次平均 `AVG_TIMER_WAIT` 降序选取和展示，平均耗时相同时按累计 `SUM_TIMER_WAIT` 降序次排序；它不等价于超过 `long_query_time` 的单次慢查询，慢查询告警优先使用采集窗口内 `Slow_queries` 增量，累计值仅作兼容和辅助展示。
+- 运行期完整性审计不再对已有外键保证的 message、attachment、job、event 和 checkpoint write 关系执行 `COUNT(*) + LEFT JOIN` 全表扫描，而是轻量确认关键约束存在；仍保留当前没有外键保证的 `checkpoints.thread_id → sessions.id` 检查，也不再要求 `chat_messages` 必须存在分区。
+- `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoints`、`checkpoint_writes`、`analysis_jobs`、`analysis_job_events`、`database_monitor_snapshots`、`database_monitor_settings`、`admin_audit_events`、`admin_operations`、`admin_operation_items` 这些关键表，以及 `users.role`、`users.auth_version`、`users.password_changed_at`、`checkpoint_writes.write_identity_hash` 和 3.2 三个关键索引是否已存在。
 - 当前 LangGraph MySQL checkpointer 使用 `session_id` 作为 `thread_id`；删除已创建会话时必须在同一事务内先删除对应 `checkpoints`，并依赖 `checkpoint_writes → checkpoints` 的级联外键清理 writes，不能调用会自行开事务的 `MySQLSaver.delete_thread()`。
+- `checkpoint_writes` 的幂等业务键是 `(thread_id, checkpoint_ns, checkpoint_id, task_id, idx)`；由于完整 utf8mb4 联合索引超长，应用写入并由 3.2 migration 回填长度前缀编码的 SHA-256 `BINARY(32)` 摘要，再建立唯一索引，不截断 LangGraph 标识。该列不能使用 generated column，因为其基列属于带 `ON DELETE CASCADE` 的复合外键。特殊 writes 走 upsert，普通 writes 忽略重复；最新 checkpoint 按 `created_at DESC, checkpoint_id DESC` 稳定排序。
+- `Database/lifecycle_repair.py` 默认只列出有限孤立 archived session/checkpoint/pending writes 主键；只有 `--apply --confirm-database <精确库名>` 才执行，migration 不得调用它或静默删除历史数据。
+- 运行期完整性审计不再查询已经迁移走的 MySQL checkpoint 表，而是轻量确认 cleanup outbox 外键/领取索引，并报告失败清理任务；也不再要求 `chat_messages` 必须存在分区。
+- `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoint_cleanup_outbox`、`analysis_jobs`、`analysis_job_events`、`database_monitor_snapshots`、`database_monitor_settings`、`admin_audit_events`、`admin_operations`、`admin_operation_items` 这些关键表，以及 `users.role`、`users.auth_version`、`users.password_changed_at`、cleanup outbox 领取索引和管理员幂等索引是否已存在。
+- 当前 LangGraph PostgreSQL checkpointer 使用 `session_id` 作为 `thread_id`；会话或用户删除只能在 MySQL 事务内先写 `checkpoint_cleanup_outbox`，不能把 PostgreSQL `adelete_thread()` 假装纳入 MySQL 事务。
+- `checkpoint_cleanup_outbox` 使用 `(thread_id)` 唯一键幂等，cleanup worker 用 `FOR UPDATE SKIP LOCKED` 领取任务，租约过期可恢复，最多执行三次，失败后按 10 秒、30 秒退避；管理员用户删除的操作状态由 outbox 聚合推进。
+- `Database/lifecycle_repair.py` 默认只列出有限孤立 archived session 和失败/过期 cleanup outbox 主键；只有 `--apply --confirm-database <精确库名>` 才执行，migration 不得调用它或静默删除历史数据。
 - `analysis_jobs` 和 `analysis_job_events` 是当前长任务系统的真实持久化基础：前者是任务队列，后者是事件日志；job 创建、领取、状态更新、事件写入和 SSE 读取都必须走主库或强一致读。
 - 同一 `user_id + session_id` 同时只允许一个 `queued/running` job；当前实现不是 generated column，而是把 `active_session_key` 作为可空普通列，并通过唯一键 `uq_analysis_jobs_active_session` 兜底并发竞态。
 - 旧 `/api/send_stream` 只保留为迁移提示接口，返回 `410`；前端真实路径应使用 `POST /api/agent/jobs` 创建任务，再用 `GET /api/agent/jobs/<job_id>/events` 订阅 SSE，断线续传依赖 `Last-Event-ID`。
 - 数据库账号按职责拆分：
   - `MYSQL_WRITE_USER` / `MYSQL_WRITE_PASSWORD`：应用写主库、迁移、启动检查用。
-  - `MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`：业务读主库/从库数据用。
+  - `MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`：业务读主库/从库数据用；除业务库 `SELECT` 外，只额外读取 `performance_schema.events_statements_summary_by_digest`，不得扩大为全局 `SELECT`。
   - `MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`：只用于执行 `SHOW REPLICA STATUS`。
   - `MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`：只给 MySQL 从库复制通道拉 binlog 用。
   - `MYSQL_USER` / `MYSQL_PASSWORD`：仅作为写/读账号兼容兜底，不承担复制状态检查职责。
-- `docker-compose.replica.yml` 是本地主从开发拓扑，当前包含 `mysql-primary`、`mysql-replica`、`app`、`worker` 四个服务；本轮仍不提供自动故障切换。
-- Docker 是当前首选开发方式；`docker-compose.replica.yml` 中 `app` 和 `worker` 都会挂载以下知识库目录：
+- `docker-compose.yml` 是本地主从加 PostgreSQL checkpoint 开发拓扑，当前包含 `mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`db-bootstrap`、`app`、`worker`、`monitor`、`checkpoint-cleanup` 八个服务；`db-bootstrap` 是一次性初始化服务，运行成功后其他运行服务才启动，本轮仍不提供自动故障切换。`docker-compose.replica.yml` 仅保留为旧路径兼容副本。
+- 连接池按 OS 进程计算：`write_pool + read_pool * (1 + replica_count)`，worker slot 共享所在进程的池。默认建连/获取池/管理员锁等待/从库状态缓存分别为 5s/3s/5s/2s；复制状态失效或异常只回退主库，不自动切主。真实容量依据和读写矩阵记录在 `setting/database_governance.md`。
+- Docker 是当前首选开发方式；`docker-compose.yml` 中 `app` 和 `worker` 都会挂载以下知识库目录：
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
+- 后端单元测试使用独立 `docker-compose.test.yml`：`unit-test` 服务基于 Dockerfile 的 `test` 目标预装 `requirements-test.txt`，不依赖数据库，以 `tests/unit-test.env` 屏蔽项目 `.env` 并关闭 LangSmith 追踪，禁用网络，只读挂载当前仓库；通过 `docker compose ... run --rm` 按需创建和删除测试容器，测试镜像继续复用。
 - RAG 启动期只检查知识库目录是否可用，不会在启动时完整加载向量库；若 `Agent/knowledge_base/db` 不存在，worker 会记录 warning，并以“无知识库模式”继续运行。
-- DirectLiNGAM 已作为独立运行时 MCP 工具 `causal_direct_lingam` 接入；`Agent/causal/causalachieve.py` 已实现 runner、输入校验、真实拟合、causal-learn `Dag` 统一转换、带权图结果和结构化成功/失败结果。显式点名 DirectLiNGAM 时，MCP planner 会确定性选择该工具；后处理已支持 `matrix_convention="target_to_source"` 的带权非零矩阵；报告节点会补充 DirectLiNGAM 的实现版本、参数、因果顺序和假设/局限说明。接口契约位于 `README/DirectLiNGAM接口契约.md`，Python 3.11 smoke、MCP wrapper smoke、固定基础镜像和版本锁位于 `tests/smoke/`；两份正式 requirements 精确版本和全量 worker/数据库环境端到端验收仍未完成。
+- DirectLiNGAM 已作为独立 MCP 工具 `causal_direct_lingam` 接入 `Agent/CausalAgentMCP/mcp_server.py`；显式点名 DirectLiNGAM 时 planner 会确定性选择该工具。runner 只接受连续数值 CSV，返回因果顺序、`matrix_convention="target_to_source"` 的系数矩阵和带权有向图；后处理会保留未反转边的 `weight`，报告必须说明线性、非高斯、误差独立、DAG 和无潜在混杂假设。
 
 
-### 3.1 常用命令
+### 3.2 常用命令
 
 激活本地 conda 环境（仅在不用 Docker 时）：
 
 ```bash
-conda activate causalchat
+conda activate causalagent
 ```
 
 本地启动后端：
 
 ```bash
-python Causalchat.py
+python CausalAgent.py
 ```
 
 本地启动后台 worker：
@@ -141,6 +196,44 @@ python Causalchat.py
 ```bash
 python -m app.agent.worker
 ```
+
+本地启动数据库监控采集器：
+
+```bash
+python -m Database.monitor_worker
+```
+
+管理员 Vue 本地验证：
+
+```bash
+cd admin-frontend
+npm ci
+npm run typecheck
+npm run test:unit
+npm run test:e2e:mock
+npm run build
+```
+
+后端单元测试默认使用按需 Docker 环境：
+
+```bash
+docker compose -f docker-compose.test.yml build unit-test
+docker compose -f docker-compose.test.yml run --rm unit-test
+```
+
+指定测试可以在服务名后覆盖默认命令；只有依赖变化时才需要重新构建测试镜像。集成测试、本地 Python 回退和完整分类见 `tests/README.md`。
+
+真实隔离环境 E2E 还需提供 `PLAYWRIGHT_BASE_URL`、管理员/普通用户测试凭据后运行
+`npm run test:e2e`；本机仅有 Edge 时可显式设置 `PLAYWRIGHT_CHANNEL=msedge`，
+未设置时仍使用 Playwright 标准 Chromium。
+
+3.2 完整隔离主从验收在管理员生产构建完成后运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests/run_admin_32_e2e.ps1
+```
+
+该脚本不会触碰当前开发库，覆盖空库升级、3.2 migration 往返、受控写入/删除、主从追平和普通用户回归；不会自动删除隔离容器和卷，清理仍需单独明确确认。物理删除种子不能通过 `KeepSeededData` 重放。
 
 本地启动桌面端：
 
@@ -152,24 +245,36 @@ python Run_causal.py
 Docker 主从开发启动（推荐）：
 
 ```bash
-docker-compose -f docker-compose.replica.yml up -d
+docker compose -f docker-compose.yml up -d
 ```
 
-首次启动、空卷重建或数据库环境重建后，推荐按下面顺序执行：
+首次启动、空卷重建或数据库环境重建后，推荐按下面顺序执行；全新空库不要先运行 preflight：
 
 ```bash
-docker-compose -f docker-compose.replica.yml run --rm app python Database/database_init.py
-docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_before_db_upgrade.py
-docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head
+docker compose -f docker-compose.yml up -d
+```
+
+`.env` 必须提供非空 `CHECKPOINT_POSTGRES_PASSWORD`；Compose 会自动运行
+`db-bootstrap` 和 `checkpoint-cleanup`。本地等价命令为：
+
+```bash
+python -m Database.bootstrap
+python -m Database.checkpoint_cleanup_worker
 ```
 
 如果你当前不是在 Docker 里开发，再使用本地等价命令：
 
 ```bash
-python Database/database_init.py
-python Database/audit_before_db_upgrade.py
-alembic upgrade head
+python -m Database.bootstrap
 ```
+
+如需在不重启运行服务的情况下手动重跑一次性初始化入口，可执行：
+
+```bash
+docker compose -f docker-compose.yml run --rm db-bootstrap
+```
+
+只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才在 `alembic upgrade head` 前运行 `Database/audit_before_db_upgrade.py`。
 
 ### 3.2 数据库相关特别要求
 
@@ -178,6 +283,7 @@ alembic upgrade head
 
 ```text
 Database/database_init.py
+Database/bootstrap.py
 Database/migrations/versions/*
 app/db.py
 相关 SQL 读写代码
@@ -233,7 +339,7 @@ MYSQL_USER/MYSQL_PASSWORD：现在主要是兼容兜底，主从开发里不依�
 - 新增数据库表但忘了更新 `check_database_readiness`
 - 修改接口返回结构但没有检查前端 `script.js`
 - 改了上传或聊天附件结构却没同步恢复逻辑
-- 修改 MCP 或 RAG 初始化路径但没检查 `Causalchat.py` 和 `app/agent/core.py`
+- 修改 MCP 或 RAG 初始化路径但没检查 `CausalAgent.py` 和 `app/agent/core.py`
 
 ## 6. 修改后的验证要求
 
@@ -248,7 +354,7 @@ python -m py_compile <变更的Python文件>
 如果改动涉及导入链、启动链、配置链，优先再做一次后端启动级验证：
 
 ```bash
-python Causalchat.py
+python CausalAgent.py
 ```
 
 如果因为缺少 `.env`、数据库或模型目录而无法启动，要明确说明。
@@ -257,7 +363,7 @@ python Causalchat.py
 
 必须检查：
 
-- `Database/database_init.py` 是否同步
+- `Database/database_init.py` 和 `Database/bootstrap.py` 是否同步
 - 对应 Alembic migration 是否存在且升级/回滚逻辑自洽
 - `app/db.py` 的就绪检查是否需要更新
 - 相关 SQL 是否仍兼容旧数据和空数据场景
@@ -266,11 +372,13 @@ python Causalchat.py
 
 ### 6.3 前端改动
 
-前端为静态资源方案，没有现成的 Node 构建流程。改动后至少要：
+普通用户前端仍为 Flask 静态资源；管理员前端有独立 Node 构建流程。改动后至少要：
 
 - 检查 `chat.html`、`style.css`、`script.js` 的引用关系
 - 检查接口路径是否仍与后端一致
 - 检查加载态、空态、失败态是否受影响
+- 在 `admin-frontend/` 执行 `npm ci`、`npm run typecheck`、`npm run test:unit` 和 `npm run build`
+- 管理员看板变更必须通过等价矩阵测试；真实数据库写流程只允许在隔离环境提供 Playwright 凭据后执行
 - 如条件允许，启动后端并在浏览器中做一次最小交互验证
 
 ### 6.4 RAG / MCP / Agent 图改动
@@ -358,6 +466,3 @@ python Causalchat.py
 - 不要盲目按旧文档修改代码
 - 先说明差异
 - 以当前可运行实现为准提出建议
-
-## 11. 其他
-1. 不要更改日志的历史文件，当需要新增日志的时候，请在日志后增加

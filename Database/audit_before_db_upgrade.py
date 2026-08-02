@@ -13,6 +13,11 @@ import sys
 
 import mysql.connector
 
+try:
+    from Database.inspection import execute_migration_preflight_checks
+except ModuleNotFoundError:  # 兼容 `python Database/audit_before_db_upgrade.py`
+    from inspection import execute_migration_preflight_checks
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,83 +63,39 @@ def get_connection():
     )
 
 
-def scalar(cursor, sql: str) -> int:
-    cursor.execute(sql)
-    row = cursor.fetchone()
-    return int(row[0]) if row else 0
-
-
-def audit() -> list[tuple[str, str, int]]:
-    checks: list[tuple[str, str, int]] = []
+def audit() -> list[dict]:
+    """按当前 schema 在主库只读连接上执行迁移前置审计。"""
     with get_connection() as conn:
-        cursor = conn.cursor()
-        checks.append((
-            "孤立 chat_messages.session_id",
-            "FAIL",
-            scalar(cursor, """
-                SELECT COUNT(*)
-                FROM chat_messages cm
-                LEFT JOIN sessions s ON s.id = cm.session_id
-                WHERE s.id IS NULL
-            """),
-        ))
-        checks.append((
-            "孤立 chat_messages.user_id",
-            "FAIL",
-            scalar(cursor, """
-                SELECT COUNT(*)
-                FROM chat_messages cm
-                LEFT JOIN users u ON u.id = cm.user_id
-                WHERE u.id IS NULL
-            """),
-        ))
-        checks.append((
-            "孤立 chat_attachments.message_id",
-            "FAIL",
-            scalar(cursor, """
-                SELECT COUNT(*)
-                FROM chat_attachments ca
-                LEFT JOIN chat_messages cm ON cm.id = ca.message_id
-                WHERE cm.id IS NULL
-            """),
-        ))
-        checks.append((
-            "非法 chat_attachments.attachment_type",
-            "FAIL",
-            scalar(cursor, """
-                SELECT COUNT(*)
-                FROM chat_attachments
-                WHERE attachment_type NOT IN (
-                    'causal_graph',
-                    'analysis_result',
-                    'file_content',
-                    'other',
-                    'visualization'
-                )
-            """),
-        ))
-        checks.append((
-            "chat_messages 分区表",
-            "INFO",
-            scalar(cursor, """
-                SELECT COUNT(*)
-                FROM information_schema.partitions
-                WHERE table_schema = DATABASE()
-                  AND table_name = 'chat_messages'
-                  AND partition_name IS NOT NULL
-            """),
-        ))
-    return checks
+        timeout_ms = int(os.environ.get("DB_INSPECTION_QUERY_TIMEOUT_MS", "3000"))
+        if timeout_ms <= 0:
+            raise RuntimeError("DB_INSPECTION_QUERY_TIMEOUT_MS 必须大于 0")
+        return execute_migration_preflight_checks(
+            conn,
+            timeout_ms=timeout_ms,
+            source_role="primary",
+            source_alias="primary",
+        )
 
 
 def main() -> int:
+    """输出迁移前审计结果，并在阻塞项非零或检查未知时拒绝升级。"""
     failures = 0
-    for name, severity, count in audit():
-        status = "PASS"
-        if severity == "FAIL" and count > 0:
+    for check in audit():
+        if check["status"] == "unknown":
+            status = "UNKNOWN"
+            failures += 1
+        elif check["severity"] == "blocking" and check["status"] == "error":
             status = "FAIL"
             failures += 1
-        logging.info("%s | %s | count=%s", status, name, count)
+        else:
+            status = "PASS"
+        logging.info(
+            "%s | %s | count=%s | source=%s",
+            status,
+            check["label"],
+            check["value"],
+            check["source_alias"],
+        )
 
     if failures:
         logging.error("审计未通过：发现 %s 类阻塞问题。请先修复数据。", failures)

@@ -18,13 +18,13 @@ from langchain_core.tools import BaseTool
 from typing import Any, Type, List
 from pydantic import BaseModel, create_model
 from langgraph.types import Command 
-from Agent.causal_agent.state import CausalChatState
+from Agent.causal_agent.state import CausalAgentState
 from app.chat.response_storage import render_summary_for_display
 
 ## die manager
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 mcp_dir = os.path.join(BASE_DIR, "Agent")
-mcp_server_path = os.path.join(mcp_dir, "CausalChatMCP", "mcp_server.py")
+mcp_server_path = os.path.join(mcp_dir, "CausalAgentMCP", "mcp_server.py")
 knowledge_base_dir = os.path.join(BASE_DIR, "Agent","knowledge_base")
 
 

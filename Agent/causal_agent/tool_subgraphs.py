@@ -13,24 +13,24 @@ from Agent.causal_agent.fault_tolerance import (
     tool_retry,
 )
 from Agent.causal_agent.graph_utils import bind_node
-from Agent.causal_agent.state import CausalChatState
+from Agent.causal_agent.state import CausalAgentState
 
 
-def route_rag_planner(state: CausalChatState) -> str:
+def route_rag_planner(state: CausalAgentState) -> str:
     """仅在 RAG planner 产生标准 tool_calls 时进入 ToolNode。当失败时，跳过子图"""
     messages = state.get("messages", [])
     latest_message = messages[-1] if messages else None
     return "tool" if getattr(latest_message, "tool_calls", None) else "skip"
 
 
-def route_mcp_planner(state: CausalChatState) -> str:
+def route_mcp_planner(state: CausalAgentState) -> str:
     """MCP planner 只有产生标准 tool_calls 时才进入 ToolNode。"""
     messages = state.get("messages", [])
     latest_message = messages[-1] if messages else None
     return "tool" if getattr(latest_message, "tool_calls", None) else "failed"
 
 
-def route_mcp_tool_result(state: CausalChatState) -> str:
+def route_mcp_tool_result(state: CausalAgentState) -> str:
     """ToolNode 异常恢复后直接结束子图，正常 ToolMessage 交给 parser。"""
     messages = state.get("messages", [])
     latest_message = messages[-1] if messages else None
@@ -45,7 +45,7 @@ def route_mcp_tool_result(state: CausalChatState) -> str:
 
 def build_mcp_subgraph(llm, mcp_tools):
     """Build the MCP tool-calling subgraph used as one parent-graph stage."""
-    graph = StateGraph(CausalChatState)
+    graph = StateGraph(CausalAgentState)
     graph.add_node(
         "mcp_planner",
         bind_node(nodes.mcp_planner_node, llm=llm, mcp_tools=mcp_tools),
@@ -83,7 +83,7 @@ def build_mcp_subgraph(llm, mcp_tools):
 
 def build_rag_subgraph(llm, rag_tools):
     """Build the RAG enrichment subgraph used as one parent-graph stage."""
-    graph = StateGraph(CausalChatState)
+    graph = StateGraph(CausalAgentState)
     graph.add_node(
         "rag_question_planner",
         bind_node(nodes.rag_question_planner_node, llm=llm, rag_tools=rag_tools),

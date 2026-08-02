@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from Agent.llm_structured_output import invoke_structured
-from Agent.causal_agent.state import CausalChatState
+from Agent.causal_agent.state import CausalAgentState
 from Agent.knowledge_base.query_rag import get_rag_excerpt
 
 from Agent.causal_agent.back_prompt import evaluate_edge_prompt
@@ -64,13 +64,16 @@ def _decision_key(source: str, target: str) -> str:
 
 def _serialize_edge_for_prompt(edge: Dict[str, Any]) -> Dict[str, Any]:
     """仅向 prompt 暴露必要字段，减少模型被原始对象噪声干扰的概率。"""
-    return {
+    serialized = {
         "id": edge.get("id"),
         "source": edge.get("source"),
         "target": edge.get("target"),
         "edge_type": edge.get("edge_type"),
         "label": edge.get("label", ""),
     }
+    if "weight" in edge:
+        serialized["weight"] = edge["weight"]
+    return serialized
 
 
 def _build_fallback_evaluation(
@@ -145,6 +148,7 @@ def _apply_edge_decisions(
             revised_edge["target"] = revised_target
             revised_edge["edge_type"] = "directed"
             revised_edge["label"] = ""
+            revised_edge.pop("weight", None)
             applied["revised_source"] = revised_source
             applied["revised_target"] = revised_target
         else:
@@ -168,7 +172,7 @@ def _apply_edge_decisions(
 
 def evaluate_edges_with_llm(
         critical_edges: List[Dict[str, Any]],
-        state: CausalChatState,
+        state: CausalAgentState,
         llm: ChatOpenAI
     ) -> Dict[str, Any]:
     """

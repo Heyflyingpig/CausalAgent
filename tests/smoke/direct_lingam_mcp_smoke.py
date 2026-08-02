@@ -64,7 +64,7 @@ def run_mcp_smoke() -> None:
     install_fastmcp_stub()
     disable_mcp_log_file()
 
-    from Agent.CausalChatMCP import mcp_server
+    from Agent.CausalAgentMCP import mcp_server
 
     node_names = ["x0", "x1", "x2", "x3", "x4", "x5"]
     csv_data = pd.DataFrame(

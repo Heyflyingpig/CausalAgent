@@ -3,10 +3,12 @@ import logging
 import sys
 from pathlib import Path
 
+from config.checkpoint_settings import CheckpointPostgresConfig
+
 # 计算项目根目录
-# __file__ -> D:/.../CausalChat/config/settings.py
-# os.path.dirname(__file__) -> D:/.../CausalChat/config
-# os.path.dirname(os.path.dirname(__file__)) -> D:/.../CausalChat (项目根目录)
+# __file__ -> D:/.../CausalAgent/config/settings.py
+# os.path.dirname(__file__) -> D:/.../CausalAgent/config
+# os.path.dirname(os.path.dirname(__file__)) -> D:/.../CausalAgent (项目根目录)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 加载 .env 文件（如果存在）
@@ -106,13 +108,157 @@ class AppConfig:
         if missing_database_credentials:
             raise ValueError(f"配置错误: 缺少数据库账号配置 {missing_database_credentials}")
         self.MYSQL_DATABASE = self._get_config("MYSQL_DATABASE")
+        checkpoint_postgres = CheckpointPostgresConfig.from_env()
+        self.CHECKPOINT_POSTGRES_HOST = checkpoint_postgres.host
+        self.CHECKPOINT_POSTGRES_PORT = checkpoint_postgres.port
+        self.CHECKPOINT_POSTGRES_DATABASE = checkpoint_postgres.database
+        self.CHECKPOINT_POSTGRES_USER = checkpoint_postgres.user
+        self.CHECKPOINT_POSTGRES_PASSWORD = checkpoint_postgres.password
+        self.CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS = checkpoint_postgres.connect_timeout_seconds
+        self.CHECKPOINT_POSTGRES_POOL_MIN_SIZE = checkpoint_postgres.pool_min_size
+        self.CHECKPOINT_POSTGRES_POOL_MAX_SIZE = checkpoint_postgres.pool_max_size
         self.MYSQL_POOL_SIZE_WRITE = self._get_int_config("MYSQL_POOL_SIZE_WRITE", default=5)
         self.MYSQL_POOL_SIZE_READ = self._get_int_config("MYSQL_POOL_SIZE_READ", default=5)
+        self.MYSQL_CONNECT_TIMEOUT_SECONDS = self._get_int_config(
+            "MYSQL_CONNECT_TIMEOUT_SECONDS",
+            default=5,
+        )
+        self.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS = self._get_float_config(
+            "MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS",
+            default=3.0,
+        )
+        self.MYSQL_POOL_ACQUIRE_RETRY_MS = self._get_int_config(
+            "MYSQL_POOL_ACQUIRE_RETRY_MS",
+            default=50,
+        )
+        self.MYSQL_REPLICA_STATUS_CACHE_SECONDS = self._get_float_config(
+            "MYSQL_REPLICA_STATUS_CACHE_SECONDS",
+            default=2.0,
+        )
         self.MYSQL_REPLICA_MAX_LAG_SECONDS = self._get_int_config(
             "MYSQL_REPLICA_MAX_LAG_SECONDS",
             default=2
         )
         self.MYSQL_QUERY_WARN_MS = self._get_int_config("MYSQL_QUERY_WARN_MS", default=500)
+        self.DB_INSPECTION_QUERY_TIMEOUT_MS = self._get_int_config(
+            "DB_INSPECTION_QUERY_TIMEOUT_MS",
+            default=3000,
+        )
+        self.DB_DASHBOARD_CONNECTION_WARNING_PERCENT = self._get_int_config(
+            "DB_DASHBOARD_CONNECTION_WARNING_PERCENT",
+            default=70,
+        )
+        self.DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT = self._get_int_config(
+            "DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT",
+            default=85,
+        )
+        self.DB_MONITOR_AUTO_REFRESH_ENABLED = self._get_bool_config(
+            "DB_MONITOR_AUTO_REFRESH_ENABLED",
+            default=True,
+        )
+        self.DB_MONITOR_REALTIME_INTERVAL_SECONDS = self._get_int_config(
+            "DB_MONITOR_REALTIME_INTERVAL_SECONDS",
+            default=10,
+        )
+        self.DB_MONITOR_SQL_INTERVAL_SECONDS = self._get_int_config(
+            "DB_MONITOR_SQL_INTERVAL_SECONDS",
+            default=60,
+        )
+        self.DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS = self._get_int_config(
+            "DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS",
+            default=900,
+        )
+        self.DB_MONITOR_SLOW_QUERY_WARNING_DELTA = self._get_int_config(
+            "DB_MONITOR_SLOW_QUERY_WARNING_DELTA",
+            default=1,
+        )
+        self.DB_MONITOR_INTEGRITY_ENABLED = self._get_bool_config(
+            "DB_MONITOR_INTEGRITY_ENABLED",
+            default=False,
+        )
+        self.DB_MONITOR_INTEGRITY_INTERVAL_SECONDS = self._get_int_config(
+            "DB_MONITOR_INTEGRITY_INTERVAL_SECONDS",
+            default=86400,
+        )
+        self.ADMIN_VITE_DEV_SERVER_URL = self._get_config(
+            "ADMIN_VITE_DEV_SERVER_URL",
+            required=False,
+            default="",
+        ).rstrip("/")
+        self.ADMIN_FRONTEND_DIST_DIR = self._get_config(
+            "ADMIN_FRONTEND_DIST_DIR",
+            required=False,
+            default="",
+        )
+        self.ADMIN_BATCH_MAX_TARGETS = self._get_int_config(
+            "ADMIN_BATCH_MAX_TARGETS",
+            default=20,
+        )
+        self.ADMIN_DELETE_MAX_RELATED_ROWS = self._get_int_config(
+            "ADMIN_DELETE_MAX_RELATED_ROWS",
+            default=10000,
+        )
+        self.ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS = self._get_int_config(
+            "ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS",
+            default=5,
+        )
+        positive_database_values = {
+            "MYSQL_POOL_SIZE_WRITE": self.MYSQL_POOL_SIZE_WRITE,
+            "MYSQL_POOL_SIZE_READ": self.MYSQL_POOL_SIZE_READ,
+            "MYSQL_CONNECT_TIMEOUT_SECONDS": self.MYSQL_CONNECT_TIMEOUT_SECONDS,
+            "MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS": self.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS,
+            "MYSQL_POOL_ACQUIRE_RETRY_MS": self.MYSQL_POOL_ACQUIRE_RETRY_MS,
+            "MYSQL_REPLICA_STATUS_CACHE_SECONDS": self.MYSQL_REPLICA_STATUS_CACHE_SECONDS,
+            "CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS": self.CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS,
+            "CHECKPOINT_POSTGRES_POOL_MIN_SIZE": self.CHECKPOINT_POSTGRES_POOL_MIN_SIZE,
+            "CHECKPOINT_POSTGRES_POOL_MAX_SIZE": self.CHECKPOINT_POSTGRES_POOL_MAX_SIZE,
+            "ADMIN_BATCH_MAX_TARGETS": self.ADMIN_BATCH_MAX_TARGETS,
+            "ADMIN_DELETE_MAX_RELATED_ROWS": self.ADMIN_DELETE_MAX_RELATED_ROWS,
+            "ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS": self.ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS,
+        }
+        for name, value in positive_database_values.items():
+            if value <= 0:
+                raise ValueError(f"配置错误: {name} 必须大于 0。")
+        if self.ADMIN_BATCH_MAX_TARGETS > 50:
+            raise ValueError("配置错误: ADMIN_BATCH_MAX_TARGETS 不能超过 50。")
+        if self.MYSQL_POOL_SIZE_WRITE > 32 or self.MYSQL_POOL_SIZE_READ > 32:
+            raise ValueError(
+                "配置错误: MySQL Connector/Python 单连接池大小不能超过 32。"
+            )
+        checkpoint_postgres.validate()
+        if self.DB_INSPECTION_QUERY_TIMEOUT_MS <= 0:
+            raise ValueError("配置错误: DB_INSPECTION_QUERY_TIMEOUT_MS 必须大于 0。")
+        if not (
+            0
+            <= self.DB_DASHBOARD_CONNECTION_WARNING_PERCENT
+            < self.DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT
+            <= 100
+        ):
+            raise ValueError(
+                "配置错误: 数据库看板连接阈值必须满足 "
+                "0 <= WARNING < CRITICAL <= 100。"
+            )
+        monitor_ranges = (
+            ("DB_MONITOR_REALTIME_INTERVAL_SECONDS", self.DB_MONITOR_REALTIME_INTERVAL_SECONDS, 5, 10),
+            ("DB_MONITOR_SQL_INTERVAL_SECONDS", self.DB_MONITOR_SQL_INTERVAL_SECONDS, 30, 60),
+            (
+                "DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS",
+                self.DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS,
+                300,
+                900,
+            ),
+        )
+        for name, value, minimum, maximum in monitor_ranges:
+            if not minimum <= value <= maximum:
+                raise ValueError(
+                    f"配置错误: {name} 必须在 {minimum} 到 {maximum} 之间。"
+                )
+        if self.DB_MONITOR_SLOW_QUERY_WARNING_DELTA <= 0:
+            raise ValueError("配置错误: DB_MONITOR_SLOW_QUERY_WARNING_DELTA 必须大于 0。")
+        if self.DB_MONITOR_INTEGRITY_INTERVAL_SECONDS < 3600:
+            raise ValueError(
+                "配置错误: DB_MONITOR_INTEGRITY_INTERVAL_SECONDS 必须至少为 3600。"
+            )
         self.JOB_WORKERS = self._get_int_config("JOB_WORKERS", default=2)
         self.JOB_POLL_INTERVAL_SECONDS = self._get_float_config("JOB_POLL_INTERVAL_SECONDS", default=1.0)
         self.JOB_HEARTBEAT_INTERVAL_SECONDS = self._get_int_config(
@@ -205,6 +351,20 @@ class AppConfig:
             return float(value)
         except ValueError as exc:
             raise ValueError(f"配置错误: 环境变量 '{key}' 必须是数字，当前值为 '{value}'。") from exc
+
+    def _get_bool_config(self, key, default):
+        """严格解析布尔环境变量，避免非空字符串被错误视为启用。"""
+        value = os.environ.get(key)
+        if value in (None, ""):
+            return default
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+        raise ValueError(
+            f"配置错误: 环境变量 '{key}' 只能是 true 或 false，当前值为 '{value}'。"
+        )
 
     @staticmethod
     def _parse_csv_config(value):

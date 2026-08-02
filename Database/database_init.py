@@ -114,15 +114,15 @@ class DatabaseBootstrap:
 
 
 def main() -> int:
-    print("CausalChat 数据库初始化引导")
+    print("CausalAgent 数据库初始化引导")
     bootstrap = DatabaseBootstrap()
     if not bootstrap.bootstrap():
         print("\n数据库初始化引导失败，请检查 database_init.log。")
         return 1
 
     print("\n数据库已存在且连接可用。")
-    print("下一步请执行：")
-    print("  docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head")
+    print("\n如需完成 MySQL 和 PostgreSQL 的完整初始化，请执行：")
+    print("  python -m Database.bootstrap")
     print("\n说明：业务表结构由 Alembic 迁移维护，本脚本不再创建或修改业务表。")
     return 0
 

@@ -6,6 +6,7 @@ app.chat.services - 聊天服务
 '''
 from app.db import get_read_connection, get_write_connection
 from app.chat.response_storage import prepare_ai_response_for_storage
+from app.chat.session_title import build_session_title
 import mysql.connector
 import logging
 from datetime import datetime
@@ -46,10 +47,14 @@ def get_chat_history(session_id: str, user_id: int, limit: int) -> list:
 
 
 ## 保存历史文件     
+class SessionNotFoundError(ValueError):
+    """表示写入请求引用了不存在或不属于当前用户的会话。"""
+
+
 def save_chat(user_id, session_id, user_msg, ai_response):
     """
-    将用户和AI的交互保存到新的优化数据库结构中。
-    - 采用延迟创建策略：如果session不存在，则在第一条消息时创建
+    将用户和 AI 的交互保存到数据库中。
+    - 只接受已由 new_chat 创建且仍归属于当前用户的 session
     - 在 chat_messages 中为用户和AI分别创建记录。
     - 如果AI响应包含附件，则在 chat_attachments 中创建记录。
     - 更新 sessions 表的元数据。
@@ -60,23 +65,17 @@ def save_chat(user_id, session_id, user_msg, ai_response):
         with get_write_connection() as conn:
             cursor = conn.cursor(dictionary=True)
 
-            #  核心修改：实现延迟session创建逻辑 
-            # 0. 检查session是否存在，如果不存在则创建
-            cursor.execute("SELECT message_count, title FROM sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
+            cursor.execute(
+                "SELECT message_count, title FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
+                (session_id, user_id),
+            )
             session_data = cursor.fetchone()
             
             if not session_data:
-                # Session不存在，创建新的session记录（延迟创建）
-                new_title = user_msg[:8] + ("..." if len(user_msg) > 8 else "")
-                cursor.execute("""
-                    INSERT INTO sessions (id, user_id, title, created_at, last_activity_at, message_count)
-                    VALUES (%s, %s, %s, %s, %s, 0)
-                """, (session_id, user_id, new_title, timestamp_dt, timestamp_dt))
-                is_first_message = True
-                logging.info(f"延迟创建session记录: {session_id} (用户: {user_id}, 标题: '{new_title}')")
-            else:
-                # Session已存在，判断是否为第一条消息
-                is_first_message = session_data['message_count'] == 0
+                conn.rollback()
+                raise SessionNotFoundError("会话不存在或无权访问")
+
+            is_first_message = session_data['message_count'] == 0
             
             # 保存用户消息
             sql_user = """
@@ -113,8 +112,7 @@ def save_chat(user_id, session_id, user_msg, ai_response):
             # 根据是否为第一条消息，决定是否更新标题
             if is_first_message:
                 #  更新会话，包括新标题（或确认创建时的标题）
-                new_title = user_msg[:8] # 截取前8个字符作为标题
-                new_title = new_title + "..." if len(user_msg) > 8 else new_title
+                new_title = build_session_title(user_msg)
                 sql_update_session = """
                     UPDATE sessions 
                     SET title = %s, last_activity_at = %s, message_count = message_count + 2
@@ -132,6 +130,8 @@ def save_chat(user_id, session_id, user_msg, ai_response):
             
             conn.commit()
             return True
+    except SessionNotFoundError:
+        raise
     except mysql.connector.Error as e:
         logging.error(f"保存聊天记录到数据库时出错 (用户 ID: {user_id}, 会话: {session_id}): {e}")
         return False
