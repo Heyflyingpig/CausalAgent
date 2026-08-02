@@ -10,8 +10,20 @@ from __future__ import annotations
 from typing import Callable
 
 from langchain_core.messages import AIMessage
-from langgraph.errors import NodeError
-from langgraph.types import Command, RetryPolicy, TimeoutPolicy, default_retry_on
+try:
+    from langgraph.errors import NodeError
+except ImportError:
+    class NodeError(Exception):
+        """兼容未导出 NodeError 的 LangGraph 版本所需的错误载体类型。"""
+
+        node: str
+        error: BaseException
+
+from langgraph.types import Command, RetryPolicy, default_retry_on
+try:
+    from langgraph.types import TimeoutPolicy
+except ImportError:
+    TimeoutPolicy = None
 
 from .state import CausalChatState
 
@@ -51,8 +63,10 @@ def tool_retry(max_attempts: int = 3) -> RetryPolicy:
     )
 
 
-def timeout(run_timeout: float, idle_timeout: float | None = None) -> TimeoutPolicy:
+def timeout(run_timeout: float, idle_timeout: float | None = None) -> TimeoutPolicy | None:
     """生成节点 timeout 策略，run_timeout 是单次 attempt 的硬上限。"""
+    if TimeoutPolicy is None:
+        return None
     return TimeoutPolicy(run_timeout=run_timeout, idle_timeout=idle_timeout)
 
 
@@ -137,7 +151,7 @@ def recover_tools_to_agent(state: CausalChatState, error: NodeError) -> Command:
 
 
 def recover_mcp_tool_failure(state: CausalChatState, error: NodeError) -> dict:
-    """MCP ToolNode 失败后的恢复：写入因果分析失败结构，由父图决定后续路由。"""
+    """MCP 子图节点失败后的恢复：写入标准失败结构，由父图决定后续路由。"""
     message = sanitize_error(error.error)
     return {
         "messages": [AIMessage(content=f"决策：MCP 工具执行失败：{message}", name=error.node)],

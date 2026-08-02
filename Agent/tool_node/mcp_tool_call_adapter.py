@@ -67,7 +67,7 @@ def _inject_mcp_runtime_arguments(
         if tool is None or not _tool_accepts_argument(tool, "csv_data"):
             continue
         args = tool_call.setdefault("args", {})
-        args.setdefault("csv_data", file_content)
+        args["csv_data"] = file_content
 
     return ai_message
 

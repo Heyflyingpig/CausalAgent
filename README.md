@@ -61,6 +61,9 @@ CausalAgent
 - [Star 趋势](#star-趋势)
 - [项目结构](#项目结构)
 - [更新日志](./README/CHANGELOG.md)
+- [DirectLiNGAM 接入需求与实施计划](./README/DirectLiNGAM需求与实施计划.md)
+- [DirectLiNGAM 接口契约](./README/DirectLiNGAM接口契约.md)
+- [DirectLiNGAM 依赖核验记录](./README/DirectLiNGAM依赖核验记录.md)
 
 
 
@@ -121,6 +124,7 @@ graph TD;
 
     subgraph "Tools & Data"
         MCP --> PC[PC Algorithm]
+        MCP --> Direct[DirectLiNGAM]
         MCP --> FCI[FCI Algorithm]
         Pre --> Data[(MySQL/Files)]
     end
@@ -128,7 +132,7 @@ graph TD;
 ```
 
 - **Router Agent**：根据用户意图在「预处理 / 因果分析 / 知识库问答 / 报告生成」等节点之间自动路由，无需用户关心底层算法。
-- **Causal Agent**：负责与 MCP 因果算法工具交互（如 PC、FCI 等），完成因果结构学习与干预效应估计的核心推理。
+- **Causal Agent**：负责与 MCP 因果算法工具交互（如 PC、DirectLiNGAM、FCI 等），完成因果结构学习与干预效应估计的核心推理。
 - **Writer Agent**：结合因果结果与 RAG 知识库，自动撰写结构化专业报告（背景、方法、结果、结论与局限性）。
 - **Chat Agent**：面向一般问答与解释型对话，为非专业用户提供自然语言解释与操作指引。
 
@@ -146,6 +150,7 @@ graph TD;
 - **可插拔算法框架**：通过 MCP 将因果发现与估计算法以「工具」形式解耦，便于在不改动 Agent 主逻辑的前提下扩展/更换算法库。
 - **当前支持**：
   - PC 算法（基于条件独立检验的因果结构学习）。
+  - DirectLiNGAM（面向线性、非高斯、DAG、无潜在混杂假设下的带权有向因果图发现）。
 - **规划中**：
   - FCI 等含潜在混杂的结构学习算法；
   - 因果效应估计（ATE/CATE）与反事实分析等模块。
@@ -451,7 +456,7 @@ python Run_causal.py
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
 ├── .github/workflows/       # GitHub Actions 工作流
 ├── README.md               # 项目说明
-├── README/                 # README 图片与更新日志
+├── README/                 # README 图片、更新日志与需求计划
 ├── database_init.log       # 数据库初始化日志
 ├── app/                    # Flask 应用主目录（Blueprint 结构）
 │   ├── __init__.py         # 创建 Flask app，注册蓝图

@@ -72,6 +72,13 @@ OLC_CYCLE_MATRIX = np.array(
         [1, 0, 0],
     ]
 )
+DIRECT_LINGAM_CYCLE_MATRIX = np.array(
+    [
+        [0.0, 0.0, 0.7],
+        [-0.4, 0.0, 0.0],
+        [0.0, 1.2, 0.0],
+    ]
+)
 
 
 def _cycle_edges(cycle):
@@ -86,6 +93,7 @@ def _cycle_edges(cycle):
     ("matrix", "matrix_convention"),
     [
         (PC_CYCLE_MATRIX, "causallearn"),
+        (DIRECT_LINGAM_CYCLE_MATRIX, "target_to_source"),
         (OLC_CYCLE_MATRIX, "olc"),
     ],
 )
@@ -108,6 +116,7 @@ def test_detect_cycles_respects_matrix_direction(matrix, matrix_convention):
     ("matrix", "matrix_convention", "expected_cell"),
     [
         (np.array([[0, 0], [1, 0]]), "causallearn", (1, 0)),
+        (np.array([[0.0, 0.0], [-0.82, 0.0]]), "target_to_source", (1, 0)),
         (np.array([[0, 1], [0, 0]]), "olc", (0, 1)),
     ],
 )
@@ -224,16 +233,21 @@ def test_fix_cycles_rejects_edges_outside_cycle_or_not_directed(
     assert removed_edges == []
 
 
-def _analysis_state(matrix, *, olc=False):
+def _analysis_state(matrix, *, olc=False, matrix_convention=None):
     """构造包含真实展示边和指定矩阵约定的后处理状态。"""
     raw_results = {"adjacency_matrix": matrix.tolist()}
     if olc:
         raw_results["coefficient_matrix"] = np.zeros_like(matrix).tolist()
+    analysis_result = {
+        "success": True,
+        "data": {"nodes": GRAPH_NODES, "edges": GRAPH_EDGES},
+        "raw_results": raw_results,
+    }
+    if matrix_convention:
+        analysis_result["matrix_convention"] = matrix_convention
     return {
         "causal_analysis_result": {
-            "success": True,
-            "data": {"nodes": GRAPH_NODES, "edges": GRAPH_EDGES},
-            "raw_results": raw_results,
+            **analysis_result,
         },
         "analysis_parameters": {},
         "knowledge_base_result": {},
@@ -262,6 +276,7 @@ def _keep_all(edges, *_args):
     ("matrix", "olc", "expected_convention", "removed_cell"),
     [
         (PC_CYCLE_MATRIX, False, "causallearn", (0, 2)),
+        (DIRECT_LINGAM_CYCLE_MATRIX, False, "target_to_source", (0, 2)),
         (OLC_CYCLE_MATRIX, True, "olc", (2, 0)),
     ],
 )
@@ -291,7 +306,14 @@ def test_postprocess_revised_graph_excludes_cycle_removed_edge(
     monkeypatch.setattr(nodes, "evaluate_edges_with_llm", fake_evaluate)
 
     result = asyncio.run(
-        nodes.postprocess_node(_analysis_state(matrix, olc=olc), object())
+        nodes.postprocess_node(
+            _analysis_state(
+                matrix,
+                olc=olc,
+                matrix_convention=expected_convention,
+            ),
+            object(),
+        )
     )
 
     revised = result["postprocess_result"]["revised_graph"]

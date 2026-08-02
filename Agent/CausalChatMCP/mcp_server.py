@@ -11,9 +11,12 @@ for p in (PROJECT_ROOT, AGENT_DIR):
         sys.path.insert(0, p)
 
 
-import json
 from mcp.server.fastmcp import FastMCP
-from Agent.causal.causalachieve import run_olc_analysis, run_pc_analysis
+from Agent.causal.causalachieve import (
+    run_direct_lingam_analysis,
+    run_olc_analysis,
+    run_pc_analysis,
+)
 
 
 log_file_path = os.path.join(CURRENT_DIR, 'mcp_server.log')
@@ -30,7 +33,7 @@ logging.info("MCP Server Script Started, Logging Initialized")
 mcp = FastMCP("causal-analyzer")
 
 @mcp.tool()
-async def causal_pc(csv_data: str) -> str:
+async def causal_pc(csv_data: str) -> dict:
     """
     使用PC算法对CSV数据执行因果发现分析。
 
@@ -53,21 +56,25 @@ async def causal_pc(csv_data: str) -> str:
         csv_data: 一个包含完整CSV文件内容的字符串。
 
     Returns:
-        一个包含分析结果的JSON字符串，包括因果图结构和边的方向信息。
+        一个包含分析结果的结构化字典，包括因果图结构和边的方向信息。
     """
     logging.info(f"工具 'causal_pc' 已被调用，输入数据长度: {len(csv_data)}。")
     try:
         # 工具的核心职责：执行分析
         analysis_result = run_pc_analysis(csv_data)
         
-        return json.dumps(analysis_result, ensure_ascii=False)
+        return analysis_result
 
     except Exception as e:
         logging.error(f"'causal_pc' 工具执行出错: {e}", exc_info=True)
-        return json.dumps({"success": False, "message": f"执行分析时发生内部错误: {e}"}, ensure_ascii=False)
+        return {
+            "success": False,
+            "message": f"执行分析时发生内部错误: {e}",
+            "error_type": type(e).__name__,
+        }
 
 @mcp.tool()
-async def causal_olc(csv_data: str) -> str:
+async def causal_olc(csv_data: str) -> dict:
     """
     使用OLC算法对CSV数据执行因果发现分析，专门处理存在隐藏混杂因素的场景。
 
@@ -90,17 +97,55 @@ async def causal_olc(csv_data: str) -> str:
         csv_data: 一个包含完整CSV文件内容的字符串，数据应为连续值变量。
 
     Returns:
-        一个包含分析结果的JSON字符串，包括因果图结构和潜在混杂因素信息。
+        一个包含分析结果的结构化字典，包括因果图结构和潜在混杂因素信息。
     """
     logging.info(f"工具 'causal_olc' 已被调用，输入数据长度: {len(csv_data)}。")
     try:
         # 工具的核心职责：执行分析
         analysis_result = run_olc_analysis(csv_data)
         
-        return json.dumps(analysis_result, ensure_ascii=False)
+        return analysis_result
     except Exception as e:
         logging.error(f"'causal_olc' 工具执行出错: {e}", exc_info=True)
-        return json.dumps({"success": False, "message": f"执行分析时发生内部错误: {e}"}, ensure_ascii=False)
+        return {
+            "success": False,
+            "message": f"执行分析时发生内部错误: {e}",
+            "error_type": type(e).__name__,
+        }
+
+
+@mcp.tool()
+async def causal_direct_lingam(csv_data: str) -> dict:
+    """
+    使用 DirectLiNGAM 对连续数值 CSV 数据执行因果发现分析。
+
+    DirectLiNGAM 适用于用户明确接受线性、非高斯、误差独立、DAG 且无潜在混杂
+    假设的场景。它会返回带权有向无环图、因果顺序和原始系数矩阵；系数矩阵
+    采用 B[target, source] 表示 source -> target。
+
+    这是一个纯计算工具，不执行任何数据库或文件系统操作。
+
+    Args:
+        csv_data: 一个包含完整 CSV 文件内容的字符串，所有分析列必须为连续数值。
+
+    Returns:
+        一个包含 DirectLiNGAM 结构化分析结果或结构化失败信息的字典。
+    """
+    logging.info(
+        "工具 'causal_direct_lingam' 已被调用，输入数据长度: %s。",
+        len(csv_data),
+    )
+    try:
+        analysis_result = run_direct_lingam_analysis(csv_data)
+        return analysis_result
+    except Exception as e:
+        logging.error(f"'causal_direct_lingam' 工具执行出错: {e}", exc_info=True)
+        return {
+            "success": False,
+            "algorithm": "direct_lingam",
+            "message": f"执行 DirectLiNGAM 分析时发生内部错误: {e}",
+            "error_type": type(e).__name__,
+        }
 
 if __name__ == "__main__":
     logging.info("MCP 因果分析服务器启动")

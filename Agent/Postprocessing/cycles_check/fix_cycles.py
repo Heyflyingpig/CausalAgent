@@ -27,10 +27,19 @@ def _matrix_cell_for_edge(
     matrix_convention: str,
 ) -> Tuple[int, int]:
     """返回指定有向边在不同算法邻接矩阵中的真实存储位置。"""
-    if matrix_convention == "causallearn":
+    if matrix_convention in {"causallearn", "target_to_source"}:
         return target_index, source_index
     if matrix_convention == "olc":
         return source_index, target_index
+    raise ValueError(f"unsupported matrix convention: {matrix_convention}")
+
+
+def _has_directed_edge_value(value: float, matrix_convention: str) -> bool:
+    """判断矩阵单元格是否表示可删除的确定有向边。"""
+    if matrix_convention == "target_to_source":
+        return value != 0
+    if matrix_convention in {"causallearn", "olc"}:
+        return value == 1
     raise ValueError(f"unsupported matrix convention: {matrix_convention}")
 
 
@@ -52,7 +61,7 @@ def fix_cycles_with_llm(
         node_names: 节点名称列表
         llm: LangChain的ChatOpenAI实例
         state: 当前状态，用于获取数据摘要和知识库结果
-        matrix_convention: 邻接矩阵的方向约定
+        matrix_convention: 邻接矩阵的方向约定；DirectLiNGAM 使用 target_to_source
         
     Returns:
         修正后的邻接矩阵，以及实际成功置零的 (source, target) 边列表
@@ -149,7 +158,10 @@ def fix_cycles_with_llm(
                 to_idx,
                 matrix_convention,
             )
-            if revised_matrix[row_idx][column_idx] == 1:
+            if _has_directed_edge_value(
+                revised_matrix[row_idx][column_idx],
+                matrix_convention,
+            ):
                 revised_matrix[row_idx][column_idx] = 0
                 removed_edges.append((from_node, to_node))
                 logging.info(f"已删除边: {from_node} -> {to_node}")

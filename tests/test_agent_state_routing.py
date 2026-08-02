@@ -1,10 +1,11 @@
 import asyncio
+import json
 import os
 import sys
 import types
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
 for key, value in {
@@ -46,7 +47,11 @@ from Agent.causal_agent.fault_tolerance import (
     recover_preprocess_to_agent,
     route_to_normal_chat,
 )
-from Agent.causal_agent.tool_subgraphs import route_rag_planner
+from Agent.causal_agent.tool_subgraphs import (
+    route_mcp_planner,
+    route_mcp_tool_result,
+    route_rag_planner,
+)
 from Agent.llm_structured_output import StructuredOutputError
 from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
 
@@ -120,6 +125,28 @@ def test_agent_deterministic_and_failure_routes_overwrite_old_state(monkeypatch)
     assert structured_failure["route_decision"] == "normal_chat"
 
 
+def test_mcp_protocol_failure_returns_to_agent_without_restarting_fold():
+    """MCP 协议失败必须成为显式失败，使 Agent 结束本轮分析而不是重新加载文件。"""
+    tool_call = AIMessage(
+        content="",
+        tool_calls=[{"name": "causal_pc", "args": {}, "id": "call-1"}],
+    )
+    tool_result = ToolMessage(
+        content='{"result": {"unexpected": true}}',
+        tool_call_id="call-1",
+    )
+    state = _state("请使用 data.csv 立即执行因果分析")
+    state["messages"].extend([tool_call, tool_result])
+
+    parsed = asyncio.run(nodes.mcp_result_parser_node(state))
+    state.update(parsed)
+    decision = asyncio.run(nodes.agent_node(state, object()))
+
+    assert parsed["causal_analysis_result"]["success"] is False
+    assert parsed["causal_analysis_result"]["error_type"] == "MCPProtocolError"
+    assert decision["route_decision"] == "normal_chat"
+
+
 def test_fold_extraction_failure_uses_recent_file_and_can_validate(monkeypatch):
     """参数提取失败视为空值，仍继续最近文件与确定性校验。"""
     async def fail_structured(**kwargs):
@@ -187,6 +214,51 @@ def test_routers_use_safe_defaults_for_missing_or_invalid_state():
     assert edges.decision_router({"route_decision": "invalid", "messages": []}) == "normal_chat"
     assert edges.fold_router({"messages": [AIMessage(content="信息完备")]}) == "agent"
     assert edges.fold_router({"fold_decision": "invalid", "messages": []}) == "agent"
+
+
+def test_mcp_subgraph_routes_only_valid_tool_calls_and_results():
+    """MCP 子图仅执行有效调用，并在异常恢复结果出现后直接结束。"""
+    planner_call = AIMessage(
+        content="",
+        tool_calls=[{"name": "causal_pc", "args": {}, "id": "call-1"}],
+    )
+    tool_result = ToolMessage(content='{"success": true}', tool_call_id="call-1")
+
+    assert route_mcp_planner({"messages": [planner_call]}) == "tool"
+    assert route_mcp_planner({"messages": [AIMessage(content="planner failed")]}) == "failed"
+    assert route_mcp_tool_result(
+        {
+            "messages": [planner_call, tool_result],
+            "causal_analysis_result": {"success": False},
+        }
+    ) == "parse"
+    assert route_mcp_tool_result(
+        {
+            "messages": [planner_call, AIMessage(content="tool failed")],
+            "causal_analysis_result": {"success": False},
+        }
+    ) == "failed"
+
+
+def test_mcp_parser_preserves_subgraph_failure_without_tool_message():
+    """ToolNode 异常恢复已生成的失败结果不能被 parser 的二次错误覆盖。"""
+    failure = {
+        "success": False,
+        "error": "connection closed",
+        "error_type": "ConnectionError",
+    }
+
+    result = asyncio.run(
+        nodes.mcp_result_parser_node(
+            {
+                "messages": [AIMessage(content="MCP tool failed")],
+                "causal_analysis_result": failure,
+            }
+        )
+    )
+
+    assert result["causal_analysis_result"] == failure
+    assert result["tool_call_request"] is False
 
 
 def test_recovery_handlers_keep_route_audit_fields_separate():
@@ -310,6 +382,121 @@ def test_mcp_planner_disables_thinking_and_requires_a_tool_choice():
     }
     assert result["messages"][0].tool_calls[0]["name"] == "causal_pc"
     assert result["messages"][0].tool_calls[0]["args"]["csv_data"] == "A,Y\n1,2\n"
+
+
+def test_mcp_planner_deterministically_selects_explicit_direct_lingam():
+    """用户明确点名 DirectLiNGAM 时必须优先选择独立工具并注入 CSV。"""
+
+    class UnusedLLM:
+        """如果确定性选择失效，测试会因访问模型而失败。"""
+
+        extra_body = None
+
+        def model_copy(self, *, update):
+            raise AssertionError("明确 DirectLiNGAM 请求不应调用 LLM 选工具")
+
+    tools = [
+        types.SimpleNamespace(name="causal_pc", args={"csv_data": {}}),
+        types.SimpleNamespace(name="causal_direct_lingam", args={"csv_data": {}}),
+    ]
+    result = asyncio.run(
+        nodes.mcp_planner_node(
+            _state(
+                "请使用 DirectLiNGAM 分析这份 CSV",
+                file_content="A,B\n1,2\n3,4\n",
+            ),
+            UnusedLLM(),
+            tools,
+        )
+    )
+
+    tool_call = result["messages"][0].tool_calls[0]
+    assert tool_call["name"] == "causal_direct_lingam"
+    assert tool_call["args"]["csv_data"] == "A,B\n1,2\n3,4\n"
+
+
+def test_explicit_direct_lingam_mcp_stage_parses_and_routes_to_rag():
+    """显式 DirectLiNGAM 请求应完成 MCP 阶段并进入后续 RAG/报告链。"""
+
+    class UnusedLLM:
+        """确定性工具选择不应访问模型。"""
+
+        extra_body = None
+
+        def model_copy(self, *, update):
+            raise AssertionError("明确 DirectLiNGAM 请求不应调用 LLM 选工具")
+
+    tools = [
+        types.SimpleNamespace(name="causal_direct_lingam", args={"csv_data": {}}),
+    ]
+    state = _state(
+        "请使用 DirectLiNGAM 分析这份 CSV",
+        file_content="A,B\n1,2\n3,4\n",
+    )
+    planner_result = asyncio.run(
+        nodes.mcp_planner_node(state, UnusedLLM(), tools)
+    )
+    planner_message = planner_result["messages"][0]
+    tool_call = planner_message.tool_calls[0]
+    tool_message = ToolMessage(
+        content=json.dumps(
+            {
+                "success": True,
+                "algorithm": "direct_lingam",
+                "matrix_convention": "target_to_source",
+                "data": {
+                    "nodes": [{"id": "A"}, {"id": "B"}],
+                    "edges": [{"from": "A", "to": "B", "arrows": "to", "weight": 0.8}],
+                },
+                "raw_results": {
+                    "adjacency_matrix": [[0.0, 0.0], [0.8, 0.0]],
+                    "causal_order": [0, 1],
+                    "causal_order_names": ["A", "B"],
+                },
+            }
+        ),
+        tool_call_id=tool_call["id"],
+    )
+
+    parsed = asyncio.run(
+        nodes.mcp_result_parser_node(
+            {
+                **state,
+                "messages": state["messages"] + [planner_message, tool_message],
+            }
+        )
+    )
+
+    assert parsed["causal_analysis_result"]["success"] is True
+    assert parsed["causal_analysis_result"]["algorithm"] == "direct_lingam"
+    assert parsed["causal_analysis_result"]["_tool_call"]["name"] == "causal_direct_lingam"
+    assert edges.mcp_router(parsed) == "rag"
+
+
+def test_direct_lingam_report_context_includes_assumptions_and_versions():
+    """报告上下文必须明确 DirectLiNGAM 的版本、参数、方向和解释边界。"""
+    context = nodes._causal_method_context_for_report(
+        {
+            "success": True,
+            "algorithm": "direct_lingam",
+            "implementation": {
+                "version": "0.1.4.7",
+                "embedded_version": "1.5.4",
+            },
+            "parameters": {"measure": "pwling"},
+            "matrix_convention": "target_to_source",
+            "raw_results": {"causal_order_names": ["A", "B"]},
+            "diagnostics": {"n_samples": 200, "n_features": 2},
+        }
+    )
+
+    assert "causal-learn 0.1.4.7" in context
+    assert "measure=pwling" in context
+    assert "B[target, source]" in context
+    assert "linear structural equation model" in context
+    assert "non-Gaussian" in context
+    assert "latent confounders" in context
+    assert "candidate causal relations" in context
 
 
 @pytest.mark.parametrize(

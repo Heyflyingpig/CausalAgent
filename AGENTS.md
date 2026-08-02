@@ -40,6 +40,7 @@
 ├── docker-compose.replica.yml # MySQL 主从开发拓扑
 ├── .github/workflows/       # GitHub Actions 工作流
 ├── README.md               # 项目说明
+├── README/                 # README 图片、更新日志与需求计划
 ├── database_init.log       # 数据库初始化日志
 ├── app/                    # Flask 应用主目录（Blueprint 结构）
 │   ├── __init__.py         # 创建 Flask app，注册蓝图
@@ -89,7 +90,7 @@
 - Web 进程只负责登录态校验、短请求、analysis job 入队和 SSE 推送；Agent/RAG/MCP 长任务不在 Web 进程内执行，而是由独立 worker 进程处理。
 - 后台 worker 入口是 `python -m app.agent.worker`；worker 启动流程是：数据库就绪检查 -> 初始化 LLM -> 检查 RAG 可用性 -> 按 `JOB_WORKERS` 启动多个 slot。
 - 每个 worker slot 会独占一组 MCP server process、一个通过 `MultiServerMCPClient.session("causal")` 打开的持久 `ClientSession`、一组由 `load_mcp_tools(session)` 生成的 LangChain tools，以及一个编译好的 Agent graph；真实执行单元是 slot，不是 Flask 请求线程。旧 `open_mcp_session()` / 手写 `list_tools()` 包装仅保留作历史兼容入口。
-- 父图当前只暴露 `mcp`、`rag` 两个工具阶段节点：`mcp` 子图内部执行 `mcp_planner -> mcp_tool_node -> mcp_result_parser`，`rag` 子图内部执行 `rag_question_planner -> rag_tool_node -> rag_result_parser`；worker 事件流仍沿用旧 `astream(stream_mode="updates")` 适配，不要求本轮输出 tool-level SSE 事件。
+- 父图当前只暴露 `mcp`、`rag` 两个工具阶段节点：`mcp` 子图正常路径执行 `mcp_planner -> mcp_tool_node -> mcp_result_parser`，planner、ToolNode 和 parser 的失败路径会在子图内生成标准 `success=False` 结果并结束子图；`rag` 子图内部执行 `rag_question_planner -> rag_tool_node -> rag_result_parser`；worker 事件流仍沿用旧 `astream(stream_mode="updates")` 适配，不要求本轮输出 tool-level SSE 事件。
 - Pydantic 结构化输出统一通过 `Agent/llm_structured_output.py` 的同步/异步入口执行，固定使用普通 `function_calling`；调用器仅对结构化请求发送 `thinking.type=disabled`，避免 DeepSeek Thinking 与固定 `tool_choice` 冲突。MCP 继续使用原生 Tool Calls；只有 MCP planner 使用关闭 Thinking 的 LLM 副本和 `tool_choice="required"`，确保模型必须自行选择一个已加载工具。
 - `agent` 与 `fold` 的条件路由只读取 `route_decision`、`fold_decision` 显式 State 字段；展示消息仅用于用户可见内容和审计，不参与控制流。
 - 配置统一由 `config/settings.py` 从系统环境变量读取；若项目根目录存在 `.env`，会先通过 `python-dotenv` 加载到环境变量。
@@ -118,6 +119,7 @@
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
 - RAG 启动期只检查知识库目录是否可用，不会在启动时完整加载向量库；若 `Agent/knowledge_base/db` 不存在，worker 会记录 warning，并以“无知识库模式”继续运行。
+- DirectLiNGAM 已作为独立运行时 MCP 工具 `causal_direct_lingam` 接入；`Agent/causal/causalachieve.py` 已实现 runner、输入校验、真实拟合、causal-learn `Dag` 统一转换、带权图结果和结构化成功/失败结果。显式点名 DirectLiNGAM 时，MCP planner 会确定性选择该工具；后处理已支持 `matrix_convention="target_to_source"` 的带权非零矩阵；报告节点会补充 DirectLiNGAM 的实现版本、参数、因果顺序和假设/局限说明。接口契约位于 `README/DirectLiNGAM接口契约.md`，Python 3.11 smoke、MCP wrapper smoke、固定基础镜像和版本锁位于 `tests/smoke/`；两份正式 requirements 精确版本和全量 worker/数据库环境端到端验收仍未完成。
 
 
 ### 3.1 常用命令
@@ -356,3 +358,6 @@ python Causalchat.py
 - 不要盲目按旧文档修改代码
 - 先说明差异
 - 以当前可运行实现为准提出建议
+
+## 11. 其他
+1. 不要更改日志的历史文件，当需要新增日志的时候，请在日志后增加
