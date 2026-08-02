@@ -19,4 +19,3 @@ def test_compose_files_keep_legacy_langchain_config_without_mode_switch():
         assert "LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}" in text
         assert "LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}" in text
         assert not any(item in text for item in forbidden)
-

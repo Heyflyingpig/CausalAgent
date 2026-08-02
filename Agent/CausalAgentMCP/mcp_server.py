@@ -12,7 +12,11 @@ for p in (PROJECT_ROOT, AGENT_DIR):
 
 
 from mcp.server.fastmcp import FastMCP
-from Agent.causal.causalachieve import run_olc_analysis, run_pc_analysis
+from Agent.causal.causalachieve import (
+    run_direct_lingam_analysis,
+    run_olc_analysis,
+    run_pc_analysis,
+)
 
 
 log_file_path = os.path.join(CURRENT_DIR, 'mcp_server.log')
@@ -107,6 +111,25 @@ async def causal_olc(csv_data: str) -> dict:
             "success": False,
             "message": f"执行分析时发生内部错误: {e}",
             "error_type": type(e).__name__,
+        }
+
+
+@mcp.tool()
+async def causal_direct_lingam(csv_data: str) -> dict:
+    """使用 DirectLiNGAM 对连续数值 CSV 数据执行因果发现分析。"""
+    logging.info(
+        "工具 'causal_direct_lingam' 已被调用，输入数据长度: %s。",
+        len(csv_data),
+    )
+    try:
+        return run_direct_lingam_analysis(csv_data)
+    except Exception as exc:
+        logging.error("'causal_direct_lingam' 工具执行出错: %s", exc, exc_info=True)
+        return {
+            "success": False,
+            "algorithm": "direct_lingam",
+            "message": f"执行 DirectLiNGAM 分析时发生内部错误: {exc}",
+            "error_type": type(exc).__name__,
         }
 
 if __name__ == "__main__":

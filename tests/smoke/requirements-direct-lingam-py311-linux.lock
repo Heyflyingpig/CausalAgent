@@ -1,0 +1,27 @@
+# DirectLiNGAM Day 1 smoke lock for python:3.11-slim / linux-x86_64.
+# The causal-learn artifact URL and SHA256 come from the official PyPI JSON API.
+causal-learn @ https://files.pythonhosted.org/packages/ba/9f/689a810f63a1456598044ce6305a2ace0edded2c02a913807b02aed82e3a/causal_learn-0.1.4.7-py3-none-any.whl#sha256=c48ea7638c2bd7f7acb6d44e534bf172b164b56be93c75dd1ebe35ee040ce9de
+contourpy==1.3.3
+cycler==0.12.1
+fonttools==4.63.0
+graphviz==0.21
+joblib==1.5.3
+kiwisolver==1.5.0
+matplotlib==3.11.1
+momentchi2==0.1.8
+narwhals==2.24.0
+networkx==3.6.1
+numpy==2.4.6
+packaging==26.2
+pandas==3.0.5
+patsy==1.0.2
+pillow==12.3.0
+pydot==4.0.1
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+scikit-learn==1.9.0
+scipy==1.17.1
+six==1.17.0
+statsmodels==0.14.6
+threadpoolctl==3.6.0
+tqdm==4.70.0

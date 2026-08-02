@@ -122,6 +122,7 @@ graph TD;
 
     subgraph "Tools & Data"
         MCP --> PC[PC Algorithm]
+        MCP --> DirectLiNGAM[DirectLiNGAM]
         MCP --> FCI[FCI Algorithm]
         Pre --> Data[(MySQL/Files)]
     end
@@ -147,6 +148,7 @@ graph TD;
 - **可插拔算法框架**：通过 MCP 将因果发现与估计算法以「工具」形式解耦，便于在不改动 Agent 主逻辑的前提下扩展/更换算法库。
 - **当前支持**：
   - PC 算法（基于条件独立检验的因果结构学习）。
+  - DirectLiNGAM（面向连续数值数据的线性非高斯无环因果发现，输出因果顺序与带权有向图）。使用结果时需满足误差相互独立、无潜在混杂等模型假设，边权表示模型估计系数，不等同于实验验证。
 - **规划中**：
   - FCI 等含潜在混杂的结构学习算法；
   - 因果效应估计（ATE/CATE）与反事实分析等模块。

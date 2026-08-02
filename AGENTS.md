@@ -174,6 +174,7 @@
   - `Agent/knowledge_base/db`
 - 后端单元测试使用独立 `docker-compose.test.yml`：`unit-test` 服务基于 Dockerfile 的 `test` 目标预装 `requirements-test.txt`，不依赖数据库，以 `tests/unit-test.env` 屏蔽项目 `.env` 并关闭 LangSmith 追踪，禁用网络，只读挂载当前仓库；通过 `docker compose ... run --rm` 按需创建和删除测试容器，测试镜像继续复用。
 - RAG 启动期只检查知识库目录是否可用，不会在启动时完整加载向量库；若 `Agent/knowledge_base/db` 不存在，worker 会记录 warning，并以“无知识库模式”继续运行。
+- DirectLiNGAM 已作为独立 MCP 工具 `causal_direct_lingam` 接入 `Agent/CausalAgentMCP/mcp_server.py`；显式点名 DirectLiNGAM 时 planner 会确定性选择该工具。runner 只接受连续数值 CSV，返回因果顺序、`matrix_convention="target_to_source"` 的系数矩阵和带权有向图；后处理会保留未反转边的 `weight`，报告必须说明线性、非高斯、误差独立、DAG 和无潜在混杂假设。
 
 
 ### 3.2 常用命令
@@ -465,5 +466,3 @@ python CausalAgent.py
 - 不要盲目按旧文档修改代码
 - 先说明差异
 - 以当前可运行实现为准提出建议
-
-

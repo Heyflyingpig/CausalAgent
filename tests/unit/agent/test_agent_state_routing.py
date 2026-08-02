@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sys
 import types
@@ -381,6 +382,121 @@ def test_mcp_planner_disables_thinking_and_requires_a_tool_choice():
     }
     assert result["messages"][0].tool_calls[0]["name"] == "causal_pc"
     assert result["messages"][0].tool_calls[0]["args"]["csv_data"] == "A,Y\n1,2\n"
+
+
+def test_mcp_planner_deterministically_selects_explicit_direct_lingam():
+    """用户明确点名 DirectLiNGAM 时必须优先选择独立工具并注入 CSV。"""
+
+    class UnusedLLM:
+        """如果确定性选择失效，测试会因访问模型而失败。"""
+
+        extra_body = None
+
+        def model_copy(self, *, update):
+            raise AssertionError("明确 DirectLiNGAM 请求不应调用 LLM 选工具")
+
+    tools = [
+        types.SimpleNamespace(name="causal_pc", args={"csv_data": {}}),
+        types.SimpleNamespace(name="causal_direct_lingam", args={"csv_data": {}}),
+    ]
+    result = asyncio.run(
+        nodes.mcp_planner_node(
+            _state(
+                "请使用 DirectLiNGAM 分析这份 CSV",
+                file_content="A,B\n1,2\n3,4\n",
+            ),
+            UnusedLLM(),
+            tools,
+        )
+    )
+
+    tool_call = result["messages"][0].tool_calls[0]
+    assert tool_call["name"] == "causal_direct_lingam"
+    assert tool_call["args"]["csv_data"] == "A,B\n1,2\n3,4\n"
+
+
+def test_explicit_direct_lingam_mcp_stage_parses_and_routes_to_rag():
+    """显式 DirectLiNGAM 请求应完成 MCP 阶段并进入后续 RAG/报告链。"""
+
+    class UnusedLLM:
+        """确定性工具选择不应访问模型。"""
+
+        extra_body = None
+
+        def model_copy(self, *, update):
+            raise AssertionError("明确 DirectLiNGAM 请求不应调用 LLM 选工具")
+
+    tools = [
+        types.SimpleNamespace(name="causal_direct_lingam", args={"csv_data": {}}),
+    ]
+    state = _state(
+        "请使用 DirectLiNGAM 分析这份 CSV",
+        file_content="A,B\n1,2\n3,4\n",
+    )
+    planner_result = asyncio.run(
+        nodes.mcp_planner_node(state, UnusedLLM(), tools)
+    )
+    planner_message = planner_result["messages"][0]
+    tool_call = planner_message.tool_calls[0]
+    tool_message = ToolMessage(
+        content=json.dumps(
+            {
+                "success": True,
+                "algorithm": "direct_lingam",
+                "matrix_convention": "target_to_source",
+                "data": {
+                    "nodes": [{"id": "A"}, {"id": "B"}],
+                    "edges": [{"from": "A", "to": "B", "arrows": "to", "weight": 0.8}],
+                },
+                "raw_results": {
+                    "adjacency_matrix": [[0.0, 0.0], [0.8, 0.0]],
+                    "causal_order": [0, 1],
+                    "causal_order_names": ["A", "B"],
+                },
+            }
+        ),
+        tool_call_id=tool_call["id"],
+    )
+
+    parsed = asyncio.run(
+        nodes.mcp_result_parser_node(
+            {
+                **state,
+                "messages": state["messages"] + [planner_message, tool_message],
+            }
+        )
+    )
+
+    assert parsed["causal_analysis_result"]["success"] is True
+    assert parsed["causal_analysis_result"]["algorithm"] == "direct_lingam"
+    assert parsed["causal_analysis_result"]["_tool_call"]["name"] == "causal_direct_lingam"
+    assert edges.mcp_router(parsed) == "rag"
+
+
+def test_direct_lingam_report_context_includes_assumptions_and_versions():
+    """报告上下文必须明确 DirectLiNGAM 的版本、参数、方向和解释边界。"""
+    context = nodes._causal_method_context_for_report(
+        {
+            "success": True,
+            "algorithm": "direct_lingam",
+            "implementation": {
+                "version": "0.1.4.7",
+                "embedded_version": "1.5.4",
+            },
+            "parameters": {"measure": "pwling"},
+            "matrix_convention": "target_to_source",
+            "raw_results": {"causal_order_names": ["A", "B"]},
+            "diagnostics": {"n_samples": 200, "n_features": 2},
+        }
+    )
+
+    assert "causal-learn 0.1.4.7" in context
+    assert "measure=pwling" in context
+    assert "B[target, source]" in context
+    assert "linear structural equation model" in context
+    assert "non-Gaussian" in context
+    assert "latent confounders" in context
+    assert "candidate causal relations" in context
 
 
 @pytest.mark.parametrize(

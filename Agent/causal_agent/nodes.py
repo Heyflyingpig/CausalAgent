@@ -195,6 +195,16 @@ from Agent.Processing.fold_verify import validate_analysis
 from Agent.Processing.data_visualize import generate_visualizations
 
 
+def _normalize_optional_llm_text(value: str | None) -> str | None:
+    """将 LLM 可空文本中的明确缺失哨兵转换为 None。"""
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or normalized.casefold() in {"none", "null"}:
+        return None
+    return value
+
+
 async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     文件加载、解析与验证节点。
@@ -257,9 +267,9 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
             node_name="fold",
         )
 
-        filename = structured_response.filename
-        target = structured_response.target
-        treatment = structured_response.treatment
+        filename = _normalize_optional_llm_text(structured_response.filename)
+        target = _normalize_optional_llm_text(structured_response.target)
+        treatment = _normalize_optional_llm_text(structured_response.treatment)
         
     except StructuredOutputError as e:
         logging.error(f"无法从LLM响应中解析或验证提取信息: {e}。将返回错误值")
@@ -484,10 +494,65 @@ from Agent.tool_node.tool_message_adapter import (
 )
 
 
+def _mcp_tool_name(tool: Any) -> str | None:
+    """从 MCP/LangChain tool 对象或 OpenAI-style dict 中读取工具名。"""
+    if isinstance(tool, dict):
+        function = tool.get("function", {})
+        return function.get("name") if isinstance(function, dict) else None
+    return getattr(tool, "name", None)
+
+
+def _has_mcp_tool(mcp_tools: list, tool_name: str) -> bool:
+    """判断当前 MCP tool 列表是否包含指定工具。"""
+    return any(_mcp_tool_name(tool) == tool_name for tool in mcp_tools)
+
+
+def _explicit_direct_lingam_requested(state: CausalAgentState) -> bool:
+    """检测用户是否明确要求使用 DirectLiNGAM。"""
+    latest_text = _latest_human_text(state)
+    normalized = latest_text.lower()
+    compact = "".join(char for char in normalized if char.isalnum())
+    return any(
+        token in normalized
+        for token in ("directlingam", "direct lingam", "direct-lingam", "direct_lingam")
+    ) or "directlingam" in compact
+
+
+def _direct_mcp_tool_call(
+    tool_name: str,
+    state: CausalAgentState,
+    mcp_tools: list,
+) -> AIMessage:
+    """为确定性工具选择构造 ToolNode 可消费的标准 AIMessage。"""
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": tool_name,
+                "args": {},
+                "id": f"planner-{tool_name}-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    return normalize_mcp_tool_call_message(ai_message, state, mcp_tools)
+
+
 async def mcp_planner_node(state: CausalAgentState, llm: ChatOpenAI, mcp_tools: list) -> dict:
     """强制模型从可用 MCP tools 中选择一个，并返回标准 Tool Call。"""
     if not mcp_tools:
         raise RuntimeError("No MCP tools are available for causal analysis.")
+    if (
+        _explicit_direct_lingam_requested(state)
+        and _has_mcp_tool(mcp_tools, "causal_direct_lingam")
+    ):
+        logging.info("检测到明确 DirectLiNGAM 请求，确定性选择 causal_direct_lingam。")
+        return {
+            "messages": [
+                _direct_mcp_tool_call("causal_direct_lingam", state, mcp_tools)
+            ]
+        }
+
     # 固定 tool_choice 的请求使用关闭 Thinking 的隔离副本。
     planner_llm = llm.model_copy(
         update={
@@ -680,9 +745,17 @@ from Agent.Postprocessing.evaluate_edge.edge_utils import extract_critical_edges
 
 
 def _matrix_convention_for_analysis(analysis_result: Dict[str, Any]) -> str:
-    """根据算法标识或 OLC 特有元数据确定邻接矩阵方向。"""
+    """根据显式字段、算法标识或 OLC 元数据确定邻接矩阵方向。"""
+    explicit_convention = str(
+        analysis_result.get("matrix_convention", "")
+    ).strip().lower()
+    if explicit_convention in {"target_to_source", "causallearn", "olc"}:
+        return explicit_convention
+
     algorithm = str(analysis_result.get("algorithm", "")).strip().lower()
     raw_results = analysis_result.get("raw_results", {})
+    if algorithm == "direct_lingam":
+        return "target_to_source"
     if algorithm == "olc" or "coefficient_matrix" in raw_results:
         return "olc"
     return "causallearn"
@@ -703,15 +776,16 @@ def _as_revised_graph(
         else:
             arrows = ""
 
-        vis_edges.append(
-            {
-                "from": edge["source"],
-                "to": edge["target"],
-                "arrows": arrows,
-                "dashes": edge_type in {"undirected", "partially_oriented"},
-                "label": edge.get("label", ""),
-            }
-        )
+        vis_edge = {
+            "from": edge["source"],
+            "to": edge["target"],
+            "arrows": arrows,
+            "dashes": edge_type in {"undirected", "partially_oriented"},
+            "label": edge.get("label", ""),
+        }
+        if "weight" in edge:
+            vis_edge["weight"] = edge["weight"]
+        vis_edges.append(vis_edge)
 
     return {"nodes": list(graph_nodes), "edges": vis_edges}
 
@@ -931,6 +1005,46 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
 
 ## 调用元数据
 from Agent.Report.Metadata_sum import metadata_summary, metadata_mapping
+
+
+def _causal_method_context_for_report(analysis_result: Dict[str, Any]) -> str:
+    """为报告节点生成算法专用解释边界。"""
+    if not isinstance(analysis_result, dict):
+        return "No structured causal analysis result is available."
+
+    algorithm = str(analysis_result.get("algorithm", "")).strip().lower()
+    if algorithm != "direct_lingam":
+        return "No additional algorithm-specific reporting guidance is required."
+
+    implementation = analysis_result.get("implementation", {})
+    parameters = analysis_result.get("parameters", {})
+    raw_results = analysis_result.get("raw_results", {})
+    diagnostics = analysis_result.get("diagnostics", {})
+    causal_order_names = raw_results.get("causal_order_names", [])
+    causal_order_text = (
+        " -> ".join(str(name) for name in causal_order_names)
+        if isinstance(causal_order_names, list) and causal_order_names
+        else "not available"
+    )
+
+    return (
+        "DirectLiNGAM reporting guidance:\n"
+        f"- Implementation: causal-learn {implementation.get('version', 'unknown')} "
+        f"with embedded LiNGAM {implementation.get('embedded_version', 'unknown')}.\n"
+        f"- Parameters: measure={parameters.get('measure', 'unknown')}.\n"
+        f"- Samples/features: n_samples={diagnostics.get('n_samples', 'unknown')}, "
+        f"n_features={diagnostics.get('n_features', 'unknown')}.\n"
+        f"- Matrix convention: {analysis_result.get('matrix_convention', 'target_to_source')}; "
+        "B[target, source] means source -> target.\n"
+        f"- Estimated causal order: {causal_order_text}.\n"
+        "- Required assumptions: continuous numeric variables, linear structural equation model, "
+        "non-Gaussian and mutually independent errors, acyclic causal graph, and no unmodeled "
+        "latent confounders among the observed variables.\n"
+        "- Interpretation rule: weighted directed edges are candidate causal relations under these "
+        "assumptions, not experimentally verified causal facts."
+    )
+
+
 async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     报告模块：
@@ -951,11 +1065,14 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
          2. 因果分析结果：{causal_analysis_result}
         3. 知识库结果：{knowledge_base_result}
         4. 后处理结果：{postprocess_result}
+        5. 算法解释补充：{method_context}
 
         ## 因果分析结果解读规则
         - 如果因果分析结果包含 error_type，请明确说明算法未能产生有效因果图，不要声称“没有因果关系”。
         - 如果因果分析结果包含 fallback_from 和 fallback_reason，请说明原算法不适用并已改用 fallback_tool 的结果。
         - 只有当算法 success 为 true 且边列表为空时，才可以表述为“未发现显著因果边/因果关系”。
+        - 如果算法解释补充中出现 DirectLiNGAM，请明确说明线性、非高斯、误差独立、DAG 和无潜在混杂假设。
+        - DirectLiNGAM 的带权边只能解释为模型假设下的候选因果关系，不得写成实验已验证事实。
          
         ## 报告结构要求
         1. **数据概览**：基于上述数据概览进行总结
@@ -1016,6 +1133,9 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         "causal_analysis_result": state.get("causal_analysis_result", {}),
         "knowledge_base_result": knowledge_summary,
         "postprocess_result": state.get("postprocess_result", {}),
+        "method_context": _causal_method_context_for_report(
+            state.get("causal_analysis_result", {})
+        ),
         "system_role": causal_report_prompt()
     })
 

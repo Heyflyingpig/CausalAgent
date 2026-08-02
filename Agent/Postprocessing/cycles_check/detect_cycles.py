@@ -9,10 +9,22 @@ def _as_networkx_adjacency(
     matrix_convention: str,
 ) -> np.ndarray:
     """按算法矩阵约定转换为 networkx 使用的 row-to-column 邻接矩阵。"""
-    if matrix_convention == "causallearn":
+    if matrix_convention in {"causallearn", "target_to_source"}:
         return adjacency_matrix.T
     if matrix_convention == "olc":
         return adjacency_matrix
+    raise ValueError(f"unsupported matrix convention: {matrix_convention}")
+
+
+def _directed_edge_mask(
+    adjacency_matrix: np.ndarray,
+    matrix_convention: str,
+) -> np.ndarray:
+    """按矩阵约定提取真正表示有向边的位置。"""
+    if matrix_convention == "target_to_source":
+        return adjacency_matrix != 0
+    if matrix_convention in {"causallearn", "olc"}:
+        return adjacency_matrix == 1
     raise ValueError(f"unsupported matrix convention: {matrix_convention}")
 
 
@@ -27,8 +39,9 @@ def detect_cycles(
     Args:
         adjacency_matrix: 邻接矩阵 (n x n)
         node_names: 节点名称列表
-        matrix_convention: causallearn 表示 matrix[target, source]；
-            olc 表示 matrix[source, target]
+        matrix_convention: causallearn 表示 matrix[target, source] 且值 1 为有向边；
+            target_to_source 表示 matrix[target, source] 且任意非零值为有向边；
+            olc 表示 matrix[source, target] 且值 1 为有向边。
         
     Returns:
         (has_cycle, cycles): 是否有环路，以及所有环路的列表
@@ -42,10 +55,10 @@ def detect_cycles(
         if adjacency_matrix.size == 0:
             return False, []
         
-        # 构建有向图：只保留值为1的边（确定的有向边）
-        # 创建一个副本，将非0值转换为1（简化处理）
-        # 由于causal-learn的邻接矩阵会重复输出-1值，所以需要先转换为1
-        adj_binary = (adjacency_matrix == 1).astype(int)
+        adj_binary = _directed_edge_mask(
+            adjacency_matrix,
+            matrix_convention,
+        ).astype(int)
         
         # networkx 固定使用 adj[source][target]，这里按算法约定显式转换。
         adj_for_nx = _as_networkx_adjacency(adj_binary, matrix_convention)
