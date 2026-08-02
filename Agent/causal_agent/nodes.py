@@ -103,7 +103,7 @@ async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         return {"messages": [response_message], "route_decision": "normal_chat"}
 
     # 检查生成报告所需的有效分析结果是否已存在。
-    has_tool_results = causal_analysis_result.get("success") is True
+        has_tool_results = causal_analysis_result.get("success") is True
 
     latest_human_text = _latest_human_text(state)
     if not has_tool_results and _is_explicit_causal_analysis_request(latest_human_text):
@@ -195,6 +195,16 @@ from Agent.Processing.fold_verify import validate_analysis
 from Agent.Processing.data_visualize import generate_visualizations
 
 
+def _normalize_optional_llm_text(value: str | None) -> str | None:
+    """将 LLM 可空文本中的明确缺失哨兵转换为 None。"""
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or normalized.casefold() in {"none", "null"}:
+        return None
+    return value
+
+
 async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
     """
     文件加载、解析与验证节点。
@@ -257,9 +267,9 @@ async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
             node_name="fold",
         )
 
-        filename = structured_response.filename
-        target = structured_response.target
-        treatment = structured_response.treatment
+        filename = _normalize_optional_llm_text(structured_response.filename)
+        target = _normalize_optional_llm_text(structured_response.target)
+        treatment = _normalize_optional_llm_text(structured_response.treatment)
         
     except StructuredOutputError as e:
         logging.error(f"无法从LLM响应中解析或验证提取信息: {e}。将返回错误值")

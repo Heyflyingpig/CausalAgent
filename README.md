@@ -61,6 +61,7 @@ CausalAgent
 - [Star 趋势](#star-趋势)
 - [项目结构](#项目结构)
 - [更新日志](./README/CHANGELOG.md)
+- [DirectLiNGAM 算法介绍](./README/DirectLiNGAM算法介绍.html)
 - [DirectLiNGAM 接入需求与实施计划](./README/DirectLiNGAM需求与实施计划.md)
 - [DirectLiNGAM 接口契约](./README/DirectLiNGAM接口契约.md)
 - [DirectLiNGAM 依赖核验记录](./README/DirectLiNGAM依赖核验记录.md)

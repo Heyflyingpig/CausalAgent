@@ -123,6 +123,15 @@ def initialize_rag_system():
     return True
 
 
+def _snapshot_interrupts(snapshot) -> list[Any]:
+    """汇总 LangGraph StateSnapshot 中尚待恢复的 task interrupts。"""
+    return [
+        item
+        for task in (getattr(snapshot, "tasks", None) or ())
+        for item in (getattr(task, "interrupts", None) or ())
+    ]
+
+
 async def ai_call_stream(text, user_id, username, session_id, graph=None):
     """
     流式版本的 ai_call，使用 astream() 捕获节点执行更新。
@@ -144,8 +153,7 @@ async def ai_call_stream(text, user_id, username, session_id, graph=None):
     # 检查当前状态，判断是否是恢复中断的会话
     try:
         state = await target_graph.aget_state(config)
-        ## 检查是否中断
-        is_interrupted = state.next == () and state.tasks
+        is_interrupted = bool(_snapshot_interrupts(state))
         
         if is_interrupted:
             logging.info(f"[流式] 检测到会话 {session_id} 处于中断状态，使用Command(resume=...)恢复")
@@ -170,7 +178,7 @@ async def ai_call_stream(text, user_id, username, session_id, graph=None):
     import time
     node_start_times = {}
     final_state_data = None
-    interrupt_info = None
+    streamed_interrupts = []
     last_node = None
     
     try:
@@ -181,6 +189,13 @@ async def ai_call_stream(text, user_id, username, session_id, graph=None):
             
             # chunk的格式: {node_name: node_output}
             for node_name, node_output in chunk.items():
+                if node_name == "__interrupt__":
+                    if isinstance(node_output, (list, tuple)):
+                        streamed_interrupts.extend(node_output)
+                    else:
+                        streamed_interrupts.append(node_output)
+                    continue
+
                 if node_name in NODE_DESCRIPTIONS:
 
                     # 如果有上一个节点，且当前节点与上一个不同，先发送上一个节点的结束事件
@@ -233,13 +248,13 @@ async def ai_call_stream(text, user_id, username, session_id, graph=None):
         # 获取最终状态以检查interrupt
         state = await target_graph.aget_state(config)
         final_state_data = state.values
+        pending_interrupts = _snapshot_interrupts(state)
+        interrupts = pending_interrupts or streamed_interrupts
         
         # 检查是否有interrupt
-        if "__interrupt__" in final_state_data:
-            interrupt_info = final_state_data["__interrupt__"]
-            
+        if interrupts:
             # 提取问题文本
-            interrupt_obj = interrupt_info[0] if isinstance(interrupt_info, (list, tuple)) else interrupt_info
+            interrupt_obj = interrupts[0]
             question = interrupt_obj.value if hasattr(interrupt_obj, 'value') else str(interrupt_obj)
             
             event_data = {
@@ -248,6 +263,7 @@ async def ai_call_stream(text, user_id, username, session_id, graph=None):
             }
             yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
             logging.info(f"[SSE] 图已暂停，等待用户输入")
+            return
         else:
             # 发送最终结果
             result = process_final_result(final_state_data)
