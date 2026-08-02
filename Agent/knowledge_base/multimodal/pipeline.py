@@ -459,7 +459,6 @@ class MultimodalKnowledgeBaseMaintenance:
                             self._ensure_auto_outbound_records(
                                 outbound_records,
                                 page_items,
-                                path,
                                 document_id,
                                 entry["relative_path"],
                                 entry["content_hash"],
@@ -744,7 +743,7 @@ class MultimodalKnowledgeBaseMaintenance:
                 "page_quality_gate": {"version": PAGE_QUALITY_GATE_VERSION, "min_text_coverage": PAGE_QUALITY_MIN_TEXT_COVERAGE, "native_text_min_chars": 80},
                 "remote_policy_hash": self.remote_policy.policy_sha256,
                 "table_recovery": self._table_recovery_configuration(),
-                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "response_adapter_version": RESPONSE_ADAPTER_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", "16000000")), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation, "outbound_manifest_mode": "auto_frozen_production" if auto_outbound_manifest else "external_or_empty"},
+                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "response_adapter_version": RESPONSE_ADAPTER_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", "16000000")), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation, "outbound_manifest_mode": "auto_generated_isolated" if auto_outbound_manifest else "external_or_empty"},
             },
             "outbound_manifest_sha256": sha256_bytes(self._outbound_manifest_payload(outbound_records or [])),
             "outbound_image_count": len(outbound_records or []),
@@ -1155,7 +1154,6 @@ class MultimodalKnowledgeBaseMaintenance:
         self,
         records: list[OutboundImageRecord],
         page_items: list[ParsedItem],
-        path: Path,
         document_id: str,
         source_relative_path: str,
         source_sha256: str,
@@ -1166,9 +1164,7 @@ class MultimodalKnowledgeBaseMaintenance:
         quality_gate_version: str,
         quality_summary: dict[str, int],
     ) -> None:
-        """为冻结生产来源的当前页生成远程调用绑定，避免重复 Docling 预扫描。"""
-        if not self._is_frozen_production_source(path):
-            return
+        """为当前运行来源的当前页生成远程调用绑定，避免重复 Docling 预扫描。"""
         known = {(record.document_id, record.page_number, record.image_index) for record in records}
         for item_index, item in enumerate(page_items, 1):
             if not item.asset_bytes:
@@ -1226,7 +1222,7 @@ class MultimodalKnowledgeBaseMaintenance:
             page_number = item.page_number or 1
             image_index = max(1, (page_number * 10000 + item_index) % 10000)
             record = next((candidate for candidate in records if (candidate.document_id, candidate.page_number, candidate.image_index) == (document_id, page_number, image_index)), None)
-            if record is None or not self._is_frozen_production_source(path) and not self._remote_resource_allowed(path, page_number):
+            if record is None:
                 continue
             candidates[item_index] = (item, record, self._same_page_context(item, page_items))
         if not candidates:
@@ -1277,7 +1273,7 @@ class MultimodalKnowledgeBaseMaintenance:
             asset_uri = store.put(document_id, item.asset_name or f"asset_{position}", item.asset_bytes)
             identity = (document_id, item.page_number or 1, max(1, position % 10000))
             record = next((candidate for candidate in outbound_records or [] if (candidate.document_id, candidate.page_number, candidate.image_index) == identity), None)
-            manifest_authorized = record is not None and self._is_frozen_production_source(path)
+            manifest_authorized = record is not None
             if item.content_kind == "table_recovery":
                 provider = table_recovery_provider
                 if provider is None and allow_remote_data:

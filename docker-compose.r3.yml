@@ -1,0 +1,28 @@
+# R3 maintenance worker: connected for the later approved WCode step, while code,
+# models, and the active pointer remain immutable. It is an on-demand service only.
+services:
+  r3-maintenance:
+    image: ${R3_WORKER_IMAGE:-causalagent-demopaper-worker}
+    profiles: ["r3"]
+    working_dir: /app
+    restart: "no"
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      MULTIMODAL_DOCLING_ARTIFACTS_DIR: /opt/docling-models
+      VISION_API_KEY: ${VISION_API_KEY:-}
+      VISION_BASE_URL: ${VISION_BASE_URL:-}
+      VISION_MODEL: ${VISION_MODEL:-}
+    volumes:
+      - .:/app:ro
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ${MULTIMODAL_DOCLING_HOST_DIR:?set by the R3 maintenance scripts}:/opt/docling-models:ro
+      - ./Agent/knowledge_base/multimodal_runtime/active_index.json:/app/Agent/knowledge_base/multimodal_runtime/active_index.json:ro
+      - ./Agent/knowledge_base/multimodal_assets:/app/Agent/knowledge_base/multimodal_assets
+      - ./Agent/knowledge_base/multimodal_indexes:/app/Agent/knowledge_base/multimodal_indexes
+      - ./tmp:/out
+    networks:
+      - causalchat_replica_network

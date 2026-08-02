@@ -61,20 +61,19 @@ class RagService:
 
         raw = self.runtime.vector_db.get(include=["metadatas"], limit=limit)
         metadatas = raw.get("metadatas") or []
-        doc_ids = [
-            str(metadata.get("doc_id") or metadata.get("document_id") or "")
+        metadata_key_counts = Counter(
+            key
             for metadata in metadatas
-        ]
-        datasets = [str(metadata.get("dataset", "")) for metadata in metadatas]
-        prefixes = [doc_id.split("_", 1)[0] for doc_id in doc_ids if doc_id]
+            for key in metadata
+        )
         return {
             "exists": True,
             "persist_directory": self.runtime.config.vector_db_dir,
             "collection_name": self.runtime.config.collection_name,
+            "release_id": self.runtime.config.release_id,
+            "embedding_config": dict(self.runtime.config.embedding_config),
             "vector_count": len(raw.get("ids") or []),
-            "dataset_counts": dict(Counter(datasets)),
-            "doc_id_prefix_counts": dict(Counter(prefixes)),
-            "sample_doc_ids": doc_ids[:5],
+            "metadata_key_counts": dict(metadata_key_counts),
         }
 
     def answer_question(
