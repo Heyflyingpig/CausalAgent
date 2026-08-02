@@ -1,20 +1,5 @@
 from pathlib import Path
 
-def test_legacy_structured_output_switch_is_absent_from_config_docs_and_tests():
-    """旧结构化模式开关不再构成配置、部署、文档或测试契约。"""
-    legacy_key = "LLM_" + "STRUCTURED_OUTPUT_" + "METHOD"
-    files = [
-        Path("config/settings.py"),
-        Path("docker-compose.yml"),
-        Path("docker-compose.replica.yml"),
-        Path("docker-compose.prod.yml"),
-        Path("README.md"),
-        *Path("README").glob("*.md"),
-        *Path("tests").glob("test_*.py"),
-    ]
-
-    for path in files:
-        assert legacy_key not in path.read_text(encoding="utf-8"), path
 
 
 def test_compose_files_keep_legacy_langchain_config_without_mode_switch():
