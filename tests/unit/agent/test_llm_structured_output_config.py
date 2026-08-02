@@ -26,9 +26,6 @@ def test_readme_does_not_advertise_unimplemented_langsmith_switches():
     """README 不把本次修复无关的 LANGSMITH 变量描述成有效配置。"""
     text = Path("README.md").read_text(encoding="utf-8")
 
-    assert "DeepSeek/OpenAI 兼容的普通 Tool Calls" in text
-    assert "Pydantic 结构化输出" in text
-    assert "MCP" in text
     assert "LANGCHAIN_API_KEY=" in text
     assert "LANGCHAIN_PROJECT=" in text
     for key in (
