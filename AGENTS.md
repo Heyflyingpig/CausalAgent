@@ -1,4 +1,4 @@
-# CausalChat AGENTS.md
+# CausalAgent AGENTS.md
 
 本文件适用于仓库根目录及其所有子目录；如果更深层目录存在新的 `AGENTS.md`，以更近的文件为准。
 
@@ -31,15 +31,15 @@
 
 ```text
 .
-├── Causalchat.py           # Flask 后端入口
+├── CausalAgent.py          # Flask 后端入口
 ├── Run_causal.py           # 桌面端启动入口（pywebview）
 ├── requirements.txt        # 完整依赖
 ├── requirements-base.txt   # 基础依赖（docker/生产使用）
 ├── requirements-test.txt   # Docker 单元测试依赖
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml         # MySQL 主从 + PostgreSQL checkpoint 开发拓扑
 ├── docker-compose.prod.yml
-├── docker-compose.replica.yml # MySQL 主从开发拓扑
+├── docker-compose.replica.yml # 旧路径兼容副本，不作为默认开发入口
 ├── docker-compose.test.yml # 按需创建的一次性单元测试环境
 ├── .github/workflows/       # GitHub Actions 工作流
 ├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收覆盖
@@ -106,7 +106,7 @@
 - GitHub Actions 轻量 CI 位于 `.github/workflows/lightweight-ci.yml`，对 `main`、`develop` 的 push 和 Pull Request 生效；它只执行 Python 语法编译、无外部服务依赖的轻量测试以及 Pull Request 策略检查。
 - 功能分支应向 `develop` 发起 Pull Request，只有 `develop` 可以向 `main` 发起 Pull Request；分支保护需要在 GitHub Rulesets 中启用，并把 `Python syntax`、`Light tests`、`Pull request policy` 设置为必需检查。
 - 桌面端入口是 `Run_causal.py`，它固定加载 `http://127.0.0.1:5001`；桌面模式本质上仍依赖先启动后端。
-- Web 后端入口是 `Causalchat.py`，它导入 `app/__init__.py` 中的 `create_app()` 生成 Flask app；本地直接运行时使用 `app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)`，Docker 镜像默认通过 `gunicorn ... Causalchat:app` 启动。
+- Web 后端入口是 `CausalAgent.py`，它导入 `app/__init__.py` 中的 `create_app()` 生成 Flask app；本地直接运行时使用 `app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)`，Docker 镜像默认通过 `gunicorn ... CausalAgent:app` 启动。
 - `create_app()` 会先执行 `app/db.py` 中的 `check_database_readiness()`，确认数据库和关键表已就绪，然后再注册蓝图。
 - 当前实际注册的蓝图有 7 个：`auth`、`chat`、`files`、`agent`、`main`、`admin`、`admin_page`。
 - Web 进程只负责登录态校验、短请求、analysis job 入队和 SSE 推送；Agent/RAG/MCP 长任务不在 Web 进程内执行，而是由独立 worker 进程处理。
@@ -121,8 +121,8 @@
   - `app/static/css/style.css`
   - `app/static/js/script.js`
 - 管理员前端独立位于 `admin-frontend/`，使用 Vue 3、严格 TypeScript、Vue Router、Element Plus、Vite、Vitest 和 Playwright；路由为 `/admin/database` 与 `/admin/database/settings`，Vite base 固定为 `/admin/`。
-- 管理员 Vue 生产构建默认从 `admin-frontend/dist` 读取；Docker 镜像使用 Node 24 构建阶段，并把产物复制到 `/opt/causalchat-admin`。最终 Python 运行镜像不包含 Node、不启动 Vite、不开放 Node 端口。开发期只有显式设置 `ADMIN_VITE_DEV_SERVER_URL` 时，Flask 在完成页面鉴权后才跳转到 Vite。
-- `admin-frontend/dist/` 是需要随管理员 Vue 源码同步更新并提交的发布产物；根 `.gitignore` 只忽略仓库根目录 `/dist/`。`.dockerignore` 继续排除本地前端产物，因为 Dockerfile 会在 Node 构建阶段从当前源码重新构建并复制到 `/opt/causalchat-admin`。
+- 管理员 Vue 生产构建默认从 `admin-frontend/dist` 读取；Docker 镜像使用 Node 24 构建阶段，并把产物复制到 `/opt/causalagent-admin`。最终 Python 运行镜像不包含 Node、不启动 Vite、不开放 Node 端口。开发期只有显式设置 `ADMIN_VITE_DEV_SERVER_URL` 时，Flask 在完成页面鉴权后才跳转到 Vite。
+- `admin-frontend/dist/` 是需要随管理员 Vue 源码同步更新并提交的发布产物；根 `.gitignore` 只忽略仓库根目录 `/dist/`。`.dockerignore` 继续排除本地前端产物，因为 Dockerfile 会在 Node 构建阶段从当前源码重新构建并复制到 `/opt/causalagent-admin`。
 - 旧管理员 `db_admin.html`、`db_admin.css`、`db_admin.js` 已在等价测试、真实快照和整版回滚演练通过后移除；管理员页面只使用 Vue 生产构建或显式启用的 Vite 开发服务器，普通用户静态前端不受影响。
 - `Database/database_init.py` 只负责加载环境变量、确保数据库存在并检查连接；业务表结构维护入口是 Alembic，而不是这个脚本。
 - Alembic 迁移目录由 `alembic.ini` 指向 `Database/migrations`；业务 schema 变更应以迁移脚本为准。
@@ -163,9 +163,9 @@
   - `MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`：只用于执行 `SHOW REPLICA STATUS`。
   - `MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`：只给 MySQL 从库复制通道拉 binlog 用。
   - `MYSQL_USER` / `MYSQL_PASSWORD`：仅作为写/读账号兼容兜底，不承担复制状态检查职责。
-- `docker-compose.replica.yml` 是本地主从加 PostgreSQL checkpoint 开发拓扑，当前包含 `mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`app`、`worker`、`monitor`、`checkpoint-setup`、`checkpoint-cleanup` 八个服务；本轮仍不提供自动故障切换。
+- `docker-compose.yml` 是本地主从加 PostgreSQL checkpoint 开发拓扑，当前包含 `mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`app`、`worker`、`monitor`、`checkpoint-setup`、`checkpoint-cleanup` 八个服务；本轮仍不提供自动故障切换。`docker-compose.replica.yml` 仅保留为旧路径兼容副本。
 - 连接池按 OS 进程计算：`write_pool + read_pool * (1 + replica_count)`，worker slot 共享所在进程的池。默认建连/获取池/管理员锁等待/从库状态缓存分别为 5s/3s/5s/2s；复制状态失效或异常只回退主库，不自动切主。真实容量依据和读写矩阵记录在 `setting/database_governance.md`。
-- Docker 是当前首选开发方式；`docker-compose.replica.yml` 中 `app` 和 `worker` 都会挂载以下知识库目录：
+- Docker 是当前首选开发方式；`docker-compose.yml` 中 `app` 和 `worker` 都会挂载以下知识库目录：
   - `Agent/knowledge_base/models`
   - `Agent/knowledge_base/db`
 - 后端单元测试使用独立 `docker-compose.test.yml`：`unit-test` 服务基于 Dockerfile 的 `test` 目标预装 `requirements-test.txt`，不依赖数据库，以 `tests/unit-test.env` 屏蔽项目 `.env` 并关闭 LangSmith 追踪，禁用网络，只读挂载当前仓库；通过 `docker compose ... run --rm` 按需创建和删除测试容器，测试镜像继续复用。
@@ -177,13 +177,13 @@
 激活本地 conda 环境（仅在不用 Docker 时）：
 
 ```bash
-conda activate causalchat
+conda activate causalagent
 ```
 
 本地启动后端：
 
 ```bash
-python Causalchat.py
+python CausalAgent.py
 ```
 
 本地启动后台 worker：
@@ -240,14 +240,14 @@ python Run_causal.py
 Docker 主从开发启动（推荐）：
 
 ```bash
-docker-compose -f docker-compose.replica.yml up -d
+docker-compose -f docker-compose.yml up -d
 ```
 
 首次启动、空卷重建或数据库环境重建后，推荐按下面顺序执行；全新空库不要先运行 preflight：
 
 ```bash
-docker-compose -f docker-compose.replica.yml run --rm app python Database/database_init.py
-docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head
+docker-compose -f docker-compose.yml run --rm app python Database/database_init.py
+docker-compose -f docker-compose.yml run --rm app alembic upgrade head
 ```
 
 `.env` 必须提供非空 `CHECKPOINT_POSTGRES_PASSWORD`；Compose 会自动运行
@@ -329,7 +329,7 @@ MYSQL_USER/MYSQL_PASSWORD：现在主要是兼容兜底，主从开发里不依�
 - 新增数据库表但忘了更新 `check_database_readiness`
 - 修改接口返回结构但没有检查前端 `script.js`
 - 改了上传或聊天附件结构却没同步恢复逻辑
-- 修改 MCP 或 RAG 初始化路径但没检查 `Causalchat.py` 和 `app/agent/core.py`
+- 修改 MCP 或 RAG 初始化路径但没检查 `CausalAgent.py` 和 `app/agent/core.py`
 
 ## 6. 修改后的验证要求
 
@@ -344,7 +344,7 @@ python -m py_compile <变更的Python文件>
 如果改动涉及导入链、启动链、配置链，优先再做一次后端启动级验证：
 
 ```bash
-python Causalchat.py
+python CausalAgent.py
 ```
 
 如果因为缺少 `.env`、数据库或模型目录而无法启动，要明确说明。

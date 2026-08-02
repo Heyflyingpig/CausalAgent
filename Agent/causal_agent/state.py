@@ -4,7 +4,7 @@ from typing import Annotated, Any, Dict, List, Literal, NotRequired, Optional, T
 from langchain_core.messages import BaseMessage
 
 
-class CausalChatState(TypedDict):
+class CausalAgentState(TypedDict):
     """
     Represents the state of our graph. This TypedDict acts as the "memory"
     or "state" that is passed between all the nodes in the graph.

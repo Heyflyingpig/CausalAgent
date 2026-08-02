@@ -13,7 +13,6 @@ def test_compose_files_keep_legacy_langchain_config_without_mode_switch():
 
     for compose_file in (
         "docker-compose.yml",
-        "docker-compose.replica.yml",
         "docker-compose.prod.yml",
     ):
         text = Path(compose_file).read_text(encoding="utf-8")

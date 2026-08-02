@@ -24,8 +24,8 @@ function Assert-Admin31Exit {
     }
 }
 
-$primaryContainer = "causalchat31e2e_mysql_primary"
-$replicaContainer = "causalchat31e2e_mysql_replica"
+$primaryContainer = "causalagent31e2e_mysql_primary"
+$replicaContainer = "causalagent31e2e_mysql_replica"
 $existingContainers = docker ps -a --format "{{.Names}}"
 Assert-Admin31Exit "docker ps"
 $primaryExists = $existingContainers -contains $primaryContainer
@@ -41,7 +41,7 @@ if ($KeepSeededData) {
 }
 
 $env:MYSQL_ROOT_PASSWORD = New-Admin31Secret
-$env:MYSQL_DATABASE = "causalchat31e2e"
+$env:MYSQL_DATABASE = "causalagent31e2e"
 $env:MYSQL_USER = "compat31"
 $env:MYSQL_PASSWORD = New-Admin31Secret
 $env:MYSQL_WRITE_USER = "writer31"
@@ -98,8 +98,8 @@ FLUSH PRIVILEGES;
         Assert-Admin31Exit "rotate isolated credentials"
     } else {
         docker-compose `
-            -p causalchat31e2e `
-            -f docker-compose.replica.yml `
+            -p causalagent31e2e `
+            -f docker-compose.yml `
             -f docker-compose.admin-e2e.yml `
             up -d --build mysql-primary mysql-replica
         Assert-Admin31Exit "start isolated MySQL pair"
@@ -143,7 +143,7 @@ FLUSH PRIVILEGES;
         -WindowStyle Hidden
     $flaskProcess = Start-Process `
         -FilePath "python" `
-        -ArgumentList "-m", "flask", "--app", "Causalchat", "run", "--host", "127.0.0.1", "--port", "15011", "--no-reload" `
+        -ArgumentList "-m", "flask", "--app", "CausalAgent", "run", "--host", "127.0.0.1", "--port", "15011", "--no-reload" `
         -PassThru `
         -WindowStyle Hidden
 

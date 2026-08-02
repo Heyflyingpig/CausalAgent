@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from Agent.llm_structured_output import invoke_structured
-from Agent.causal_agent.state import CausalChatState
+from Agent.causal_agent.state import CausalAgentState
 from Agent.knowledge_base.query_rag import get_rag_excerpt
 
 from Agent.causal_agent.back_prompt import evaluate_edge_prompt
@@ -168,7 +168,7 @@ def _apply_edge_decisions(
 
 def evaluate_edges_with_llm(
         critical_edges: List[Dict[str, Any]],
-        state: CausalChatState,
+        state: CausalAgentState,
         llm: ChatOpenAI
     ) -> Dict[str, Any]:
     """

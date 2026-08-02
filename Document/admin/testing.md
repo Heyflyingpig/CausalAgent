@@ -21,7 +21,7 @@ npm run build
 powershell -ExecutionPolicy Bypass -File tests/run_admin_32_e2e.ps1
 ```
 
-脚本使用 `docker-compose.replica.yml` 和 `docker-compose.admin-e2e.yml`，不会迁移或写入当前开发库。它覆盖空库升级、migration 往返、受控用户/文件写入、逐目标审计、主从追平和普通用户回归。
+脚本使用 `docker-compose.yml` 和 `docker-compose.admin-e2e.yml`，不会迁移或写入当前开发库。它覆盖空库升级、migration 往返、受控用户/文件写入、逐目标审计、主从追平和普通用户回归。
 
 真实 Playwright 流程需要提供 `PLAYWRIGHT_BASE_URL`、管理员和普通用户测试凭据。本机只有 Edge 时可设置 `PLAYWRIGHT_CHANNEL=msedge`；未设置时使用 Playwright Chromium。
 

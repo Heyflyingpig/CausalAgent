@@ -15,7 +15,7 @@ for key, value in {
     "MYSQL_HOST": "mysql",
     "MYSQL_USER": "app",
     "MYSQL_PASSWORD": "password",
-    "MYSQL_DATABASE": "causalchat",
+    "MYSQL_DATABASE": "causalagent",
 }.items():
     os.environ.setdefault(key, value)
 

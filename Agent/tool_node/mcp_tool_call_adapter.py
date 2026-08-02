@@ -5,7 +5,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
-from Agent.causal_agent.state import CausalChatState
+from Agent.causal_agent.state import CausalAgentState
 
 
 def _tool_name(tool: Any) -> str | None:
@@ -53,7 +53,7 @@ def _tools_by_name(mcp_tools: list) -> dict[str, Any]:
 
 def _inject_mcp_runtime_arguments(
     ai_message: AIMessage,
-    state: CausalChatState,
+    state: CausalAgentState,
     mcp_tools: list,
 ) -> AIMessage:
     """在模型选定 MCP 工具后，只向声明 csv_data 的工具补充运行时数据。"""
@@ -74,7 +74,7 @@ def _inject_mcp_runtime_arguments(
 
 def normalize_mcp_tool_call_message(
     ai_message: AIMessage,
-    state: CausalChatState,
+    state: CausalAgentState,
     mcp_tools: list,
 ) -> AIMessage:
     """校验并规范化 MCP planner 产出的 ToolNode 调用消息。保留第一个调用"""

@@ -354,7 +354,7 @@ def collect_snapshot(snapshot_key: str, *, require_due: bool = False) -> bool:
     """在 MySQL 命名锁保护下复核调度状态并采集一个共享快照。"""
     if snapshot_key not in SNAPSHOT_KEYS:
         raise ValueError(f"未知监控快照类型: {snapshot_key}")
-    lock_name = f"causalchat:db-monitor:{snapshot_key}"
+    lock_name = f"causalagent:db-monitor:{snapshot_key}"
     with get_write_connection() as lock_connection:
         cursor = lock_connection.cursor(dictionary=True)
         cursor.execute("SELECT GET_LOCK(%s, 0) AS acquired", (lock_name,))

@@ -180,7 +180,7 @@ Here is a brief guide. For more detailed, Chinese step-by-step instructions (inc
 6. Start the backend service:
 
    ```bash
-   python Causalchat.py
+   python CausalAgent.py
    ```
 
 7. In another terminal, start the desktop frontend:
@@ -207,7 +207,7 @@ Contributions via Issues and Pull Requests are welcome.
 ├── requirements.txt        # Full dependencies
 ├── requirements-base.txt   # Base dependencies (docker/production)
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml         # MySQL primary/replica + PostgreSQL checkpoint development
 ├── docker-compose.prod.yml
 ├── README.md               # Chinese README
 ├── README_EN.md            # English README (this file)

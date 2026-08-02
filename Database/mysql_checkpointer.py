@@ -59,7 +59,7 @@ class MySQLSaver(BaseCheckpointSaver):
                 'host': 'localhost',
                 'user': 'root',
                 'password': 'password',
-                'database': 'causalchat'
+                'database': 'causalagent'
             }
         )
         checkpointer.setup()  # 初始化表（如果使用Alembic则不需要）
@@ -82,7 +82,7 @@ class MySQLSaver(BaseCheckpointSaver):
                     'port': 3306,
                     'user': 'root',
                     'password': 'your_password',
-                    'database': 'causalchat'
+                    'database': 'causalagent'
                 }
             
             serde (JsonPlusSerializer, optional): 序列化器
@@ -189,7 +189,7 @@ class MySQLSaver(BaseCheckpointSaver):
                     "v": 1,                    # 版本号
                     "id": "uuid-222",          # 新checkpoint的ID（LangGraph生成）
                     "ts": "2024-01-15...",     # 时间戳
-                    "channel_values": {        #  CausalChatState
+                    "channel_values": {        #  CausalAgentState
                         "messages": [...],
                         "analysis_parameters": {...},
                         ...
@@ -885,7 +885,7 @@ if __name__ == "__main__":
         'port': 3306,
         'user': 'root',
         'password': 'your_password',
-        'database': 'causalchat'
+        'database': 'causalagent'
     }
     
     # 创建 checkpointer
