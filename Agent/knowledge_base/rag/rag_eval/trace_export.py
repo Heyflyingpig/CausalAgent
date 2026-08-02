@@ -151,13 +151,13 @@ def _index_ragas_rows(ragas_result: Dict[str, Any]) -> Dict[str, Dict[str, Any]]
         indexed[_question_key(question)] = {
             "question_index": index + 1,
             "question": question,
-            "question_type": metadata.get("question_type", ""),
+            "sample_id": metadata.get("sample_id", ""),
+            "source": metadata.get("source", {}),
             "expected_claims": metadata.get("expected_claims", []),
             "reference_answer": metadata.get("reference_answer", row.get("reference", "")),
             "answer": row.get("response", ""),
             "answer_status": metadata.get("answer_status", ""),
             "answer_confidence": metadata.get("answer_confidence", ""),
-            "retrieved_context_ids": row.get("retrieved_context_ids", []),
             "retrieved_contexts": row.get("retrieved_contexts", []),
             "final_evidence_payload": metadata.get("final_evidence_payload", []),
             "trace_timings_ms": metadata.get("trace_timings_ms", {}),
@@ -180,7 +180,7 @@ def _index_case_reasons(case_result: Dict[str, Any], reason_prefix: str) -> Dict
 
 
 def _summarize_stage_results(stage_results: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """压缩 retrieval stage trace，保留每阶段 top ids 和命中信息。"""
+    """压缩 retrieval stage trace，保留每阶段通用 evidence 和命中信息。"""
     summarized = []
     for stage_name in TRACE_STAGE_ORDER:
         stage = stage_results.get(stage_name)
@@ -189,8 +189,8 @@ def _summarize_stage_results(stage_results: Dict[str, Any]) -> List[Dict[str, An
         summarized.append(
             {
                 "stage": stage_name,
-                "retrieved_chunk_ids": stage.get("retrieved_chunk_ids", []),
-                "matched_chunk_ids": stage.get("matched_chunk_ids", []),
+                "retrieved_evidence": stage.get("retrieved_evidence", []),
+                "matched_evidence": stage.get("matched_evidence", []),
                 "recall": stage.get("recall"),
                 "reciprocal_rank": stage.get("reciprocal_rank"),
                 "hit": stage.get("hit"),
@@ -200,15 +200,14 @@ def _summarize_stage_results(stage_results: Dict[str, Any]) -> List[Dict[str, An
 
 
 def _build_retrieval_trace(retrieval_row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """构造单题 retrieval eval trace；没有 gold 评测时返回可识别空对象。"""
+    """构造单题 retrieval eval trace；没有 gold 时保留 unscored 状态。"""
     if not retrieval_row:
         return {"has_retrieval_eval": False}
     return {
         "has_retrieval_eval": True,
-        "gold_chunk_ids": retrieval_row.get("gold_chunk_ids", []),
-        "gold_doc_ids": retrieval_row.get("gold_doc_ids", []),
-        "retrieved_chunk_ids": retrieval_row.get("retrieved_chunk_ids", []),
-        "matched_chunk_ids": retrieval_row.get("matched_chunk_ids", []),
+        "gold_evidence": retrieval_row.get("gold_evidence", []),
+        "retrieved_evidence": retrieval_row.get("retrieved_evidence", []),
+        "matched_evidence": retrieval_row.get("matched_evidence", []),
         "recall": retrieval_row.get("recall"),
         "reciprocal_rank": retrieval_row.get("reciprocal_rank"),
         "loss_reasons": retrieval_row.get("loss_reasons", []),
@@ -228,7 +227,6 @@ def _build_generation_trace(row: Dict[str, Any], config: Dict[str, Any]) -> Dict
         "answer_confidence": row.get("answer_confidence", ""),
         "answer": row.get("answer", ""),
         "answer_preview": _truncate_text(row.get("answer", ""), answer_preview_chars),
-        "retrieved_context_ids": row.get("retrieved_context_ids", []),
         "context_count": len(contexts),
         "context_previews": [_truncate_text(context, context_preview_chars) for context in contexts],
         "final_evidence_payload": row.get("final_evidence_payload", []),
@@ -287,7 +285,8 @@ def _build_trace_rows(config: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "trace_id": _build_trace_id(question_index, ragas_row.get("question", "")),
                 "question_index": question_index,
                 "question": ragas_row.get("question", ""),
-                "question_type": ragas_row.get("question_type", ""),
+                "sample_id": ragas_row.get("sample_id", ""),
+                "source": ragas_row.get("source", {}),
                 "expected_claims": ragas_row.get("expected_claims", []),
                 "reference_answer": ragas_row.get("reference_answer", ""),
                 "data_availability": {
@@ -329,7 +328,7 @@ def _build_trace_index(trace_rows: List[Dict[str, Any]], config: Dict[str, Any])
                 "trace_id": row["trace_id"],
                 "question_index": row["question_index"],
                 "question": row["question"],
-                "question_type": row["question_type"],
+                "sample_id": row.get("sample_id", ""),
                 "is_bad_case": row["bad_case"]["is_bad_case"],
                 "bad_case_sources": sorted({case.get("source", "") for case in row["bad_case"]["cases"]}),
                 "has_retrieval_eval": row["data_availability"]["has_retrieval_eval"],
@@ -345,19 +344,24 @@ def _build_trace_index(trace_rows: List[Dict[str, Any]], config: Dict[str, Any])
 
 def run_trace_export_from_code_config() -> Dict[str, Any]:
     """根据 TRACE_EXPORT_CONFIG 导出 RAG 评测 trace。"""
-    trace_rows = _build_trace_rows(TRACE_EXPORT_CONFIG)
-    trace_index = _build_trace_index(trace_rows, TRACE_EXPORT_CONFIG)
+    return export_trace_bundle(TRACE_EXPORT_CONFIG)
 
-    if TRACE_EXPORT_CONFIG.get("save_output"):
-        _write_jsonl_file(Path(TRACE_EXPORT_CONFIG["trace_jsonl_path"]), trace_rows)
-        _write_json_file(Path(TRACE_EXPORT_CONFIG["trace_index_path"]), trace_index)
-    if TRACE_EXPORT_CONFIG.get("save_markdown"):
-        write_markdown_file(Path(TRACE_EXPORT_CONFIG["report_path"]), build_trace_markdown_report(trace_index))
+
+def export_trace_bundle(config: Dict[str, Any]) -> Dict[str, Any]:
+    """根据显式输入输出配置导出 trace，不读取默认知识库或最新产物。"""
+    trace_rows = _build_trace_rows(config)
+    trace_index = _build_trace_index(trace_rows, config)
+
+    if config.get("save_output"):
+        _write_jsonl_file(Path(config["trace_jsonl_path"]), trace_rows)
+        _write_json_file(Path(config["trace_index_path"]), trace_index)
+    if config.get("save_markdown"):
+        write_markdown_file(Path(config["report_path"]), build_trace_markdown_report(trace_index))
 
     return {
         "status": "pass",
-        "trace_jsonl_path": str(Path(TRACE_EXPORT_CONFIG["trace_jsonl_path"]).resolve()),
-        "trace_index_path": str(Path(TRACE_EXPORT_CONFIG["trace_index_path"]).resolve()),
-        "report_path": str(Path(TRACE_EXPORT_CONFIG["report_path"]).resolve()),
+        "trace_jsonl_path": str(Path(config["trace_jsonl_path"]).resolve()),
+        "trace_index_path": str(Path(config["trace_index_path"]).resolve()),
+        "report_path": str(Path(config["report_path"]).resolve()),
         **{key: trace_index[key] for key in trace_index if key.endswith("_count")},
     }

@@ -22,17 +22,19 @@ from Agent.knowledge_base.rag.rag_eval.ragas_eval import (
 )
 from Agent.knowledge_base.rag.rag_config import (
     MACHINE_OUTPUT_DIR,
+    RAG_EVAL_DATASET_NAME,
+    RAG_EVAL_DATASET_PATH,
     REPORT_OUTPUT_DIR,
     RUNS_DIR,
     RUN_PIPELINE_CONFIG,
 )
 from Agent.knowledge_base.rag.operation_datasets.dataset_utils import (
-    DATASET_FILES,
     validate_all_datasets,
     write_dataset_validation_outputs,
 )
 from Agent.knowledge_base.rag.tools.report_utils import build_pipeline_summary_markdown_report, write_markdown_file
 from Agent.knowledge_base.rag.rag_eval.trace_export import run_trace_export_from_code_config
+from Agent.knowledge_base.rag.rag_eval.contracts import evaluation_identity
 
 
 # 本地手动运行时优先改 rag_config.py 里的 RUN_PIPELINE_CONFIG。
@@ -123,7 +125,9 @@ def _file_fingerprint(path: Path) -> Dict[str, Any]:
 
 def _dataset_fingerprints() -> Dict[str, Dict[str, Any]]:
     """记录当前评测数据集的文件指纹。"""
-    return {dataset_name: _file_fingerprint(path) for dataset_name, path in DATASET_FILES.items()}
+    if not RAG_EVAL_DATASET_PATH:
+        return {RAG_EVAL_DATASET_NAME: {"exists": False}}
+    return {RAG_EVAL_DATASET_NAME: _file_fingerprint(RAG_EVAL_DATASET_PATH)}
 
 
 def _is_current_output(path: Path, run_started_epoch: float) -> bool:
@@ -487,10 +491,14 @@ def _pipeline_status_reason(step_results: List[Dict[str, Any]], threshold_checks
 
 def _build_config_snapshot() -> Dict[str, Any]:
     """保存本次运行的关键配置快照。"""
+    dataset_path = RUN_PIPELINE_CONFIG.get("dataset_path") or EVAL_RUN_CONFIG.get("dataset_path")
+    if not dataset_path:
+        dataset_path = RAGAS_RUN_CONFIG.get("dataset_path", "")
     return {
         "pipeline": RUN_PIPELINE_CONFIG,
         "retrieval_eval": EVAL_RUN_CONFIG,
         "ragas_eval": RAGAS_RUN_CONFIG,
+        "evaluation_identity": evaluation_identity(dataset_path) if dataset_path else {},
     }
 
 
