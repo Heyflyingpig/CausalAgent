@@ -153,8 +153,12 @@ Here is a brief guide. For more detailed, Chinese step-by-step instructions (inc
 3. Start the services:
 
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
+
+   The one-shot `db-bootstrap` service initializes the MySQL schema through
+   Alembic and initializes the LangGraph PostgreSQL checkpoint schema before
+   the application services start.
 
 > [!IMPORTANT]
 > The knowledge base is still being built, so RAG-based query features are temporarily limited.
@@ -170,11 +174,10 @@ Here is a brief guide. For more detailed, Chinese step-by-step instructions (inc
    ```
 
 4. Create a `.env` file in the project root (same fields as in the Docker section above).
-5. Initialize the database and run Alembic migrations:
+5. Run the unified database bootstrap:
 
    ```bash
-   python Database/database_init.py
-   alembic upgrade head
+   python -m Database.bootstrap
    ```
 
 6. Start the backend service:

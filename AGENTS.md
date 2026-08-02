@@ -80,6 +80,7 @@
 │   └── tool_node/
 ├── Database/               # 数据库初始化与迁移逻辑
 │   ├── database_init.py
+│   ├── bootstrap.py        # MySQL/Alembic/PostgreSQL 统一初始化入口
 │   ├── audit_before_db_upgrade.py
 │   ├── inspection.py       # 数据库看板统一只读检查服务
 │   ├── deep_audit.py       # 手动 deep 数据库事实审计
@@ -127,7 +128,7 @@
 - 管理员 Vue 生产构建默认从 `admin-frontend/dist` 读取；Docker 镜像使用 Node 24 构建阶段，并把产物复制到 `/opt/causalagent-admin`。最终 Python 运行镜像不包含 Node、不启动 Vite、不开放 Node 端口。开发期只有显式设置 `ADMIN_VITE_DEV_SERVER_URL` 时，Flask 在完成页面鉴权后才跳转到 Vite。
 - `admin-frontend/dist/` 是需要随管理员 Vue 源码同步更新并提交的发布产物；根 `.gitignore` 只忽略仓库根目录 `/dist/`。`.dockerignore` 继续排除本地前端产物，因为 Dockerfile 会在 Node 构建阶段从当前源码重新构建并复制到 `/opt/causalagent-admin`。
 - 旧管理员 `db_admin.html`、`db_admin.css`、`db_admin.js` 已在等价测试、真实快照和整版回滚演练通过后移除；管理员页面只使用 Vue 生产构建或显式启用的 Vite 开发服务器，普通用户静态前端不受影响。
-- `Database/database_init.py` 只负责加载环境变量、确保数据库存在并检查连接；业务表结构维护入口是 Alembic，而不是这个脚本。
+- `Database/database_init.py` 只负责加载环境变量、确保 MySQL 数据库存在并检查连接；`Database/bootstrap.py` 负责按顺序编排 MySQL 建库、Alembic migration 和 LangGraph PostgreSQL checkpoint setup；业务表结构维护入口仍是 Alembic，而不是 `database_init.py`。
 - Alembic 迁移目录由 `alembic.ini` 指向 `Database/migrations`；业务 schema 变更应以迁移脚本为准。
 - LangGraph checkpoint 的运行时真相在 PostgreSQL；`Database/checkpoint_setup.py` 使用官方 `AsyncPostgresSaver.setup()` 创建 schema，`Database/checkpoint_cleanup_worker.py` 消费 MySQL `checkpoint_cleanup_outbox` 并调用 `adelete_thread()`。MySQL 只保存 outbox，不再保存 checkpoint 数据。
 - `Database/audit_before_db_upgrade.py` 是旧库添加外键前的 schema-aware preflight，不是新库初始化步骤：仅当相关表已存在、目标外键尚未建立且待执行迁移需要该约束时才做孤立数据扫描；全新空库直接执行 Alembic。
@@ -166,7 +167,7 @@
   - `MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`：只用于执行 `SHOW REPLICA STATUS`。
   - `MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`：只给 MySQL 从库复制通道拉 binlog 用。
   - `MYSQL_USER` / `MYSQL_PASSWORD`：仅作为写/读账号兼容兜底，不承担复制状态检查职责。
-- `docker-compose.yml` 是本地主从加 PostgreSQL checkpoint 开发拓扑，当前包含 `mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`app`、`worker`、`monitor`、`checkpoint-setup`、`checkpoint-cleanup` 八个服务；本轮仍不提供自动故障切换。`docker-compose.replica.yml` 仅保留为旧路径兼容副本。
+- `docker-compose.yml` 是本地主从加 PostgreSQL checkpoint 开发拓扑，当前包含 `mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`db-bootstrap`、`app`、`worker`、`monitor`、`checkpoint-cleanup` 八个服务；`db-bootstrap` 是一次性初始化服务，运行成功后其他运行服务才启动，本轮仍不提供自动故障切换。`docker-compose.replica.yml` 仅保留为旧路径兼容副本。
 - 连接池按 OS 进程计算：`write_pool + read_pool * (1 + replica_count)`，worker slot 共享所在进程的池。默认建连/获取池/管理员锁等待/从库状态缓存分别为 5s/3s/5s/2s；复制状态失效或异常只回退主库，不自动切主。真实容量依据和读写矩阵记录在 `setting/database_governance.md`。
 - Docker 是当前首选开发方式；`docker-compose.yml` 中 `app` 和 `worker` 都会挂载以下知识库目录：
   - `Agent/knowledge_base/models`
@@ -243,29 +244,33 @@ python Run_causal.py
 Docker 主从开发启动（推荐）：
 
 ```bash
-docker-compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml up -d
 ```
 
 首次启动、空卷重建或数据库环境重建后，推荐按下面顺序执行；全新空库不要先运行 preflight：
 
 ```bash
-docker-compose -f docker-compose.yml run --rm app python Database/database_init.py
-docker-compose -f docker-compose.yml run --rm app alembic upgrade head
+docker compose -f docker-compose.yml up -d
 ```
 
 `.env` 必须提供非空 `CHECKPOINT_POSTGRES_PASSWORD`；Compose 会自动运行
-`checkpoint-setup` 和 `checkpoint-cleanup`。本地等价命令为：
+`db-bootstrap` 和 `checkpoint-cleanup`。本地等价命令为：
 
 ```bash
-python -m Database.checkpoint_setup
+python -m Database.bootstrap
 python -m Database.checkpoint_cleanup_worker
 ```
 
 如果你当前不是在 Docker 里开发，再使用本地等价命令：
 
 ```bash
-python Database/database_init.py
-alembic upgrade head
+python -m Database.bootstrap
+```
+
+如需在不重启运行服务的情况下手动重跑一次性初始化入口，可执行：
+
+```bash
+docker compose -f docker-compose.yml run --rm db-bootstrap
 ```
 
 只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才在 `alembic upgrade head` 前运行 `Database/audit_before_db_upgrade.py`。
@@ -277,6 +282,7 @@ alembic upgrade head
 
 ```text
 Database/database_init.py
+Database/bootstrap.py
 Database/migrations/versions/*
 app/db.py
 相关 SQL 读写代码
@@ -356,7 +362,7 @@ python CausalAgent.py
 
 必须检查：
 
-- `Database/database_init.py` 是否同步
+- `Database/database_init.py` 和 `Database/bootstrap.py` 是否同步
 - 对应 Alembic migration 是否存在且升级/回滚逻辑自洽
 - `app/db.py` 的就绪检查是否需要更新
 - 相关 SQL 是否仍兼容旧数据和空数据场景

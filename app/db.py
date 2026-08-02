@@ -340,7 +340,7 @@ def check_database_readiness():
             if missing_tables:
                 error_msg = (
                     f"数据库表缺失: {sorted(missing_tables)}。"
-                    "请先运行 'python Database/database_init.py' 并执行 'alembic upgrade head'。"
+                    "请先运行 'python -m Database.bootstrap'。"
                 )
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)
@@ -358,7 +358,7 @@ def check_database_readiness():
             if cursor.fetchone() is None:
                 error_msg = (
                     "数据库关键字段缺失: users.role。"
-                    "请先执行 'alembic upgrade head'。"
+                    "请先运行 'python -m Database.bootstrap'。"
                 )
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)
@@ -382,7 +382,7 @@ def check_database_readiness():
                 error_msg = (
                     "数据库关键字段缺失: "
                     f"{sorted(f'users.{name}' for name in missing_security_columns)}。"
-                    "请先执行 'alembic upgrade head'。"
+                    "请先运行 'python -m Database.bootstrap'。"
                 )
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)
@@ -419,7 +419,7 @@ def check_database_readiness():
                 error_msg = (
                     "数据库关键索引缺失: "
                     f"{sorted(f'{table}.{index}' for table, index in missing_indexes)}。"
-                    "请先执行 'alembic upgrade head'。"
+                    "请先运行 'python -m Database.bootstrap'。"
                 )
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)
@@ -436,7 +436,7 @@ def check_database_readiness():
         if e.errno == errorcode.ER_BAD_DB_ERROR:
             error_msg = (
                 f"数据库 '{settings.MYSQL_DATABASE}' 不存在。"
-                "请先运行 'python Database/database_init.py' 创建数据库。"
+                "请先运行 'python -m Database.bootstrap'。"
             )
             logging.error(error_msg)
             raise RuntimeError(error_msg) from e
