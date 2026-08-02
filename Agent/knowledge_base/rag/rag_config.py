@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -16,11 +17,13 @@ PUBMEDQA_DIR = DATA_DIR / "external" / "pubmedqa"  # PubMedQA active 数据集�
 PUBMEDQA_PROCESSED_DIR = PUBMEDQA_DIR / "processed"  # PubMedQA 转换后数据目录。
 PUBMEDQA_CORPUS_PATH = PUBMEDQA_PROCESSED_DIR / "pubmedqa_corpus_docs.jsonl"  # PubMedQA evidence corpus。
 PUBMEDQA_EVAL_DATASET_PATH = PUBMEDQA_PROCESSED_DIR / "pubmedqa_eval_dataset.json"  # PubMedQA benchmark_v2 主测试集。
-EVAL_DATASET_PATH = PUBMEDQA_EVAL_DATASET_PATH  # 兼容旧工具名，实际指向 PubMedQA active 测试集。
+MULTIMODAL_EVAL_DATASET_PATH = KNOWLEDGE_BASE_DIR / "multimodal" / "production_eval_v1.json"  # Pearl 多模态定位题集。
+ACTIVE_CORPUS_PATH = PUBMEDQA_CORPUS_PATH  # 仅供 medical 构建工具使用，不属于 R5 评测输入。
+RAG_EVAL_DATASET_PATH_VALUE = os.getenv("RAG_EVAL_DATASET_PATH", "").strip()
+RAG_EVAL_DATASET_PATH = Path(RAG_EVAL_DATASET_PATH_VALUE) if RAG_EVAL_DATASET_PATH_VALUE else None
+RAG_EVAL_DATASET_NAME = os.getenv("RAG_EVAL_DATASET_NAME", "user_supplied").strip() or "user_supplied"
+RAG_EVAL_DEFAULT_LIMIT = None
 MEDICAL_VECTOR_DB_DIR = VECTOR_DB_DIR  # 医疗向量库仍写入项目统一 db 目录。
-ACTIVE_BENCHMARK_NAME = "pubmedqa"  # 当前 active benchmark 名称。
-ACTIVE_CORPUS_PATH = PUBMEDQA_CORPUS_PATH  # 当前 active benchmark 对应 corpus。
-ACTIVE_EVAL_DATASET_PATH = PUBMEDQA_EVAL_DATASET_PATH  # 当前 active benchmark 对应测试集。
 
 """
 定义 retrieval trace 的阶段顺序；报告、trace 导出和阶段命中/丢失分析会按这个顺序展示。
@@ -69,15 +72,15 @@ RETRIEVAL_PROFILES: Dict[str, Dict[str, Any]] = {
         "mmr_lambda": 0.4,  # 降低相关性权重，提高多样性。
         "official_only_when_available": True,  # 旧因果库有官方语料时只保留官方语料。
     },
-    "active_current": {  # 当前 active benchmark 基线。
+    "active_current": {  # 通用 R5 检索基线。
         "dense_fetch_k": 10,  # dense 第一阶段取回候选数。
         "dense_mmr_k": 10,  # 当前等于 dense_fetch_k，通常不会触发二次 MMR embedding。
         "sparse_fetch_k": 8,  # sparse / BM25 取回候选数。
-        "final_top_k": 4,  # PubMedQA smoke20/pilot100 显示 top4 与 top12 召回持平，优先减少 Ragas 上下文噪音。
+        "final_top_k": 4,
         "dense_score_threshold": 0.45,  # dense 原始候选最低分数。
-        "final_rerank_threshold": 0.0,  # final 阶段不再按 rerank 分数过滤，避免截掉 sparse 命中的 gold。
+        "final_rerank_threshold": 0.0,
         "mmr_lambda": 0.7,  # MMR 偏相关性。
-        "official_only_when_available": False,  # 医疗 benchmark corpus 不做官方/非官方语料过滤。
+        "official_only_when_available": False,
     },
     "pubmedqa_eval100": {  # PubMedQA 100 条正式评测检索预设。
         "dense_fetch_k": 10,  # 保持当前 active 基线，优先稳定性而不是扩大候选池。
@@ -113,12 +116,10 @@ RETRIEVAL_PROFILES: Dict[str, Dict[str, Any]] = {
 
 VISIBLE_RETRIEVAL_PROFILES = [
     "active_current",
-    "pubmedqa_eval100",
 ]
 
 VISIBLE_RETRIEVAL_PROFILE_LIMITS = {
-    "active_current": 30,
-    "pubmedqa_eval100": 100,
+    "active_current": None,
 }
 
 """
@@ -126,12 +127,12 @@ VISIBLE_RETRIEVAL_PROFILE_LIMITS = {
 """
 RETRIEVAL_EVAL_CONFIG = {
     "mode": "single",  # single 跑一组 profile；sweep 跑 RETRIEVAL_SWEEP_CONFIGS。
-    "dataset_path": str(ACTIVE_EVAL_DATASET_PATH),  # retrieval_eval 使用的 benchmark_v2 测试集。
+    "dataset_path": str(RAG_EVAL_DATASET_PATH) if RAG_EVAL_DATASET_PATH else "",
     "output_path": str(MACHINE_OUTPUT_DIR / "rag_eval_result.json"),  # single 模式 JSON 输出。
     "sweep_output_path": str(MACHINE_OUTPUT_DIR / "rag_eval_sweep_result.json"),  # sweep 模式 JSON 输出。
     "report_path": str(REPORT_OUTPUT_DIR / "rag_eval_report.md"),  # single 模式 Markdown 报告。
     "sweep_report_path": str(REPORT_OUTPUT_DIR / "rag_eval_sweep_report.md"),  # sweep 模式 Markdown 报告。
-    "limit": 30,  # 当前 smoke/pilot 默认跑前 30 条；全量评测时再改为 None。
+    "limit": RAG_EVAL_DEFAULT_LIMIT,  # 通用题集默认不截断样本。
     "top_k": None,  # 非 None 时临时覆盖 final_top_k；正式调参优先改 profile。
     "retrieval_profile": "active_current",  # single 模式使用的检索 profile。
     "save_output": True,  # 是否写 JSON 输出。
@@ -168,20 +169,23 @@ RETRIEVAL_SWEEP_CONFIGS: List[Dict[str, Any]] = [
 定义旧候选生成工具的配置；用于离线生成 top-k 候选表，不是当前 active benchmark 主入口。
 """
 CANDIDATE_GENERATION_CONFIG = {
-    "dataset_path": str(ACTIVE_EVAL_DATASET_PATH),  # PubMedQA active benchmark 路径。
+    "dataset_path": str(RAG_EVAL_DATASET_PATH) if RAG_EVAL_DATASET_PATH else "",
     "output_path": str(MACHINE_OUTPUT_DIR / "rag_eval_candidates_top20.json"),  # 离线候选表输出。
     "top_k": 20,  # 候选表保留 top-k。
     "limit": None,  # None 处理 active benchmark 全量。
     "retrieval_profile": "active_candidate_top20",  # 候选生成使用的 active profile。
 }
 
-RAGAS_ACTIVE_PROFILE = "pubmedqa_pipeline"  # 当前 Ragas profile；由 RAGAS_RUN_PROFILES 合并成运行配置。
+RAGAS_ACTIVE_PROFILE = os.getenv(
+    "RAGAS_ACTIVE_PROFILE",
+    "generic_pipeline",
+)  # 当前 Ragas profile；由 RAGAS_RUN_PROFILES 合并成运行配置。
 
 """
 定义 Ragas 评测基础配置；最终配置会由这里和 RAGAS_ACTIVE_PROFILE 对应 profile 合并得到。
 """
 RAGAS_BASE_CONFIG = {
-    "dataset_path": str(ACTIVE_EVAL_DATASET_PATH),  # Ragas prepared dataset 的源测试集。
+    "dataset_path": str(RAG_EVAL_DATASET_PATH) if RAG_EVAL_DATASET_PATH else "",
     "ragas_dataset_path": str(MACHINE_OUTPUT_DIR / "ragas_eval_dataset.json"),  # retrieval+answer 缓存。
     "output_path": str(MACHINE_OUTPUT_DIR / "ragas_eval_result.json"),  # Ragas judge 结果输出。
     "report_path": str(REPORT_OUTPUT_DIR / "ragas_eval_report.md"),  # Ragas Markdown 报告。
@@ -190,11 +194,9 @@ RAGAS_BASE_CONFIG = {
     "retrieval_report_path": str(REPORT_OUTPUT_DIR / "rag_eval_report.md"),  # Ragas 单跑时同步刷新的 retrieval 报告。
     "low_score_cases_path": str(MACHINE_OUTPUT_DIR / "ragas_low_score_cases.json"),  # Ragas 低分样本输出。
     "cross_metric_cases_path": str(MACHINE_OUTPUT_DIR / "ragas_cross_metric_bad_cases.json"),  # retrieval/Ragas 跨指标坏例。
-    "limit": 1,  # base 默认只跑 1 条；最终由 active profile 覆盖。
+    "limit": None,
     "sample_filter": {
-        "review_statuses": [],  # 兼容旧字段；主 benchmark_v2 不新增 review_status。
-        "question_types": [],  # 可按题型过滤；空列表表示不过滤。
-        "is_smoke_case": None,  # 兼容旧字段；主 benchmark_v2 不新增 is_smoke_case。
+        "sample_ids": [],
     },
     "selected_metrics": ["faithfulness"],  # base 默认指标；最终由 active profile 覆盖。
     "include_reference_metrics": True,  # 是否启用依赖 reference 的指标，如 context_recall。
@@ -226,6 +228,28 @@ RAGAS_BASE_CONFIG = {
 定义 Ragas 运行 profile；用于区分 quick smoke、小样本核心指标、全量、prepare-only 和 active repeat 场景。
 """
 RAGAS_RUN_PROFILES = {
+    "generic_pipeline": {
+        "limit": None,
+        "selected_metrics": [
+            "faithfulness",
+            "answer_relevancy",
+            "context_utilization",
+            "context_recall",
+        ],
+        "reuse_prepared_dataset": True,
+        "reuse_score_cache": False,
+        "retrieval_profile": "active_current",
+        "retrieval_config": {
+            **RETRIEVAL_PROFILES["active_current"],
+            "max_evidence_chars": 1600,
+        },
+        "ragas_timeout": 1800,
+        "ragas_max_workers": 2,
+        "ragas_max_retries": 3,
+        "ragas_max_wait": 20,
+        "judge_profile": "generic_rag_v1",
+        "repeat_count": 1,
+    },
     "quick_cached": {  # 最小链路检查：验证脚本和缓存是否可用。
         "limit": 1,  # 只跑 1 条。
         "selected_metrics": ["faithfulness"],  # 只跑最轻量核心指标。
@@ -253,49 +277,6 @@ RAGAS_RUN_PROFILES = {
         "judge_profile": "fast_core",  # judge 标签，进入缓存签名。
         "repeat_count": 1,  # judge 不重复。
     },
-    "pubmedqa_pipeline": {  # PubMedQA pipeline 调参入口；样本数可通过前端动态覆盖。
-        "limit": 30,  # 只跑前 30 条。
-        "selected_metrics": [
-            "faithfulness",  # 回答是否忠于证据。
-            "answer_relevancy",  # 回答是否切题。
-            "context_utilization",  # 回答是否有效利用上下文。
-            "context_recall",  # 上下文是否覆盖 reference 要点。
-        ],
-        "reuse_prepared_dataset": True,  # 签名不一致时会自动重建 prepared dataset。
-        "reuse_score_cache": False,  # 调参 smoke 默认重新 judge。
-        "retrieval_config": {
-            **RETRIEVAL_PROFILES["active_current"],
-            "max_evidence_chars": 1600,
-        },  # Ragas 需要完整 PubMedQA rationale；只覆盖评测链路，不改业务默认证据长度。
-        "ragas_timeout": 3600,  # 单任务超时秒数；30 条 Ragas smoke 给 judge 最多 1 小时。
-        "ragas_max_workers": 5,  # smoke 允许轻量并发，避免四指标串行过慢。
-        "ragas_max_retries": 3,  # 避免限流时默认 10 次重试拖长整体耗时。
-        "ragas_max_wait": 20,  # 限制重试退避最长等待。
-        "judge_profile": "pubmedqa_pipeline_ctx6_1600_evidence1600_pubmedqa_prompt_v6",  # judge 标签，进入缓存签名。
-        "repeat_count": 1,  # judge 不重复。
-    },
-    "pubmedqa_eval100": {  # PubMedQA 100 条正式评测配置。
-        "limit": 100,  # 只跑前 100 条。
-        "selected_metrics": [
-            "faithfulness",  # 回答是否忠于证据。
-            "answer_relevancy",  # 回答是否切题。
-            "context_utilization",  # 回答是否有效利用上下文。
-            "context_recall",  # 上下文是否覆盖 reference 要点。
-        ],
-        "reuse_prepared_dataset": True,  # 中断或重跑时优先复用 prepared dataset。
-        "reuse_score_cache": False,  # 正式评测默认重新 judge。
-        "retrieval_profile": "pubmedqa_eval100",  # 与 100 条检索预设对应。
-        "retrieval_config": {
-            **RETRIEVAL_PROFILES["pubmedqa_eval100"],
-            "max_evidence_chars": 1600,
-        },  # 保持 PubMedQA rationale 覆盖。
-        "ragas_timeout": 1800,  # 100 条长跑保守给足单任务超时。
-        "ragas_max_workers": 8,  # Ragas 0.4.x 会按样本×指标提交异步任务；5 worker 先保守并发提速。
-        "ragas_max_retries": 3,  # 控制 API 失败重试次数，避免限流时长时间空等。
-        "ragas_max_wait": 20,  # 控制 retry 指数退避最长等待。
-        "judge_profile": "pubmedqa_eval100_ctx6_1600_evidence1600_pubmedqa_prompt_v6",  # judge 标签，进入缓存签名。
-        "repeat_count": 1,  # judge 不重复。
-    },
     "reviewed_all_core_metrics": {  # 当前 active benchmark 全量四指标配置。
         "limit": None,  # None 表示完整 active benchmark。
         "selected_metrics": [
@@ -312,7 +293,7 @@ RAGAS_RUN_PROFILES = {
         "repeat_count": 1,  # judge 不重复。
     },
     "strict_repeat3": {  # active benchmark 重复评测，用于观察 judge 方差。
-        "dataset_path": str(ACTIVE_EVAL_DATASET_PATH),  # PubMedQA active benchmark。
+        "dataset_path": str(RAG_EVAL_DATASET_PATH) if RAG_EVAL_DATASET_PATH else "",
         "limit": None,  # active benchmark 全量。
         "selected_metrics": [
             "faithfulness",  # 回答是否忠于证据。
@@ -342,8 +323,9 @@ RAGAS_RUN_PROFILES = {
 }
 
 VISIBLE_RAGAS_PROFILES = [
-    "pubmedqa_pipeline",
-    "pubmedqa_eval100",
+    "generic_pipeline",
+    "quick_cached",
+    "reviewed_5_core_metrics",
 ]
 
 if RAGAS_ACTIVE_PROFILE not in RAGAS_RUN_PROFILES:
@@ -366,8 +348,6 @@ RUN_PIPELINE_CONFIG = {
     "steps": ["validate_datasets", "retrieval_eval", "ragas_eval", "trace_export", "summary"],  # 默认保留坏例链路导出；claim 需人工启用。
     "copy_latest_outputs_to_run_dir": True,  # 是否把 latest 输出复制到本次 run 目录。
     "thresholds": {
-        "retrieval_hit_rate_min": 1.0,  # final 证据命中率最低阈值。
-        "retrieval_recall_at_k_min": 0.6,  # final 证据 recall 最低阈值。
         "ragas_faithfulness_min": 0.5,  # Ragas faithfulness 最低阈值。
     },
 }
@@ -381,7 +361,7 @@ RAGAS_TESTSET_GENERATE_CONFIG = {
     "embedding_provider": "medical_openai_compatible",  # 复用 build_knowledge._build_medical_embedding()。
     "raw_output_path": str(MACHINE_OUTPUT_DIR / "ragas_generated_testset.json"),  # Ragas 原始测试集输出。
     "converted_output_path": str(MACHINE_OUTPUT_DIR / "ragas_generated_eval_samples.json"),  # 转换后样本输出。
-    "eval_dataset_path": str(ACTIVE_EVAL_DATASET_PATH),  # 默认写入 PubMedQA active benchmark 路径。
+    "eval_dataset_path": str(RAG_EVAL_DATASET_PATH) if RAG_EVAL_DATASET_PATH else "",
     "testset_size": 2,  # 生成样本数量。
     "max_pages_per_pdf": 10,  # 每个 PDF 最多读取页数。
     "write_eval_dataset": True,  # 是否写 benchmark JSON。
@@ -440,7 +420,7 @@ MEDICAL_KNOWLEDGE_BUILD_CONFIG = {
 """
 ACTIVE_RETRIEVAL_EVAL_CONFIG = {
     "corpus_path": str(ACTIVE_CORPUS_PATH),  # 备用工具读取的 active corpus。
-    "dataset_path": str(ACTIVE_EVAL_DATASET_PATH),  # 备用工具读取的 active 测试集。
+    "dataset_path": str(RAG_EVAL_DATASET_PATH) if RAG_EVAL_DATASET_PATH else "",
     "output_path": str(MACHINE_OUTPUT_DIR / "retrieval_eval_result.json"),  # 备用 retrieval 输出。
     "report_path": str(REPORT_OUTPUT_DIR / "retrieval_eval_report.md"),  # 备用 retrieval 报告。
     "top_k": 5,  # 备用工具检索 top-k。

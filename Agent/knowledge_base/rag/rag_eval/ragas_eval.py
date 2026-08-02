@@ -2,6 +2,7 @@ import json
 import math
 import os
 import importlib.util
+from contextlib import contextmanager
 from importlib import metadata as importlib_metadata
 import hashlib
 import sys
@@ -32,16 +33,20 @@ from langchain_openai import ChatOpenAI
 from config.settings import settings
 from Agent.knowledge_base.query_rag import (
     RagRetrievalConfig,
+    build_retrieval_config,
     _answer_question,
     _get_embedding_function,
     _normalize_question_payload,
     build_retrieval_trace,
     get_vector_db_metadata_summary,
 )
+from Agent.knowledge_base.rag.rag_eval.contracts import (
+    candidate_evidence,
+    evaluation_identity,
+)
 from Agent.knowledge_base.rag.rag_config import (
-    ACTIVE_EVAL_DATASET_PATH,
-    DATA_DIR,
     MACHINE_OUTPUT_DIR,
+    RAG_EVAL_DATASET_PATH,
     RAGAS_RUN_CONFIG,
     REPORT_OUTPUT_DIR,
     RETRIEVAL_PROFILES,
@@ -53,7 +58,7 @@ from Agent.knowledge_base.rag.tools.report_utils import (
     write_markdown_file,
 )
 
-DEFAULT_DATASET_PATH = ACTIVE_EVAL_DATASET_PATH
+DEFAULT_DATASET_PATH = str(RAG_EVAL_DATASET_PATH) if RAG_EVAL_DATASET_PATH else ""
 DEFAULT_RAGAS_DATASET_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_dataset.json"
 DEFAULT_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_result.json"
 DEFAULT_REPORT_PATH = REPORT_OUTPUT_DIR / "ragas_eval_report.md"
@@ -61,13 +66,34 @@ DEFAULT_SCORE_CACHE_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_score_cache.json"
 DEFAULT_RETRIEVAL_EVAL_PATH = MACHINE_OUTPUT_DIR / "rag_eval_result.json"
 DEFAULT_LOW_SCORE_CASES_PATH = MACHINE_OUTPUT_DIR / "ragas_low_score_cases.json"
 DEFAULT_CROSS_METRIC_CASES_PATH = MACHINE_OUTPUT_DIR / "ragas_cross_metric_bad_cases.json"
-ANSWER_BUILD_VERSION = "answer_fallback_v5_pubmedqa_compact_rationale_prompt"
+ANSWER_BUILD_VERSION = "answer_fallback_v7_generic_rag_prompt"
 RagasEventCallback = Callable[[str, str, Dict[str, Any]], None]
 RagasCancelChecker = Callable[[], bool]
 
 
 class RagasEvalCancelled(RuntimeError):
     """Raised when a caller requests cooperative cancellation inside Ragas eval."""
+
+
+@contextmanager
+def _langsmith_tracing_disabled():
+    """在 Ragas judge 期间关闭外部 tracing，结束后恢复调用方环境。"""
+    names = (
+        "LANGCHAIN_TRACING_V2",
+        "LANGSMITH_TRACING",
+        "LANGSMITH_TRACING_V2",
+    )
+    original = {name: os.environ.get(name) for name in names}
+    try:
+        for name in names:
+            os.environ[name] = "false"
+        yield
+    finally:
+        for name, value in original.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _cancel_requested(cancel_checker: Optional[RagasCancelChecker]) -> bool:
@@ -107,7 +133,7 @@ def _emit_step_progress(
     )
 
 # 本地手动运行时优先改这里。
-# Phase3 默认读取 PubMedQA active benchmark。
+# Phase3 只读取 RAG_EVAL_DATASET_PATH 指定的通用题集。
 # Ragas 的部分指标会触发多轮 judge 调用；确认链路稳定后，再把 limit 和指标逐步放大。
 # 为了控制耗时，默认会复用已落盘的 ragas_eval_dataset.json；如果修改了检索参数、
 # context 截断策略或样本数量，脚本会自动重建。
@@ -121,14 +147,17 @@ def _emit_step_progress(
 # 当前 profile：
 # - quick_cached：1 条样本，优先验证流程，允许复用 Ragas 分数缓存。
 # - reviewed_5_core_metrics：5 条样本，跑当前接入的 Ragas 核心指标。
-# - reviewed_all_core_metrics：PubMedQA active benchmark 全量核心指标。
+# - reviewed_all_core_metrics：通用题集全量核心指标。
 # - reviewed_all_prepare_only：只构造 Ragas dataset，不调用 Ragas judge。
-# - strict_repeat3：PubMedQA active benchmark，四指标重复 3 次。
+# - strict_repeat3：通用题集四指标重复 3 次。
 def run_ragas_eval_from_code_config(
     event_callback: Optional[RagasEventCallback] = None,
     cancel_checker: Optional[RagasCancelChecker] = None,
 ) -> Dict[str, Any]:
     """根据 RAGAS_RUN_CONFIG 准备数据、运行 Ragas，并写入输出文件。"""
+    dataset_path = str(RAGAS_RUN_CONFIG.get("dataset_path") or "").strip()
+    if not dataset_path:
+        raise ValueError("RAG_EVAL_DATASET_PATH is not configured.")
     retrieval_config = _build_retrieval_config(RAGAS_RUN_CONFIG.get("retrieval_config"))
     sample_filter = RAGAS_RUN_CONFIG.get("sample_filter")
     prepared_dataset = None
@@ -178,6 +207,7 @@ def run_ragas_eval_from_code_config(
         "build_seconds": prepared_dataset["build_seconds"],
         "loaded_from_cache": prepared_dataset.get("loaded_from_cache", False),
         "dataset_build_config": prepared_dataset.get("dataset_build_config", {}),
+        "evaluation_identity": prepared_dataset.get("evaluation_identity", {}),
         "ragas_rows": prepared_dataset["ragas_rows"],
         "metadata": prepared_dataset["metadata"],
         "metrics": RAGAS_RUN_CONFIG["selected_metrics"],
@@ -473,15 +503,16 @@ def run_ragas_baseline(
     )
 
     started_at = time.perf_counter()
-    evaluation_result = components["evaluate"](
-        evaluation_dataset,
-        metrics=metric_objects,
-        llm=judge_llm,
-        embeddings=embeddings,
-        run_config=run_config,
-        raise_exceptions=False,
-        show_progress=show_progress,
-    )
+    with _langsmith_tracing_disabled():
+        evaluation_result = components["evaluate"](
+            evaluation_dataset,
+            metrics=metric_objects,
+            llm=judge_llm,
+            embeddings=embeddings,
+            run_config=run_config,
+            raise_exceptions=False,
+            show_progress=show_progress,
+        )
     records = _extract_score_records(evaluation_result)
     summary = _summarize_scores(records, effective_metric_names)
     metric_validity = _build_metric_validity(records, effective_metric_names)
@@ -646,6 +677,11 @@ def build_ragas_dataset(
         dataset = dataset[:limit]
 
     config = retrieval_config or RagRetrievalConfig()
+    eval_identity = (
+        evaluation_identity(dataset_path)
+        if Path(dataset_path).is_file()
+        else {"schema_version": "rag_eval_v1", "dataset_path": str(Path(dataset_path))}
+    )
     rows: List[Dict[str, Any]] = []
     metadata_rows: List[Dict[str, Any]] = []
     started_at = time.perf_counter()
@@ -686,6 +722,7 @@ def build_ragas_dataset(
         "answer_base_url": settings.BASE_URL,
         "answer_build_version": ANSWER_BUILD_VERSION,
         "vector_db_summary": get_vector_db_metadata_summary(),
+        "evaluation_identity": eval_identity,
     }
     result = {
         "status": "cancelled" if cancelled else "pass",
@@ -694,6 +731,7 @@ def build_ragas_dataset(
         "source_sample_count": len(load_eval_dataset(dataset_path)),
         "config": config.to_dict(),
         "dataset_build_config": dataset_build_config,
+        "evaluation_identity": eval_identity,
         "build_seconds": round(time.perf_counter() - started_at, 3),
         "ragas_rows": rows,
         "metadata": metadata_rows,
@@ -789,6 +827,9 @@ def ensure_retrieval_eval_for_ragas(
             "sample_count": refreshed.get("sample_count"),
             "cancelled_after_samples": refreshed.get("cancelled_after_samples", refreshed.get("sample_count", 0)),
         }
+    refreshed["evaluation_identity"] = prepared_dataset.get("evaluation_identity") or evaluation_identity(
+        RAGAS_RUN_CONFIG["dataset_path"]
+    )
     _write_json_file(retrieval_path, refreshed)
     write_markdown_file(report_path, build_rag_retrieval_single_markdown_report(refreshed))
     return {
@@ -831,6 +872,12 @@ def _check_retrieval_eval_compatibility(
     if retrieval_eval.get("config") != retrieval_config.to_dict():
         return {"compatible": False, "reason": "retrieval config mismatch"}
 
+    expected_identity = prepared_dataset.get("evaluation_identity") or prepared_dataset.get(
+        "dataset_build_config", {}
+    ).get("evaluation_identity")
+    if expected_identity and retrieval_eval.get("evaluation_identity") != expected_identity:
+        return {"compatible": False, "reason": "evaluation identity mismatch"}
+
     expected_vector_summary = prepared_dataset.get("dataset_build_config", {}).get("vector_db_summary")
     actual_vector_summary = retrieval_eval.get("vector_db_summary")
     if expected_vector_summary and not _stable_vector_summary_equal(expected_vector_summary, actual_vector_summary):
@@ -847,9 +894,9 @@ def _stable_vector_summary_equal(expected: Dict[str, Any], actual: Optional[Dict
         "persist_directory",
         "collection_name",
         "vector_count",
-        "dataset_counts",
-        "doc_id_prefix_counts",
-        "sample_doc_ids",
+        "release_id",
+        "embedding_config",
+        "metadata_key_counts",
     ]
     return {key: expected.get(key) for key in stable_keys} == {key: actual.get(key) for key in stable_keys}
 
@@ -883,17 +930,17 @@ def _build_ragas_eval_row(
     trace = build_retrieval_trace(question, config=retrieval_config)
     evidence_payloads = trace.get("evidence_payload", [])
     ragas_evidence_payloads = evidence_payloads[:max_contexts] if max_contexts else evidence_payloads
+    answer_prompt = _build_generic_eval_answer_prompt()
     answer_result = _answer_question(
         _normalize_question_payload(sample),
         evidence_payloads,
-        answer_prompt=_build_pubmedqa_eval_answer_prompt(),
+        answer_prompt=answer_prompt,
     )
 
     retrieved_contexts = [
         _truncate_for_eval(evidence.get("content", ""), max_context_chars)
         for evidence in ragas_evidence_payloads
     ]
-    retrieved_context_ids = [evidence.get("chunk_id", "") for evidence in ragas_evidence_payloads]
     reference = sample.get("reference_answer", "")
     response = _truncate_for_eval(answer_result.get("answer", ""), max_response_chars)
 
@@ -901,7 +948,6 @@ def _build_ragas_eval_row(
         "user_input": question,
         "response": response,
         "retrieved_contexts": retrieved_contexts,
-        "retrieved_context_ids": retrieved_context_ids,
     }
     if reference:
         ragas_row["reference"] = reference
@@ -910,10 +956,7 @@ def _build_ragas_eval_row(
         "sample_id": sample.get("sample_id", ""),
         "question": question,
         "source": sample.get("source", {}),
-        "gold_doc_ids": sample.get("gold_doc_ids", []),
-        "question_type": sample.get("question_type", ""),
-        "expected_corpus": sample.get("expected_corpus", ""),
-        "expected_sources": sample.get("expected_sources", sample.get("gold_doc_ids", [])),
+        "gold_evidence": sample.get("gold_evidence", []),
         "expected_claims": sample.get("expected_claims", []),
         "reference_answer": reference,
         "judge_rubric": sample.get("judge_rubric", {}),
@@ -927,6 +970,10 @@ def _build_ragas_eval_row(
         "ragas_max_response_chars": max_response_chars,
         "trace_timings_ms": trace.get("timings_ms", {}),
         "final_evidence_payload": evidence_payloads,
+        "retrieved_evidence": [
+            candidate_evidence(evidence.get("metadata", {}))
+            for evidence in evidence_payloads
+        ],
     }
 
     return {
@@ -935,12 +982,12 @@ def _build_ragas_eval_row(
     }
 
 
-def _build_pubmedqa_eval_answer_prompt() -> ChatPromptTemplate:
-    """构造 PubMedQA 评测专用回答 prompt，用于覆盖 long_answer rationale。"""
+def _build_generic_eval_answer_prompt() -> ChatPromptTemplate:
+    """构造不依赖知识源或文件格式的 RAG 评测回答 prompt。"""
     return ChatPromptTemplate.from_template(
         """
-        You are a careful biomedical RAG answer writer for PubMedQA evaluation.
-        Your answer must be grounded only in the retrieved evidence and must stay close to the PubMedQA long-answer rationale.
+        You are a careful answer writer for a general RAG evaluation.
+        Use only the retrieved evidence, regardless of how the source was parsed or stored.
 
         # Question
         {question}
@@ -955,16 +1002,11 @@ def _build_pubmedqa_eval_answer_prompt() -> ChatPromptTemplate:
         {evidence_blocks}
 
         # Answer rules
-        1. Use only the provided evidence. Do not add biomedical claims, populations, mechanisms, outcomes, or safety statements that are absent from the evidence.
-        2. Prefer evidence from the same PubMedQA article as the question. Ignore unrelated retrieved contexts when enough same-article evidence exists.
-        3. Mark `status` as `insufficient_evidence` only when the retrieved evidence does not contain the study population/design plus at least one direct result relevant to the question.
-        4. If same-article evidence is present but incomplete, answer with `status="answered"`, `confidence="medium"` or `low`, and explicitly state the limitation.
-        5. Cover the PubMedQA rationale: study design or population, main numeric/statistical/directional findings, limitations or uncertainty, and the final yes/no/maybe direction when supported.
-        6. Keep the answer compact: 4 to 6 sentences, no bullet list, no more than 220 English words or 360 Chinese characters.
-        7. Every substantive claim in the answer must be supported by one or more cited evidence IDs.
-        8. `citations` must contain only evidence IDs actually used in the answer, such as E1 or E2. If `status="answered"`, include at least one citation.
-        9. `status` must be exactly `answered` or `insufficient_evidence`; `confidence` must be exactly `high`, `medium`, or `low`.
-        10. Return only the structured result, without extra commentary.
+        1. Do not add facts that are absent from the retrieved evidence.
+        2. If the evidence is insufficient, use `status="insufficient_evidence"`.
+        3. Every substantive claim must cite one or more evidence IDs actually used.
+        4. `citations` may contain only IDs such as E1 or E2.
+        5. Keep the answer concise and return only the structured result.
         """
     )
 
@@ -972,33 +1014,14 @@ def filter_eval_samples(
     dataset: List[Dict[str, Any]],
     sample_filter: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """按评测配置筛选样本；v2 benchmark 不要求旧 review/question_type 字段。"""
+    """按通用 sample_id 或 source 元数据筛选评测样本。"""
     if not sample_filter:
         return dataset
 
     sample_ids = set(sample_filter.get("sample_ids") or [])
-    source_datasets = set(sample_filter.get("source_datasets") or [])
-    row_range = sample_filter.get("source_row_range") or []
-    review_statuses = set(sample_filter.get("review_statuses") or [])
-    question_types = set(sample_filter.get("question_types") or [])
-    is_smoke_case = sample_filter.get("is_smoke_case")
-
     filtered = []
     for sample in dataset:
-        source = sample.get("source") or {}
-        row_index = source.get("row_index")
         if sample_ids and sample.get("sample_id") not in sample_ids:
-            continue
-        if source_datasets and source.get("dataset") not in source_datasets:
-            continue
-        if len(row_range) == 2 and isinstance(row_index, int):
-            if row_index < int(row_range[0]) or row_index > int(row_range[1]):
-                continue
-        if review_statuses and sample.get("review_status") not in review_statuses:
-            continue
-        if question_types and sample.get("question_type") not in question_types:
-            continue
-        if is_smoke_case is not None and bool(sample.get("is_smoke_case")) != bool(is_smoke_case):
             continue
         filtered.append(sample)
     return filtered
@@ -1369,6 +1392,11 @@ def _expected_dataset_build_config(
     sample_filter: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """生成用于判断 prepared dataset 缓存是否可复用的配置签名。"""
+    eval_identity = (
+        evaluation_identity(dataset_path)
+        if Path(dataset_path).is_file()
+        else {"schema_version": "rag_eval_v1", "dataset_path": str(Path(dataset_path))}
+    )
     return {
         "limit": limit,
         "dataset_sha256": _sha256_file(dataset_path),
@@ -1381,6 +1409,7 @@ def _expected_dataset_build_config(
         "answer_base_url": settings.BASE_URL,
         "answer_build_version": ANSWER_BUILD_VERSION,
         "vector_db_summary": get_vector_db_metadata_summary(),
+        "evaluation_identity": eval_identity,
     }
 
 
@@ -1463,9 +1492,9 @@ def _write_score_cache(cache_path: str, signature: str, result: Dict[str, Any]) 
 def _build_retrieval_config(raw_config: Optional[Dict[str, Any]] = None) -> RagRetrievalConfig:
     """构造 Ragas baseline 使用的检索配置。"""
     if not raw_config:
-        profile_name = RAGAS_RUN_CONFIG.get("retrieval_profile", "baseline_current")
-        return RagRetrievalConfig(**RETRIEVAL_PROFILES[profile_name])
-    return RagRetrievalConfig(**raw_config)
+        profile_name = RAGAS_RUN_CONFIG.get("retrieval_profile", "active_current")
+        return build_retrieval_config(RETRIEVAL_PROFILES[profile_name])
+    return build_retrieval_config(raw_config)
 
 
 def _truncate_for_eval(text: str, max_chars: Optional[int]) -> str:

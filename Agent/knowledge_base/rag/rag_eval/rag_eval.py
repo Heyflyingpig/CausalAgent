@@ -12,16 +12,22 @@ if __package__ in {None, ""}:
 
 from Agent.knowledge_base.query_rag import (
     RagRetrievalConfig,
+    build_retrieval_config,
     # build_retrieval_trace 是本评测真正调用知识库检索的入口。
     # 它会走当前 RAG retrieval 链路：dense -> threshold -> MMR -> sparse -> merge/rerank -> final。
     # rag_eval.py 只消费它返回的 trace，不直接操作 FAISS / embedding / sparse index。
     build_retrieval_trace,
     get_vector_db_metadata_summary,
 )
+from Agent.knowledge_base.rag.rag_eval.contracts import (
+    candidate_evidence,
+    evaluation_identity,
+    load_eval_dataset as load_contract_dataset,
+    locator_matches,
+)
 from Agent.knowledge_base.rag.rag_config import (
-    ACTIVE_EVAL_DATASET_PATH,
-    DATA_DIR,
     MACHINE_OUTPUT_DIR,
+    RAG_EVAL_DATASET_PATH,
     REPORT_OUTPUT_DIR,
     RETRIEVAL_EVAL_CONFIG,
     RETRIEVAL_PROFILES,
@@ -34,7 +40,7 @@ from Agent.knowledge_base.rag.tools.report_utils import (
     write_markdown_file,
 )
 
-DEFAULT_DATASET_PATH = ACTIVE_EVAL_DATASET_PATH
+DEFAULT_DATASET_PATH = str(RAG_EVAL_DATASET_PATH) if RAG_EVAL_DATASET_PATH else ""
 DEFAULT_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "rag_eval_result.json"
 DEFAULT_SWEEP_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "rag_eval_sweep_result.json"
 DEFAULT_REPORT_PATH = REPORT_OUTPUT_DIR / "rag_eval_report.md"
@@ -43,6 +49,8 @@ DEFAULT_SWEEP_REPORT_PATH = REPORT_OUTPUT_DIR / "rag_eval_sweep_report.md"
 CLAIM_OVERLAP_THRESHOLD = 0.35
 EvalEventCallback = Callable[[str, str, Dict[str, Any]], None]
 EvalCancelChecker = Callable[[], bool]
+RetrievalTraceBuilder = Callable[..., Dict[str, Any]]
+VectorSummaryProvider = Callable[[], Dict[str, Any]]
 
 
 def _cancel_requested(cancel_checker: Optional[EvalCancelChecker]) -> bool:
@@ -79,8 +87,7 @@ def _emit_sample_progress(
 # mode="single" 跑一组配置；mode="sweep" 跑下面的 SWEEP_CONFIGS 参数对比。
 # single 模式默认使用 query_rag.py 里的 RagRetrievalConfig() 默认值。
 # 只有 top_k 不为 None 时，才会临时覆盖 final_top_k。
-# 默认数据集使用 PubMedQA active benchmark。
-# 如果没有 gold_chunk_ids，retrieval recall/MRR 只能作为空 gold 诊断，生成质量主要看 Ragas/claim eval。
+# 评测题集必须由 RAG_EVAL_DATASET_PATH 显式提供；没有 gold_evidence 时检索指标为未评分。
 EVAL_RUN_CONFIG = RETRIEVAL_EVAL_CONFIG
 
 # 内部调参用的候选配置。name 只是实验标签，config 会传给 RagRetrievalConfig。
@@ -104,60 +111,59 @@ def load_eval_dataset(dataset_path: str) -> List[Dict[str, Any]]:
     Raises:
         ValueError: 当 JSON 文件内容不是数组格式时抛出异常
     """
-    path = Path(dataset_path)
-    with path.open("r", encoding="utf-8-sig") as file:
-        data = json.load(file)
-    if not isinstance(data, list):
-        raise ValueError("评测数据必须是 JSON 数组。")
-    return data
+    if not str(dataset_path or "").strip():
+        raise ValueError("RAG_EVAL_DATASET_PATH is not configured.")
+    return load_contract_dataset(dataset_path)
 
 
 def _collect_stage_metrics(
     stage_candidates: List[Dict[str, Any]],
-    gold_chunk_ids: set[str],
-    gold_doc_ids: Optional[set[str]] = None,
+    gold_evidence: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """
-    统计单个检索阶段相对 gold 的命中情况
-
-    Args:
-        stage_candidates (List[Dict[str, Any]]): 某一阶段返回的候选列表
-        gold_chunk_ids (set[str]): 当前问题对应的 gold chunk id 集合
-        gold_doc_ids (Optional[set[str]]): 没有 chunk gold 时使用的 gold doc id 集合
-
-    Returns:
-        Dict[str, Any]: 包含召回、MRR、命中与命中 chunk 列表的统计结果
-    """
-    retrieved_chunk_ids = [candidate["metadata"]["chunk_id"] for candidate in stage_candidates]
-    retrieved_doc_ids = [candidate["metadata"].get("doc_id", "") for candidate in stage_candidates]
-    match_mode = "chunk" if gold_chunk_ids else "doc"
-    gold_ids = gold_chunk_ids or (gold_doc_ids or set())
-    retrieved_ids = retrieved_chunk_ids if match_mode == "chunk" else retrieved_doc_ids
-    matched = [retrieved_id for retrieved_id in retrieved_ids if retrieved_id in gold_ids]
-    matched_chunk_ids = [
-        chunk_id
-        for chunk_id, doc_id in zip(retrieved_chunk_ids, retrieved_doc_ids)
-        if (chunk_id in gold_chunk_ids if match_mode == "chunk" else doc_id in gold_ids)
+    """按通用 evidence locator 统计一个检索阶段的命中情况。"""
+    retrieved_evidence = [
+        candidate_evidence(candidate.get("metadata", {}))
+        for candidate in stage_candidates
     ]
-    matched_doc_ids = [doc_id for doc_id in retrieved_doc_ids if doc_id in gold_ids] if match_mode == "doc" else []
-    
-    # 计算Reciprocal Rank (倒数排名): 第一个相关文档的位置的倒数
-    reciprocal_rank = 0.0
-    for index, retrieved_id in enumerate(retrieved_ids, start=1):
-        if retrieved_id in gold_ids:
-            reciprocal_rank = 1.0 / index
-            break
- 
-    # 计算召回率: 检索到的相关文档数量 / 所有相关文档数量
-    recall = len(set(matched)) / len(gold_ids) if gold_ids else 0.0
+    gold_evidence = list(gold_evidence or [])
+    if not gold_evidence:
+        return {
+            "match_mode": "unscored",
+            "retrieved_evidence": retrieved_evidence,
+            "matched_evidence": [],
+            "recall": None,
+            "reciprocal_rank": None,
+            "first_relevant_rank": None,
+            "hit": None,
+        }
+
+    matched_flags = [
+        any(locator_matches(candidate, expected) for expected in gold_evidence)
+        for candidate in retrieved_evidence
+    ]
+    matched = [
+        candidate
+        for candidate, matched_flag in zip(retrieved_evidence, matched_flags)
+        if matched_flag
+    ]
+    first_relevant_rank = next(
+        (index for index, matched_flag in enumerate(matched_flags, start=1) if matched_flag),
+        None,
+    )
+    reciprocal_rank = 1.0 / first_relevant_rank if first_relevant_rank else 0.0
+    matched_gold = [
+        expected
+        for expected in gold_evidence
+        if any(locator_matches(candidate, expected) for candidate in retrieved_evidence)
+    ]
+    recall = len(matched_gold) / len(gold_evidence)
     return {
-        "match_mode": match_mode,
-        "retrieved_chunk_ids": retrieved_chunk_ids,
-        "retrieved_doc_ids": retrieved_doc_ids,
-        "matched_chunk_ids": matched_chunk_ids,
-        "matched_doc_ids": matched_doc_ids,
+        "match_mode": "locator",
+        "retrieved_evidence": retrieved_evidence,
+        "matched_evidence": matched,
         "recall": recall,
         "reciprocal_rank": reciprocal_rank,
+        "first_relevant_rank": first_relevant_rank,
         "hit": 1 if matched else 0,
     }
 
@@ -172,13 +178,17 @@ def _summarize_stage_metrics(stage_details: List[Dict[str, Any]]) -> Dict[str, A
     Returns:
         Dict[str, Any]: 平均 recall、MRR 和 hit rate
     """
-    if not stage_details:
-        return {"recall": 0.0, "mrr": 0.0, "hit_rate": 0.0}
+    scored = [detail for detail in stage_details if detail.get("match_mode") != "unscored"]
+    if not scored:
+        return {"recall": None, "mrr": None, "hit_rate": None, "match_mode": "unscored"}
 
     return {
-        "recall": round(mean(detail["recall"] for detail in stage_details), 4),
-        "mrr": round(mean(detail["reciprocal_rank"] for detail in stage_details), 4), #MRR - Mean Reciprocal Rank
-        "hit_rate": round(mean(detail["hit"] for detail in stage_details), 4),
+        "recall": round(mean(detail["recall"] for detail in scored), 4),
+        "mrr": round(mean(detail["reciprocal_rank"] for detail in scored), 4),
+        "hit_rate": round(mean(detail["hit"] for detail in scored), 4),
+        "match_mode": "locator",
+        "scored_sample_count": len(scored),
+        "unscored_sample_count": len(stage_details) - len(scored),
     }
 
 
@@ -192,27 +202,29 @@ def _summarize_prefix_metrics(prefix_metric_buckets: Dict[int, List[Dict[str, An
 
 def _collect_gold_rank_summary(
     stage_results: Dict[str, Dict[str, Any]],
-    gold_chunk_ids: set[str],
-    gold_doc_ids: Optional[set[str]] = None,
+    gold_evidence: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """记录 gold 在各阶段中的排名位置，便于观察 rerank / final 截断影响。"""
+    """记录通用 evidence 在各阶段的排名位置。"""
+    gold_evidence = list(gold_evidence or [])
     summary: Dict[str, Any] = {}
-    match_mode = "chunk" if gold_chunk_ids else "doc"
-    gold_ids = gold_chunk_ids or (gold_doc_ids or set())
     for stage_name, stage_result in stage_results.items():
-        retrieved_ids = (
-            stage_result["retrieved_chunk_ids"]
-            if match_mode == "chunk"
-            else stage_result.get("retrieved_doc_ids", [])
-        )
-        ranks: Dict[str, int] = {}
-        for index, retrieved_id in enumerate(retrieved_ids, start=1):
-            if retrieved_id in gold_ids and retrieved_id not in ranks:
-                ranks[retrieved_id] = index
+        if not gold_evidence:
+            summary[stage_name] = {
+                "match_mode": "unscored",
+                "matched_count": 0,
+                "best_rank": None,
+                "gold_ranks": [],
+            }
+            continue
+        ranks = [
+            index
+            for index, candidate in enumerate(stage_result.get("retrieved_evidence", []), start=1)
+            if any(locator_matches(candidate, expected) for expected in gold_evidence)
+        ]
         summary[stage_name] = {
-            "match_mode": match_mode,
-            "matched_count": len(ranks),
-            "best_rank": min(ranks.values()) if ranks else None,
+            "match_mode": "locator",
+            "matched_count": len(stage_result.get("matched_evidence", [])),
+            "best_rank": min(ranks) if ranks else None,
             "gold_ranks": ranks,
         }
     return summary
@@ -301,71 +313,36 @@ def _summarize_timings(timing_details: List[Dict[str, float]]) -> Dict[str, floa
     }
 
 
-def _doc_id_prefix(doc_id: str) -> str:
-    """从 doc_id 中抽取数据集前缀，用于粗略判断 benchmark gold 和向量库是否匹配。"""
-    return str(doc_id).split("_", 1)[0] if doc_id else ""
-
-
-def _collect_gold_doc_prefixes(dataset: List[Dict[str, Any]]) -> set[str]:
-    """汇总 benchmark 样本里的 gold_doc_ids 前缀。"""
-    prefixes: set[str] = set()
-    for sample in dataset:
-        for doc_id in sample.get("gold_doc_ids", []):
-            prefix = _doc_id_prefix(str(doc_id))
-            if prefix:
-                prefixes.add(prefix)
-    return prefixes
-
-
-def _validate_vector_store_matches_dataset(dataset: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """在检索前检查当前向量库 doc_id 前缀是否覆盖 benchmark gold_doc_ids 前缀。"""
-    summary = get_vector_db_metadata_summary()
-    gold_prefixes = _collect_gold_doc_prefixes(dataset)
-    vector_prefixes = set(summary.get("doc_id_prefix_counts", {}).keys())
-    summary["gold_doc_id_prefixes"] = sorted(gold_prefixes)
-    summary["vector_doc_id_prefixes"] = sorted(vector_prefixes)
-    if gold_prefixes and vector_prefixes and gold_prefixes.isdisjoint(vector_prefixes):
-        raise ValueError(
-            "Active benchmark gold_doc_ids do not match the current vector DB. "
-            f"gold prefixes={sorted(gold_prefixes)}, vector prefixes={sorted(vector_prefixes)}, "
-            f"persist_directory={summary.get('persist_directory')}"
-        )
-    return summary
+def _validate_vector_store_matches_dataset(
+    dataset: List[Dict[str, Any]],
+    vector_summary_provider: Optional[VectorSummaryProvider] = None,
+) -> Dict[str, Any]:
+    """只记录 Runtime 提供的向量库身份，不根据题集猜测知识源是否匹配。"""
+    return (vector_summary_provider or get_vector_db_metadata_summary)()
 
 
 def _detect_loss_reasons(stage_results: Dict[str, Dict[str, Any]]) -> List[str]:
-    """
-    根据各阶段命中情况，粗略标记当前问题可能的丢失原因
-
-    这些标签主要用于内部调参时快速定位问题落在哪一段链路，
-    例如 dense 没召回、MMR 去重误伤，或 merge/rerank 阶段掉点。
-    """
+    """根据已评分的各阶段结果标记检索链路中的丢失位置。"""
+    if any(result.get("match_mode") == "unscored" for result in stage_results.values()):
+        return []
     reasons: List[str] = []
-    # 检查密集检索原始阶段是否未找到匹配项
-    if not stage_results["dense_raw"]["matched_chunk_ids"]:
+    if not stage_results["dense_raw"]["matched_evidence"]:
         reasons.append("dense_missing")
-    # 检查密集检索是否因阈值过滤而丢弃了匹配项
-    if stage_results["dense_raw"]["matched_chunk_ids"] and not stage_results["dense_thresholded"]["matched_chunk_ids"]:
+    if stage_results["dense_raw"]["matched_evidence"] and not stage_results["dense_thresholded"]["matched_evidence"]:
         reasons.append("dense_threshold_drop")
-    # 检查密集检索经MMR去重后是否丢弃了匹配项
-    if stage_results["dense_thresholded"]["matched_chunk_ids"] and not stage_results["dense_mmr"]["matched_chunk_ids"]:
+    if stage_results["dense_thresholded"]["matched_evidence"] and not stage_results["dense_mmr"]["matched_evidence"]:
         reasons.append("dense_mmr_drop")
-    # 检查稀疏检索是否找到了密集检索遗漏的匹配项（稀疏检索恢复）
-    if not stage_results["dense_mmr"]["matched_chunk_ids"] and stage_results["sparse"]["matched_chunk_ids"]:
+    if not stage_results["dense_mmr"]["matched_evidence"] and stage_results["sparse"]["matched_evidence"]:
         reasons.append("sparse_recovered")
-    # 检查 dense/sparse 合并及官方语料过滤后是否丢失匹配项
     if (
-        stage_results["dense_mmr"]["matched_chunk_ids"] or stage_results["sparse"]["matched_chunk_ids"]
-    ) and not stage_results["merged_before_rerank"]["matched_chunk_ids"]:
+        stage_results["dense_mmr"]["matched_evidence"] or stage_results["sparse"]["matched_evidence"]
+    ) and not stage_results["merged_before_rerank"]["matched_evidence"]:
         reasons.append("merge_drop")
-    # 检查 rerank 阶段是否让匹配项消失。正常情况下 rerank 只排序不删除；如果出现该标签，说明 trace 逻辑异常。
-    if stage_results["merged_before_rerank"]["matched_chunk_ids"] and not stage_results["reranked"]["matched_chunk_ids"]:
+    if stage_results["merged_before_rerank"]["matched_evidence"] and not stage_results["reranked"]["matched_evidence"]:
         reasons.append("rerank_drop")
-    # 检查 final threshold 或 final_top_k 是否导致匹配项丢失。
-    if stage_results["reranked"]["matched_chunk_ids"] and not stage_results["final"]["matched_chunk_ids"]:
+    if stage_results["reranked"]["matched_evidence"] and not stage_results["final"]["matched_evidence"]:
         reasons.append("final_filter_or_topk_drop")
-    # 如果没有发现丢失原因但最终有匹配项，则标记为最终命中
-    if not reasons and stage_results["final"]["matched_chunk_ids"]:
+    if not reasons and stage_results["final"]["matched_evidence"]:
         reasons.append("final_hit")
     return reasons
 
@@ -377,6 +354,8 @@ def evaluate_retrieval(
     event_callback: Optional[EvalEventCallback] = None,
     cancel_checker: Optional[EvalCancelChecker] = None,
     step_name: str = "retrieval_eval",
+    retrieval_trace_builder: Optional[RetrievalTraceBuilder] = None,
+    vector_summary_provider: Optional[VectorSummaryProvider] = None,
 ) -> Dict[str, Any]:
     """
     评估 RAG 检索链路在给定数据集上的表现
@@ -407,21 +386,24 @@ def evaluate_retrieval(
             dense_score_threshold=config.dense_score_threshold,
             final_rerank_threshold=config.final_rerank_threshold,
             mmr_lambda=config.mmr_lambda,
-            official_only_when_available=config.official_only_when_available,
+            max_evidence_chars=config.max_evidence_chars,
         )
     if not dataset:
         return {
             "sample_count": 0,
-        "recall_at_k": 0.0,
-        "mrr": 0.0,
-        "hit_rate": 0.0,
-        "avg_timings_ms": {},
-        "stage_metrics": {},
-        "loss_reason_counts": {},
-        "config": config.to_dict(),
+            "recall_at_k": None,
+            "mrr": None,
+            "hit_rate": None,
+            "avg_timings_ms": {},
+            "stage_metrics": {},
+            "loss_reason_counts": {},
+            "config": config.to_dict(),
         }
 
-    vector_db_summary = _validate_vector_store_matches_dataset(dataset)
+    vector_db_summary = _validate_vector_store_matches_dataset(
+        dataset,
+        vector_summary_provider=vector_summary_provider,
+    )
     details: List[Dict[str, Any]] = []
     stage_metric_buckets: Dict[str, List[Dict[str, Any]]] = {
         "dense_raw": [],
@@ -446,26 +428,23 @@ def evaluate_retrieval(
             _emit_sample_progress(event_callback, step_name, "cancelled", sample_index - 1, total_count, sample)
             break
         question = sample["question"]
-        gold_chunk_ids = set(sample.get("gold_chunk_ids", []))
-        gold_doc_ids = set(sample.get("gold_doc_ids", []))
-        # 调用知识库检索入口：这里会真正访问本地向量库 / 稀疏检索资源，
-        # 并返回各阶段候选结果。优先使用 chunk gold；没有 chunk gold 时使用 doc gold。
-        trace = build_retrieval_trace(question, config=config)
+        gold_evidence = sample.get("gold_evidence", [])
+        trace = (retrieval_trace_builder or build_retrieval_trace)(question, config=config)
         timing_details.append(trace.get("timings_ms", {}))
         stage_results = {
-            stage_name: _collect_stage_metrics(stage_candidates, gold_chunk_ids, gold_doc_ids)
+            stage_name: _collect_stage_metrics(stage_candidates, gold_evidence)
             for stage_name, stage_candidates in trace["stages"].items()
         }
         for prefix_k in final_prefix_metric_buckets:
             final_prefix_metric_buckets[prefix_k].append(
-                _collect_stage_metrics(trace["stages"]["final"][:prefix_k], gold_chunk_ids, gold_doc_ids)
+                _collect_stage_metrics(trace["stages"]["final"][:prefix_k], gold_evidence)
             )
         for stage_name, stage_result in stage_results.items():
             stage_metric_buckets[stage_name].append(stage_result)
 
         final_result = stage_results["final"]
         loss_reasons = _detect_loss_reasons(stage_results)
-        gold_rank_summary = _collect_gold_rank_summary(stage_results, gold_chunk_ids, gold_doc_ids)
+        gold_rank_summary = _collect_gold_rank_summary(stage_results, gold_evidence)
         claim_diagnostics = _collect_claim_diagnostics(sample.get("expected_claims", []), trace)
         for reason in loss_reasons:
             loss_reason_counts[reason] = loss_reason_counts.get(reason, 0) + 1
@@ -475,25 +454,20 @@ def evaluate_retrieval(
                 "sample_id": sample.get("sample_id", ""),
                 "question": question,
                 "source": sample.get("source", {}),
-                "question_type": sample.get("question_type", ""),
-                "expected_corpus": sample.get("expected_corpus", ""),
-                "expected_sources": sample.get("expected_sources", sample.get("gold_doc_ids", [])),
                 "expected_claims": sample.get("expected_claims", []),
                 "reference_answer": sample.get("reference_answer", ""),
                 "judge_rubric": sample.get("judge_rubric", {}),
-                "gold_chunk_ids": list(gold_chunk_ids),
-                "gold_doc_ids": list(gold_doc_ids),
+                "gold_evidence": gold_evidence,
                 "retrieval_match_mode": final_result.get("match_mode", ""),
-                "retrieved_chunk_ids": final_result["retrieved_chunk_ids"],
-                "retrieved_doc_ids": final_result.get("retrieved_doc_ids", []),
-                "matched_chunk_ids": final_result["matched_chunk_ids"],
-                "matched_doc_ids": final_result.get("matched_doc_ids", []),
+                "retrieved_evidence": final_result["retrieved_evidence"],
+                "matched_evidence": final_result["matched_evidence"],
                 "recall": final_result["recall"],
                 "reciprocal_rank": final_result["reciprocal_rank"],
                 "stage_results": stage_results,
                 "gold_rank_summary": gold_rank_summary,
                 "trace_timings_ms": trace.get("timings_ms", {}),
                 "final_evidence_payload": trace.get("evidence_payload", []),
+                "retrieved_locators": [candidate_evidence(evidence.get("metadata", evidence)) for evidence in trace.get("stages", {}).get("final", [])],
                 "claim_diagnostics": claim_diagnostics,
                 "loss_reasons": loss_reasons,
             }
@@ -581,6 +555,8 @@ def run_eval_with_options(
 def sweep_retrieval_configs(
     dataset: List[Dict[str, Any]],
     config_specs: List[Dict[str, Any]],
+    retrieval_trace_builder: Optional[RetrievalTraceBuilder] = None,
+    vector_summary_provider: Optional[VectorSummaryProvider] = None,
 ) -> Dict[str, Any]:
     """
     对多组检索参数配置执行批量评测。
@@ -593,8 +569,13 @@ def sweep_retrieval_configs(
     for index, config_spec in enumerate(config_specs, start=1):
         run_name = config_spec.get("name", f"run_{index}")
         raw_config = config_spec.get("config", config_spec)
-        config = RagRetrievalConfig(**raw_config)
-        result = evaluate_retrieval(dataset, retrieval_config=config)
+        config = build_retrieval_config(raw_config)
+        result = evaluate_retrieval(
+            dataset,
+            retrieval_config=config,
+            retrieval_trace_builder=retrieval_trace_builder,
+            vector_summary_provider=vector_summary_provider,
+        )
         runs.append(
             {
                 "run_id": index,
@@ -612,7 +593,13 @@ def sweep_retrieval_configs(
             }
         )
 
-    runs.sort(key=lambda item: (item["metrics"]["recall_at_k"], item["metrics"]["mrr"]), reverse=True)
+    runs.sort(
+        key=lambda item: (
+            item["metrics"]["recall_at_k"] if item["metrics"]["recall_at_k"] is not None else -1.0,
+            item["metrics"]["mrr"] if item["metrics"]["mrr"] is not None else -1.0,
+        ),
+        reverse=True,
+    )
     return {
         "sample_count": len(dataset),
         "run_count": len(runs),
@@ -630,6 +617,13 @@ def _write_json_file(path: Path, data: Dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _require_dataset_path(dataset_path: str) -> str:
+    """确保评测入口使用显式题集路径。"""
+    if not str(dataset_path or "").strip():
+        raise ValueError("RAG_EVAL_DATASET_PATH is not configured.")
+    return dataset_path
+
+
 def run_eval_from_code_config(
     event_callback: Optional[EvalEventCallback] = None,
     cancel_checker: Optional[EvalCancelChecker] = None,
@@ -644,27 +638,30 @@ def run_eval_from_code_config(
     Returns:
         Dict[str, Any]: 检索评测结果。
     """
-    retrieval_profile = EVAL_RUN_CONFIG.get("retrieval_profile", "baseline_current")
+    retrieval_profile = EVAL_RUN_CONFIG.get("retrieval_profile", "active_current")
+    dataset_path = _require_dataset_path(EVAL_RUN_CONFIG.get("dataset_path", ""))
+    eval_identity = evaluation_identity(dataset_path)
     top_k = EVAL_RUN_CONFIG.get("top_k")
     if top_k is None and retrieval_profile:
-        dataset = load_eval_dataset(EVAL_RUN_CONFIG["dataset_path"])
+        dataset = load_eval_dataset(dataset_path)
         limit = EVAL_RUN_CONFIG.get("limit")
         if limit is not None:
             dataset = dataset[:limit]
         result = evaluate_retrieval(
             dataset,
-            retrieval_config=RagRetrievalConfig(**RETRIEVAL_PROFILES[retrieval_profile]),
+            retrieval_config=build_retrieval_config(RETRIEVAL_PROFILES[retrieval_profile]),
             event_callback=event_callback,
             cancel_checker=cancel_checker,
         )
     else:
         result = run_eval_with_options(
-            dataset_path=EVAL_RUN_CONFIG["dataset_path"],
+            dataset_path=dataset_path,
             limit=EVAL_RUN_CONFIG["limit"],
             top_k=top_k,
             event_callback=event_callback,
             cancel_checker=cancel_checker,
         )
+    result["evaluation_identity"] = eval_identity
     if EVAL_RUN_CONFIG.get("save_output"):
         _write_json_file(Path(EVAL_RUN_CONFIG["output_path"]), result)
     if EVAL_RUN_CONFIG.get("save_markdown"):
@@ -685,14 +682,17 @@ def run_sweep_from_code_config() -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: 多组配置的指标对比结果。
     """
-    dataset = load_eval_dataset(EVAL_RUN_CONFIG["dataset_path"])
+    dataset_path = _require_dataset_path(EVAL_RUN_CONFIG.get("dataset_path", ""))
+    eval_identity = evaluation_identity(dataset_path)
+    dataset = load_eval_dataset(dataset_path)
     limit = EVAL_RUN_CONFIG.get("limit")
     if limit is not None:
         dataset = dataset[:limit]
 
     result = sweep_retrieval_configs(dataset, SWEEP_CONFIGS)
-    result["dataset_path"] = str(Path(EVAL_RUN_CONFIG["dataset_path"]).resolve())
+    result["dataset_path"] = str(Path(dataset_path).resolve())
     result["limit"] = limit
+    result["evaluation_identity"] = eval_identity
 
     if EVAL_RUN_CONFIG.get("save_output"):
         _write_json_file(Path(EVAL_RUN_CONFIG["sweep_output_path"]), result)

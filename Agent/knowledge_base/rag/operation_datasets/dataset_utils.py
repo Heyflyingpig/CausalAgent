@@ -4,21 +4,20 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from Agent.knowledge_base.rag.tools.report_utils import build_dataset_validation_markdown_report, write_markdown_file
+from Agent.knowledge_base.rag.rag_eval.contracts import (
+    EVAL_SCHEMA_VERSION,
+    validate_eval_dataset,
+)
 from Agent.knowledge_base.rag.rag_config import (
-    ACTIVE_BENCHMARK_NAME,
-    ACTIVE_CORPUS_PATH,
-    ACTIVE_EVAL_DATASET_PATH,
+    RAG_EVAL_DATASET_NAME,
+    RAG_EVAL_DATASET_PATH,
 )
 
 
 RAG_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = RAG_DIR / "data"
 OUTPUT_DIR = RAG_DIR / "output"
 MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
 REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
-DATASET_FILES = {
-    ACTIVE_BENCHMARK_NAME: ACTIVE_EVAL_DATASET_PATH,
-}
 ALLOWED_QUESTION_TYPES = {
     "definition",
     "comparison",
@@ -37,9 +36,8 @@ CHUNK_ID_PATTERN = re.compile(r"^[a-z0-9_-]+#p\d+#c\d+$")
 def infer_dataset_name(path: Path) -> str:
     """根据路径识别评测数据集名称，无法匹配时返回 unknown。"""
     resolved = path.resolve()
-    for dataset_name, dataset_path in DATASET_FILES.items():
-        if resolved == dataset_path.resolve():
-            return dataset_name
+    if RAG_EVAL_DATASET_PATH and resolved == RAG_EVAL_DATASET_PATH.resolve():
+        return RAG_EVAL_DATASET_NAME
     return "unknown"
 
 
@@ -330,39 +328,21 @@ def validate_legacy_doc_dataset(samples: List[Dict[str, Any]], available_doc_ids
 
 
 def validate_all_datasets() -> Dict[str, Any]:
-    """校验当前统一 RAG eval 测试集并返回总结果。"""
-    result: Dict[str, Any] = {"datasets": {}, "benchmark_corpus": {}, "errors": [], "warnings": []}
-    loaded: Dict[str, List[Dict[str, Any]]] = {}
-    benchmark_corpus = validate_benchmark_corpus(ACTIVE_CORPUS_PATH)
-    result["benchmark_corpus"] = {
-        key: value
-        for key, value in benchmark_corpus.items()
-        if key != "doc_ids"
+    """校验显式配置的通用 RAG eval 题集，不读取任何知识库语料。"""
+    result: Dict[str, Any] = {
+        "schema_version": EVAL_SCHEMA_VERSION,
+        "dataset_name": RAG_EVAL_DATASET_NAME,
+        "dataset_path": str(RAG_EVAL_DATASET_PATH.resolve()) if RAG_EVAL_DATASET_PATH else "",
+        "datasets": {},
+        "errors": [],
+        "warnings": [],
     }
-    available_benchmark_doc_ids = set(benchmark_corpus.get("doc_ids", []))
-
-    for dataset_name, path in DATASET_FILES.items():
-        if not path.exists():
-            result["warnings"].append(f"{dataset_name}: missing dataset file {path}.")
-            continue
-        samples = load_dataset_json(path)
-        loaded[dataset_name] = samples
-        if dataset_name == ACTIVE_BENCHMARK_NAME:
-            detail = validate_benchmark_v2_dataset(samples, available_benchmark_doc_ids, dataset_name=dataset_name)
-            if detail["errors"] and any("sample_id" in error for error in detail["errors"]):
-                legacy_detail = validate_dataset(dataset_name, samples)
-                legacy_detail["errors"].extend(
-                    validate_legacy_doc_dataset(samples, available_benchmark_doc_ids, dataset_name=dataset_name)
-                )
-                legacy_detail["benchmark_corpus_doc_count"] = len(available_benchmark_doc_ids)
-                legacy_detail["schema_version"] = "legacy_phase1_v1"
-                detail = legacy_detail
-        else:
-            detail = validate_dataset(dataset_name, samples)
-        result["datasets"][dataset_name] = detail
+    if not RAG_EVAL_DATASET_PATH:
+        result["errors"].append("RAG_EVAL_DATASET_PATH is not configured.")
+    else:
+        detail = validate_eval_dataset(RAG_EVAL_DATASET_PATH)
+        result["datasets"][RAG_EVAL_DATASET_NAME] = detail
         result["errors"].extend(detail["errors"])
-        if dataset_name == ACTIVE_BENCHMARK_NAME:
-            result["errors"].extend(benchmark_corpus["errors"])
 
     result["error_count"] = len(result["errors"])
     result["warning_count"] = len(result["warnings"])
@@ -429,8 +409,93 @@ def _get_generated_field(row: Dict[str, Any], names: List[str], default: Any = "
     return default
 
 
-def convert_ragas_generated_row_to_eval_sample(row: Dict[str, Any]) -> Dict[str, Any]:
-    """把 Ragas 生成的一行样本转换为当前 RAG eval schema。"""
+DEFAULT_LOCATOR_FIELDS = (
+    "document_id",
+    "page_number",
+    "unit_id",
+    "modality",
+    "content_kind",
+    "asset_uri",
+    "chunk_id",
+    "doc_id",
+    "page",
+)
+
+
+def _context_text(value: Any) -> str:
+    """提取 Ragas context 或 source record 中的可比正文。"""
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return ""
+    for key in ("page_content", "content", "text", "context"):
+        text = value.get(key)
+        if text is not None and str(text).strip():
+            return str(text).strip()
+    return ""
+
+
+def _context_metadata(value: Any) -> Dict[str, Any]:
+    """提取 context 自带或 source record 中的 metadata。"""
+    if not isinstance(value, dict):
+        return {}
+    metadata = value.get("metadata")
+    if isinstance(metadata, dict):
+        return dict(metadata)
+    return dict(value)
+
+
+def _stable_locator(metadata: Dict[str, Any], locator_fields: tuple[str, ...]) -> Dict[str, Any]:
+    """只保留 Runtime 可用于严格匹配的稳定 metadata 字段。"""
+    return {
+        key: metadata[key]
+        for key in locator_fields
+        if key in metadata and metadata[key] not in (None, "")
+    }
+
+
+def resolve_generated_gold_evidence(
+    contexts: Any,
+    source_records: List[Dict[str, Any]] | None = None,
+    locator_fields: tuple[str, ...] = DEFAULT_LOCATOR_FIELDS,
+) -> List[Dict[str, Any]]:
+    """把生成 context 映射为稳定 locator；无法唯一映射时保持未评分。"""
+    if isinstance(contexts, str):
+        contexts = [contexts]
+    if not isinstance(contexts, list):
+        return []
+
+    records = source_records or []
+    resolved: List[Dict[str, Any]] = []
+    seen_locators = set()
+    for context in contexts:
+        locator = _stable_locator(_context_metadata(context), locator_fields)
+        if not locator:
+            text = _context_text(context)
+            matches = [
+                record
+                for record in records
+                if text and _context_text(record) == text
+            ]
+            if len(matches) == 1:
+                locator = _stable_locator(_context_metadata(matches[0]), locator_fields)
+        if locator:
+            key = json.dumps(locator, ensure_ascii=False, sort_keys=True, default=str)
+            if key not in seen_locators:
+                resolved.append(locator)
+                seen_locators.add(key)
+    return resolved
+
+
+def convert_ragas_generated_row_to_eval_sample(
+    row: Dict[str, Any],
+    source_records: List[Dict[str, Any]] | None = None,
+    *,
+    locator_fields: tuple[str, ...] = DEFAULT_LOCATOR_FIELDS,
+    source_snapshot: Dict[str, Any] | None = None,
+    row_index: int | None = None,
+) -> Dict[str, Any]:
+    """把 Ragas 生成的一行样本转换为候选 rag_eval_v1 样本。"""
     question = str(_get_generated_field(row, ["user_input", "question", "query"], "")).strip()
     reference_answer = str(
         _get_generated_field(row, ["reference", "reference_answer", "ground_truth", "answer"], "")
@@ -441,38 +506,73 @@ def convert_ragas_generated_row_to_eval_sample(row: Dict[str, Any]) -> Dict[str,
     contexts = _get_generated_field(row, ["reference_contexts", "contexts", "retrieved_contexts"], [])
     if isinstance(contexts, str):
         contexts = [contexts]
+    claims = row.get("expected_claims") or extract_claims_from_reference(reference_answer)
+    if not isinstance(claims, list):
+        claims = extract_claims_from_reference(reference_answer)
+    claims = [str(claim).strip() for claim in claims if str(claim).strip()]
+    gold_evidence = row.get("gold_evidence") or resolve_generated_gold_evidence(
+        contexts,
+        source_records=source_records,
+        locator_fields=locator_fields,
+    )
+    source = dict(row.get("source") or {})
+    source.update(
+        {
+            "generator": source.get("generator", "ragas"),
+            "review_status": source.get("review_status", "candidate"),
+            "context_count": len(contexts),
+        }
+    )
+    if source_snapshot:
+        source["source_snapshot"] = dict(source_snapshot)
+    if row_index is not None:
+        source["row_index"] = row_index
 
-    question_type = infer_question_type(question)
     return {
+        "sample_id": str(row.get("sample_id") or f"generated-{row_index or 0:04d}"),
         "question": question,
-        "question_type": question_type,
-        "expected_corpus": "official",
-        "expected_sources": [
-            "pearl_2009_causality-mono_1",
-            "pearl_mackenzie_2018_the_book_of_why-mono_1",
-        ],
-        "expected_claims": extract_claims_from_reference(reference_answer),
+        "expected_claims": claims,
         "reference_answer": reference_answer,
-        "gold_chunk_ids": [],
-        "gold_doc_ids": [
-            "pearl_2009_causality-mono_1",
-            "pearl_mackenzie_2018_the_book_of_why-mono_1",
-        ],
+        "gold_evidence": gold_evidence,
         "judge_rubric": {
-            "must_cover": extract_claims_from_reference(reference_answer),
+            "must_cover": claims,
             "avoid": [
                 "脱离证据编造因果结论",
                 "把相关性直接等同于因果关系",
                 "忽略题目中的限制条件或识别假设",
             ],
         },
-        "notes": (
-            "Generated by Ragas testset generation; pending human review. "
-            f"source_context_count={len(contexts)}"
-        ),
-        "eval_schema_version": "phase1_v1",
-        "review_status": "pending_human_review",
-        "is_smoke_case": False,
+        "source": source,
+    }
+
+
+def build_generated_eval_dataset(
+    rows: List[Dict[str, Any]],
+    source_records: List[Dict[str, Any]] | None = None,
+    *,
+    dataset_id: str = "generated_candidate",
+    dataset_revision: str = "",
+    source_snapshot: Dict[str, Any] | None = None,
+    locator_fields: tuple[str, ...] = DEFAULT_LOCATOR_FIELDS,
+) -> Dict[str, Any]:
+    """构造冻结前的 generated_candidate 题集文档。"""
+    samples = [
+        convert_ragas_generated_row_to_eval_sample(
+            row,
+            source_records=source_records,
+            locator_fields=locator_fields,
+            source_snapshot=source_snapshot,
+            row_index=index,
+        )
+        for index, row in enumerate(rows, start=1)
+    ]
+    return {
+        "schema_version": EVAL_SCHEMA_VERSION,
+        "dataset_id": dataset_id,
+        "dataset_kind": "generated_candidate",
+        "dataset_revision": dataset_revision,
+        "source_snapshot": dict(source_snapshot or {}),
+        "samples": samples,
     }
 
 
@@ -480,11 +580,30 @@ def write_generated_eval_dataset(
     samples: List[Dict[str, Any]],
     dataset_path: Path | None = None,
     merge_existing: bool = True,
+    *,
+    dataset_id: str = "generated_candidate",
+    dataset_revision: str = "",
+    dataset_kind: str = "generated_candidate",
+    source_snapshot: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """写入 Ragas 生成的统一 eval dataset，可选择和现有样本按 question 去重合并。"""
-    target_path = dataset_path or ACTIVE_EVAL_DATASET_PATH
+    """写入带 provenance 的统一 eval dataset，可按 question 去重合并。"""
+    target_path = dataset_path or RAG_EVAL_DATASET_PATH
+    if target_path is None:
+        raise ValueError("RAG_EVAL_DATASET_PATH is not configured.")
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = load_dataset_json(target_path) if merge_existing and target_path.exists() else []
+    existing: List[Dict[str, Any]] = []
+    if merge_existing and target_path.exists():
+        payload = json.loads(target_path.read_text(encoding="utf-8-sig"))
+        existing = payload.get("samples", []) if isinstance(payload, dict) else payload
+        if not isinstance(existing, list):
+            raise ValueError(f"{target_path} must contain a samples list")
+        existing_kind = payload.get("dataset_kind", "untyped") if isinstance(payload, dict) else "untyped"
+        existing_id = payload.get("dataset_id", target_path.stem) if isinstance(payload, dict) else target_path.stem
+        if existing_kind != dataset_kind or existing_id != dataset_id:
+            raise ValueError(
+                f"refusing to merge {dataset_kind}/{dataset_id} into "
+                f"{existing_kind}/{existing_id}; use a separate dataset path"
+            )
     existing_questions = {sample["question"] for sample in existing}
     appended = []
     skipped_duplicates = []
@@ -498,7 +617,21 @@ def write_generated_eval_dataset(
         existing_questions.add(question)
         appended.append(question)
 
-    target_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    target_path.write_text(
+        json.dumps(
+            {
+                "schema_version": EVAL_SCHEMA_VERSION,
+                "dataset_id": dataset_id,
+                "dataset_kind": dataset_kind,
+                "dataset_revision": dataset_revision,
+                "source_snapshot": dict(source_snapshot or {}),
+                "samples": existing,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return {
         "dataset_path": str(target_path.resolve()),
         "input_count": len(samples),
@@ -507,5 +640,7 @@ def write_generated_eval_dataset(
         "appended_questions": appended,
         "skipped_duplicate_questions": skipped_duplicates,
         "final_count": len(existing),
+        "with_gold_evidence": sum(bool(sample.get("gold_evidence")) for sample in existing),
+        "unscored_retrieval_count": sum(not bool(sample.get("gold_evidence")) for sample in existing),
     }
 

@@ -178,14 +178,14 @@ def _build_judge_llm() -> ChatOpenAI:
     )
 
 
-def _format_evidence_blocks(contexts: List[str], context_ids: List[str], max_context_chars: int) -> str:
+def _format_evidence_blocks(contexts: List[str], evidence_ids: List[str], max_context_chars: int) -> str:
     """把 Ragas retrieved contexts 转成 judge prompt 中的证据块。"""
     blocks = []
     for index, context in enumerate(contexts, start=1):
-        context_id = context_ids[index - 1] if index - 1 < len(context_ids) else f"C{index}"
+        evidence_id = evidence_ids[index - 1] if index - 1 < len(evidence_ids) else f"E{index}"
         blocks.append(
-            f"[C{index}]\n"
-            f"context_id: {context_id}\n"
+            f"[E{index}]\n"
+            f"evidence_id: {evidence_id}\n"
             f"content: {_truncate_text(context, max_context_chars)}"
         )
     return "\n\n".join(blocks) if blocks else "No final evidence."
@@ -201,7 +201,7 @@ def _run_claim_judge(
     question: str,
     answer: str,
     contexts: List[str],
-    context_ids: List[str],
+    evidence_ids: List[str],
     expected_claims: List[str],
     reference_answer: str,
     judge_rubric: Dict[str, Any],
@@ -215,7 +215,7 @@ def _run_claim_judge(
             "reference_answer": reference_answer,
             "expected_claims": json.dumps(expected_claims, ensure_ascii=False, indent=2),
             "answer": answer,
-            "evidence_blocks": _format_evidence_blocks(contexts, context_ids, max_context_chars),
+            "evidence_blocks": _format_evidence_blocks(contexts, evidence_ids, max_context_chars),
             "judge_rubric": json.dumps(judge_rubric, ensure_ascii=False, indent=2),
         }
     )
@@ -226,7 +226,7 @@ def _run_claim_judge_with_retries(
     question: str,
     answer: str,
     contexts: List[str],
-    context_ids: List[str],
+    evidence_ids: List[str],
     expected_claims: List[str],
     reference_answer: str,
     judge_rubric: Dict[str, Any],
@@ -243,7 +243,7 @@ def _run_claim_judge_with_retries(
                     question=question,
                     answer=answer,
                     contexts=contexts,
-                    context_ids=context_ids,
+                    evidence_ids=evidence_ids,
                     expected_claims=expected_claims,
                     reference_answer=reference_answer,
                     judge_rubric=judge_rubric,
@@ -354,7 +354,13 @@ def _build_eval_rows(ragas_result: Dict[str, Any], limit: Optional[int]) -> List
                 "judge_rubric": metadata.get("judge_rubric", {}),
                 "answer": ragas_row.get("response", ""),
                 "retrieved_contexts": ragas_row.get("retrieved_contexts", []),
-                "retrieved_context_ids": ragas_row.get("retrieved_context_ids", []),
+                "evidence_ids": [
+                    evidence.get("evidence_id", f"E{evidence_index}")
+                    for evidence_index, evidence in enumerate(
+                        metadata.get("final_evidence_payload", []), start=1
+                    )
+                    if isinstance(evidence, dict)
+                ],
                 "answer_status": metadata.get("answer_status", ""),
                 "answer_confidence": metadata.get("answer_confidence", ""),
             }
@@ -392,7 +398,7 @@ def run_claim_eval_from_code_config() -> Dict[str, Any]:
                 question=row.get("question", ""),
                 answer=answer,
                 contexts=row.get("retrieved_contexts", []),
-                context_ids=row.get("retrieved_context_ids", []),
+                evidence_ids=row.get("evidence_ids", []),
                 expected_claims=expected_claims,
                 reference_answer=row.get("reference_answer", ""),
                 judge_rubric=row.get("judge_rubric", {}),

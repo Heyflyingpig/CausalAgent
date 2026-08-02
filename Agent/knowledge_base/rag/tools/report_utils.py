@@ -190,16 +190,14 @@ def build_dataset_validation_markdown_report(result: Dict[str, Any]) -> str:
         f"## {report_label('Datasets')}",
         "",
         f"| {report_label('dataset')} | {report_label('samples')} | {report_label('with_gold')} | "
-        f"{report_label('with_claims')} | {report_label('question_types')} |",
-        "| --- | ---: | ---: | ---: | --- |",
+        f"{report_label('with_claims')} |",
+        "| --- | ---: | ---: | ---: |",
     ]
     for dataset_name, detail in result["datasets"].items():
-        type_counts = detail.get("question_type_counts", {})
-        type_text = ", ".join(f"{key}: {value}" for key, value in type_counts.items()) if type_counts else "-"
-        with_gold = detail.get("with_gold_chunk_ids", detail.get("with_gold_doc_ids", 0))
+        with_gold = detail.get("with_gold_evidence", 0)
         lines.append(
             f"| {dataset_name} | {detail['sample_count']} | {with_gold} | "
-            f"{detail['with_expected_claims']} | {escape_markdown_cell(type_text)} |"
+            f"{detail.get('with_expected_claims', 0)} |"
         )
 
     lines.extend(["", f"## {report_label('Errors')}", ""])
@@ -360,10 +358,10 @@ def build_rag_retrieval_single_markdown_report(result: Dict[str, Any]) -> str:
             [
                 f"### Q{index}. {escape_markdown_cell(detail.get('question', ''))}",
                 "",
-                f"- {report_label('question_type')}: {detail.get('question_type', '')}",
+                f"- sample_id: {detail.get('sample_id', '')}",
                 f"- {report_label('recall')}: {format_metric(detail.get('recall', 0.0))}",
                 f"- {report_label('reciprocal_rank')}: {format_metric(detail.get('reciprocal_rank', 0.0))}",
-                f"- matched_chunk_ids: {', '.join(detail.get('matched_chunk_ids', [])) or 'None'}",
+                f"- matched_evidence_count: {len(detail.get('matched_evidence', []))}",
                 f"- expected_claims: {'; '.join(detail.get('expected_claims', [])) or 'None'}",
                 f"- loss_reasons: {', '.join(detail.get('loss_reasons', [])) or 'None'}",
                 f"- final_evidence_count: {len(detail.get('final_evidence_payload', []))}",
