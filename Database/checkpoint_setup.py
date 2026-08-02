@@ -14,6 +14,11 @@ from Agent.causal_agent.postgres_checkpointer import (
 
 async def _main_async() -> None:
     """等待 PostgreSQL 可用后执行官方幂等 setup。"""
+    await setup_checkpoint_schema_once()
+
+
+async def setup_checkpoint_schema_once() -> None:
+    """执行一次 LangGraph PostgreSQL checkpoint schema 初始化并校验版本。"""
     async with open_checkpoint_pool() as pool:
         await setup_checkpoint_schema(pool)
         await verify_checkpoint_schema(pool)

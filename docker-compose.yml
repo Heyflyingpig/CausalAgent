@@ -153,6 +153,8 @@ services:
         condition: service_healthy
       mysql-replica:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     networks:
       - causalagent_replica_network
     restart: unless-stopped
@@ -215,19 +217,28 @@ services:
         condition: service_healthy
       mysql-replica:
         condition: service_healthy
-      checkpoint-setup:
+      db-bootstrap:
         condition: service_completed_successfully
     networks:
       - causalagent_replica_network
     restart: unless-stopped
 
-  checkpoint-setup:
+  db-bootstrap:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: causalagent_checkpoint_setup
-    command: python -m Database.checkpoint_setup
+    container_name: causalagent_db_bootstrap
+    command: python -m Database.bootstrap
     environment:
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_PORT=3306
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
       - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
       - CHECKPOINT_POSTGRES_PORT=5432
       - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
@@ -239,6 +250,8 @@ services:
     volumes:
       - .:/app
     depends_on:
+      mysql-primary:
+        condition: service_healthy
       postgres-checkpoint:
         condition: service_healthy
     networks:
@@ -284,7 +297,7 @@ services:
         condition: service_healthy
       mysql-replica:
         condition: service_healthy
-      checkpoint-setup:
+      db-bootstrap:
         condition: service_completed_successfully
     networks:
       - causalagent_replica_network
@@ -345,6 +358,8 @@ services:
         condition: service_healthy
       mysql-replica:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     networks:
       - causalagent_replica_network
     restart: unless-stopped

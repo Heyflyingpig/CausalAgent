@@ -191,24 +191,24 @@ cp .env.example .env
 
 3. 在项目根目录运行docker-compose
 ```bash
-docker-compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml up -d
 ```
 
-4. 运行数据库迁移
+`docker compose ... up -d` 会在 app、worker、monitor 和 cleanup worker 启动前，
+自动运行一次性 `db-bootstrap`。它依次执行 MySQL 建库、Alembic migration 和
+LangGraph 官方 PostgreSQL setup。若需要手动重跑该初始化入口，可执行：
+
 ```bash
-docker-compose -f docker-compose.yml run --rm app python Database/database_init.py
-docker-compose -f docker-compose.yml run --rm app alembic upgrade head
+docker compose -f docker-compose.yml run --rm db-bootstrap
 ```
 
-PostgreSQL checkpoint 使用独立服务。请先在 `.env` 设置非空的
-`CHECKPOINT_POSTGRES_PASSWORD`；`docker-compose ... up -d` 会自动运行一次
-`checkpoint-setup` 创建官方 LangGraph schema，并启动独立的
-`checkpoint-cleanup` worker。
+请先在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`。
+`checkpoint-cleanup` 仍是独立的常驻 worker，用于消费跨库清理 outbox。
 
 全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 
 ```bash
-docker-compose -f docker-compose.yml run --rm app python Database/audit_before_db_upgrade.py
+docker compose -f docker-compose.yml run --rm app python Database/audit_before_db_upgrade.py
 ```
 
 > [!IMPORTANT]
@@ -241,7 +241,7 @@ docker-compose -f docker-compose.yml run --rm app python Database/audit_before_d
 
 ```bash
 # Docker 运行
-docker-compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli promote <username>
+docker compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli promote <username>
 ```
 
 管理员系统的部署、开发、API、安全边界和测试说明统一放在 [`Document/admin/`](Document/admin/README.md)。其中：
@@ -366,7 +366,8 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 │   │   └── models/         # 嵌入模型
 │   └── tool_node/          # MCP 工具节点封装（task、rag 调用等）
 ├── Database/               # 数据库初始化与迁移逻辑
-│   ├── database_init.py    # 数据库初始化引导脚本
+│   ├── database_init.py    # MySQL 数据库存在性与连接引导
+│   ├── bootstrap.py        # MySQL/Alembic/PostgreSQL 统一初始化入口
 │   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
 │   ├── inspection.py       # 管理员看板统一只读检查服务
 │   ├── deep_audit.py       # 手动 deep 数据库事实审计

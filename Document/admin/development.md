@@ -26,23 +26,37 @@ npm run build
 python -m app.auth.admin_cli promote <username>
 
 # Docker 运行
-docker-compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli promote <username>
+docker compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli promote <username>
 ```
 
 该命令只做幂等提升，不创建用户，也不负责降级管理员。管理员登录后进入 `/admin/database`。
 
 ## PostgreSQL checkpoint
 
-迁移前请在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`。Docker 主从拓扑会启动
-`postgres-checkpoint`、一次性 `checkpoint-setup` 和持续运行的
-`checkpoint-cleanup`；本地运行等价命令为：
+迁移前请在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`。数据库初始化统一由
+`db-bootstrap` 完成，Docker 和本地都调用同一个 Python 入口：
 
 ```bash
-python -m Database.checkpoint_setup
+docker compose -f docker-compose.yml run --rm db-bootstrap
+
+# 本地运行
+python -m Database.bootstrap
+```
+
+该入口按顺序执行 MySQL 建库、Alembic migration 和 LangGraph 官方 PostgreSQL
+checkpoint setup。`checkpoint-cleanup` 仍是持续运行的跨库清理 worker：
+
+```bash
 python -m Database.checkpoint_cleanup_worker
 ```
 
-`alembic upgrade head` 中的 PostgreSQL 迁移会删除 MySQL checkpoint 表和数据；
+如需只检查或重新执行 PostgreSQL checkpoint schema，也可以单独运行：
+
+```bash
+python -m Database.checkpoint_setup
+```
+
+统一 bootstrap 中的 Alembic migration 会删除 MySQL checkpoint 表和数据；
 `alembic downgrade` 只重建空的兼容表结构，不恢复已删除数据。
 由于该迁移合并了两个历史 head，回退时必须指定明确目标 revision，不能使用
 `alembic downgrade -1`；例如回退到 `e4f5a6b7c8d9`。
