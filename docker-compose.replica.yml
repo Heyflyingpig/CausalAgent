@@ -1,11 +1,11 @@
-# CausalChat MySQL 主从开发
+# 兼容旧路径：当前开发请使用 docker-compose.yml；本文件暂保留，不作为默认入口。
 
 services:
   mysql-primary:
     build:
       context: ./Database/mysql
       dockerfile: Dockerfile.primary
-    container_name: causalchat_mysql_primary
+    container_name: causalagent_mysql_primary
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -24,7 +24,7 @@ services:
     volumes:
       - mysql_primary_data:/var/lib/mysql
     networks:
-      - causalchat_replica_network
+      - causalagent_replica_network
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
@@ -55,7 +55,7 @@ services:
     build:
       context: ./Database/mysql
       dockerfile: Dockerfile.replica
-    container_name: causalchat_mysql_replica
+    container_name: causalagent_mysql_replica
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_REPLICATION_USER: ${MYSQL_REPLICATION_USER:-replica}
@@ -65,7 +65,7 @@ services:
     volumes:
       - mysql_replica_data:/var/lib/mysql
     networks:
-      - causalchat_replica_network
+      - causalagent_replica_network
     depends_on:
       mysql-primary:
         condition: service_healthy
@@ -80,7 +80,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: causalchat_app
+    container_name: causalagent_app
     environment:
       - MYSQL_HOST=mysql-primary
       - MYSQL_WRITE_HOST=mysql-primary
@@ -105,8 +105,8 @@ services:
       - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
       - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
       - CHECKPOINT_POSTGRES_PORT=5432
-      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalchat_checkpoints}
-      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalchat_checkpoint}
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
       - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
       - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
       - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
@@ -154,14 +154,14 @@ services:
       mysql-replica:
         condition: service_healthy
     networks:
-      - causalchat_replica_network
+      - causalagent_replica_network
     restart: unless-stopped
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: causalchat_worker
+    container_name: causalagent_worker
     command: python -m app.agent.worker
     environment:
       - MYSQL_HOST=mysql-primary
@@ -187,8 +187,8 @@ services:
       - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
       - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
       - CHECKPOINT_POSTGRES_PORT=5432
-      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalchat_checkpoints}
-      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalchat_checkpoint}
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
       - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
       - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
       - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
@@ -218,20 +218,20 @@ services:
       checkpoint-setup:
         condition: service_completed_successfully
     networks:
-      - causalchat_replica_network
+      - causalagent_replica_network
     restart: unless-stopped
 
   checkpoint-setup:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: causalchat_checkpoint_setup
+    container_name: causalagent_checkpoint_setup
     command: python -m Database.checkpoint_setup
     environment:
       - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
       - CHECKPOINT_POSTGRES_PORT=5432
-      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalchat_checkpoints}
-      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalchat_checkpoint}
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
       - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
       - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
       - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
@@ -242,13 +242,13 @@ services:
       postgres-checkpoint:
         condition: service_healthy
     networks:
-      - causalchat_replica_network
+      - causalagent_replica_network
 
   checkpoint-cleanup:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: causalchat_checkpoint_cleanup
+    container_name: causalagent_checkpoint_cleanup
     command: python -m Database.checkpoint_cleanup_worker
     environment:
       - MYSQL_HOST=mysql-primary
@@ -269,8 +269,8 @@ services:
       - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
       - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
       - CHECKPOINT_POSTGRES_PORT=5432
-      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalchat_checkpoints}
-      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalchat_checkpoint}
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
       - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
       - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
       - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
@@ -287,14 +287,14 @@ services:
       checkpoint-setup:
         condition: service_completed_successfully
     networks:
-      - causalchat_replica_network
+      - causalagent_replica_network
     restart: unless-stopped
 
   monitor:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: causalchat_monitor
+    container_name: causalagent_monitor
     command: python -m Database.monitor_worker
     environment:
       - MYSQL_HOST=mysql-primary
@@ -346,11 +346,11 @@ services:
       mysql-replica:
         condition: service_healthy
     networks:
-      - causalchat_replica_network
+      - causalagent_replica_network
     restart: unless-stopped
 
 networks:
-  causalchat_replica_network:
+  causalagent_replica_network:
     driver: bridge
 
 volumes:

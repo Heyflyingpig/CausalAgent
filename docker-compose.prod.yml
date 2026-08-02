@@ -1,5 +1,5 @@
 # ==========================================
-# CausalChat Docker Compose 配置文件（生产环境）
+# CausalAgent Docker Compose 配置文件（生产环境）
 # ==========================================
 # 目的：用于生产部署的配置
 # 与开发环境的主要区别：
@@ -14,7 +14,7 @@ services:
   # --- MySQL 数据库服务（生产配置）---
   mysql:
     image: mysql:8.0
-    container_name: causalchat_mysql_prod
+    container_name: causalagent_mysql_prod
     
     # 原因：添加_prod后缀，区分开发和生产容器
     
@@ -46,7 +46,7 @@ services:
     # - 防止误操作删除生产数据
     
     networks:
-      - causalchat_network_prod
+      - causalagent_network_prod
     
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -85,7 +85,7 @@ services:
   # --- Flask 应用服务（生产配置）---
   app:
     # === 关键区别4：使用镜像而非构建 ===
-    image: causalchat:latest
+    image: causalagent:latest
     # 原因：
     # - 生产环境应该使用预构建的镜像
     # - 镜像应该在CI/CD中构建并测试
@@ -95,9 +95,9 @@ services:
     # build:
     #   context: .
     #   dockerfile: Dockerfile
-    # image: causalchat:v1.0.0  # 给构建的镜像打标签
+    # image: causalagent:v1.0.0  # 给构建的镜像打标签
     
-    container_name: causalchat_app_prod
+    container_name: causalagent_app_prod
     
     environment:
       - MYSQL_HOST=mysql  # 仍然使用服务名
@@ -171,7 +171,7 @@ services:
         condition: service_healthy
     
     networks:
-      - causalchat_network_prod
+      - causalagent_network_prod
     
     restart: unless-stopped
     
@@ -196,8 +196,8 @@ services:
     # 如果是单机部署，使用docker run的--cpus和--memory参数
 
   monitor:
-    image: causalchat:latest
-    container_name: causalchat_monitor_prod
+    image: causalagent:latest
+    container_name: causalagent_monitor_prod
     command: python -m Database.monitor_worker
 
     environment:
@@ -235,7 +235,7 @@ services:
         condition: service_healthy
 
     networks:
-      - causalchat_network_prod
+      - causalagent_network_prod
 
     restart: unless-stopped
 
@@ -246,7 +246,7 @@ services:
         max-file: "3"
 
 networks:
-  causalchat_network_prod:
+  causalagent_network_prod:
     driver: bridge
     # 生产环境也可以考虑：
     # - 使用overlay网络（跨主机）
@@ -270,16 +270,16 @@ volumes:
 # 
 # 首次部署：
 #   1. 在服务器上准备代码和配置
-#      git clone https://github.com/your-repo/CausalChat.git
-#      cd CausalChat
+#      git clone https://github.com/your-repo/CausalAgent.git
+#      cd CausalAgent
 #   
 #   2. 创建生产环境配置
 #      cp env.example .env
 #      nano .env  # 填入生产环境的真实值
 #   
 #   3. 构建镜像（如果需要）
-#      docker build -t causalchat:v1.0.0 .
-#      docker tag causalchat:v1.0.0 causalchat:latest
+#      docker build -t causalagent:v1.0.0 .
+#      docker tag causalagent:v1.0.0 causalagent:latest
 #   
 #   4. 启动服务
 #      docker-compose -f docker-compose.prod.yml up -d
@@ -296,8 +296,8 @@ volumes:
 #      git pull
 #   
 #   2. 重新构建镜像
-#      docker build -t causalchat:v1.1.0 .
-#      docker tag causalchat:v1.1.0 causalchat:latest
+#      docker build -t causalagent:v1.1.0 .
+#      docker tag causalagent:v1.1.0 causalagent:latest
 #   
 #   3. 重启服务（滚动更新）
 #      docker-compose -f docker-compose.prod.yml up -d --no-deps --build app
@@ -307,12 +307,12 @@ volumes:
 #      docker-compose -f docker-compose.prod.yml logs -f app
 #
 # 回滚：
-#   docker tag causalchat:v1.0.0 causalchat:latest
+#   docker tag causalagent:v1.0.0 causalagent:latest
 #   docker-compose -f docker-compose.prod.yml up -d app
 #
 # 备份数据：
 #   docker run --rm \
-#     -v causalchat_mysql_data_prod:/data \
+#     -v causalagent_mysql_data_prod:/data \
 #     -v $(pwd):/backup \
 #     alpine tar czf /backup/mysql_backup_$(date +%Y%m%d).tar.gz /data
 #

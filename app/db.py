@@ -74,7 +74,7 @@ def _get_write_pool() -> pooling.MySQLConnectionPool:
         with _pool_lock:
             if _write_pool is None:
                 _write_pool = pooling.MySQLConnectionPool(
-                    pool_name="causalchat_write_pool",
+                    pool_name="causalagent_write_pool",
                     pool_size=settings.MYSQL_POOL_SIZE_WRITE,
                     pool_reset_session=True,
                     **write_connection_config(settings.MYSQL_WRITE_HOST),
@@ -89,7 +89,7 @@ def _get_read_pool(host: str) -> pooling.MySQLConnectionPool:
             pool = _read_pools.get(host)
             if pool is None:
                 pool = pooling.MySQLConnectionPool(
-                    pool_name=f"causalchat_read_{abs(hash(host))}",
+                    pool_name=f"causalagent_read_{abs(hash(host))}",
                     pool_size=settings.MYSQL_POOL_SIZE_READ,
                     pool_reset_session=True,
                     **read_connection_config(host),

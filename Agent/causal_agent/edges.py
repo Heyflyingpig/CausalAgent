@@ -1,11 +1,11 @@
 import logging
-from .state import CausalChatState
+from .state import CausalAgentState
 
 
 ROUTE_DECISIONS = {"fold", "postprocess", "normal_chat", "inquiry_answer"}
 FOLD_DECISIONS = {"preprocess", "agent"}
 
-def decision_router(state: CausalChatState) -> str:
+def decision_router(state: CausalAgentState) -> str:
     """
     只读取 agent 写入的显式 route_decision，不从展示消息推断控制流。
     """
@@ -17,7 +17,7 @@ def decision_router(state: CausalChatState) -> str:
     logging.info("路由决策 -> %s", decision)
     return decision
 
-def fold_router(state: CausalChatState) -> str:
+def fold_router(state: CausalAgentState) -> str:
     """
     只读取 fold 写入的显式 fold_decision，不从展示消息推断控制流。
     """
@@ -29,7 +29,7 @@ def fold_router(state: CausalChatState) -> str:
     logging.info("路由决策 -> %s", decision)
     return decision
 
-def preprocess_router(state: CausalChatState) -> str:
+def preprocess_router(state: CausalAgentState) -> str:
     """
     参数验证节点后的路由器。
     如果验证成功，则执行工具
@@ -39,7 +39,7 @@ def preprocess_router(state: CausalChatState) -> str:
     return "mcp"
 
 
-def execute_tool_router(state:CausalChatState) -> str:
+def execute_tool_router(state:CausalAgentState) -> str:
     """
     旧 execute_tools 节点后的兼容路由器。
     当前父图已改为 preprocess -> mcp -> rag -> agent，本函数仅保留给历史调用。
@@ -48,7 +48,7 @@ def execute_tool_router(state:CausalChatState) -> str:
     logging.info(f"前往decision_router")
     return "agent"
 
-def mcp_router(state: CausalChatState) -> str:
+def mcp_router(state: CausalAgentState) -> str:
     """检测mcp是否调用成功"""
     logging.info("--- 路由: MCP决策 ---")
     mcp_result =  state.get("causal_analysis_result")
@@ -59,7 +59,7 @@ def mcp_router(state: CausalChatState) -> str:
     return "agent"
 
 
-def postprocess_router(state:CausalChatState) -> str:
+def postprocess_router(state:CausalAgentState) -> str:
     '''
     通向report_node
     '''

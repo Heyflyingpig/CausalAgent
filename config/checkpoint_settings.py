@@ -61,8 +61,8 @@ class CheckpointPostgresConfig:
         return cls(
             host=os.getenv("CHECKPOINT_POSTGRES_HOST", "postgres-checkpoint"),
             port=_int_env("CHECKPOINT_POSTGRES_PORT", 5432),
-            database=os.getenv("CHECKPOINT_POSTGRES_DATABASE", "causalchat_checkpoints"),
-            user=os.getenv("CHECKPOINT_POSTGRES_USER", "causalchat_checkpoint"),
+            database=os.getenv("CHECKPOINT_POSTGRES_DATABASE", "causalagent_checkpoints"),
+            user=os.getenv("CHECKPOINT_POSTGRES_USER", "causalagent_checkpoint"),
             password=os.getenv("CHECKPOINT_POSTGRES_PASSWORD") or None,
             connect_timeout_seconds=_float_env(
                 "CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS",

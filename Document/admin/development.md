@@ -2,7 +2,7 @@
 
 ## 生产部署
 
-Dockerfile 使用 Node 24 构建 `admin-frontend/`，再把产物复制到最终 Python 镜像的 `/opt/causalchat-admin`。运行镜像不包含 Node、不启动 Vite，也不开放 Node 端口。
+Dockerfile 使用 Node 24 构建 `admin-frontend/`，再把产物复制到最终 Python 镜像的 `/opt/causalagent-admin`。运行镜像不包含 Node、不启动 Vite，也不开放 Node 端口。
 
 非 Docker 环境需要先生成管理员前端产物：
 
@@ -15,7 +15,7 @@ npm run test:e2e:mock
 npm run build
 ```
 
-未设置开发服务器地址时，Flask 默认托管仓库中的 `admin-frontend/dist/`；Docker 镜像通过 `ADMIN_FRONTEND_DIST_DIR=/opt/causalchat-admin` 指向镜像内产物。
+未设置开发服务器地址时，Flask 默认托管仓库中的 `admin-frontend/dist/`；Docker 镜像通过 `ADMIN_FRONTEND_DIST_DIR=/opt/causalagent-admin` 指向镜像内产物。
 
 ## 创建初始管理员
 
@@ -26,7 +26,7 @@ npm run build
 python -m app.auth.admin_cli promote <username>
 
 # Docker 运行
-docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.admin_cli promote <username>
+docker-compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli promote <username>
 ```
 
 该命令只做幂等提升，不创建用户，也不负责降级管理员。管理员登录后进入 `/admin/database`。
@@ -77,4 +77,4 @@ Flask 仍先完成管理员页面鉴权，再跳转到 Vite。Vite 只代理 `/a
 
 ## 发布产物
 
-`admin-frontend/dist/` 是随管理员 Vue 源码同步更新的发布产物。`.dockerignore` 排除本地产物，因为镜像会从当前源码重新构建；最终镜像使用 `/opt/causalchat-admin` 中的构建结果。
+`admin-frontend/dist/` 是随管理员 Vue 源码同步更新的发布产物。`.dockerignore` 排除本地产物，因为镜像会从当前源码重新构建；最终镜像使用 `/opt/causalagent-admin` 中的构建结果。

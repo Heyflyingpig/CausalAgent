@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from Agent.llm_structured_output import ainvoke_structured
 from Agent.causal_agent.back_prompt import causal_rag_prompt
-from Agent.causal_agent.state import CausalChatState
+from Agent.causal_agent.state import CausalAgentState
 
 
 class RagQuestionItem(BaseModel):
@@ -59,7 +59,7 @@ def _format_messages(messages: List[BaseMessage], max_messages: int = 6) -> str:
     return "\n".join(formatted_messages) if formatted_messages else "无可用对话历史。"
 
 
-def _format_causal_summary(state: CausalChatState) -> str:
+def _format_causal_summary(state: CausalAgentState) -> str:
     """将因果分析结果转换为适合问题生成 prompt 的摘要文本。"""
     causal_result = state.get("causal_analysis_result") or {}
     if not causal_result:
@@ -72,7 +72,7 @@ def _format_causal_summary(state: CausalChatState) -> str:
 
 @task
 async def get_rag_questions(
-    state: CausalChatState,
+    state: CausalAgentState,
     llm: ChatOpenAI,
     max_questions: int,
 ) -> List[Dict]:

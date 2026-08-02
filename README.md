@@ -191,13 +191,13 @@ cp .env.example .env
 
 3. 在项目根目录运行docker-compose
 ```bash
-docker-compose -f docker-compose.replica.yml up -d
+docker-compose -f docker-compose.yml up -d
 ```
 
 4. 运行数据库迁移
 ```bash
-docker-compose -f docker-compose.replica.yml run --rm app python Database/database_init.py
-docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head
+docker-compose -f docker-compose.yml run --rm app python Database/database_init.py
+docker-compose -f docker-compose.yml run --rm app alembic upgrade head
 ```
 
 PostgreSQL checkpoint 使用独立服务。请先在 `.env` 设置非空的
@@ -208,7 +208,7 @@ PostgreSQL checkpoint 使用独立服务。请先在 `.env` 设置非空的
 全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 
 ```bash
-docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_before_db_upgrade.py
+docker-compose -f docker-compose.yml run --rm app python Database/audit_before_db_upgrade.py
 ```
 
 > [!IMPORTANT]
@@ -241,7 +241,7 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 
 ```bash
 # Docker 运行
-docker-compose -f docker-compose.replica.yml run --rm app python -m app.auth.admin_cli promote <username>
+docker-compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli promote <username>
 ```
 
 管理员系统的部署、开发、API、安全边界和测试说明统一放在 [`Document/admin/`](Document/admin/README.md)。其中：
@@ -314,15 +314,15 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 
 ```
 .
-├── Causalchat.py           # Flask 后端入口
+├── CausalAgent.py          # Flask 后端入口
 ├── Run_causal.py           # 桌面端启动入口（pywebview）
 ├── requirements.txt        # 完整依赖
 ├── requirements-base.txt   # 基础依赖（docker/生产使用）
 ├── requirements-test.txt   # Docker 单元测试依赖
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yml         # MySQL 主从 + PostgreSQL checkpoint 开发拓扑
 ├── docker-compose.prod.yml
-├── docker-compose.replica.yml # MySQL 主从开发拓扑
+├── docker-compose.replica.yml # 旧路径兼容副本，不作为默认开发入口
 ├── docker-compose.test.yml # 按需创建的一次性单元测试环境
 ├── .github/workflows/       # GitHub Actions 工作流
 ├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收端口/容器覆盖

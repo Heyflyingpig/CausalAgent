@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, END
-from .state import CausalChatState
+from .state import CausalAgentState
 from . import nodes, edges
 from .graph_utils import bind_node
 from .tool_subgraphs import build_mcp_subgraph, build_rag_subgraph
@@ -26,7 +26,7 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
 
     父图只表达业务阶段顺序，MCP/RAG 的 tool-calling 细节封装在各自子图内。
     """
-    workflow = StateGraph(CausalChatState)
+    workflow = StateGraph(CausalAgentState)
 
     agent_node_with_llm = bind_node(nodes.agent_node, llm=llm)
     fold_node_with_llm = bind_node(nodes.fold_node, llm=llm)

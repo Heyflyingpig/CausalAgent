@@ -60,7 +60,7 @@ def promote_user_to_admin(username: str) -> tuple[bool, str]:
 
 def build_parser() -> argparse.ArgumentParser:
     """构建管理员 CLI 的命令行参数解析器。"""
-    parser = argparse.ArgumentParser(description="CausalChat 初始管理员管理命令")
+    parser = argparse.ArgumentParser(description="CausalAgent 初始管理员管理命令")
     subparsers = parser.add_subparsers(dest="command", required=True)
     promote_parser = subparsers.add_parser("promote", help="提升一个现有用户为管理员")
     promote_parser.add_argument("username", help="数据库中已经注册的准确用户名")

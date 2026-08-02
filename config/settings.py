@@ -6,9 +6,9 @@ from pathlib import Path
 from config.checkpoint_settings import CheckpointPostgresConfig
 
 # 计算项目根目录
-# __file__ -> D:/.../CausalChat/config/settings.py
-# os.path.dirname(__file__) -> D:/.../CausalChat/config
-# os.path.dirname(os.path.dirname(__file__)) -> D:/.../CausalChat (项目根目录)
+# __file__ -> D:/.../CausalAgent/config/settings.py
+# os.path.dirname(__file__) -> D:/.../CausalAgent/config
+# os.path.dirname(os.path.dirname(__file__)) -> D:/.../CausalAgent (项目根目录)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 加载 .env 文件（如果存在）

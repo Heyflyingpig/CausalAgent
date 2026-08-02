@@ -1,4 +1,4 @@
-# CausalChat Docker 镜像构建文件
+# CausalAgent Docker 镜像构建文件
 
 FROM python:3.11-slim AS python-deps
 
@@ -51,11 +51,11 @@ RUN npm run build
 FROM python-deps AS runtime
 
 COPY . .
-COPY --from=admin-builder /frontend/dist /opt/causalchat-admin
+COPY --from=admin-builder /frontend/dist /opt/causalagent-admin
 
-ENV ADMIN_FRONTEND_DIST_DIR=/opt/causalchat-admin
+ENV ADMIN_FRONTEND_DIST_DIR=/opt/causalagent-admin
 
 EXPOSE 5001
 
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:5001 --workers ${WEB_WORKERS:-1} --threads ${WEB_THREADS:-12} --timeout ${WEB_TIMEOUT:-120} Causalchat:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:5001 --workers ${WEB_WORKERS:-1} --threads ${WEB_THREADS:-12} --timeout ${WEB_TIMEOUT:-120} CausalAgent:app"]
 

@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage
 from langgraph.errors import NodeError
 from langgraph.types import Command, RetryPolicy, TimeoutPolicy, default_retry_on
 
-from .state import CausalChatState
+from .state import CausalAgentState
 
 
 def retry_transient_errors(exc: BaseException) -> bool:
@@ -65,7 +65,7 @@ def sanitize_error(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
 
 
-def route_to_normal_chat(state: CausalChatState, error: NodeError) -> Command:
+def route_to_normal_chat(state: CausalAgentState, error: NodeError) -> Command:
     """Agent 路由失败后的保守恢复：进入普通问答兜底分支。"""
     return Command(
         update={
@@ -81,7 +81,7 @@ def route_to_normal_chat(state: CausalChatState, error: NodeError) -> Command:
     )
 
 
-def recover_fold_to_agent(state: CausalChatState, error: NodeError) -> Command:
+def recover_fold_to_agent(state: CausalAgentState, error: NodeError) -> Command:
     """Fold 节点失败后的恢复：记录审计决策并回到 agent。"""
     return Command(
         update={
@@ -98,7 +98,7 @@ def recover_fold_to_agent(state: CausalChatState, error: NodeError) -> Command:
     )
 
 
-def recover_preprocess_to_agent(state: CausalChatState, error: NodeError) -> Command:
+def recover_preprocess_to_agent(state: CausalAgentState, error: NodeError) -> Command:
     """Preprocess 节点失败后的恢复：回到 agent，但不伪造 fold 决策。"""
     return Command(
         update={
@@ -114,7 +114,7 @@ def recover_preprocess_to_agent(state: CausalChatState, error: NodeError) -> Com
     )
 
 
-def recover_tools_to_agent(state: CausalChatState, error: NodeError) -> Command:
+def recover_tools_to_agent(state: CausalAgentState, error: NodeError) -> Command:
     """工具节点失败后的恢复：保留结构化失败结果并回到 agent。"""
     message = _error_message(error)
     return Command(
@@ -136,7 +136,7 @@ def recover_tools_to_agent(state: CausalChatState, error: NodeError) -> Command:
     )
 
 
-def recover_mcp_tool_failure(state: CausalChatState, error: NodeError) -> dict:
+def recover_mcp_tool_failure(state: CausalAgentState, error: NodeError) -> dict:
     """MCP 子图节点失败后的恢复：写入标准失败结构，由父图决定后续路由。"""
     message = sanitize_error(error.error)
     return {
@@ -150,7 +150,7 @@ def recover_mcp_tool_failure(state: CausalChatState, error: NodeError) -> dict:
     }
 
 
-def degrade_rag_tool_result(state: CausalChatState, error: NodeError) -> dict:
+def degrade_rag_tool_result(state: CausalAgentState, error: NodeError) -> dict:
     """RAG ToolNode 失败后的降级：保留稳定结构，让报告继续生成。"""
     return {
         "knowledge_base_result": {
@@ -163,7 +163,7 @@ def degrade_rag_tool_result(state: CausalChatState, error: NodeError) -> dict:
     }
 
 
-def recover_postprocess_to_report(state: CausalChatState, error: NodeError) -> Command:
+def recover_postprocess_to_report(state: CausalAgentState, error: NodeError) -> Command:
     """后处理失败后的恢复：使用原始分析结果继续报告生成。"""
     message = f"{_error_message(error)}；将使用原始分析结果继续生成报告。"
     return Command(
@@ -175,7 +175,7 @@ def recover_postprocess_to_report(state: CausalChatState, error: NodeError) -> C
     )
 
 
-def recover_terminal_message(state: CausalChatState, error: NodeError) -> dict:
+def recover_terminal_message(state: CausalAgentState, error: NodeError) -> dict:
     """终态回答节点失败后的恢复：返回可展示的失败消息，让 graph 正常结束。"""
     return {
         "messages": [
@@ -187,7 +187,7 @@ def recover_terminal_message(state: CausalChatState, error: NodeError) -> dict:
     }
 
 
-def recover_report(state: CausalChatState, error: NodeError) -> dict:
+def recover_report(state: CausalAgentState, error: NodeError) -> dict:
     """报告节点失败后的恢复：生成简短兜底报告，让 worker 能走 final_result。"""
     message = f"报告生成失败：{_error_message(error)}"
     return {
@@ -197,4 +197,4 @@ def recover_report(state: CausalChatState, error: NodeError) -> dict:
     }
 
 
-NodeErrorHandler = Callable[[CausalChatState, NodeError], Command | dict]
+NodeErrorHandler = Callable[[CausalAgentState, NodeError], Command | dict]

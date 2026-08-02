@@ -2,7 +2,7 @@ import os
 import logging
 import sys
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))      # .../Agent/CausalChatMCP
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))      # .../Agent/CausalAgentMCP
 AGENT_DIR = os.path.dirname(CURRENT_DIR)                      # .../Agent
 PROJECT_ROOT = os.path.dirname(AGENT_DIR)                     # 项目根目录
 

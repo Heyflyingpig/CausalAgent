@@ -15,11 +15,11 @@ class AdminFrontendDeploymentTests(unittest.TestCase):
         self.assertIn("RUN npm run build", text)
         self.assertIn("FROM python:3.11-slim AS runtime", text)
         self.assertIn(
-            "COPY --from=admin-builder /frontend/dist /opt/causalchat-admin",
+            "COPY --from=admin-builder /frontend/dist /opt/causalagent-admin",
             text,
         )
         self.assertIn(
-            "ENV ADMIN_FRONTEND_DIST_DIR=/opt/causalchat-admin",
+            "ENV ADMIN_FRONTEND_DIST_DIR=/opt/causalagent-admin",
             text,
         )
         final_stage = text.split("FROM python:3.11-slim AS runtime", 1)[1]
@@ -43,11 +43,12 @@ class AdminFrontendDeploymentTests(unittest.TestCase):
         )
 
     def test_compose_files_add_no_node_service_or_port(self):
-        """三套 Compose 不得启动 Vite/Node 服务或开放 5173。"""
+        """各套 Compose 不得启动 Vite/Node 服务或开放 5173。"""
         for filename in (
             "docker-compose.yml",
             "docker-compose.prod.yml",
-            "docker-compose.replica.yml",
+            "docker-compose.test.yml",
+            "docker-compose.admin-e2e.yml",
         ):
             with self.subTest(filename=filename):
                 text = Path(filename).read_text(encoding="utf-8")

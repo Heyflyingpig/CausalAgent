@@ -35,7 +35,7 @@ jobs:
         run: >-
           python -m compileall -q
           app Agent Database config tests
-          Causalchat.py Run_causal.py
+          CausalAgent.py Run_causal.py
 
   light-tests:
     name: Light tests

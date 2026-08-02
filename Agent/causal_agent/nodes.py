@@ -1,5 +1,5 @@
 import asyncio
-from .state import CausalChatState
+from .state import CausalAgentState
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -55,7 +55,7 @@ class RouteQuery(BaseModel):
     )
 
 # agentnode节点用于做初步的decision
-def _latest_human_text(state: CausalChatState) -> str:
+def _latest_human_text(state: CausalAgentState) -> str:
     """Return the latest human message content from the graph state."""
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):
@@ -81,7 +81,7 @@ def _is_explicit_causal_analysis_request(text: str) -> bool:
     return has_data_target and has_causal_intent and has_action
 
 
-async def agent_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
 
     """
     Agent节点，是图的起点，用于判断是否需要进入causal循环，
@@ -195,7 +195,7 @@ from Agent.Processing.fold_verify import validate_analysis
 from Agent.Processing.data_visualize import generate_visualizations
 
 
-async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     文件加载、解析与验证节点。
     1.  使用LLM从对话中一次性提取文件名、目标和处理变量。
@@ -380,7 +380,7 @@ async def fold_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         }
 
 
-async def preprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def preprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     项目预处理模块:
     1.  从状态(state)中加载 DataFrame 和数据摘要。
@@ -484,7 +484,7 @@ from Agent.tool_node.tool_message_adapter import (
 )
 
 
-async def mcp_planner_node(state: CausalChatState, llm: ChatOpenAI, mcp_tools: list) -> dict:
+async def mcp_planner_node(state: CausalAgentState, llm: ChatOpenAI, mcp_tools: list) -> dict:
     """强制模型从可用 MCP tools 中选择一个，并返回标准 Tool Call。"""
     if not mcp_tools:
         raise RuntimeError("No MCP tools are available for causal analysis.")
@@ -529,7 +529,7 @@ async def mcp_planner_node(state: CausalChatState, llm: ChatOpenAI, mcp_tools: l
     return {"messages": [ai_message]}
 
 
-async def mcp_result_parser_node(state: CausalChatState) -> dict:
+async def mcp_result_parser_node(state: CausalAgentState) -> dict:
     """解析 MCP ToolNode 产生的 ToolMessage，并把结果注入状态。"""
     messages = state.get("messages", [])
     latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
@@ -582,7 +582,7 @@ async def mcp_result_parser_node(state: CausalChatState) -> dict:
     }
 
 
-async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag_tools: list) -> dict:
+async def rag_question_planner_node(state: CausalAgentState, llm: ChatOpenAI, rag_tools: list) -> dict:
     """生成 RAG 问题；结构化失败时写入稳定降级结果并跳过工具调用。"""
     logging.info("正在启动 RAG 问题生成任务...")
 
@@ -626,7 +626,7 @@ async def rag_question_planner_node(state: CausalChatState, llm: ChatOpenAI, rag
     return {"messages": [ai_message]}
 
 
-async def rag_result_parser_node(state: CausalChatState) -> dict:
+async def rag_result_parser_node(state: CausalAgentState) -> dict:
     """子节点：获取rag返回内容，注入state当中"""
     messages = state.get("messages", [])
     latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
@@ -729,7 +729,7 @@ def _without_removed_edges(
     ]
 
 
-async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     后处理模块：
     1. 提取并验证因果图结构
@@ -931,7 +931,7 @@ async def postprocess_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
 
 ## 调用元数据
 from Agent.Report.Metadata_sum import metadata_summary, metadata_mapping
-async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     报告模块：
     主要是对所有的参数生成一份报告
@@ -1047,7 +1047,7 @@ async def report_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
         "messages": [report_complete_message]
     }
 
-async def normal_chat_node(state: CausalChatState,llm: ChatOpenAI) -> dict:
+async def normal_chat_node(state: CausalAgentState,llm: ChatOpenAI) -> dict:
     """
     Represents "正常问答".
     This is for when the agent determines it's a simple chat conversation.
@@ -1074,7 +1074,7 @@ async def normal_chat_node(state: CausalChatState,llm: ChatOpenAI) -> dict:
     # 只返回新消息
     return {"messages": [AIMessage(content=response, name="normal_chat")]}
 
-async def inquiry_answer_node(state: CausalChatState, llm: ChatOpenAI) -> dict:
+async def inquiry_answer_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     根据报告追问用户的问题
     """
