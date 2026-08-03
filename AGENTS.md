@@ -44,7 +44,7 @@
 ├── .github/                 # GitHub Actions 与 Issue 模板
 │   ├── workflows/           # GitHub Actions 工作流
 │   └── ISSUE_TEMPLATE/      # Issue Form 模板
-├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收覆盖
+├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从 + PostgreSQL 验收覆盖
 ├── README.md               # 项目说明
 ├── Document/
 │   └── admin/              # 管理员 API、开发部署与测试文档
@@ -84,6 +84,7 @@
 │   ├── audit_before_db_upgrade.py
 │   ├── inspection.py       # 数据库看板统一只读检查服务
 │   ├── deep_audit.py       # 手动 deep 数据库事实审计
+│   ├── checkpoint_inspection.py # PostgreSQL checkpoint 管理员只读与审计
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口
 │   ├── monitor_worker.py   # 数据库看板分层采集进程
 │   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入
@@ -126,7 +127,7 @@
   - `app/static/js/script.js`
 - 管理员前端独立位于 `admin-frontend/`，使用 Vue 3、严格 TypeScript、Vue Router、Element Plus、Vite、Vitest 和 Playwright；路由为 `/admin/database` 与 `/admin/database/settings`，Vite base 固定为 `/admin/`。
 - 管理员 Vue 生产构建默认从 `admin-frontend/dist` 读取；Docker 镜像使用 Node 24 构建阶段，并把产物复制到 `/opt/causalagent-admin`。最终 Python 运行镜像不包含 Node、不启动 Vite、不开放 Node 端口。开发期只有显式设置 `ADMIN_VITE_DEV_SERVER_URL` 时，Flask 在完成页面鉴权后才跳转到 Vite。
-- `admin-frontend/dist/` 是需要随管理员 Vue 源码同步更新并提交的发布产物；根 `.gitignore` 只忽略仓库根目录 `/dist/`。`.dockerignore` 继续排除本地前端产物，因为 Dockerfile 会在 Node 构建阶段从当前源码重新构建并复制到 `/opt/causalagent-admin`。
+- `admin-frontend/dist/` 中只提交入口文件 `index.html`，`dist/assets/` 的哈希构建产物由 `.gitignore` 排除并在 Dockerfile 的 Node 构建阶段重新生成；`.dockerignore` 继续排除本地前端产物，镜像会从当前源码构建并复制到 `/opt/causalagent-admin`。
 - 旧管理员 `db_admin.html`、`db_admin.css`、`db_admin.js` 已在等价测试、真实快照和整版回滚演练通过后移除；管理员页面只使用 Vue 生产构建或显式启用的 Vite 开发服务器，普通用户静态前端不受影响。
 - `Database/database_init.py` 只负责加载环境变量、确保 MySQL 数据库存在并检查连接；`Database/bootstrap.py` 负责按顺序编排 MySQL 建库、Alembic migration 和 LangGraph PostgreSQL checkpoint setup；业务表结构维护入口仍是 Alembic，而不是 `database_init.py`。
 - Alembic 迁移目录由 `alembic.ini` 指向 `Database/migrations`；业务 schema 变更应以迁移脚本为准。
@@ -148,17 +149,14 @@
 - monitor 还接受仅手动请求的 `deep_audit` 快照：它永不定时调度，覆盖 revision、关键 schema、字符集/UTC/隔离级别、账号职责结论、Job/Event、checkpoint cleanup outbox、归档关系、`active_session_key` 和逐从库状态；每项有查询超时和异常样本上限，不自动修复，也不返回账号、host 或 grants。
 - 看板连接使用率 warning/error 默认阈值为 `70%`/`85%`，由 `DB_DASHBOARD_CONNECTION_WARNING_PERCENT` 和 `DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT` 配置；快速 SELECT 超时由 `DB_INSPECTION_QUERY_TIMEOUT_MS` 配置，默认 `3000ms`。刷新和采集配置统一由 `DB_MONITOR_AUTO_REFRESH_ENABLED`、`DB_MONITOR_REALTIME_INTERVAL_SECONDS`、`DB_MONITOR_SQL_INTERVAL_SECONDS`、`DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS`、`DB_MONITOR_SLOW_QUERY_WARNING_DELTA`、`DB_MONITOR_INTEGRITY_ENABLED`、`DB_MONITOR_INTEGRITY_INTERVAL_SECONDS` 控制，不得在路由、SQL 或前端硬编码。
 - SQL digest 区块语义是“SQL 性能摘要/高负载 SQL”，按单次平均 `AVG_TIMER_WAIT` 降序选取和展示，平均耗时相同时按累计 `SUM_TIMER_WAIT` 降序次排序；它不等价于超过 `long_query_time` 的单次慢查询，慢查询告警优先使用采集窗口内 `Slow_queries` 增量，累计值仅作兼容和辅助展示。
-- 运行期完整性审计不再对已有外键保证的 message、attachment、job、event 和 checkpoint write 关系执行 `COUNT(*) + LEFT JOIN` 全表扫描，而是轻量确认关键约束存在；仍保留当前没有外键保证的 `checkpoints.thread_id → sessions.id` 检查，也不再要求 `chat_messages` 必须存在分区。
-- `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoints`、`checkpoint_writes`、`analysis_jobs`、`analysis_job_events`、`database_monitor_snapshots`、`database_monitor_settings`、`admin_audit_events`、`admin_operations`、`admin_operation_items` 这些关键表，以及 `users.role`、`users.auth_version`、`users.password_changed_at`、`checkpoint_writes.write_identity_hash` 和 3.2 三个关键索引是否已存在。
-- 当前 LangGraph MySQL checkpointer 使用 `session_id` 作为 `thread_id`；删除已创建会话时必须在同一事务内先删除对应 `checkpoints`，并依赖 `checkpoint_writes → checkpoints` 的级联外键清理 writes，不能调用会自行开事务的 `MySQLSaver.delete_thread()`。
-- `checkpoint_writes` 的幂等业务键是 `(thread_id, checkpoint_ns, checkpoint_id, task_id, idx)`；由于完整 utf8mb4 联合索引超长，应用写入并由 3.2 migration 回填长度前缀编码的 SHA-256 `BINARY(32)` 摘要，再建立唯一索引，不截断 LangGraph 标识。该列不能使用 generated column，因为其基列属于带 `ON DELETE CASCADE` 的复合外键。特殊 writes 走 upsert，普通 writes 忽略重复；最新 checkpoint 按 `created_at DESC, checkpoint_id DESC` 稳定排序。
-- `Database/lifecycle_repair.py` 默认只列出有限孤立 archived session/checkpoint/pending writes 主键；只有 `--apply --confirm-database <精确库名>` 才执行，migration 不得调用它或静默删除历史数据。
 - 运行期完整性审计不再查询已经迁移走的 MySQL checkpoint 表，而是轻量确认 cleanup outbox 外键/领取索引，并报告失败清理任务；也不再要求 `chat_messages` 必须存在分区。
 - `check_database_readiness()` 当前会检查 `users`、`sessions`、`chat_messages`、`chat_attachments`、`uploaded_files`、`archived_sessions`、`checkpoint_cleanup_outbox`、`analysis_jobs`、`analysis_job_events`、`database_monitor_snapshots`、`database_monitor_settings`、`admin_audit_events`、`admin_operations`、`admin_operation_items` 这些关键表，以及 `users.role`、`users.auth_version`、`users.password_changed_at`、cleanup outbox 领取索引和管理员幂等索引是否已存在。
 - 当前 LangGraph PostgreSQL checkpointer 使用 `session_id` 作为 `thread_id`；会话或用户删除只能在 MySQL 事务内先写 `checkpoint_cleanup_outbox`，不能把 PostgreSQL `adelete_thread()` 假装纳入 MySQL 事务。
+- quick integrity 通过独立 PostgreSQL 只读连接检查 checkpoint 连通性、官方四表集合和 setup migration 版本；deep audit 额外检查官方字段/主键、三张数据表的估算统计，并抽取最多 20 个 `thread_id → sessions.id` 跨库关系样本。所有结果只返回逻辑别名，不返回 PostgreSQL host、账号或连接串。
 - `checkpoint_cleanup_outbox` 使用 `(thread_id)` 唯一键幂等，cleanup worker 用 `FOR UPDATE SKIP LOCKED` 领取任务，租约过期可恢复，最多执行三次，失败后按 10 秒、30 秒退避；管理员用户删除的操作状态由 outbox 聚合推进。
 - `Database/lifecycle_repair.py` 默认只列出有限孤立 archived session 和失败/过期 cleanup outbox 主键；只有 `--apply --confirm-database <精确库名>` 才执行，migration 不得调用它或静默删除历史数据。
 - `analysis_jobs` 和 `analysis_job_events` 是当前长任务系统的真实持久化基础：前者是任务队列，后者是事件日志；job 创建、领取、状态更新、事件写入和 SSE 读取都必须走主库或强一致读。
+- 管理员任务详情通过单视图选择器展示 MySQL `analysis_job_events` 的节点/任务事件或 PostgreSQL checkpoint 安全摘要，默认进入节点/任务事件；新 checkpoint 通过 `metadata.job_id` 与任务精确关联，旧记录缺少该字段时不得按时间猜测归属。管理员接口不得读取或返回 checkpoint 状态正文、blob 或 pending writes。
 - 同一 `user_id + session_id` 同时只允许一个 `queued/running` job；当前实现不是 generated column，而是把 `active_session_key` 作为可空普通列，并通过唯一键 `uq_analysis_jobs_active_session` 兜底并发竞态。
 - 旧 `/api/send_stream` 只保留为迁移提示接口，返回 `410`；前端真实路径应使用 `POST /api/agent/jobs` 创建任务，再用 `GET /api/agent/jobs/<job_id>/events` 订阅 SSE，断线续传依赖 `Last-Event-ID`。
 - 数据库账号按职责拆分：
@@ -168,6 +166,7 @@
   - `MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`：只给 MySQL 从库复制通道拉 binlog 用。
   - `MYSQL_USER` / `MYSQL_PASSWORD`：仅作为写/读账号兼容兜底，不承担复制状态检查职责。
 - `docker-compose.yml` 是本地主从加 PostgreSQL checkpoint 开发拓扑，当前包含 `mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`db-bootstrap`、`app`、`worker`、`monitor`、`checkpoint-cleanup` 八个服务；`db-bootstrap` 是一次性初始化服务，运行成功后其他运行服务才启动，本轮仍不提供自动故障切换。`docker-compose.replica.yml` 仅保留为旧路径兼容副本。
+- `docker-compose.prod.yml` 同样包含 PostgreSQL checkpoint、统一 bootstrap、Agent worker、monitor 和 checkpoint cleanup；`app` 与 `monitor` 需要 PostgreSQL 配置以支持管理员 checkpoint 摘要和 quick/deep 审计。
 - 连接池按 OS 进程计算：`write_pool + read_pool * (1 + replica_count)`，worker slot 共享所在进程的池。默认建连/获取池/管理员锁等待/从库状态缓存分别为 5s/3s/5s/2s；复制状态失效或异常只回退主库，不自动切主。真实容量依据和读写矩阵记录在 `setting/database_governance.md`。
 - Docker 是当前首选开发方式；`docker-compose.yml` 中 `app` 和 `worker` 都会挂载以下知识库目录：
   - `Agent/knowledge_base/models`

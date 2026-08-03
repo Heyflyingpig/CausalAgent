@@ -1,6 +1,7 @@
-"""
-MySQL Checkpointer Implementation for LangGraph
-基于 LangGraph 官方 BaseCheckpointSaver 接口的 MySQL 实现
+"""历史兼容的 MySQL Checkpointer，不再用于现行运行或管理员读取链路。
+
+现行 LangGraph checkpoint 事实源是 PostgreSQL。本文件仅供旧代码迁移参考，
+不得被 Web、worker、管理员服务或现行测试导入。
 
 """
 

@@ -26,15 +26,17 @@ function Assert-Admin31Exit {
 
 $primaryContainer = "causalagent31e2e_mysql_primary"
 $replicaContainer = "causalagent31e2e_mysql_replica"
+$postgresContainer = "causalagent31e2e_postgres_checkpoint"
 $existingContainers = docker ps -a --format "{{.Names}}"
 Assert-Admin31Exit "docker ps"
 $primaryExists = $existingContainers -contains $primaryContainer
 $replicaExists = $existingContainers -contains $replicaContainer
-if (($primaryExists -or $replicaExists) -and -not $ReuseExisting) {
+$postgresExists = $existingContainers -contains $postgresContainer
+if (($primaryExists -or $replicaExists -or $postgresExists) -and -not $ReuseExisting) {
     throw "Existing 3.1/3.2 E2E containers found; refusing to overwrite or delete them."
 }
-if ($ReuseExisting -and -not ($primaryExists -and $replicaExists)) {
-    throw "ReuseExisting requires both isolated 3.1/3.2 database containers."
+if ($ReuseExisting -and -not ($primaryExists -and $replicaExists -and $postgresExists)) {
+    throw "ReuseExisting requires all isolated 3.1/3.2 database containers."
 }
 if ($KeepSeededData) {
     throw "3.2 includes physical-delete E2E and cannot reuse already-mutated seed data."
@@ -52,6 +54,9 @@ $env:MYSQL_REPLICA_STATUS_USER = "status31"
 $env:MYSQL_REPLICA_STATUS_PASSWORD = New-Admin31Secret
 $env:MYSQL_REPLICATION_USER = "replica31"
 $env:MYSQL_REPLICATION_PASSWORD = New-Admin31Secret
+$env:CHECKPOINT_POSTGRES_DATABASE = "causalagent31e2e_checkpoints"
+$env:CHECKPOINT_POSTGRES_USER = "checkpoint31"
+$env:CHECKPOINT_POSTGRES_PASSWORD = New-Admin31Secret
 $env:API_KEY = "isolated-e2e-not-used"
 $env:BASE_URL = "https://example.invalid"
 $env:MODEL = "isolated-e2e-model"
@@ -63,6 +68,8 @@ $env:MYSQL_HOST = "127.0.0.1"
 $env:MYSQL_WRITE_HOST = "127.0.0.1"
 $env:MYSQL_READ_HOSTS = "127.0.0.2"
 $env:MYSQL_PORT = "13317"
+$env:CHECKPOINT_POSTGRES_HOST = "127.0.0.1"
+$env:CHECKPOINT_POSTGRES_PORT = "15433"
 $env:MYSQL_POOL_SIZE_WRITE = "5"
 $env:MYSQL_POOL_SIZE_READ = "5"
 $env:MYSQL_CONNECT_TIMEOUT_SECONDS = "5"
@@ -96,24 +103,33 @@ FLUSH PRIVILEGES;
 "@
         $rotationSql | docker exec -i $primaryContainer sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD"'
         Assert-Admin31Exit "rotate isolated credentials"
+        $postgresRotationSql = "ALTER USER checkpoint31 WITH PASSWORD '$($env:CHECKPOINT_POSTGRES_PASSWORD)';"
+        $postgresRotationSql | docker exec -i $postgresContainer `
+            psql -v ON_ERROR_STOP=1 -U checkpoint31 -d causalagent31e2e_checkpoints
+        Assert-Admin31Exit "rotate isolated PostgreSQL credential"
     } else {
         docker-compose `
             -p causalagent31e2e `
             -f docker-compose.yml `
             -f docker-compose.admin-e2e.yml `
-            up -d --build mysql-primary mysql-replica
-        Assert-Admin31Exit "start isolated MySQL pair"
+            up -d --build mysql-primary mysql-replica postgres-checkpoint
+        Assert-Admin31Exit "start isolated MySQL pair and PostgreSQL checkpoint"
     }
 
     $healthDeadline = [DateTime]::UtcNow.AddMinutes(3)
     do {
         $primaryHealth = docker inspect --format "{{.State.Health.Status}}" $primaryContainer
         $replicaHealth = docker inspect --format "{{.State.Health.Status}}" $replicaContainer
-        if ($primaryHealth -eq "healthy" -and $replicaHealth -eq "healthy") {
+        $postgresHealth = docker inspect --format "{{.State.Health.Status}}" $postgresContainer
+        if (
+            $primaryHealth -eq "healthy" -and
+            $replicaHealth -eq "healthy" -and
+            $postgresHealth -eq "healthy"
+        ) {
             break
         }
         if ([DateTime]::UtcNow -ge $healthDeadline) {
-            throw "Timed out waiting for the isolated 3.1/3.2 MySQL pair."
+            throw "Timed out waiting for the isolated 3.1/3.2 databases."
         }
         Start-Sleep -Seconds 2
     } while ($true)
@@ -133,6 +149,12 @@ FLUSH PRIVILEGES;
     Assert-Admin31Exit "3.2 existing structure preflight"
     alembic upgrade head
     Assert-Admin31Exit "3.2 existing structure upgrade"
+    docker-compose `
+        -p causalagent31e2e `
+        -f docker-compose.yml `
+        -f docker-compose.admin-e2e.yml `
+        up -d --build checkpoint-cleanup
+    Assert-Admin31Exit "start isolated PostgreSQL checkpoint cleanup"
     python -m tests.e2e.admin.seed_admin_31_e2e
     Assert-Admin31Exit "seed isolated 3.1/3.2 fixtures"
 
@@ -181,5 +203,5 @@ FLUSH PRIVILEGES;
     if ($monitorProcess -and -not $monitorProcess.HasExited) {
         Stop-Process -Id $monitorProcess.Id
     }
-    Write-Host "Isolated database containers and volumes were retained: $primaryContainer, $replicaContainer"
+    Write-Host "Isolated database containers and volumes were retained: $primaryContainer, $replicaContainer, $postgresContainer"
 }

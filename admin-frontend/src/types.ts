@@ -241,6 +241,25 @@ export interface AdminJobEvent {
   event_type: string
   created_at: string
   has_payload: boolean
+  node_name: string | null
+  node_desc: string | null
+  duration_seconds: number | null
+}
+
+export interface AdminCheckpointSummary {
+  checkpoint_id: string
+  parent_checkpoint_id: string | null
+  checkpoint_ns: string
+  created_at: string | null
+  step: number | null
+  source: string | null
+  updated_channels: string[]
+}
+
+export interface AdminCheckpointPage extends CursorPage<AdminCheckpointSummary> {
+  source_alias: 'checkpoint-postgres'
+  attribution: 'thread_id+metadata.job_id'
+  legacy_unattributed: boolean
 }
 
 export interface AdminFile {

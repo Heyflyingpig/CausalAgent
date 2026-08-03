@@ -28,8 +28,6 @@ from app.admin.write_service import (
 )
 from app.auth.service import managed_password_error
 from app import db as database_access
-from Database.mysql_checkpointer import MySQLSaver, _pending_write_identity_hash
-from langgraph.checkpoint.base import WRITES_IDX_MAP
 from mysql.connector.errors import PoolError
 
 
@@ -120,71 +118,23 @@ class ControlledAdminWriteTests(unittest.TestCase):
         self.assertIn("ADD COLUMN auth_version", text)
         self.assertIn("CREATE TABLE admin_operations", text)
         self.assertIn("CREATE TABLE admin_operation_items", text)
-        self.assertIn("uq_checkpoint_writes_task_idx", text)
-        self.assertIn("write_identity_hash BINARY(32) NOT NULL", text)
-        self.assertIn("OCTET_LENGTH(task_id)", text)
-        self.assertNotIn("DELETE FROM checkpoint_writes", text)
         self.assertNotIn("DROP TABLE users", text)
 
-    def test_checkpointer_matches_langgraph_retry_semantics(self):
-        """普通 writes 忽略重复，已知特殊 writes 更新同一幂等键。"""
-        text = Path("Database/mysql_checkpointer.py").read_text(encoding="utf-8")
-        self.assertIn("INSERT IGNORE INTO checkpoint_writes", text)
-        self.assertIn("ON DUPLICATE KEY UPDATE", text)
-        self.assertIn("ORDER BY created_at DESC, checkpoint_id DESC", text)
-
-        class RecordingCursor:
-            """记录 checkpointer 选择的 SQL，而不接触数据库。"""
-
-            rowcount = 1
-
-            def __init__(self):
-                self.statements = []
-
-            def execute(self, sql, params):
-                self.statements.append((sql, params))
-
-        saver = object.__new__(MySQLSaver)
-        saver._serialize_blob = lambda value: str(value).encode("utf-8")
-        config = {
-            "configurable": {
-                "thread_id": "session-1",
-                "checkpoint_ns": "",
-                "checkpoint_id": "checkpoint-1",
-            }
-        }
-        known_cursor = RecordingCursor()
-        known_channel = next(iter(WRITES_IDX_MAP))
-        saver._insert_pending_writes(
-            known_cursor,
-            config,
-            [(known_channel, "known")],
-            "task-1",
+    def test_checkpoint_runtime_and_admin_reads_use_postgres(self):
+        """现行 worker 与管理员读取只引用 PostgreSQL checkpoint 链路。"""
+        migration = Path(
+            "Database/migrations/versions/"
+            "f8b9c0d1e2f3_migrate_checkpoints_to_postgres.py"
+        ).read_text(encoding="utf-8")
+        inspection = Path("Database/checkpoint_inspection.py").read_text(
+            encoding="utf-8"
         )
-        self.assertIn("ON DUPLICATE KEY UPDATE", known_cursor.statements[0][0])
-
-        ordinary_cursor = RecordingCursor()
-        saver._insert_pending_writes(
-            ordinary_cursor,
-            config,
-            [("ordinary-channel", "ordinary")],
-            "task-1",
-        )
-        self.assertIn(
-            "INSERT IGNORE INTO checkpoint_writes",
-            ordinary_cursor.statements[0][0],
-        )
-        self.assertEqual(
-            ordinary_cursor.statements[0][1][-1],
-            _pending_write_identity_hash(
-                "session-1",
-                "",
-                "checkpoint-1",
-                "task-1",
-                0,
-            ),
-        )
-        self.assertEqual(len(ordinary_cursor.statements[0][1][-1]), 32)
+        core = Path("app/agent/core.py").read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE checkpoint_cleanup_outbox", migration)
+        self.assertIn("DROP TABLE IF EXISTS checkpoints", migration)
+        self.assertIn("metadata ->> 'job_id' = %s", inspection)
+        self.assertIn("ORDER BY checkpoint_id DESC", inspection)
+        self.assertIn('"job_id": job_id', core)
 
     def test_lifecycle_repair_is_dry_run_and_requires_database_confirmation(self):
         """孤立修复 CLI 默认 dry-run，apply 必须精确确认数据库。"""

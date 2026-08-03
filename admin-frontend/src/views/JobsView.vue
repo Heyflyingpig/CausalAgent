@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ApiError, adminApi } from '../api'
 import CursorPager from '../components/CursorPager.vue'
 import SensitiveContentDialog from '../components/SensitiveContentDialog.vue'
 import { formatDate } from '../lib/dashboard'
 import type {
+  AdminCheckpointPage,
   AdminJob,
   AdminJobEvent,
   CursorPage,
@@ -24,7 +25,19 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<AdminJob | null>(null)
 const events = ref<CursorPage<AdminJobEvent> | null>(null)
+const eventLoading = ref(false)
+const eventError = ref('')
 const eventCursors = ref<(string | undefined)[]>([undefined])
+const checkpoints = ref<AdminCheckpointPage | null>(null)
+const checkpointLoading = ref(false)
+const checkpointError = ref('')
+const checkpointCursors = ref<(string | undefined)[]>([undefined])
+type DetailPanel = 'events' | 'checkpoints'
+const activeDetailPanel = ref<DetailPanel>('events')
+const detailPanelOptions: Array<{ label: string; value: DetailPanel }> = [
+  { label: '节点与任务事件', value: 'events' },
+  { label: 'Checkpoint 状态', value: 'checkpoints' },
+]
 const contentVisible = ref(false)
 const contentTitle = ref('')
 const contentLoader = ref<(offset: number) => Promise<SensitiveContentChunk>>(
@@ -35,11 +48,30 @@ const currentCursor = computed(() => cursors.value[cursors.value.length - 1])
 const currentEventCursor = computed(
   () => eventCursors.value[eventCursors.value.length - 1],
 )
+const currentCheckpointCursor = computed(
+  () => checkpointCursors.value[checkpointCursors.value.length - 1],
+)
+
+watch(activeDetailPanel, (panel) => {
+  if (
+    panel === 'checkpoints'
+    && detail.value
+    && !checkpoints.value
+    && !checkpointLoading.value
+  ) {
+    void loadCheckpoints()
+  }
+})
+
+/** 把 API 异常转换为带 request ID 的局部错误。 */
+function errorText(caught: unknown): string {
+  const apiError = caught as ApiError
+  return `${apiError.message}（请求 ID：${apiError.requestId || '未知'}）`
+}
 
 /** 显示带 request ID 的统一页面错误。 */
 function showError(caught: unknown): void {
-  const apiError = caught as ApiError
-  error.value = `${apiError.message}（请求 ID：${apiError.requestId || '未知'}）`
+  error.value = errorText(caught)
 }
 
 /** 按筛选和游标读取任务摘要。 */
@@ -80,16 +112,34 @@ function previousPage(): void {
 /** 读取当前任务的一页事件时间线。 */
 async function loadEvents(): Promise<void> {
   if (!detail.value) return
-  detailLoading.value = true
+  eventLoading.value = true
+  eventError.value = ''
   try {
     events.value = await adminApi.jobEvents(detail.value.job_id, {
       limit: 20,
       cursor: currentEventCursor.value,
     })
   } catch (caught) {
-    showError(caught)
+    eventError.value = errorText(caught)
   } finally {
-    detailLoading.value = false
+    eventLoading.value = false
+  }
+}
+
+/** 读取当前任务的一页 PostgreSQL checkpoint 摘要。 */
+async function loadCheckpoints(): Promise<void> {
+  if (!detail.value) return
+  checkpointLoading.value = true
+  checkpointError.value = ''
+  try {
+    checkpoints.value = await adminApi.jobCheckpoints(detail.value.job_id, {
+      limit: 20,
+      cursor: currentCheckpointCursor.value,
+    })
+  } catch (caught) {
+    checkpointError.value = errorText(caught)
+  } finally {
+    checkpointLoading.value = false
   }
 }
 
@@ -99,7 +149,12 @@ async function openDetail(row: AdminJob): Promise<void> {
   detailLoading.value = true
   detail.value = null
   events.value = null
+  eventError.value = ''
   eventCursors.value = [undefined]
+  checkpoints.value = null
+  checkpointError.value = ''
+  checkpointCursors.value = [undefined]
+  activeDetailPanel.value = 'events'
   try {
     detail.value = await adminApi.job(row.job_id)
     await loadEvents()
@@ -123,6 +178,20 @@ function previousEvents(): void {
   if (eventCursors.value.length <= 1) return
   eventCursors.value.pop()
   void loadEvents()
+}
+
+/** 进入 checkpoint 后一页。 */
+function nextCheckpoints(): void {
+  if (!checkpoints.value?.next_cursor) return
+  checkpointCursors.value.push(checkpoints.value.next_cursor)
+  void loadCheckpoints()
+}
+
+/** 返回 checkpoint 上一页。 */
+function previousCheckpoints(): void {
+  if (checkpointCursors.value.length <= 1) return
+  checkpointCursors.value.pop()
+  void loadCheckpoints()
 }
 
 /** 明确点击后打开指定类别任务正文。 */
@@ -214,25 +283,93 @@ onMounted(() => loadJobs())
           <el-button v-if="detail.has_error" type="danger" plain @click="reveal('error')">查看错误</el-button>
         </div>
 
-        <h3 class="drawer-section-title">事件时间线</h3>
-        <el-timeline v-if="events?.items.length">
-          <el-timeline-item
-            v-for="event in events.items"
-            :key="event.id"
-            :timestamp="formatDate(event.created_at)"
-          >
-            <strong>{{ event.event_type }}</strong>
-            <span class="event-meta">事件 #{{ event.id }} · payload {{ event.has_payload ? '已记录' : '为空' }}</span>
-          </el-timeline-item>
-        </el-timeline>
-        <el-empty v-else description="没有任务事件" />
-        <CursorPager
-          :can-previous="eventCursors.length > 1"
-          :has-more="Boolean(events?.has_more)"
-          :loading="detailLoading"
-          @previous="previousEvents"
-          @next="nextEvents"
-        />
+        <div v-if="detail" class="job-state-selector">
+          <div class="job-state-selector-copy">
+            <strong>任务状态视图</strong>
+            <span>选择查看 MySQL 任务事件或 PostgreSQL checkpoint 摘要</span>
+          </div>
+          <el-segmented
+            v-model="activeDetailPanel"
+            :options="detailPanelOptions"
+            size="large"
+            aria-label="选择任务状态视图"
+          />
+        </div>
+
+        <section
+          v-if="detail && activeDetailPanel === 'events'"
+          v-loading="eventLoading"
+          class="job-state-panel"
+        >
+          <h3 class="drawer-section-title">节点与任务事件（MySQL）</h3>
+          <el-alert
+            v-if="eventError"
+            class="page-notice"
+            type="error"
+            :closable="false"
+            :title="eventError"
+          />
+          <el-timeline v-if="events?.items.length">
+            <el-timeline-item
+              v-for="event in events.items"
+              :key="event.id"
+              :timestamp="formatDate(event.created_at)"
+            >
+              <strong>{{ event.node_name || event.event_type }}</strong>
+              <span v-if="event.node_desc" class="event-meta">{{ event.node_desc }}</span>
+              <span class="event-meta">
+                {{ event.event_type }} · 事件 #{{ event.id }}
+                <template v-if="event.duration_seconds !== null"> · {{ event.duration_seconds }} 秒</template>
+              </span>
+            </el-timeline-item>
+          </el-timeline>
+          <el-empty v-else description="没有任务事件" />
+          <CursorPager
+            :can-previous="eventCursors.length > 1"
+            :has-more="Boolean(events?.has_more)"
+            :loading="eventLoading"
+            @previous="previousEvents"
+            @next="nextEvents"
+          />
+        </section>
+
+        <section v-else-if="detail" v-loading="checkpointLoading" class="job-state-panel">
+          <h3 class="drawer-section-title">Checkpoint 状态（PostgreSQL）</h3>
+          <el-alert
+            v-if="checkpointError"
+            class="page-notice"
+            type="error"
+            :closable="false"
+            :title="checkpointError"
+          />
+          <el-alert
+            v-if="checkpoints?.legacy_unattributed"
+            class="page-notice"
+            type="warning"
+            :closable="false"
+            title="该会话存在迁移前 checkpoint，因缺少 job_id 无法可靠归属，本页不按时间猜测。"
+          />
+          <el-timeline v-if="checkpoints?.items.length">
+            <el-timeline-item
+              v-for="checkpoint in checkpoints.items"
+              :key="`${checkpoint.checkpoint_ns}:${checkpoint.checkpoint_id}`"
+              :timestamp="formatDate(checkpoint.created_at)"
+            >
+              <strong>Step {{ checkpoint.step ?? '未知' }} · {{ checkpoint.source || '未知来源' }}</strong>
+              <span class="event-meta">ID {{ checkpoint.checkpoint_id }}</span>
+              <span class="event-meta">父 ID {{ checkpoint.parent_checkpoint_id || '无' }} · namespace {{ checkpoint.checkpoint_ns || '(default)' }}</span>
+              <span class="event-meta">更新通道 {{ checkpoint.updated_channels.join('、') || '无' }}</span>
+            </el-timeline-item>
+          </el-timeline>
+          <el-empty v-else-if="!checkpointError" description="没有可归属当前任务的 checkpoint" />
+          <CursorPager
+            :can-previous="checkpointCursors.length > 1"
+            :has-more="Boolean(checkpoints?.has_more)"
+            :loading="checkpointLoading"
+            @previous="previousCheckpoints"
+            @next="nextCheckpoints"
+          />
+        </section>
       </div>
     </el-drawer>
 

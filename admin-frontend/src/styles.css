@@ -318,7 +318,33 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
   background: #fff7ed;
 }
 .sensitive-actions span { margin-right: auto; font-size: 13px; }
-.event-meta { display: block; margin-top: 5px; color: var(--ca-muted); font-size: 12px; }
+.event-meta { display: block; margin-top: 5px; color: var(--ca-muted); font-size: 12px; overflow-wrap: anywhere; }
+.job-state-selector {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--ca-line);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.job-state-selector-copy strong,
+.job-state-selector-copy span { display: block; }
+.job-state-selector-copy strong { color: #1d2939; font-size: 14px; }
+.job-state-selector-copy span { margin-top: 4px; color: var(--ca-muted); font-size: 12px; }
+.job-state-selector .el-segmented { flex: 0 0 auto; min-width: 360px; }
+.job-state-selector .el-segmented__item { min-width: 0; }
+.job-state-selector .el-segmented__item-label { white-space: nowrap; }
+.job-state-panel {
+  min-height: 360px;
+  margin-top: 14px;
+  padding: 0 20px 18px;
+  border: 1px solid var(--ca-line);
+  border-radius: 10px;
+  background: #fff;
+}
 .sensitive-notice, .content-error { margin-bottom: 14px; }
 .sensitive-content {
   min-height: 220px;
@@ -506,6 +532,9 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
   .setting-row { grid-template-columns: 1fr; gap: 14px; }
   .setting-control { justify-content: flex-start; flex-wrap: wrap; }
   .overview-grid { grid-template-columns: 1fr; }
+  .job-state-selector { align-items: stretch; flex-direction: column; gap: 12px; }
+  .job-state-selector .el-segmented { width: 100%; min-width: 0; }
+  .job-state-panel { padding-right: 14px; padding-left: 14px; }
   .filter-bar, .filter-bar:has(> :nth-child(5)) { grid-template-columns: 1fr; }
   .cursor-pager { align-items: flex-start; flex-direction: column; }
   .audit-check-title { align-items: flex-start; flex-wrap: wrap; }

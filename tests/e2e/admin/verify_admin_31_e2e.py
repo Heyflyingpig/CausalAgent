@@ -8,8 +8,10 @@ import time
 
 import bcrypt
 import mysql.connector
+import psycopg
 
 from app.db import get_read_connection, get_replica_status
+from config.checkpoint_settings import CheckpointPostgresConfig
 
 from tests.e2e.admin.seed_admin_31_e2e import (
     ATTACHMENT_ID,
@@ -27,6 +29,7 @@ from tests.e2e.admin.seed_admin_31_e2e import (
     JOB_ID,
     USER_ID,
     USER_MESSAGE_ID,
+    USER_SESSION_ID,
 )
 
 
@@ -52,7 +55,7 @@ def verify() -> None:
     with get_read_connection(consistency="strong") as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT version_num FROM alembic_version")
-        assert (cursor.fetchone() or {}).get("version_num") == "e4f5a6b7c8d9"
+        assert (cursor.fetchone() or {}).get("version_num") == "f8b9c0d1e2f3"
         cursor.execute(
             """
             SELECT INDEX_NAME AS index_name
@@ -68,17 +71,6 @@ def verify() -> None:
             """
         )
         assert len({row["index_name"] for row in cursor.fetchall()}) == 5
-        cursor.execute(
-            """
-            SELECT INDEX_NAME AS index_name
-            FROM information_schema.STATISTICS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'checkpoint_writes'
-              AND INDEX_NAME = 'uq_checkpoint_writes_task_idx'
-            """
-        )
-        assert cursor.fetchone() is not None
-
         cursor.execute(
             """
             SELECT id, username, role, is_active, auth_version, password_hash
@@ -123,14 +115,7 @@ def verify() -> None:
                     SELECT COUNT(*) FROM archived_sessions
                     WHERE id = %s
                 ) AS archived_sessions,
-                (
-                    SELECT COUNT(*) FROM checkpoints
-                    WHERE thread_id = %s
-                ) AS checkpoints,
-                (
-                    SELECT COUNT(*) FROM checkpoint_writes
-                    WHERE thread_id = %s
-                ) AS checkpoint_writes
+                0 AS checkpoint_placeholder
             """,
             (
                 DELETE_USER_ID,
@@ -141,8 +126,6 @@ def verify() -> None:
                 DELETE_JOB_ID,
                 DELETE_JOB_ID,
                 DELETE_ARCHIVED_SESSION_ID,
-                DELETE_SESSION_ID,
-                DELETE_SESSION_ID,
             ),
         )
         assert all(int(value or 0) == 0 for value in (cursor.fetchone() or {}).values())
@@ -257,6 +240,30 @@ def verify() -> None:
             (JOB_ID,),
         )
         assert int((cursor.fetchone() or {}).get("total") or 0) == 2
+
+    checkpoint_config = CheckpointPostgresConfig.from_env()
+    checkpoint_config.validate(require_credentials=True)
+    with psycopg.connect(
+        host=checkpoint_config.host,
+        port=checkpoint_config.port,
+        dbname=checkpoint_config.database,
+        user=checkpoint_config.user,
+        password=checkpoint_config.password,
+        connect_timeout=max(1, int(checkpoint_config.connect_timeout_seconds)),
+        autocommit=True,
+    ) as checkpoint_connection:
+        with checkpoint_connection.cursor() as checkpoint_cursor:
+            for table_name in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
+                checkpoint_cursor.execute(
+                    f"SELECT COUNT(*) FROM {table_name} WHERE thread_id = %s",
+                    (DELETE_SESSION_ID,),
+                )
+                assert int(checkpoint_cursor.fetchone()[0]) == 0
+            checkpoint_cursor.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = %s",
+                (USER_SESSION_ID,),
+            )
+            assert int(checkpoint_cursor.fetchone()[0]) >= 1
 
     replica_row = None
     replica_control = None

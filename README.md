@@ -206,6 +206,9 @@ docker compose -f docker-compose.yml run --rm db-bootstrap
 
 请先在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`。
 `checkpoint-cleanup` 仍是独立的常驻 worker，用于消费跨库清理 outbox。
+`app` 负责管理员 checkpoint 摘要读取，`monitor` 负责 PostgreSQL quick/deep
+检查，因此两者也必须取得相同的 `CHECKPOINT_POSTGRES_*` 配置。生产 Compose
+同样包含 PostgreSQL、bootstrap、worker、monitor 和 cleanup 服务。
 
 全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 
@@ -251,6 +254,12 @@ docker compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli p
 - [API 契约](Document/admin/api.md)
 - [开发与部署](Document/admin/development.md)
 - [测试说明](Document/admin/testing.md)
+
+任务详情默认显示 MySQL 节点/任务事件，并可通过单视图选择器切换到 PostgreSQL checkpoint 状态。新
+checkpoint 通过 `metadata.job_id` 精确关联任务；迁移前记录缺少该字段时只提示
+无法可靠归属，不按时间猜测。checkpoint API 只返回安全摘要，不读取状态正文、
+blob 或 pending writes。数据库 quick/deep 审计同时覆盖 PostgreSQL checkpoint
+连接、官方 schema/setup 版本、估算统计和有界跨库关系样本。
 
 更深入的数据库治理、读写一致性和恢复规则见 [`setting/database_governance.md`](setting/database_governance.md)。
 
@@ -331,7 +340,7 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 ├── .github/                 # GitHub Actions 与 Issue 模板
 │   ├── workflows/           # GitHub Actions 工作流
 │   └── ISSUE_TEMPLATE/      # Issue Form 模板
-├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从验收端口/容器覆盖
+├── docker-compose.admin-e2e.yml # 3.1/3.2 独立主从 + PostgreSQL 验收覆盖
 ├── README.md               # 项目说明
 ├── README/                 # README 图片与更新日志
 ├── Document/
@@ -375,6 +384,7 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 │   ├── deep_audit.py       # 手动 deep 数据库事实审计
 │   ├── lifecycle_repair.py # 孤立关系 dry-run/人工确认修复 CLI
 │   ├── checkpoint_setup.py # PostgreSQL LangGraph schema 一次性 setup
+│   ├── checkpoint_inspection.py # 管理员 PostgreSQL checkpoint 只读与审计
 │   ├── checkpoint_cleanup_worker.py # 跨库 checkpoint cleanup outbox worker
 │   ├── monitoring.py       # 共享快照存取、调度与兼容接口
 │   ├── monitor_settings.py # 在线配置解析、缓存、校验与事务写入

@@ -82,6 +82,30 @@ services:
     # - driver: "fluentd" 集中式日志收集
     # - driver: "awslogs" 如果在AWS上部署
 
+  # --- LangGraph checkpoint PostgreSQL（生产配置）---
+  postgres-checkpoint:
+    image: postgres:16-alpine
+    container_name: causalagent_postgres_checkpoint_prod
+    environment:
+      POSTGRES_DB: ${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      POSTGRES_USER: ${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      POSTGRES_PASSWORD: ${CHECKPOINT_POSTGRES_PASSWORD:?CHECKPOINT_POSTGRES_PASSWORD must be set}
+    volumes:
+      - postgres_checkpoint_data_prod:/var/lib/postgresql/data
+    networks:
+      - causalagent_network_prod
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # --- Flask 应用服务（生产配置）---
   app:
     # === 关键区别4：使用镜像而非构建 ===
@@ -113,6 +137,14 @@ services:
       - ADMIN_BATCH_MAX_TARGETS=${ADMIN_BATCH_MAX_TARGETS:-20}
       - ADMIN_DELETE_MAX_RELATED_ROWS=${ADMIN_DELETE_MAX_RELATED_ROWS:-10000}
       - ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS=${ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=${CHECKPOINT_POSTGRES_POOL_MAX_SIZE:-5}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
@@ -167,8 +199,8 @@ services:
     # - 不会因为误修改文件导致问题
     
     depends_on:
-      mysql:
-        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     
     networks:
       - causalagent_network_prod
@@ -195,6 +227,125 @@ services:
     # 注意：deploy配置需要Docker Swarm或Kubernetes
     # 如果是单机部署，使用docker run的--cpus和--memory参数
 
+  db-bootstrap:
+    image: causalagent:latest
+    container_name: causalagent_db_bootstrap_prod
+    command: python -m Database.bootstrap
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_WRITE_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=2
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres-checkpoint:
+        condition: service_healthy
+    networks:
+      - causalagent_network_prod
+
+  worker:
+    image: causalagent:latest
+    container_name: causalagent_worker_prod
+    command: python -m app.agent.worker
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_WRITE_HOST=mysql
+      - MYSQL_READ_HOSTS=
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=${CHECKPOINT_POSTGRES_POOL_MAX_SIZE:-5}
+      - JOB_WORKERS=${JOB_WORKERS:-2}
+      - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
+      - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - SECRET_KEY=${SECRET_KEY}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
+      - FLASK_ENV=production
+    volumes:
+      - ./knowledge_base/db:/app/knowledge_base/db
+      - ./static/generated_graphs:/app/static/generated_graphs
+      - app_logs_prod:/app/logs
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - causalagent_network_prod
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  checkpoint-cleanup:
+    image: causalagent:latest
+    container_name: causalagent_checkpoint_cleanup_prod
+    command: python -m Database.checkpoint_cleanup_worker
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_WRITE_HOST=mysql
+      - MYSQL_READ_HOSTS=
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=2
+      - CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS=${CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS:-1}
+      - CHECKPOINT_CLEANUP_LEASE_SECONDS=${CHECKPOINT_CLEANUP_LEASE_SECONDS:-300}
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - causalagent_network_prod
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   monitor:
     image: causalagent:latest
     container_name: causalagent_monitor_prod
@@ -211,6 +362,12 @@ services:
       - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
       - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
       - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
@@ -231,8 +388,8 @@ services:
       - FLASK_ENV=production
 
     depends_on:
-      mysql:
-        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
 
     networks:
       - causalagent_network_prod
@@ -260,6 +417,9 @@ volumes:
     # 1. 定期备份此卷
     # 2. 考虑使用外部存储（NFS, AWS EBS等）
     # 3. 测试恢复流程
+
+  postgres_checkpoint_data_prod:
+    driver: local
   
   app_logs_prod:
     driver: local
@@ -285,7 +445,7 @@ volumes:
 #      docker-compose -f docker-compose.prod.yml up -d
 #   
 #   5. 初始化数据库
-#      docker-compose -f docker-compose.prod.yml exec app python Database/database_init.py
+#      up 会等待一次性 db-bootstrap 完成 MySQL migration 与 PostgreSQL setup
 #   
 #   6. 检查状态
 #      docker-compose -f docker-compose.prod.yml ps

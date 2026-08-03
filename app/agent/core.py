@@ -132,7 +132,15 @@ def _snapshot_interrupts(snapshot) -> list[Any]:
     ]
 
 
-async def ai_call_stream(text, user_id, username, session_id, graph=None):
+async def ai_call_stream(
+    text,
+    user_id,
+    username,
+    session_id,
+    *,
+    job_id=None,
+    graph=None,
+):
     """
     流式版本的 ai_call，使用 astream() 捕获节点执行更新。
     这是一个生成器函数，会yield SSE格式的事件数据。
@@ -147,7 +155,10 @@ async def ai_call_stream(text, user_id, username, session_id, graph=None):
         "configurable": {
             "thread_id": session_id,
             "user_id": user_id
-        }
+        },
+        "metadata": {
+            "job_id": job_id,
+        } if job_id else {},
     }
     
     # 检查当前状态，判断是否是恢复中断的会话
