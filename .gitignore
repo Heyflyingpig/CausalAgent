@@ -210,5 +210,6 @@ admin-frontend/playwright-report/
 # docs
 docs/
 
-# 构建产物
-admin-frontend/dist/
+# 管理员生产构建只提交入口文件，哈希 assets 由构建阶段重新生成。
+admin-frontend/dist/*
+!admin-frontend/dist/index.html

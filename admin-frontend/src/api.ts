@@ -1,5 +1,6 @@
 import type {
   AdminAttachment,
+  AdminCheckpointPage,
   AdminFile,
   AdminJob,
   AdminJobEvent,
@@ -420,6 +421,17 @@ export const adminApi = {
     filters: { limit?: number; cursor?: string } = {},
   ) => apiRequest<CursorPage<AdminJobEvent>>(
     withQuery(`/api/admin/business/jobs/${encodeURIComponent(jobId)}/events`, filters),
+    { cache: 'no-store' },
+  ),
+  /** 分页读取精确归属当前任务的 PostgreSQL checkpoint 安全摘要。 */
+  jobCheckpoints: (
+    jobId: string,
+    filters: { limit?: number; cursor?: string } = {},
+  ) => apiRequest<AdminCheckpointPage>(
+    withQuery(
+      `/api/admin/business/jobs/${encodeURIComponent(jobId)}/checkpoints`,
+      filters,
+    ),
     { cache: 'no-store' },
   ),
   /** 点击后分块读取任务输入、结果或错误正文。 */

@@ -10,6 +10,10 @@ from datetime import datetime, timezone
 import logging
 from typing import Any, Callable
 
+from Database.checkpoint_inspection import (
+    CHECKPOINT_DATA_TABLES,
+    collect_checkpoint_deep_facts,
+)
 from Database.inspection import inspect_revision
 from app.db import get_read_connection, get_replica_status
 from config.settings import settings
@@ -423,6 +427,136 @@ def _relationship_check() -> dict[str, Any]:
     )
 
 
+def _checkpoint_postgres_checks() -> list[dict[str, Any]]:
+    """检查 PostgreSQL checkpoint schema、统计与跨库会话关系样本。"""
+    try:
+        facts = collect_checkpoint_deep_facts(
+            timeout_ms=int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS),
+            sample_limit=ANOMALY_SAMPLE_LIMIT,
+        )
+    except Exception as exc:
+        LOGGER.warning(
+            "deep PostgreSQL checkpoint 检查失败: %s",
+            type(exc).__name__,
+        )
+        return [
+            _check(
+                "checkpoint_postgres_schema",
+                "PostgreSQL checkpoint schema",
+                "unknown",
+                "检查失败或查询超时",
+            ),
+            _check(
+                "checkpoint_postgres_stats",
+                "PostgreSQL checkpoint 有界统计",
+                "unknown",
+                "检查失败或查询超时",
+            ),
+            _check(
+                "checkpoint_session_relationships",
+                "Checkpoint thread 与 MySQL 会话关系样本",
+                "unknown",
+                "检查失败或查询超时",
+            ),
+        ]
+
+    schema = facts["schema"]
+    schema_healthy = (
+        not schema["missing_columns"]
+        and not schema["invalid_primary_keys"]
+        and not schema["invalid_indexes"]
+        and schema["migration_current"]
+    )
+    schema_check = _check(
+        "checkpoint_postgres_schema",
+        "PostgreSQL checkpoint schema",
+        "healthy" if schema_healthy else "error",
+        (
+            "官方字段、主键和 migration 版本完整"
+            if schema_healthy
+            else "PostgreSQL checkpoint schema 与锁定版本不一致"
+        ),
+        schema,
+    )
+
+    stats = facts["stats"]
+    reported_tables = {row["table_name"] for row in stats}
+    stats_complete = reported_tables == set(CHECKPOINT_DATA_TABLES)
+    stats_check = _check(
+        "checkpoint_postgres_stats",
+        "PostgreSQL checkpoint 有界统计",
+        "healthy" if stats_complete else "warning",
+        (
+            "已读取三张 checkpoint 数据表的估算行数"
+            if stats_complete
+            else "部分 checkpoint 数据表没有统计信息"
+        ),
+        {
+            "is_estimate": True,
+            "tables": stats,
+        },
+    )
+
+    thread_ids = facts["thread_ids"]
+    existing_sessions: set[str] = set()
+    try:
+        if thread_ids:
+            placeholders = ", ".join(["%s"] * len(thread_ids))
+            with get_read_connection(consistency="strong") as conn:
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute(
+                    f"""
+                    SELECT /*+ MAX_EXECUTION_TIME({int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS)}) */
+                           id
+                    FROM sessions
+                    WHERE id IN ({placeholders})
+                    """,
+                    tuple(thread_ids),
+                )
+                existing_sessions = {str(row["id"]) for row in cursor.fetchall()}
+    except Exception as exc:
+        LOGGER.warning(
+            "checkpoint thread 跨库关系抽样失败: %s",
+            type(exc).__name__,
+        )
+        LOGGER.debug("checkpoint thread 跨库关系抽样异常详情", exc_info=True)
+        return [
+            schema_check,
+            stats_check,
+            _check(
+                "checkpoint_session_relationships",
+                "Checkpoint thread 与 MySQL 会话关系样本",
+                "unknown",
+                "检查失败或查询超时",
+            ),
+        ]
+    samples = [
+        {
+            "thread_id": thread_id,
+            "session_exists": thread_id in existing_sessions,
+        }
+        for thread_id in thread_ids
+    ]
+    missing_count = sum(1 for item in samples if not item["session_exists"])
+    relationship_check = _check(
+        "checkpoint_session_relationships",
+        "Checkpoint thread 与 MySQL 会话关系样本",
+        "healthy" if missing_count == 0 else "error",
+        (
+            "抽样 thread 均可关联 MySQL 会话"
+            if missing_count == 0
+            else "发现无法关联 MySQL 会话的 checkpoint thread 样本"
+        ),
+        {
+            "sample_limit": ANOMALY_SAMPLE_LIMIT,
+            "sample_count": len(samples),
+            "missing_session_count": missing_count,
+            "samples": samples,
+        },
+    )
+    return [schema_check, stats_check, relationship_check]
+
+
 def _replica_check() -> dict[str, Any]:
     """逐个读取配置从库状态并仅返回逻辑别名和健康结论。"""
     if not settings.MYSQL_READ_HOSTS:
@@ -494,6 +628,7 @@ def get_deep_audit_report() -> dict[str, Any]:
         ),
         _safe_block("replicas", "从库状态", _replica_check),
     ]
+    checks.extend(_checkpoint_postgres_checks())
     return {
         "status": _overall_status(checks),
         "observed_at": _observed_at(),

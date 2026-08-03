@@ -41,7 +41,7 @@
 | `GET` | `/api/admin/db/audit` | 读取最近 deep audit 快照 |
 | `POST` | `/api/admin/db/audit/run` | 登记 deep audit 请求 |
 
-所有 GET 只读取 MySQL 中最近的共享快照，不在 Web 请求中执行完整采集。刷新接口只登记请求，实际采集由独立 monitor 完成。
+所有数据库看板 GET 只读取 MySQL 中最近的共享快照，不在 Web 请求中执行完整采集。刷新接口只登记请求，实际采集由独立 monitor 完成；quick/deep 采集会通过只读连接检查 PostgreSQL checkpoint，并把脱敏结论写回共享快照。
 
 SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序选取和展示，平均耗时相同时按累计 `SUM_TIMER_WAIT` 降序次排序，不等同于单次查询超过 `long_query_time`。慢查询告警优先使用采集窗口内 `Slow_queries` 增量。
 
@@ -72,6 +72,7 @@ SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序�
 | `GET` | `/api/admin/business/jobs` | 分析任务列表 |
 | `GET` | `/api/admin/business/jobs/<id>` | 分析任务详情 |
 | `GET` | `/api/admin/business/jobs/<id>/events` | 任务事件列表 |
+| `GET` | `/api/admin/business/jobs/<id>/checkpoints` | PostgreSQL checkpoint 安全摘要 |
 | `GET` | `/api/admin/business/jobs/<id>/content` | 分块读取任务内容 |
 | `GET` | `/api/admin/business/files` | 文件列表 |
 | `GET` | `/api/admin/business/files/<id>` | 文件详情 |
@@ -79,7 +80,9 @@ SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序�
 | `GET` | `/api/admin/business/files/<id>/download` | 下载文件 |
 | `GET` | `/api/admin/operations/<operation_id>` | 查询受控用户删除及 checkpoint cleanup 状态 |
 
-密码哈希、Cookie、Token、文件哈希、数据库账号、host 和 grants 不进入列表 DTO。消息、附件及任务内容最多按 64 KiB 源字节分块读取；成功的敏感读取要求审计可写。CSV 预览最多读取 256 KiB、100 行、50 列，单元格最多 1000 字符，并且只按文本渲染。
+密码哈希、Cookie、Token、文件哈希、数据库账号、host 和 grants 不进入列表 DTO。任务事件接口只从 MySQL payload 提取节点名、说明和耗时；checkpoint 接口按 `thread_id=session_id` 与 `metadata.job_id` 精确归属任务，默认 20、最多 50 条并按不透明 `checkpoint_id` 游标分页，只返回 ID、父 ID、namespace、时间、step、source 和更新通道。它不读取或返回 checkpoint 状态正文、blob 和 pending writes；历史记录缺少 `job_id` 时仅返回 `legacy_unattributed=true`，不会按时间猜测。PostgreSQL 不可用时返回 `503 checkpoint_unavailable`，任务详情和 MySQL 事件接口仍可用。
+
+消息、附件及任务内容最多按 64 KiB 源字节分块读取；成功的敏感读取要求审计可写。CSV 预览最多读取 256 KiB、100 行、50 列，单元格最多 1000 字符，并且只按文本渲染。
 
 ## 受控业务写入
 

@@ -519,7 +519,7 @@ onMounted(() => loadUsers())
           type="error"
           :closable="false"
           show-icon
-          title="删除不可恢复；会话、消息、附件、文件、任务、事件、归档和 checkpoint 将会同步删除。"
+          title="删除不可恢复；MySQL 业务数据先提交，PostgreSQL checkpoint 随后由后台任务清理。"
         />
         <el-alert
           v-if="deleteError"

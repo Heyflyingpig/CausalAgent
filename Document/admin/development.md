@@ -61,6 +61,12 @@ python -m Database.checkpoint_setup
 由于该迁移合并了两个历史 head，回退时必须指定明确目标 revision，不能使用
 `alembic downgrade -1`；例如回退到 `e4f5a6b7c8d9`。
 
+管理员任务详情和数据库审计复用 `CHECKPOINT_POSTGRES_*` 建立独立只读连接。
+新任务由 worker 把 `job_id` 写入 LangGraph `config.metadata`，管理员按
+`thread_id=session_id + metadata.job_id` 读取安全摘要；旧 checkpoint 缺少
+`job_id` 时不做时间归属猜测。quick integrity 检查连接、官方表集合和 setup
+版本；deep audit 只读取 schema、主键、估算行数及最多 20 个跨库关系样本。
+
 ## 启动 monitor
 
 数据库看板读取共享快照。要持续产生新快照，需要独立启动：

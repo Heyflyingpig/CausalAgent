@@ -47,6 +47,7 @@ from app.admin.business_service import (
     get_session_detail,
     get_user_detail,
     list_files,
+    list_job_checkpoints,
     list_job_events,
     list_jobs,
     list_message_attachments,
@@ -703,6 +704,24 @@ def business_job_detail(job_id: str):
 def business_job_events(job_id: str):
     """返回指定任务的有界事件时间线。"""
     data = list_job_events(
+        job_id=job_id,
+        limit=parse_limit(request.args.get("limit")),
+        cursor=request.args.get("cursor"),
+    )
+    return api_success(data)
+
+
+@admin_bp.route("/business/jobs/<job_id>/checkpoints")
+@admin_api_endpoint
+@audited_access(
+    action="business.job.checkpoints.list",
+    target_type="analysis_job",
+    target_id=lambda values: str(values["job_id"]),
+)
+@admin_required
+def business_job_checkpoints(job_id: str):
+    """返回 PostgreSQL 中可精确归属当前任务的 checkpoint 安全摘要。"""
+    data = list_job_checkpoints(
         job_id=job_id,
         limit=parse_limit(request.args.get("limit")),
         cursor=request.args.get("cursor"),

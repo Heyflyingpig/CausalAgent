@@ -6,9 +6,10 @@ import json
 import os
 
 import bcrypt
+import psycopg
 
 from app.db import get_write_connection
-from Database.mysql_checkpointer import _pending_write_identity_hash
+from config.checkpoint_settings import CheckpointPostgresConfig
 
 
 ADMIN_ID = 3101
@@ -48,8 +49,79 @@ def _password_hash(value: str) -> str:
     )
 
 
+def _seed_postgres_checkpoints() -> None:
+    """向隔离 PostgreSQL 写入可归属任务且可验证清理的 checkpoint。"""
+    config = CheckpointPostgresConfig.from_env()
+    config.validate(require_credentials=True)
+    fixtures = (
+        (
+            USER_SESSION_ID,
+            "00000000-0000-6000-8000-000000000031",
+            JOB_ID,
+            "3.1-e2e",
+        ),
+        (
+            DELETE_SESSION_ID,
+            "00000000-0000-6000-8000-000000000032",
+            DELETE_JOB_ID,
+            "3.2-e2e",
+        ),
+    )
+    with psycopg.connect(
+        host=config.host,
+        port=config.port,
+        dbname=config.database,
+        user=config.user,
+        password=config.password,
+        connect_timeout=max(1, int(config.connect_timeout_seconds)),
+        autocommit=True,
+    ) as connection:
+        with connection.cursor() as cursor:
+            for thread_id, checkpoint_id, job_id, source in fixtures:
+                checkpoint = {
+                    "v": 4,
+                    "id": checkpoint_id,
+                    "ts": "2026-01-01T00:00:00+00:00",
+                    "channel_versions": {},
+                    "versions_seen": {},
+                    "updated_channels": [],
+                }
+                metadata = {"source": source, "step": 1, "job_id": job_id}
+                cursor.execute(
+                    """
+                    INSERT INTO checkpoints (
+                        thread_id, checkpoint_ns, checkpoint_id,
+                        parent_checkpoint_id, type, checkpoint, metadata
+                    ) VALUES (%s, '', %s, NULL, 'json', %s::jsonb, %s::jsonb)
+                    """,
+                    (
+                        thread_id,
+                        checkpoint_id,
+                        json.dumps(checkpoint),
+                        json.dumps(metadata),
+                    ),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO checkpoint_writes (
+                        thread_id, checkpoint_ns, checkpoint_id, task_id,
+                        idx, channel, type, blob, task_path
+                    ) VALUES (%s, '', %s, 'e2e-task', 0, 'result', 'bytes', %s, '')
+                    """,
+                    (thread_id, checkpoint_id, b"E2E_PENDING_WRITE"),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO checkpoint_blobs (
+                        thread_id, checkpoint_ns, channel, version, type, blob
+                    ) VALUES (%s, '', 'result', '1', 'bytes', %s)
+                    """,
+                    (thread_id, b"E2E_CHECKPOINT_BLOB"),
+                )
+
+
 def seed() -> None:
-    """在空的隔离数据库中原子写入用户、业务记录、checkpoint 与快照。"""
+    """向隔离 MySQL 写业务数据，再向 PostgreSQL 写 checkpoint fixture。"""
     admin_password = _required_secret("E2E_ADMIN_PASSWORD")
     user_password = _required_secret("E2E_USER_PASSWORD")
     with get_write_connection() as conn:
@@ -370,76 +442,6 @@ def seed() -> None:
                 json.dumps({"type": "final_result", "marker": "delete-32"}),
             ),
         )
-        cursor.execute(
-            """
-            INSERT INTO checkpoints (
-                thread_id, checkpoint_ns, checkpoint_id,
-                checkpoint, metadata_data, created_at
-            ) VALUES (%s, '', '31-checkpoint', %s, %s, UTC_TIMESTAMP())
-            """,
-            (
-                USER_SESSION_ID,
-                b"E2E_CHECKPOINT_MARKER_31",
-                json.dumps({"source": "3.1-e2e"}, ensure_ascii=False),
-            ),
-        )
-        cursor.execute(
-            """
-            INSERT INTO checkpoint_writes (
-                thread_id, checkpoint_ns, checkpoint_id, task_id,
-                idx, channel, value, created_at, write_identity_hash
-            ) VALUES (
-                %s, '', '31-checkpoint', '31-task', 0, 'result', %s,
-                UTC_TIMESTAMP(), %s
-            )
-            """,
-            (
-                USER_SESSION_ID,
-                b"E2E_PENDING_WRITE_MARKER_31",
-                _pending_write_identity_hash(
-                    USER_SESSION_ID,
-                    "",
-                    "31-checkpoint",
-                    "31-task",
-                    0,
-                ),
-            ),
-        )
-        cursor.execute(
-            """
-            INSERT INTO checkpoints (
-                thread_id, checkpoint_ns, checkpoint_id,
-                checkpoint, metadata_data, created_at
-            ) VALUES (%s, '', '32-delete-checkpoint', %s, %s, UTC_TIMESTAMP())
-            """,
-            (
-                DELETE_SESSION_ID,
-                b"E2E_DELETE_CHECKPOINT_MARKER_32",
-                json.dumps({"source": "3.2-e2e"}, ensure_ascii=False),
-            ),
-        )
-        cursor.execute(
-            """
-            INSERT INTO checkpoint_writes (
-                thread_id, checkpoint_ns, checkpoint_id, task_id,
-                idx, channel, value, created_at, write_identity_hash
-            ) VALUES (
-                %s, '', '32-delete-checkpoint', '32-delete-task', 0,
-                'result', %s, UTC_TIMESTAMP(), %s
-            )
-            """,
-            (
-                DELETE_SESSION_ID,
-                b"E2E_DELETE_PENDING_WRITE_MARKER_32",
-                _pending_write_identity_hash(
-                    DELETE_SESSION_ID,
-                    "",
-                    "32-delete-checkpoint",
-                    "32-delete-task",
-                    0,
-                ),
-            ),
-        )
         for snapshot_key, payload in {
             "realtime": {
                 "status": "healthy",
@@ -507,6 +509,7 @@ def seed() -> None:
                 (json.dumps(payload, ensure_ascii=False), snapshot_key),
             )
         conn.commit()
+    _seed_postgres_checkpoints()
 
 
 def refresh_login_passwords() -> None:

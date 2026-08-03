@@ -6,6 +6,7 @@ import csv
 from datetime import datetime
 from io import BytesIO, StringIO
 import json
+import math
 import os
 from typing import Any
 
@@ -13,10 +14,17 @@ from app.admin.audit_service import insert_admin_audit_event
 from app.admin.contracts import (
     AdminApiError,
     decode_cursor,
+    encode_cursor,
     page_result,
 )
 from app.db import get_read_connection, get_write_connection
 from app.request_context import get_request_id
+from Database.checkpoint_inspection import (
+    CHECKPOINT_SOURCE_ALIAS,
+    CheckpointPostgresUnavailable,
+    list_job_checkpoint_summaries,
+)
+from config.settings import settings
 
 
 CSV_PREVIEW_BYTES = 256 * 1024
@@ -635,7 +643,7 @@ def list_job_events(
     limit: int,
     cursor: str | None,
 ) -> dict[str, Any]:
-    """按事件 ID 倒序读取任务时间线，不返回 payload 正文。"""
+    """按事件 ID 倒序读取任务时间线，仅提取节点事件白名单字段。"""
     cursor_values = decode_cursor(cursor, size=1)
     clauses = ["job_id = %s"]
     params: list[Any] = [job_id]
@@ -653,7 +661,7 @@ def list_job_events(
             raise AdminApiError("not_found", "分析任务不存在", 404)
         db_cursor.execute(
             f"""
-            SELECT id, job_id, event_type, created_at,
+            SELECT id, job_id, event_type, created_at, payload_json,
                    (payload_json IS NOT NULL) AS has_payload
             FROM analysis_job_events
             WHERE {' AND '.join(clauses)}
@@ -665,7 +673,82 @@ def list_job_events(
         rows = db_cursor.fetchall()
     for row in rows:
         row["has_payload"] = bool(row.get("has_payload"))
+        payload = None
+        if row.get("event_type") in {"node_start", "node_end"}:
+            try:
+                decoded = _decode_json(row.get("payload_json"))
+                payload = decoded if isinstance(decoded, dict) else None
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = None
+        row.pop("payload_json", None)
+        row["node_name"] = None
+        row["node_desc"] = None
+        row["duration_seconds"] = None
+        if payload:
+            node_name = payload.get("node_name")
+            node_desc = payload.get("node_desc")
+            duration = payload.get("duration")
+            if isinstance(node_name, str):
+                row["node_name"] = node_name[:128]
+            if isinstance(node_desc, str):
+                row["node_desc"] = node_desc[:512]
+            if (
+                isinstance(duration, (int, float))
+                and not isinstance(duration, bool)
+                and math.isfinite(float(duration))
+                and 0 <= float(duration) <= 86400
+            ):
+                row["duration_seconds"] = float(duration)
     return page_result(rows, limit=limit, cursor_fields=("id",))
+
+
+def list_job_checkpoints(
+    *,
+    job_id: str,
+    limit: int,
+    cursor: str | None,
+) -> dict[str, Any]:
+    """按任务精确读取 PostgreSQL checkpoint 安全摘要。"""
+    job = get_job_detail(job_id)
+    cursor_values = decode_cursor(cursor, size=1)
+    before_checkpoint_id = None
+    if cursor_values:
+        candidate = cursor_values[0]
+        if not isinstance(candidate, str) or not 1 <= len(candidate) <= 256:
+            raise AdminApiError(
+                code="invalid_cursor",
+                message="分页游标无效",
+                fields={"cursor": "checkpoint 游标结构不正确"},
+            )
+        before_checkpoint_id = candidate
+
+    try:
+        result = list_job_checkpoint_summaries(
+            thread_id=str(job["session_id"]),
+            job_id=job_id,
+            limit=limit,
+            before_checkpoint_id=before_checkpoint_id,
+            timeout_ms=settings.DB_INSPECTION_QUERY_TIMEOUT_MS,
+        )
+    except CheckpointPostgresUnavailable as exc:
+        raise AdminApiError(
+            code="checkpoint_unavailable",
+            message="PostgreSQL checkpoint 暂时不可用",
+            status=503,
+        ) from exc
+
+    next_checkpoint_id = result.pop("next_checkpoint_id")
+    return {
+        **result,
+        "limit": limit,
+        "next_cursor": (
+            encode_cursor((next_checkpoint_id,))
+            if next_checkpoint_id
+            else None
+        ),
+        "source_alias": CHECKPOINT_SOURCE_ALIAS,
+        "attribution": "thread_id+metadata.job_id",
+    }
 
 
 def get_job_content(

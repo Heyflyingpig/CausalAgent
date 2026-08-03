@@ -89,6 +89,7 @@ async def _run_job(job: dict[str, Any], graph, worker_id: str) -> None:
             job["user_id"],
             f"user-{job['user_id']}",
             job["session_id"],
+            job_id=job_id,
             graph=graph,
         ):
             payload = _parse_sse_payload(event_data)

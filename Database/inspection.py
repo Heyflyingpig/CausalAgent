@@ -8,6 +8,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from Database.checkpoint_inspection import inspect_checkpoint_quick
+
 
 LOGGER = logging.getLogger(__name__)
 MAX_SLOW_QUERY_LIMIT = 100
@@ -1009,7 +1011,7 @@ def execute_migration_preflight_checks(
 
 
 def get_quick_integrity_report() -> dict[str, Any]:
-    """通过主库强一致读执行运行期低频完整性审计并汇总阻塞项。"""
+    """执行 MySQL 运行期审计与 PostgreSQL checkpoint 快速检查。"""
     from app.db import get_read_connection_with_source
     from config.settings import settings
 
@@ -1035,6 +1037,10 @@ def get_quick_integrity_report() -> dict[str, Any]:
                 warning="无法使用只读账号连接主库",
             ),
         }]
+
+    checks.extend(inspect_checkpoint_quick(
+        timeout_ms=settings.DB_INSPECTION_QUERY_TIMEOUT_MS,
+    ))
 
     blocking_count = sum(
         1

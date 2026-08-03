@@ -121,26 +121,15 @@ const TABLE_RULES: Record<string, TableRule> = {
       DELETE: '删除消息附件',
     },
   },
-  checkpoints: {
-    module: 'Agent 运行状态',
-    subject: 'Agent 检查点',
-    evidence: 'Database/mysql_checkpointer.py · MySQLSaver',
+  checkpoint_cleanup_outbox: {
+    module: 'Checkpoint 生命周期',
+    subject: 'PostgreSQL checkpoint 后台清理任务',
+    evidence: 'app/agent/checkpoint_cleanup.py、Database/checkpoint_cleanup_worker.py',
     actions: {
-      SELECT: '恢复 Agent 执行状态',
-      INSERT: '保存 Agent 执行状态',
-      UPDATE: '更新 Agent 执行状态',
-      DELETE: '清理 Agent 执行状态',
-    },
-  },
-  checkpoint_writes: {
-    module: 'Agent 运行状态',
-    subject: 'Agent 检查点待写数据',
-    evidence: 'Database/mysql_checkpointer.py · MySQLSaver',
-    actions: {
-      SELECT: '读取 Agent 待写状态',
-      INSERT: '保存 Agent 待写状态',
-      UPDATE: '更新 Agent 待写状态',
-      DELETE: '清理 Agent 待写状态',
+      SELECT: '读取 checkpoint 清理任务',
+      INSERT: '登记 checkpoint 清理任务',
+      UPDATE: '更新 checkpoint 清理状态或租约',
+      DELETE: '移除 checkpoint 清理任务',
     },
   },
   database_monitor_snapshots: {
