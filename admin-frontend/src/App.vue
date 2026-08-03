@@ -1,4 +1,20 @@
 <script setup lang="ts">
+import {
+  ClipboardCheck,
+  Database,
+  FolderOpen,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  MessageCircle,
+  MessagesSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
+  TimerReset,
+  UsersRound,
+  Workflow,
+  X,
+} from '@lucide/vue'
 import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { adminApi, loadIdentity } from './api'
@@ -17,19 +33,19 @@ const navigation = [
   {
     label: '业务数据',
     items: [
-      { to: '/overview', label: '业务概览', icon: '📋' },
-      { to: '/users', label: '用户与权限管理', icon: '👥' },
-      { to: '/sessions', label: '会话与内容管理', icon: '💬' },
-      { to: '/jobs', label: '分析任务管理', icon: '🔍' },
-      { to: '/files', label: '对话文件管理', icon: '📁' },
+      { to: '/overview', label: '业务概览', icon: LayoutDashboard },
+      { to: '/users', label: '用户与权限管理', icon: UsersRound },
+      { to: '/sessions', label: '会话与内容管理', icon: MessagesSquare },
+      { to: '/jobs', label: '分析任务管理', icon: Workflow },
+      { to: '/files', label: '对话文件管理', icon: FolderOpen },
     ],
   },
   {
     label: '数据库管理',
     items: [
-      { to: '/database', label: '数据库看板', icon: '📊' },
-      { to: '/database/settings', label: '自动采集时间配置', icon: '🎯' },
-      { to: '/database/audit', label: 'Schema与审计', icon: '✅' },
+      { to: '/database', label: '数据库看板', icon: Database },
+      { to: '/database/settings', label: '自动采集时间配置', icon: TimerReset },
+      { to: '/database/audit', label: 'Schema与审计', icon: ClipboardCheck },
     ],
   },
 ]
@@ -78,7 +94,7 @@ watch(
         :aria-expanded="mobileOpen"
         @click="mobileOpen = true"
       >
-        ☰
+        <Menu :size="20" :stroke-width="2" aria-hidden="true" />
       </button>
       <div class="mobile-brand-icon" aria-hidden="true">
         <img :src="BRAND_LOGO_URL" alt="">
@@ -110,7 +126,8 @@ watch(
           :aria-expanded="!collapsed"
           @click="toggleSidebar"
         >
-          {{ collapsed ? '›' : '‹' }}
+          <PanelLeftOpen v-if="collapsed" :size="16" :stroke-width="2" aria-hidden="true" />
+          <PanelLeftClose v-else :size="16" :stroke-width="2" aria-hidden="true" />
         </button>
         <button
           class="mobile-close-button"
@@ -118,7 +135,7 @@ watch(
           aria-label="关闭后台导航"
           @click="mobileOpen = false"
         >
-          ×
+          <X :size="20" :stroke-width="2" aria-hidden="true" />
         </button>
       </div>
 
@@ -137,7 +154,9 @@ watch(
               :class="{ active: isActive(item.to) }"
               :to="item.to"
             >
-              <span class="nav-icon" aria-hidden="true">{{ item.icon }}</span>
+              <span class="nav-icon" aria-hidden="true">
+                <component :is="item.icon" :size="18" :stroke-width="1.8" />
+              </span>
               <span class="nav-text">{{ item.label }}</span>
             </router-link>
           </el-tooltip>
@@ -157,7 +176,9 @@ watch(
             :href="CHAT_URL"
             :disabled="!identityReady"
           >
-            <span class="chat-entry-icon" aria-hidden="true">◌</span>
+            <span class="chat-entry-icon" aria-hidden="true">
+              <MessageCircle :size="18" :stroke-width="1.8" />
+            </span>
             <span class="chat-entry-text">进入聊天</span>
           </el-button>
         </el-tooltip>
@@ -168,7 +189,9 @@ watch(
             :disabled="!identityReady"
             @click="adminApi.logout"
           >
-            <span class="logout-icon" aria-hidden="true">↪</span>
+            <span class="logout-icon" aria-hidden="true">
+              <LogOut :size="18" :stroke-width="1.8" />
+            </span>
             <span class="logout-text">退出登录</span>
           </el-button>
         </el-tooltip>

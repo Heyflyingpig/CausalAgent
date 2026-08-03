@@ -84,8 +84,9 @@ button, a { font: inherit; }
   color: var(--ca-muted);
   background: #fff;
   cursor: pointer;
-  font-size: 20px;
-  line-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   z-index: 2;
 }
 .sidebar-toggle:hover { color: var(--ca-blue); border-color: var(--ca-blue); }
@@ -109,10 +110,13 @@ button, a { font: inherit; }
 .nav-item.active { color: var(--ca-blue); background: var(--ca-blue-soft); }
 .nav-icon {
   width: 20px;
+  height: 20px;
   flex: 0 0 20px;
-  font-size: 15px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
+.nav-icon svg { display: block; }
 .nav-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-note { margin: 14px 12px; color: var(--ca-muted); font-size: 12px; line-height: 1.7; }
 
@@ -132,7 +136,7 @@ button, a { font: inherit; }
 .sidebar-footer .chat-entry-button:focus {
   text-decoration: none;
 }
-.chat-entry-icon, .logout-icon { display: none; font-size: 18px; }
+.chat-entry-icon, .logout-icon { display: none; align-items: center; justify-content: center; }
 
 .admin-sidebar.collapsed { padding-right: 12px; padding-left: 12px; }
 .admin-sidebar.collapsed .brand-block { padding-right: 0; padding-left: 0; }
@@ -151,7 +155,7 @@ button, a { font: inherit; }
 .admin-sidebar.collapsed .chat-entry-button,
 .admin-sidebar.collapsed .logout-button { width: 44px; padding: 8px; }
 .admin-sidebar.collapsed .chat-entry-icon,
-.admin-sidebar.collapsed .logout-icon { display: inline; }
+.admin-sidebar.collapsed .logout-icon { display: inline-flex; }
 
 .admin-main { min-width: 0; padding: 34px clamp(24px, 4vw, 56px) 64px; }
 .page-loading { max-width: 1000px; padding-top: 40px; }
@@ -443,7 +447,9 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
     color: var(--ca-text);
     background: #fff;
     cursor: pointer;
-    font-size: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .mobile-brand-icon {
     position: relative;
@@ -493,7 +499,7 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
     width: 100%;
   }
   .sidebar-toggle { display: none; }
-  .mobile-close-button { position: absolute; top: 0; right: -2px; display: block; }
+  .mobile-close-button { position: absolute; top: 0; right: -2px; display: inline-flex; }
   .admin-sidebar.collapsed .nav-label,
   .admin-sidebar.collapsed .nav-text,
   .admin-sidebar.collapsed .admin-identity,

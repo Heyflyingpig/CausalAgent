@@ -89,6 +89,11 @@ describe('3.1 管理员界面交互边界', () => {
 
     expect(wrapper.classes()).not.toContain('sidebar-collapsed')
     expect(wrapper.findAll('img[src="/api/admin/brand/logo"]')).toHaveLength(2)
+    expect(wrapper.findAll('.nav-icon svg')).toHaveLength(8)
+    expect(wrapper.findAll('.nav-icon').every(icon => icon.text() === '')).toBe(true)
+    expect(wrapper.findAll('.nav-icon svg').every(icon => icon.attributes('stroke-width') === '1.8'))
+      .toBe(true)
+    expect(wrapper.find('.sidebar-toggle svg').exists()).toBe(true)
     await wrapper.find('.sidebar-toggle').trigger('click')
     expect(wrapper.classes()).toContain('sidebar-collapsed')
     expect(window.localStorage.getItem('causalagent.admin.sidebar.collapsed')).toBe('true')
