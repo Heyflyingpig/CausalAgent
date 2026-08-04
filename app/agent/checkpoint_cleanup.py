@@ -12,6 +12,54 @@ from app.db import get_write_connection
 
 MAX_CLEANUP_ATTEMPTS = 3
 RETRY_DELAYS_SECONDS = (10, 30)
+CLEANUP_RUNTIME_SNAPSHOT_KEY = "checkpoint_cleanup_runtime"
+
+
+def write_cleanup_runtime_snapshot(payload: dict[str, Any]) -> None:
+    """写入 cleanup worker 的安全运行快照，不暴露主机、账号或连接信息。"""
+    allowed = {
+        "worker_alias",
+        "worker_status",
+        "started_at",
+        "heartbeat_at",
+        "current_outbox_id",
+        "run_success_count",
+        "run_failure_count",
+        "startup_success_count",
+        "startup_failure_count",
+        "heartbeat_interval_seconds",
+        "processing_started_at",
+        "processing_duration_seconds",
+        "current_processing_started_at",
+        "current_processing_duration_seconds",
+        "last_failure_at",
+        "last_error_present",
+    }
+    safe_payload = {key: value for key, value in payload.items() if key in allowed}
+    with get_write_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            INSERT INTO database_monitor_snapshots (
+                snapshot_key, payload_json, observed_at
+            ) VALUES (%s, %s, UTC_TIMESTAMP(6))
+            ON DUPLICATE KEY UPDATE
+                payload_json = VALUES(payload_json),
+                observed_at = VALUES(observed_at)
+            """,
+            (
+                CLEANUP_RUNTIME_SNAPSHOT_KEY,
+                _json_dumps({
+                    **safe_payload,
+                    "status": "healthy",
+                    "source_role": "cleanup-worker",
+                    "source_alias": "checkpoint-cleanup",
+                    "is_estimate": False,
+                    "warning": None,
+                }),
+            ),
+        )
+        connection.commit()
 
 
 def enqueue_checkpoint_cleanup(

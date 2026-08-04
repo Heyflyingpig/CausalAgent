@@ -236,7 +236,7 @@ docker compose -f docker-compose.yml run --rm app python Database/audit_before_d
 
 #### 管理员后台
 
-管理员后台提供业务概览、用户、会话、任务、文件、数据库看板、采集配置和数据库审计。普通用户仍进入聊天页面，已启用的管理员登录后进入 `/admin/database`。
+管理员后台提供业务概览、用户、会话、任务、文件、数据库看板、采集配置和数据库审计。数据库看板通过 URL 查询参数在“数据库运行状态 / Cleanup Worker / Outbox 队列”三段视图间切换；用户删除后可从持续可见的 checkpoint 清理进度区跳转到对应 Operation ID 的 Outbox 排查。普通用户仍进入聊天页面，已启用的管理员登录后进入 `/admin/database`。
 
 管理员仍默认进入 `/admin/database`，也可从后台进入普通聊天界面；聊天页只访问当前账号自己的会话、文件和任务，并向管理员提供返回后台的入口。管理员主动访问 `/` 时不会被再次强制送回后台。
 

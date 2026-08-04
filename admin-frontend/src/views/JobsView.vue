@@ -5,6 +5,7 @@ import CursorPager from '../components/CursorPager.vue'
 import SensitiveContentDialog from '../components/SensitiveContentDialog.vue'
 import { formatDate } from '../lib/dashboard'
 import type {
+  AgentWorkerSummary,
   AdminCheckpointPage,
   AdminJob,
   AdminJobEvent,
@@ -20,6 +21,9 @@ const status = ref('')
 const userId = ref('')
 const sessionId = ref('')
 const cursors = ref<(string | undefined)[]>([undefined])
+const workerSummary = ref<AgentWorkerSummary | null>(null)
+const workerSummaryLoading = ref(false)
+const workerSummaryError = ref('')
 
 const detailVisible = ref(false)
 const detailLoading = ref(false)
@@ -92,6 +96,19 @@ async function loadJobs(reset = false): Promise<void> {
     showError(caught)
   } finally {
     loading.value = false
+  }
+}
+
+/** 从实时共享快照读取 Agent Worker 心跳和任务汇总。 */
+async function loadWorkerSummary(): Promise<void> {
+  workerSummaryLoading.value = true
+  workerSummaryError.value = ''
+  try {
+    workerSummary.value = await adminApi.jobWorkersSummary()
+  } catch (caught) {
+    workerSummaryError.value = errorText(caught)
+  } finally {
+    workerSummaryLoading.value = false
   }
 }
 
@@ -211,7 +228,10 @@ function statusType(value: AdminJob['status']): 'success' | 'warning' | 'danger'
   return 'info'
 }
 
-onMounted(() => loadJobs())
+onMounted(() => {
+  void loadJobs()
+  void loadWorkerSummary()
+})
 </script>
 
 <template>
@@ -221,6 +241,31 @@ onMounted(() => loadJobs())
         <h1>分析任务管理</h1>
       </div>
     </header>
+
+    <section class="panel worker-summary-panel" v-loading="workerSummaryLoading">
+      <div class="panel-header">
+        <div>
+          <h2>Agent Worker</h2>
+          <p>分析任务 Worker 心跳和当前队列摘要。</p>
+        </div>
+        <span class="source-meta">{{ workerSummary?.meta?.source_alias || '共享监控快照' }}</span>
+      </div>
+      <el-alert v-if="workerSummaryError" class="page-notice" type="warning" :closable="false" :title="workerSummaryError" />
+      <div class="inline-metrics four-columns">
+        <div><span>Queued</span><strong>{{ workerSummary?.summary.queued ?? '—' }}</strong></div>
+        <div><span>Running</span><strong>{{ workerSummary?.summary.running ?? '—' }}</strong></div>
+        <div><span>Stale</span><strong>{{ workerSummary?.summary.stale ?? '—' }}</strong></div>
+        <div><span>达到最大尝试仍运行</span><strong>{{ workerSummary?.summary.max_attempts_running ?? '—' }}</strong></div>
+      </div>
+      <el-table v-if="workerSummary?.jobs?.length" :data="workerSummary.jobs" table-layout="auto">
+        <el-table-column prop="job_id" label="Job ID" min-width="250" />
+        <el-table-column prop="status" label="状态" min-width="100" />
+        <el-table-column prop="worker_id" label="Worker" min-width="160" />
+        <el-table-column label="尝试次数" min-width="110"><template #default="{ row }">{{ row.attempt_count }} / {{ row.max_attempts }}</template></el-table-column>
+        <el-table-column label="心跳时间" min-width="180"><template #default="{ row }">{{ formatDate(row.heartbeat_at) }}</template></el-table-column>
+      </el-table>
+      <el-empty v-else description="当前没有 queued/running 任务" />
+    </section>
 
     <section class="filter-bar">
       <el-input v-model="q" clearable placeholder="Job ID" @keyup.enter="loadJobs(true)" />

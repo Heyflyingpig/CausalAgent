@@ -641,6 +641,8 @@ test('3.2 业务页面、受控写入、敏感揭示和可收缩导航在 mock �
   await expect(page.getByText('primary-information-schema')).toBeVisible()
   await expect(page.locator('.nav-item').filter({ hasText: '会话与内容管理' }))
     .toHaveCSS('font-size', '14px')
+  await expect(page.locator('.nav-icon svg')).toHaveCount(8)
+  await expect(page.locator('.nav-icon svg').first()).toHaveAttribute('stroke-width', '1.8')
 
   const chatEntry = page.getByRole('link', { name: '进入聊天' })
   const logoutButton = page.getByRole('button', { name: '退出登录' })
