@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import json
 import logging
+import math
 import os
 from typing import Any, Iterable
 
@@ -77,17 +78,26 @@ def _decode_payload(value: Any) -> dict[str, Any] | None:
     return decoded if isinstance(decoded, dict) else None
 
 
+def _coerce_interval_seconds(value: Any) -> int | None:
+    """把可信配置转换为正整数秒，非法或非有限值返回 None。"""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds <= 0:
+        return None
+    return max(1, math.ceil(seconds))
+
+
 def _interval_seconds(
     snapshot_key: str,
     policy: dict[str, Any] | None = None,
 ) -> int:
     """从统一配置取得某类快照的采集周期。"""
     effective = policy or get_monitor_settings()["effective"]
-    heartbeat_raw = os.getenv("CHECKPOINT_CLEANUP_HEARTBEAT_INTERVAL_SECONDS")
-    try:
-        heartbeat_interval = max(1, int(float(heartbeat_raw))) if heartbeat_raw else 10
-    except (TypeError, ValueError):
-        heartbeat_interval = 10
+    heartbeat_interval = _coerce_interval_seconds(
+        os.getenv("CHECKPOINT_CLEANUP_HEARTBEAT_INTERVAL_SECONDS")
+    ) or 10
     intervals = {
         "realtime": effective["realtime_interval_seconds"],
         "sql_performance": effective["sql_interval_seconds"],
@@ -167,6 +177,10 @@ def _enrich_snapshot(
     requested_at = _parse_utc((row or {}).get("refresh_requested_at"))
     effective = policy or get_monitor_settings()["effective"]
     interval = _interval_seconds(snapshot_key, effective)
+    if snapshot_key == "checkpoint_cleanup_runtime":
+        interval = _coerce_interval_seconds(
+            result.get("heartbeat_interval_seconds")
+        ) or interval
     now = _parse_utc((row or {}).get("database_now")) or _utc_now()
     result["observed_at"] = _iso_utc(observed_at) if observed_at else None
     result["refresh_requested_at"] = _iso_utc(requested_at) if requested_at else None
