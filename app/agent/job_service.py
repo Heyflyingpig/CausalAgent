@@ -17,12 +17,14 @@ import mysql.connector
 from mysql.connector import errorcode
 
 from app.db import get_read_connection, get_read_connection_with_source, get_write_connection
+from app.chat.services import save_chat_for_job_in_transaction
 from config.settings import settings
 
 
 ACTIVE_STATUSES = ("queued", "running")
 TERMINAL_STATUSES = ("succeeded", "failed", "canceled")
 TERMINAL_EVENTS = {"final_result", "interrupt", "error"}
+MAX_ATTEMPTS_ERROR = "任务达到最大尝试次数，且最后一次 worker 心跳已过期"
 
 
 def _json_dumps(value: Any) -> str:
@@ -135,6 +137,53 @@ def create_job(user_id: int, session_id: str, message: str) -> tuple[dict[str, A
         conn.close()
 
 
+def _finalize_exhausted_job(cursor, stale_after: int) -> bool:
+    """锁定并失败一个已耗尽尝试次数且心跳过期的 job。"""
+    cursor.execute(
+        f"""
+        SELECT job_id
+        FROM analysis_jobs
+        WHERE status = 'running'
+          AND attempt_count >= max_attempts
+          AND (
+                heartbeat_at IS NULL
+                OR heartbeat_at < (UTC_TIMESTAMP(6) - INTERVAL {stale_after} SECOND)
+              )
+        ORDER BY heartbeat_at ASC, created_at ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+        """
+    )
+    job = cursor.fetchone()
+    if not job:
+        return False
+
+    cursor.execute(
+        """
+        UPDATE analysis_jobs
+        SET status = 'failed',
+            error_message = %s,
+            last_error = %s,
+            active_session_key = NULL,
+            heartbeat_at = UTC_TIMESTAMP(6),
+            finished_at = UTC_TIMESTAMP(6)
+        WHERE job_id = %s AND status = 'running'
+        """,
+        (MAX_ATTEMPTS_ERROR, MAX_ATTEMPTS_ERROR, job["job_id"]),
+    )
+    if cursor.rowcount != 1:
+        return False
+
+    cursor.execute(
+        """
+        INSERT INTO analysis_job_events (job_id, event_type, payload_json)
+        VALUES (%s, 'error', %s)
+        """,
+        (job["job_id"], _json_dumps({"type": "error", "message": MAX_ATTEMPTS_ERROR})),
+    )
+    return True
+
+
 def claim_next_job(worker_id: str, stale_after_seconds: int | None = None) -> dict[str, Any] | None:
     """
     领取一个可执行 job。
@@ -148,7 +197,7 @@ def claim_next_job(worker_id: str, stale_after_seconds: int | None = None) -> di
     try:
         cursor = conn.cursor(dictionary=True)
         conn.start_transaction()
-        ## 执行抢任务，并锁住
+        _finalize_exhausted_job(cursor, stale_after)
         cursor.execute(
             f"""
             SELECT *
@@ -157,7 +206,10 @@ def claim_next_job(worker_id: str, stale_after_seconds: int | None = None) -> di
                     status = 'queued'
                     OR (
                         status = 'running'
-                        AND heartbeat_at < (UTC_TIMESTAMP(6) - INTERVAL {stale_after} SECOND)
+                        AND (
+                            heartbeat_at IS NULL
+                            OR heartbeat_at < (UTC_TIMESTAMP(6) - INTERVAL {stale_after} SECOND)
+                        )
                     )
                   )
               AND attempt_count < max_attempts
@@ -201,35 +253,67 @@ def get_job_by_id(job_id: str) -> dict[str, Any] | None:
         return _row_to_job(cursor.fetchone())
 
 
-def update_heartbeat(job_id: str, worker_id: str) -> None:
-    """刷新 running job 的 worker 心跳，用于崩溃恢复判断。检测进程或者协是否正常"""
+def update_heartbeat(job_id: str, worker_id: str, attempt_count: int) -> bool:
+    """仅为持有指定 attempt 的 running job 刷新 worker 心跳。"""
     with get_write_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE analysis_jobs
             SET heartbeat_at = UTC_TIMESTAMP(6)
-            WHERE job_id = %s AND worker_id = %s AND status = 'running'
+            WHERE job_id = %s
+              AND worker_id = %s
+              AND attempt_count = %s
+              AND status = 'running'
             """,
-            (job_id, worker_id),
+            (job_id, worker_id, attempt_count),
         )
         conn.commit()
+        return cursor.rowcount == 1
 
 
-def write_event(job_id: str, event_type: str, payload: dict[str, Any]) -> int:
-    """把 worker 产生的节点进度或终态事件写入事件表。"""
+def _lock_owned_running_job(cursor, job_id: str, worker_id: str, attempt_count: int) -> bool:
+    """锁定 job 行并确认它仍属于指定 worker attempt。"""
+    cursor.execute(
+        """
+        SELECT status, worker_id, attempt_count
+        FROM analysis_jobs
+        WHERE job_id = %s
+        FOR UPDATE
+        """,
+        (job_id,),
+    )
+    job = cursor.fetchone()
+    return bool(
+        job
+        and job["status"] == "running"
+        and job["worker_id"] == worker_id
+        and int(job["attempt_count"]) == int(attempt_count)
+    )
+
+
+def write_event(job_id: str, worker_id: str, attempt_count: int, event_type: str, payload: dict[str, Any]) -> int | None:
+    """仅为当前 worker attempt 写入一个事件，旧租约会被静默拒绝。"""
     with get_write_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO analysis_job_events (job_id, event_type, payload_json)
-            VALUES (%s, %s, %s)
-            """,
-            (job_id, event_type, _json_dumps(payload)),
-        )
-        event_id = cursor.lastrowid
-        conn.commit()
-        return int(event_id)
+        try:
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+            if not _lock_owned_running_job(cursor, job_id, worker_id, attempt_count):
+                conn.rollback()
+                return None
+            cursor.execute(
+                """
+                INSERT INTO analysis_job_events (job_id, event_type, payload_json)
+                VALUES (%s, %s, %s)
+                """,
+                (job_id, event_type, _json_dumps(payload)),
+            )
+            event_id = cursor.lastrowid
+            conn.commit()
+            return int(event_id)
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def read_events_after(job_id: str, after_id: int = 0, limit: int = 100) -> list[dict[str, Any]]:
@@ -252,8 +336,8 @@ def read_events_after(job_id: str, after_id: int = 0, limit: int = 100) -> list[
     return rows
 
 
-def complete_job(job_id: str, result: dict[str, Any] | None) -> None:
-    """把 job 标记为成功并保存最终结构化结果。"""
+def complete_job(job_id: str, worker_id: str, attempt_count: int, result: dict[str, Any] | None) -> bool:
+    """仅把当前 worker attempt 持有的 job 标记为成功。"""
     with get_write_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -265,48 +349,143 @@ def complete_job(job_id: str, result: dict[str, Any] | None) -> None:
                 heartbeat_at = UTC_TIMESTAMP(6),
                 finished_at = UTC_TIMESTAMP(6)
             WHERE job_id = %s
+              AND worker_id = %s
+              AND attempt_count = %s
+              AND status = 'running'
             """,
-            (_json_dumps(result or {}), job_id),
+            (_json_dumps(result or {}), job_id, worker_id, attempt_count),
         )
         conn.commit()
+        return cursor.rowcount == 1
 
 
-def fail_job(job_id: str, message: str, *, write_error_event: bool = True) -> None:
-    """把 job 标记为失败；必要时同时写入 error SSE 事件。"""
-    logging.error("analysis job %s failed: %s", job_id, message)
-    if write_error_event:
-        write_event(job_id, "error", {"type": "error", "message": message})
+def complete_job_with_chat(
+    job: dict[str, Any],
+    worker_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+    chat_response: dict[str, Any],
+    result: dict[str, Any] | None,
+) -> bool:
+    """在一个事务内幂等保存聊天、写终态事件并完成当前 worker attempt。"""
+    job_id = job["job_id"]
+    attempt_count = int(job["attempt_count"])
     with get_write_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE analysis_jobs
-            SET status = 'failed',
-                error_message = %s,
-                last_error = %s,
-                active_session_key = NULL,
-                heartbeat_at = UTC_TIMESTAMP(6),
-                finished_at = UTC_TIMESTAMP(6)
-            WHERE job_id = %s
-            """,
-            (message, message, job_id),
-        )
-        conn.commit()
+        try:
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+            if not _lock_owned_running_job(cursor, job_id, worker_id, attempt_count):
+                conn.rollback()
+                return False
+
+            save_chat_for_job_in_transaction(
+                cursor,
+                job_id,
+                job["user_id"],
+                job["session_id"],
+                job["message"],
+                chat_response,
+            )
+            cursor.execute(
+                """
+                INSERT INTO analysis_job_events (job_id, event_type, payload_json)
+                VALUES (%s, %s, %s)
+                """,
+                (job_id, event_type, _json_dumps(payload)),
+            )
+            cursor.execute(
+                """
+                UPDATE analysis_jobs
+                SET status = 'succeeded',
+                    result_json = %s,
+                    active_session_key = NULL,
+                    heartbeat_at = UTC_TIMESTAMP(6),
+                    finished_at = UTC_TIMESTAMP(6)
+                WHERE job_id = %s
+                  AND worker_id = %s
+                  AND attempt_count = %s
+                  AND status = 'running'
+                """,
+                (_json_dumps(result or {}), job_id, worker_id, attempt_count),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
 
 
-def mark_chat_saved(job_id: str) -> bool:
-    """幂等标记聊天历史已保存；返回本次调用是否真正写入标记。"""
+def fail_job(
+    job_id: str,
+    worker_id: str,
+    attempt_count: int,
+    message: str,
+    *,
+    write_error_event: bool = True,
+) -> bool:
+    """仅把当前 worker attempt 持有的 job 标记为失败并可写入 error 事件。"""
+    logging.error("analysis job %s failed: %s", job_id, message)
+    with get_write_connection() as conn:
+        try:
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+            if not _lock_owned_running_job(cursor, job_id, worker_id, attempt_count):
+                conn.rollback()
+                return False
+            if write_error_event:
+                cursor.execute(
+                    """
+                    INSERT INTO analysis_job_events (job_id, event_type, payload_json)
+                    VALUES (%s, 'error', %s)
+                    """,
+                    (job_id, _json_dumps({"type": "error", "message": message})),
+                )
+            cursor.execute(
+                """
+                UPDATE analysis_jobs
+                SET status = 'failed',
+                    error_message = %s,
+                    last_error = %s,
+                    active_session_key = NULL,
+                    heartbeat_at = UTC_TIMESTAMP(6),
+                    finished_at = UTC_TIMESTAMP(6)
+                WHERE job_id = %s
+                  AND worker_id = %s
+                  AND attempt_count = %s
+                  AND status = 'running'
+                """,
+                (message, message, job_id, worker_id, attempt_count),
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def mark_chat_saved(job_id: str, worker_id: str, attempt_count: int) -> bool:
+    """仅为当前 worker attempt 幂等标记聊天历史已保存。"""
     with get_write_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE analysis_jobs
             SET chat_saved_at = UTC_TIMESTAMP(6)
-            WHERE job_id = %s AND chat_saved_at IS NULL
+            WHERE job_id = %s
+              AND worker_id = %s
+              AND attempt_count = %s
+              AND status = 'running'
+              AND chat_saved_at IS NULL
             """,
-            (job_id,),
+            (job_id, worker_id, attempt_count),
         )
-        changed = cursor.rowcount > 0
+        changed = cursor.rowcount == 1
         conn.commit()
         return changed
 
