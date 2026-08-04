@@ -17,6 +17,8 @@ const backToSettingsButton = document.getElementById('backToSettingsButton'); //
 const csvUploaderInput = document.getElementById('csvUploader'); // 获取CSV上传器
 const uploadCsvButton = document.getElementById('uploadCsvButton'); // 获取上传按钮
 const chatArea = document.getElementById('chatArea');
+const LAST_LOGIN_RECORD_FAILED_WARNING = 'last_login_record_failed';
+const LOGIN_WARNING_DURATION_MS = 3000;
 //全局变量存储当前会话的用户名
 //一个标签页里同时并行操作多个会话的话，会造成冲突
 let currentUsername = null;
@@ -268,12 +270,21 @@ async function handleLogin() {
             // 登录成功
             currentUsername = data.username; //  设置全局变量
             currentUserRole = data.role || 'user';
-            if (data.redirect_to) {
-                window.location.assign(data.redirect_to);
-                return;
+            const hasLastLoginWarning = data.warning_code === LAST_LOGIN_RECORD_FAILED_WARNING;
+            if (hasLastLoginWarning) {
+                showTransientLoginWarning('登录成功，但最后登录时间写入失败');
             }
-            if (currentUserRole === 'admin') {
-                window.location.assign('/admin/database');
+            const redirectTarget = data.redirect_to || (
+                currentUserRole === 'admin' ? '/admin/database' : null
+            );
+            if (redirectTarget) {
+                if (hasLastLoginWarning) {
+                    window.setTimeout(() => {
+                        window.location.assign(redirectTarget);
+                    }, LOGIN_WARNING_DURATION_MS);
+                } else {
+                    window.location.assign(redirectTarget);
+                }
                 return;
             }
             clearInternalNavigationParameters();
@@ -304,6 +315,26 @@ async function handleLogin() {
 }
 
 // 处理退出登录 - 
+/**
+ * 显示一次登录告警，并在固定时间后自动移除，避免阻塞后续页面操作。
+ */
+function showTransientLoginWarning(message) {
+    const existingNotice = document.getElementById('loginTransientWarning');
+    if (existingNotice) {
+        existingNotice.remove();
+    }
+    const notice = document.createElement('div');
+    notice.id = 'loginTransientWarning';
+    notice.className = 'login-transient-warning';
+    notice.setAttribute('role', 'status');
+    notice.setAttribute('aria-live', 'polite');
+    notice.textContent = message;
+    document.body.appendChild(notice);
+    window.setTimeout(() => {
+        notice.remove();
+    }, LOGIN_WARNING_DURATION_MS);
+}
+
 async function handleLogout() {
     const username = currentUsername; //  使用全局变量获取当前用户 (主要用于日志)
     if (!username) return; // 如果没有当前用户，直接返回

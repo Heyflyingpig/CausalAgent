@@ -9,6 +9,7 @@ import bcrypt
 import logging
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api')
+LAST_LOGIN_RECORD_FAILED_WARNING = 'last_login_record_failed'
 
 # 获取注册值,检查注册值
 @auth_bp.route('/register', methods=['POST'])
@@ -51,7 +52,7 @@ def handle_login():
     处理用户登录请求。
     接收前端通过HTTPS发送的明文密码，使用bcrypt进行验证。
     """
-    from app.auth.service import find_user
+    from app.auth.service import find_user, record_successful_login
 
 
     data = request.json
@@ -76,6 +77,7 @@ def handle_login():
     stored_hashed_password = user_data["password_hash"].encode('utf-8')
     if bcrypt.checkpw(plain_password.encode('utf-8'), stored_hashed_password):
         logging.info(f"用户登录成功: {username}")
+        last_login_recorded = record_successful_login(user_data['id'])
         
         #  核心修改：在 Session 中存储用户信息 
         session.clear() # 先清除旧的会话数据
@@ -95,6 +97,8 @@ def handle_login():
             'role': user_data['role'],
             'csrf_token': csrf_token,
         }
+        if not last_login_recorded:
+            response_payload['warning_code'] = LAST_LOGIN_RECORD_FAILED_WARNING
         if redirect_to is not None:
             response_payload['redirect_to'] = redirect_to
         return jsonify(response_payload)
