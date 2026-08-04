@@ -566,6 +566,32 @@
         min-height: 1em; /* 避免没有错误时布局跳动 */
     }
 
+    .login-transient-warning {
+        position: fixed;
+        top: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 3000;
+        max-width: min(90vw, 520px);
+        padding: 12px 18px;
+        border: 1px solid #f0c36d;
+        border-radius: 8px;
+        background: #fff7e6;
+        box-shadow: 0 6px 20px rgba(79, 55, 15, 0.18);
+        color: #7a4b00;
+        font-size: 14px;
+        line-height: 1.5;
+        text-align: center;
+        pointer-events: none;
+        animation: login-warning-lifecycle 3s ease forwards;
+    }
+
+    @keyframes login-warning-lifecycle {
+        0% { opacity: 0; transform: translate(-50%, -8px); }
+        10%, 85% { opacity: 1; transform: translate(-50%, 0); }
+        100% { opacity: 0; transform: translate(-50%, -8px); }
+    }
+
 
     /* 新增：用户信息弹窗样式 */
     #userInfoPopup {
