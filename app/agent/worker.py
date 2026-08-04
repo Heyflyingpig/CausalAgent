@@ -23,7 +23,6 @@ from Agent.causal_agent.postgres_checkpointer import (
 )
 from app.agent import core as agent_core
 from app.agent import job_service
-from app.chat.services import save_chat
 from app.db import check_database_readiness
 from config.settings import settings
 
@@ -35,19 +34,33 @@ def _parse_sse_payload(event_data: str) -> dict[str, Any]:
     return json.loads(event_data[6:].strip())
 
 
-async def _heartbeat_until_stopped(job_id: str, worker_id: str, stop: asyncio.Event) -> None:
+async def _heartbeat_until_stopped(
+    job_id: str,
+    worker_id: str,
+    attempt_count: int,
+    stop: asyncio.Event,
+) -> None:
     """在 job 执行期间定期刷新 heartbeat_at，直到 stop 被设置。"""
     # 持续检查stop是否为true
     while not stop.is_set():
         await asyncio.sleep(settings.JOB_HEARTBEAT_INTERVAL_SECONDS)
         if stop.is_set():
             break
-        await asyncio.to_thread(job_service.update_heartbeat, job_id, worker_id)
+        await asyncio.to_thread(
+            job_service.update_heartbeat,
+            job_id,
+            worker_id,
+            attempt_count,
+        )
         logging.info("[worker] heartbeat job=%s worker=%s", job_id, worker_id)
 
 
-async def _save_chat_for_terminal_event(job: dict[str, Any], payload: dict[str, Any]) -> None:
-    """在 final_result 或 interrupt 后保存聊天历史，并写入幂等标记。"""
+async def _complete_terminal_event(
+    job: dict[str, Any],
+    worker_id: str,
+    payload: dict[str, Any],
+) -> bool:
+    """在一个事务内完成终态事件、聊天保存和 job 成功更新。"""
     event_type = payload.get("type")
     if event_type == "final_result":
         response_data = payload.get("data", {})
@@ -57,18 +70,18 @@ async def _save_chat_for_terminal_event(job: dict[str, Any], payload: dict[str, 
             "summary": payload.get("message", ""),
         }
     else:
-        return
+        return False
 
-    saved = await asyncio.to_thread(
-        save_chat,
-        job["user_id"],
-        job["session_id"],
-        job["message"],
+    result = payload.get("data") if event_type == "final_result" else payload
+    return await asyncio.to_thread(
+        job_service.complete_job_with_chat,
+        job,
+        worker_id,
+        event_type,
+        payload,
         response_data,
+        result,
     )
-    if not saved:
-        raise RuntimeError("聊天历史保存失败")
-    await asyncio.to_thread(job_service.mark_chat_saved, job["job_id"])
 
 
 async def _run_job(job: dict[str, Any], graph, worker_id: str) -> None:
@@ -76,7 +89,9 @@ async def _run_job(job: dict[str, Any], graph, worker_id: str) -> None:
     job_id = job["job_id"]
     stop_heartbeat = asyncio.Event()
     # 心跳检测协程是否正常进行
-    heartbeat_task = asyncio.create_task(_heartbeat_until_stopped(job_id, worker_id, stop_heartbeat))
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_until_stopped(job_id, worker_id, int(job["attempt_count"]), stop_heartbeat)
+    )
     # 标记是否该job是否结束
     terminal_seen = False
     final_result = None
@@ -94,29 +109,47 @@ async def _run_job(job: dict[str, Any], graph, worker_id: str) -> None:
         ):
             payload = _parse_sse_payload(event_data)
             event_type = payload.get("type", "message")
-            # 将获取到的值落库
-            await asyncio.to_thread(job_service.write_event, job_id, event_type, payload)
 
             if event_type in {"final_result", "interrupt"}:
-                await _save_chat_for_terminal_event(job, payload)
-                final_result = payload.get("data") if event_type == "final_result" else payload
-                await asyncio.to_thread(job_service.complete_job, job_id, final_result)
+                await _complete_terminal_event(job, worker_id, payload)
                 terminal_seen = True
             elif event_type == "error":
                 await asyncio.to_thread(
                     job_service.fail_job,
                     job_id,
+                    worker_id,
+                    int(job["attempt_count"]),
                     payload.get("message", "任务执行失败"),
-                    write_error_event=False,
                 )
                 terminal_seen = True
+            else:
+                await asyncio.to_thread(
+                    job_service.write_event,
+                    job_id,
+                    worker_id,
+                    int(job["attempt_count"]),
+                    event_type,
+                    payload,
+                )
 
         if not terminal_seen:
-            await asyncio.to_thread(job_service.complete_job, job_id, final_result or {})
+            await asyncio.to_thread(
+                job_service.complete_job,
+                job_id,
+                worker_id,
+                int(job["attempt_count"]),
+                final_result or {},
+            )
         logging.info("[worker] finish job=%s worker=%s", job_id, worker_id)
     except Exception as exc:
         logging.error("[worker] job failed job=%s worker=%s error=%s", job_id, worker_id, exc, exc_info=True)
-        await asyncio.to_thread(job_service.fail_job, job_id, str(exc))
+        await asyncio.to_thread(
+            job_service.fail_job,
+            job_id,
+            worker_id,
+            int(job["attempt_count"]),
+            str(exc),
+        )
     ## 如果结束，停止心跳
     finally:
         stop_heartbeat.set()
