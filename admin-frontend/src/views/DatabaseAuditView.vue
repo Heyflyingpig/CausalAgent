@@ -130,7 +130,13 @@ onBeforeUnmount(() => {
       </div>
       <el-table v-loading="loading" :data="quickChecks" empty-text="尚无 quick 审计结果">
         <el-table-column prop="label" label="检查" min-width="220" />
-        <el-table-column prop="status" label="状态" width="110" />
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'healthy' ? 'success' : 'danger'">
+              {{ row.status }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="说明" min-width="280" show-overflow-tooltip>
           <template #default="{ row }">{{ quickCheckDescription(row) }}</template>
         </el-table-column>
