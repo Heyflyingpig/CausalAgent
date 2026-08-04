@@ -18,7 +18,59 @@ export interface DashboardData {
   sql_performance: SnapshotMeta
   capacity: SnapshotMeta
   integrity: SnapshotMeta
+  checkpoint_cleanup_runtime?: CleanupWorkerSnapshot
+  checkpoint_cleanup_outbox?: CleanupOutboxSnapshot
   refresh_policy: Record<string, unknown>
+}
+
+export interface CleanupWorkerSnapshot extends SnapshotMeta {
+  worker_alias?: string
+  worker_status?: 'idle' | 'processing' | 'stale' | 'stopped' | 'unknown' | string
+  started_at?: string | null
+  heartbeat_at?: string | null
+  current_outbox_id?: number | null
+  run_success_count?: number
+  run_failure_count?: number
+  startup_success_count?: number
+  startup_failure_count?: number
+  heartbeat_interval_seconds?: number
+  processing_started_at?: string | null
+  processing_duration_seconds?: number | null
+  current_processing_started_at?: string | null
+  current_processing_duration_seconds?: number | null
+  last_failure_at?: string | null
+  last_error_present?: boolean
+}
+
+export interface CleanupOutboxItem {
+  outbox_id: number
+  thread_id: string
+  operation_id: string | null
+  status: 'pending' | 'processing' | 'succeeded' | 'failed' | string
+  attempts: number
+  max_attempts: number
+  available_at: string | null
+  lease_expires_at: string | null
+  created_at: string | null
+  completed_at: string | null
+  has_error: boolean
+  error_state: 'failed' | 'lease_expired' | null
+  is_due: boolean
+  lease_expired: boolean
+  priority?: number
+}
+
+export interface CleanupOutboxSnapshot extends SnapshotMeta {
+  summary?: {
+    pending: number | null
+    due_pending: number | null
+    processing: number | null
+    expired_processing: number | null
+    failed: number | null
+    latest_completed_at: string | null
+    earliest_pending_at: string | null
+  }
+  items?: CleanupOutboxItem[]
 }
 
 export type MonitorField =
@@ -244,6 +296,17 @@ export interface AdminJobEvent {
   node_name: string | null
   node_desc: string | null
   duration_seconds: number | null
+}
+
+export interface AgentWorkerSummary {
+  jobs: Record<string, unknown>[]
+  summary: {
+    queued?: number | null
+    running?: number | null
+    stale?: number | null
+    max_attempts_running?: number | null
+  }
+  meta: SnapshotMeta
 }
 
 export interface AdminCheckpointSummary {

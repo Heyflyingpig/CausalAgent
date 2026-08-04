@@ -28,6 +28,8 @@
 
 ## 数据库看板
 
+`/admin/database` 使用 `view=database`、`view=cleanup-worker`、`view=outbox` 三段 URL 视图；用户删除结果可附加 `operation_id` 进入 Outbox 并高亮对应记录。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/admin/db/dashboard` | 聚合读取最近共享快照 |
@@ -41,7 +43,7 @@
 | `GET` | `/api/admin/db/audit` | 读取最近 deep audit 快照 |
 | `POST` | `/api/admin/db/audit/run` | 登记 deep audit 请求 |
 
-所有数据库看板 GET 只读取 MySQL 中最近的共享快照，不在 Web 请求中执行完整采集。刷新接口只登记请求，实际采集由独立 monitor 完成；quick/deep 采集会通过只读连接检查 PostgreSQL checkpoint，并把脱敏结论写回共享快照。
+所有数据库看板 GET 只读取 MySQL 中最近的共享快照，不在 Web 请求中执行完整采集。共享快照还包括 `checkpoint_cleanup_runtime`（cleanup worker 心跳）和 `checkpoint_cleanup_outbox`（脱敏队列摘要）；刷新接口只登记请求，实际采集由独立 monitor 完成。Outbox 不返回 `last_error` 原文，只返回安全错误结论；quick/deep 采集会通过只读连接检查 PostgreSQL checkpoint，并把脱敏结论写回共享快照。
 
 SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序选取和展示，平均耗时相同时按累计 `SUM_TIMER_WAIT` 降序次排序，不等同于单次查询超过 `long_query_time`。慢查询告警优先使用采集窗口内 `Slow_queries` 增量。
 
