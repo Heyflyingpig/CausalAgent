@@ -19,6 +19,7 @@ import type {
   Identity,
   MonitorOverrideMap,
   MonitorSettings,
+  QuickAuditSnapshot,
   SensitiveContentChunk,
   UserDeleteImpact,
   UserOperationAction,
@@ -539,7 +540,7 @@ export const adminApi = {
     },
   ),
   /** 读取现有 quick 完整性共享快照。 */
-  quickAudit: () => apiRequest<Record<string, unknown>>(
+  quickAudit: () => apiRequest<QuickAuditSnapshot>(
     '/api/admin/db/audit?mode=quick',
     { cache: 'no-store' },
   ),
