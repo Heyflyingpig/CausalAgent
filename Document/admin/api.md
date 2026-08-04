@@ -45,6 +45,8 @@
 
 所有数据库看板 GET 只读取 MySQL 中最近的共享快照，不在 Web 请求中执行完整采集。共享快照还包括 `checkpoint_cleanup_runtime`（cleanup worker 心跳）和 `checkpoint_cleanup_outbox`（脱敏队列摘要）；刷新接口只登记请求，实际采集由独立 monitor 完成。Outbox 不返回 `last_error` 原文，只返回安全错误结论；quick/deep 采集会通过只读连接检查 PostgreSQL checkpoint，并把脱敏结论写回共享快照。
 
+Quick 快照的 `checks[]` 每项包含 `description` 和 `warning`：`description` 说明该项实际核对的结构或运行条件，`warning` 仅在本次检查异常或不可用时返回具体原因；历史快照缺少 `description` 时，前端回退展示 `warning`。
+
 SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序选取和展示，平均耗时相同时按累计 `SUM_TIMER_WAIT` 降序次排序，不等同于单次查询超过 `long_query_time`。慢查询告警优先使用采集窗口内 `Slow_queries` 增量。
 
 ## 在线采集配置

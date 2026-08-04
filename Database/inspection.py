@@ -619,6 +619,35 @@ EXPECTED_FOREIGN_KEYS = (
 EXPECTED_UNIQUE_INDEXES = ()
 
 
+def _foreign_key_description(
+    table_name: str,
+    constraint_name: str,
+    columns: tuple[tuple[str, str, str], ...],
+) -> str:
+    """生成外键检查目的，明确关联字段和约束列顺序。"""
+    relationships = ", ".join(
+        f"{table_name}.{child_column} → {parent_table}.{parent_column}"
+        for child_column, parent_table, parent_column in columns
+    )
+    return (
+        f"确认 {relationships} 通过外键 {constraint_name} 关联，"
+        "且约束定义和列顺序与预期一致。"
+    )
+
+
+def _unique_index_description(
+    table_name: str,
+    index_name: str,
+    columns: tuple[str, ...],
+) -> str:
+    """生成唯一索引检查目的，明确唯一性和列顺序要求。"""
+    column_names = ", ".join(f"{table_name}.{column}" for column in columns)
+    return (
+        f"确认唯一索引 {index_name} 覆盖 {column_names}，"
+        "且唯一性和列顺序与预期一致。"
+    )
+
+
 def _foreign_key_definition_sql(
     timeout_ms: int,
     table_name: str,
@@ -677,6 +706,12 @@ def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
             "label": f"约束 {constraint_name}",
             "severity": "blocking",
             "healthy_when": "one",
+            "description": _foreign_key_description(
+                table_name,
+                constraint_name,
+                columns,
+            ),
+            "failure_warning": f"外键 {constraint_name} 不存在或定义与预期不一致",
             "sql": _foreign_key_definition_sql(
                 timeout_ms,
                 table_name,
@@ -692,6 +727,12 @@ def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
             "label": f"唯一约束 {index_name}",
             "severity": "blocking",
             "healthy_when": "one",
+            "description": _unique_index_description(
+                table_name,
+                index_name,
+                columns,
+            ),
+            "failure_warning": f"唯一索引 {index_name} 不存在或定义与预期不一致",
             "sql": _unique_index_definition_sql(
                 timeout_ms,
                 table_name,
@@ -707,6 +748,13 @@ def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
             "label": "约束 chat_attachments.attachment_type ENUM",
             "severity": "blocking",
             "healthy_when": "one",
+            "description": (
+                "确认 chat_attachments.attachment_type 为 ENUM，"
+                "且包含 visualization 类型。"
+            ),
+            "failure_warning": (
+                "chat_attachments.attachment_type 不是包含 visualization 的 ENUM"
+            ),
             "sql": f"""SELECT {hint} COUNT(*) AS count_value
                 FROM information_schema.columns
                 WHERE table_schema = DATABASE()
@@ -720,6 +768,11 @@ def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
             "label": "约束 checkpoint cleanup outbox 领取索引",
             "severity": "blocking",
             "healthy_when": "one",
+            "description": (
+                "确认 checkpoint_cleanup_outbox 存在"
+                " idx_checkpoint_cleanup_outbox_claim 领取索引。"
+            ),
+            "failure_warning": "checkpoint cleanup outbox 领取索引缺失",
             "sql": f"""SELECT {hint} CASE WHEN COUNT(DISTINCT index_name) = 1
                     THEN 1 ELSE 0 END AS count_value
                 FROM information_schema.statistics
@@ -732,6 +785,11 @@ def _operational_integrity_definitions(timeout_ms: int) -> list[dict[str, Any]]:
             "label": "失败的 PostgreSQL checkpoint 清理任务",
             "severity": "warning",
             "healthy_when": "zero",
+            "description": (
+                "统计 checkpoint_cleanup_outbox 中 status=failed 的 PostgreSQL "
+                "checkpoint 清理任务；数量为 0 时健康。"
+            ),
+            "failure_warning": "存在失败的 PostgreSQL checkpoint 清理任务",
             "sql": f"""SELECT {hint} COUNT(*) AS count_value
                 FROM checkpoint_cleanup_outbox
                 WHERE status = 'failed'""",
@@ -781,12 +839,17 @@ def _execute_integrity_definitions(
                 "label": definition["label"],
                 "severity": definition["severity"],
                 "applicable": True,
+                "description": definition.get("description", definition["label"]),
                 **_result(
                     "healthy" if healthy else "error",
                     count,
                     source_role=source_role,
                     source_alias=source_alias,
-                    warning=None if healthy else "发现阻塞性完整性问题",
+                    warning=(
+                        None
+                        if healthy
+                        else definition.get("failure_warning", "完整性检查未通过")
+                    ),
                     observed_at=observed_at,
                 ),
             })
@@ -798,6 +861,7 @@ def _execute_integrity_definitions(
                 "label": definition["label"],
                 "severity": definition["severity"],
                 "applicable": True,
+                "description": definition.get("description", definition["label"]),
                 **_result(
                     "unknown",
                     None,
@@ -1029,6 +1093,7 @@ def get_quick_integrity_report() -> dict[str, Any]:
             "key": "integrity_connection",
             "label": "快速完整性检查连接",
             "severity": "blocking",
+            "description": "确认 Quick 审计可以使用只读账号连接 MySQL 主库。",
             **_result(
                 "unknown",
                 None,

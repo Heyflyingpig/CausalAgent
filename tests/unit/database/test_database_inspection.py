@@ -416,7 +416,13 @@ class DatabaseInspectionTests(unittest.TestCase):
 
         self.assertEqual(len(checks), len(definitions))
         self.assertEqual(checks[1]["status"], "unknown")
+        self.assertEqual(
+            checks[1]["warning"],
+            "检查失败（权限不足、查询超时或节点不可用）",
+        )
+        self.assertIn("chat_messages.user_id", checks[1]["description"])
         self.assertEqual(checks[2]["status"], "healthy")
+        self.assertTrue(all(check["description"] for check in checks))
         self.assertTrue(all(check["source_alias"] == "primary" for check in checks))
         self.assertTrue(all("observed_at" in check for check in checks))
 
@@ -448,6 +454,9 @@ class DatabaseInspectionTests(unittest.TestCase):
         self.assertIn("ordinal_position = 1", checkpoint_fk_sql)
         self.assertIn("column_name = 'operation_id'", checkpoint_fk_sql)
         self.assertIn("referenced_column_name = 'operation_id'", checkpoint_fk_sql)
+        descriptions = {definition["key"]: definition["description"] for definition in definitions}
+        self.assertIn("visualization", descriptions["constraint_chat_attachment_type_enum"])
+        self.assertIn("数量为 0 时健康", descriptions["checkpoint_cleanup_failed"])
 
     def test_migration_preflight_skips_tables_not_present_in_current_schema(self):
         """新库或较早 schema 尚无未来表时，预检标为不适用而不是失败。"""

@@ -393,3 +393,22 @@ export interface DeepAuditSnapshot extends SnapshotMeta {
   query_timeout_ms?: number
   checks: DeepAuditCheck[]
 }
+
+export interface QuickAuditCheck {
+  key: string
+  label: string
+  status: HealthStatus
+  severity?: 'blocking' | 'warning' | string
+  applicable?: boolean
+  value?: number | null
+  description?: string
+  warning?: string | null
+  [key: string]: unknown
+}
+
+export interface QuickAuditSnapshot extends SnapshotMeta {
+  mode?: string
+  blocking_count?: number
+  blocking_record_count?: number
+  checks: QuickAuditCheck[]
+}

@@ -113,11 +113,14 @@ def _quick_check(
     status: str,
     value: int | None,
     warning: str | None = None,
+    *,
+    description: str | None = None,
 ) -> dict[str, Any]:
     """构造兼容现有 quick integrity 契约的 PostgreSQL 检查项。"""
     return {
         "key": key,
         "label": label,
+        "description": description or label,
         "severity": "blocking",
         "applicable": True,
         "status": status,
@@ -142,6 +145,7 @@ def _unknown_quick_checks() -> list[dict[str, Any]]:
             "unknown",
             None,
             warning,
+            description="确认管理员审计可以通过独立只读连接访问 PostgreSQL checkpoint。",
         ),
         _quick_check(
             "checkpoint_postgres_schema",
@@ -149,6 +153,10 @@ def _unknown_quick_checks() -> list[dict[str, Any]]:
             "unknown",
             None,
             warning,
+            description=(
+                "确认当前 schema 存在 LangGraph checkpoint 官方四张表："
+                "checkpoint_migrations、checkpoints、checkpoint_blobs、checkpoint_writes。"
+            ),
         ),
         _quick_check(
             "checkpoint_postgres_migration",
@@ -156,6 +164,10 @@ def _unknown_quick_checks() -> list[dict[str, Any]]:
             "unknown",
             None,
             warning,
+            description=(
+                "确认 checkpoint_migrations 的最新版本不低于当前锁定的 "
+                "LangGraph Saver setup 版本。"
+            ),
         ),
     ]
 
@@ -172,6 +184,10 @@ def inspect_checkpoint_quick(*, timeout_ms: int) -> list[dict[str, Any]]:
                     "PostgreSQL checkpoint 连接",
                     "healthy",
                     1,
+                    description=(
+                        "确认管理员审计可以通过独立只读连接访问 "
+                        "PostgreSQL checkpoint。"
+                    ),
                 )
 
                 cursor.execute(
@@ -191,6 +207,11 @@ def inspect_checkpoint_quick(*, timeout_ms: int) -> list[dict[str, Any]]:
                     "healthy" if not missing_tables else "error",
                     len(missing_tables),
                     None if not missing_tables else "PostgreSQL checkpoint schema 不完整",
+                    description=(
+                        "确认当前 schema 存在 LangGraph checkpoint 官方四张表："
+                        "checkpoint_migrations、checkpoints、checkpoint_blobs、"
+                        "checkpoint_writes。"
+                    ),
                 )
 
                 actual_version: int | None = None
@@ -210,6 +231,10 @@ def inspect_checkpoint_quick(*, timeout_ms: int) -> list[dict[str, Any]]:
                     "healthy" if migration_ok else "error",
                     0 if migration_ok else 1,
                     None if migration_ok else "PostgreSQL checkpoint setup 尚未达到锁定版本",
+                    description=(
+                        "确认 checkpoint_migrations 的最新版本不低于当前锁定的 "
+                        "LangGraph Saver setup 版本。"
+                    ),
                 )
         return [connection_check, schema_check, migration_check]
     except Exception as exc:

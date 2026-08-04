@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ApiError, adminApi } from '../api'
-import { formatDate, isObject, statusLabel } from '../lib/dashboard'
-import type { DeepAuditSnapshot } from '../types'
+import { formatDate, statusLabel } from '../lib/dashboard'
+import type { DeepAuditSnapshot, QuickAuditCheck, QuickAuditSnapshot } from '../types'
 
-const quick = ref<Record<string, unknown> | null>(null)
+const quick = ref<QuickAuditSnapshot | null>(null)
 const deep = ref<DeepAuditSnapshot | null>(null)
 const loading = ref(true)
 const running = ref(false)
@@ -14,10 +14,7 @@ let pollTimer: number | undefined
 let requestedAt = 0
 let deadline = 0
 
-const quickChecks = computed<Record<string, unknown>[]>(() => {
-  const checks = quick.value?.checks
-  return Array.isArray(checks) ? checks.filter(isObject) : []
-})
+const quickChecks = computed<QuickAuditCheck[]>(() => quick.value?.checks || [])
 
 /** 读取 quick 和最近一次 deep 共享审计快照。 */
 async function loadAudits(): Promise<void> {
@@ -93,6 +90,16 @@ function formatDetails(value: unknown): string {
   return JSON.stringify(value ?? {}, null, 2)
 }
 
+/** 组合 Quick 检查目的与本次异常原因，并兼容旧共享快照。 */
+function quickCheckDescription(check: QuickAuditCheck): string {
+  const description = check.description?.trim() || ''
+  const warning = check.warning?.trim() || ''
+  if (description && warning && description !== warning) {
+    return `${description}；当前结果：${warning}`
+  }
+  return description || warning || '—'
+}
+
 onMounted(loadAudits)
 onBeforeUnmount(() => {
   if (pollTimer !== undefined) window.clearTimeout(pollTimer)
@@ -124,7 +131,9 @@ onBeforeUnmount(() => {
       <el-table v-loading="loading" :data="quickChecks" empty-text="尚无 quick 审计结果">
         <el-table-column prop="label" label="检查" min-width="220" />
         <el-table-column prop="status" label="状态" width="110" />
-        <el-table-column prop="warning" label="说明" min-width="280" show-overflow-tooltip />
+        <el-table-column label="说明" min-width="280" show-overflow-tooltip>
+          <template #default="{ row }">{{ quickCheckDescription(row) }}</template>
+        </el-table-column>
       </el-table>
     </section>
 
