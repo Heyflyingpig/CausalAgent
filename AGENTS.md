@@ -159,7 +159,7 @@
 - `analysis_jobs` 和 `analysis_job_events` 是当前长任务系统的真实持久化基础：前者是任务队列，后者是事件日志；job 创建、领取、状态更新、事件写入和 SSE 读取都必须走主库或强一致读。
 - 管理员任务详情通过单视图选择器展示 MySQL `analysis_job_events` 的节点/任务事件或 PostgreSQL checkpoint 安全摘要，默认进入节点/任务事件；新 checkpoint 通过 `metadata.job_id` 与任务精确关联，旧记录缺少该字段时不得按时间猜测归属。管理员接口不得读取或返回 checkpoint 状态正文、blob 或 pending writes。
 - 同一 `user_id + session_id` 同时只允许一个 `queued/running` job；当前实现不是 generated column，而是把 `active_session_key` 作为可空普通列，并通过唯一键 `uq_analysis_jobs_active_session` 兜底并发竞态。
-- 旧 `/api/send_stream` 只保留为迁移提示接口，返回 `410`；前端真实路径应使用 `POST /api/agent/jobs` 创建任务，再用 `GET /api/agent/jobs/<job_id>/events` 订阅 SSE，断线续传依赖 `Last-Event-ID`。
+- 旧 `/api/send_stream` 只保留为迁移提示接口，返回 `410`；前端真实路径应使用 `POST /api/agent/jobs` 创建任务，再用 `GET /api/agent/jobs/<job_id>/events` 订阅 SSE，断线续传依赖 `Last-Event-ID`。创建任务必须提供客户端 `Idempotency-Key`；相同用户、相同幂等键和相同请求参数返回原 job，不同参数返回 `409`。
 - 数据库账号按职责拆分：
   - `MYSQL_WRITE_USER` / `MYSQL_WRITE_PASSWORD`：应用写主库、迁移、启动检查用。
   - `MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`：业务读主库/从库数据用；除业务库 `SELECT` 外，只额外读取 `performance_schema.events_statements_summary_by_digest`，不得扩大为全局 `SELECT`。

@@ -151,5 +151,34 @@ class AdminReadIndexMigrationTests(unittest.TestCase):
         self.assertNotIn("DROP COLUMN", text)
 
 
+class AgentJobIdempotencyMigrationTests(unittest.TestCase):
+    """静态验证分析任务请求幂等 migration 和启动检查。"""
+
+    def test_idempotency_migration_extends_postgres_checkpoint_head(self):
+        """请求幂等 revision 必须承接当前合并后的 migration head。"""
+        path = Path(
+            "Database/migrations/versions/f9a0b1c2d3e4_add_agent_job_idempotency.py"
+        )
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn('revision: str = "f9a0b1c2d3e4"', text)
+        self.assertIn('down_revision: Union[str, Sequence[str], None] = "f8b9c0d1e2f3"', text)
+        self.assertIn("ADD COLUMN idempotency_key VARCHAR(128)", text)
+        self.assertIn("ADD COLUMN request_fingerprint CHAR(64)", text)
+        self.assertIn("uq_analysis_jobs_user_idempotency", text)
+
+    def test_readiness_and_deep_audit_require_idempotency_schema(self):
+        """应用启动和 deep audit 都必须识别请求幂等结构缺失。"""
+        db_text = Path("app/db.py").read_text(encoding="utf-8")
+        audit_text = Path("Database/deep_audit.py").read_text(encoding="utf-8")
+
+        self.assertIn("table_name = 'analysis_jobs'", db_text)
+        self.assertIn("column_name IN ('idempotency_key', 'request_fingerprint')", db_text)
+        self.assertIn("uq_analysis_jobs_user_idempotency", db_text)
+        self.assertIn('"idempotency_key"', audit_text)
+        self.assertIn('"request_fingerprint"', audit_text)
+        self.assertIn('"uq_analysis_jobs_user_idempotency"', audit_text)
+
+
 if __name__ == "__main__":
     unittest.main()

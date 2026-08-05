@@ -50,7 +50,7 @@ def create_analysis_job():
     创建后台分析任务。
 
     Web 层只做认证、参数校验和 job 入队，不执行 Agent/MCP。
-    同会话 active job 互斥由 job_service 和数据库唯一约束共同保证。
+    请求级幂等由 Idempotency-Key 和 job_service 的数据库唯一约束共同保证。
     """
     current_user = get_current_session_user()
     if not current_user:
@@ -63,10 +63,21 @@ def create_analysis_job():
         return jsonify({"success": False, "error": "消息不能为空"}), 400
     if not session_id:
         return jsonify({"success": False, "error": "请求无效，缺少会话ID"}), 400
+    try:
+        idempotency_key = job_service.normalize_idempotency_key(
+            request.headers.get("Idempotency-Key")
+        )
+    except job_service.InvalidIdempotencyKeyError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
 
     try:
         #  创建任务，获取任务是否创建成功表标识
-        job, existing = job_service.create_job(current_user["id"], session_id, message)
+        job, existing = job_service.create_job(
+            current_user["id"],
+            session_id,
+            message,
+            idempotency_key,
+        )
         logging.info(
             "[job-api] user=%s session=%s job=%s existing=%s",
             current_user["id"],
@@ -82,6 +93,8 @@ def create_analysis_job():
         }), 200 if existing else 202
     except PermissionError as exc:
         return jsonify({"success": False, "error": str(exc)}), 403
+    except job_service.IdempotencyConflictError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 409
     except Exception as exc:
         logging.error("创建 analysis job 失败: %s", exc, exc_info=True)
         return jsonify({"success": False, "error": "创建任务失败"}), 500

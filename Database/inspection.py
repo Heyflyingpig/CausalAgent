@@ -616,7 +616,13 @@ EXPECTED_FOREIGN_KEYS = (
     ),
 )
 
-EXPECTED_UNIQUE_INDEXES = ()
+EXPECTED_UNIQUE_INDEXES = (
+    (
+        "analysis_jobs",
+        "uq_analysis_jobs_user_idempotency",
+        ("user_id", "idempotency_key"),
+    ),
+)
 
 
 def _foreign_key_description(

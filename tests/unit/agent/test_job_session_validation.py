@@ -60,7 +60,7 @@ class JobSessionValidationTests(unittest.TestCase):
         connection = FakeConnection()
         with patch("app.agent.job_service.get_write_connection", return_value=connection):
             with self.assertRaises(PermissionError):
-                create_job(7, "missing-session", "hello")
+                create_job(7, "missing-session", "hello", "job-request-123456")
 
         self.assertTrue(connection.rolled_back)
         self.assertTrue(connection.closed)

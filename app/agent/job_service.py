@@ -8,8 +8,11 @@ Web 进程只调用创建 job、读取事件；worker 进程调用领取、心�
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import hmac
 import json
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -25,6 +28,44 @@ ACTIVE_STATUSES = ("queued", "running")
 TERMINAL_STATUSES = ("succeeded", "failed", "canceled")
 TERMINAL_EVENTS = {"final_result", "interrupt", "error"}
 MAX_ATTEMPTS_ERROR = "任务达到最大尝试次数，且最后一次 worker 心跳已过期"
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
+
+
+class InvalidIdempotencyKeyError(ValueError):
+    """表示客户端没有提供符合 API 约束的幂等键。"""
+
+
+class IdempotencyConflictError(ValueError):
+    """表示同一个幂等键被用于不同的分析请求。"""
+
+
+def normalize_idempotency_key(value: str | None) -> str:
+    """校验并返回分析任务创建 API 使用的规范化幂等键。"""
+    normalized = value.strip() if isinstance(value, str) else ""
+    if not IDEMPOTENCY_KEY_PATTERN.fullmatch(normalized):
+        raise InvalidIdempotencyKeyError(
+            "Idempotency-Key 必须是 16 到 128 位安全字符"
+        )
+    return normalized
+
+
+def _request_fingerprint(session_id: str, message: str) -> str:
+    """使用服务端密钥为当前分析请求生成不包含正文的稳定指纹。"""
+    canonical = json.dumps(
+        {"message": message, "session_id": session_id},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    secret = str(settings.SECRET_KEY).encode("utf-8")
+    return hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _ensure_same_request(job: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+    """确认已有幂等记录与本次请求参数一致，并返回原 job。"""
+    if job.get("request_fingerprint") != fingerprint:
+        raise IdempotencyConflictError("Idempotency-Key 已用于不同的分析请求")
+    return job
 
 
 def _json_dumps(value: Any) -> str:
@@ -70,6 +111,21 @@ def get_active_job(user_id: int, session_id: str) -> dict[str, Any] | None:
         return _row_to_job(cursor.fetchone())
 
 
+def get_job_by_idempotency_key(user_id: int, idempotency_key: str) -> dict[str, Any] | None:
+    """按用户和幂等键强一致读取历史 job，供请求重放返回原任务。"""
+    with get_read_connection(consistency="strong") as conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT *
+            FROM analysis_jobs
+            WHERE user_id = %s AND idempotency_key = %s
+            """,
+            (user_id, idempotency_key),
+        )
+        return _row_to_job(cursor.fetchone())
+
+
 def get_job_for_user(job_id: str, user_id: int) -> dict[str, Any] | None:
     """按 job_id 和用户校验读取 job，返回该用户job的所有值。"""
     with get_read_connection(consistency="strong") as conn:
@@ -81,11 +137,20 @@ def get_job_for_user(job_id: str, user_id: int) -> dict[str, Any] | None:
         return _row_to_job(cursor.fetchone())
 
 
-def create_job(user_id: int, session_id: str, message: str) -> tuple[dict[str, Any], bool]:
+def create_job(
+    user_id: int,
+    session_id: str,
+    message: str,
+    idempotency_key: str,
+) -> tuple[dict[str, Any], bool]:
     """
-    创建 job；若同一用户同一会话已有 active job，返回已有 job。
-    两个请求同时给同一 user_id + session_id 创建 active job 时，第二个会撞唯一约束，不能插入成功。
+    原子创建或重放一个分析 job。
+
+    同一用户重复使用同一个幂等键时，参数一致则返回原 job，参数不一致则拒绝请求。
+    同会话 active job 互斥仍由 active_session_key 唯一约束兜底。
     """
+    idempotency_key = normalize_idempotency_key(idempotency_key)
+    fingerprint = _request_fingerprint(session_id, message)
     job_id = str(uuid.uuid4())
     now = datetime.now()
     conn = get_write_connection()
@@ -100,12 +165,29 @@ def create_job(user_id: int, session_id: str, message: str) -> tuple[dict[str, A
         if not cursor.fetchone():
             conn.rollback()
             raise PermissionError("会话不存在或不属于当前用户")
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM analysis_jobs
+            WHERE user_id = %s AND idempotency_key = %s
+            FOR UPDATE
+            """,
+            (user_id, idempotency_key),
+        )
+        existing_request = _row_to_job(cursor.fetchone())
+        if existing_request:
+            _ensure_same_request(existing_request, fingerprint)
+            conn.commit()
+            return existing_request, True
+
         # f"{user_id}:{session_id}" 对应UNIQUE KEY uq_analysis_jobs_active_session (active_session_key)唯一键
         cursor.execute(
             """
             INSERT INTO analysis_jobs (
-                job_id, user_id, session_id, message, status, max_attempts, created_at, active_session_key
-            ) VALUES (%s, %s, %s, %s, 'queued', %s, %s, %s)
+                job_id, user_id, session_id, message, status, max_attempts, created_at,
+                active_session_key, idempotency_key, request_fingerprint
+            ) VALUES (%s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s)
             """,
             (
                 job_id,
@@ -115,6 +197,8 @@ def create_job(user_id: int, session_id: str, message: str) -> tuple[dict[str, A
                 settings.JOB_MAX_ATTEMPTS,
                 now,
                 f"{user_id}:{session_id}",
+                idempotency_key,
+                fingerprint,
             ),
         )
         conn.commit()
@@ -123,9 +207,16 @@ def create_job(user_id: int, session_id: str, message: str) -> tuple[dict[str, A
             raise RuntimeError("job 创建后无法读取")
         # 创建成功后，返回新 job。第二个返回值 False 表示：这不是已有任务，是新创建的任务。
         return job, False
+    except IdempotencyConflictError:
+        conn.rollback()
+        raise
     except mysql.connector.Error as exc:
         conn.rollback()
         if exc.errno == errorcode.ER_DUP_ENTRY:
+            existing_request = get_job_by_idempotency_key(user_id, idempotency_key)
+            if existing_request:
+                _ensure_same_request(existing_request, fingerprint)
+                return existing_request, True
             existing = get_active_job(user_id, session_id)
             if existing:
                 return existing, True
