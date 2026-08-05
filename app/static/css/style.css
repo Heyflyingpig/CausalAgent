@@ -266,17 +266,15 @@
     .ai-message {
         /* AI消息的容器 */
         align-self: flex-start; /* 在.chat-area中靠左对齐 */
-        
     }
 
     .ai-message .content {
-        /* AI消息的气泡样式 */
-        background-color: #f1f0f0; /* 浅灰色 */
-        margin-left: 20px; /* 与左侧边缘的距离 */
-        padding-left: 20px; /* 内边距 */
+        /* 普通回答采用无背景的文本流样式 */
+        background-color: transparent;
+        margin-left: 0;
+        padding: 10px 0;
         font-size: 15px; /* AI 长文本正文字号，稍微缩小以提升阅读体验 */
         line-height: 1.6; /* AI 长文本行距，提升可读性 */
-
     }
     /*  修改结束  */
 
@@ -847,193 +845,232 @@
 }
 /*  新增结束  */
 
-/* === 思考过程可视化样式（独立布局） === */
+/* === 思考过程可视化样式（无卡片层级） === */
 
-/* 思考过程气泡容器 - 简洁的状态提示 */
+/* 顶部总耗时入口，保持与普通 AI 文本相同的无背景布局。 */
 .thinking-bubble {
-    background-color: #f8f9fa;
-    border: 1px solid #dee2e6;
-    border-radius: 10px;
-    padding: 0;
-    margin-bottom: 5px;  /* 减小间距，因为下方会有详情面板 */
-    max-width: 80%;
-    margin-left: 20px; /* 与左侧边缘的距离 */
+    align-self: flex-start;
+    width: min(80%, 880px);
+    max-width: 880px;
+    box-sizing: border-box;
+    margin-bottom: 2px;
+    color: #6b7280;
 }
 
-/* 思考过程头部 - 可点击展开/收起 */
+/* 父级时间线入口：点击后展开“思考过程”。 */
 .thinking-header {
     display: flex;
     align-items: center;
-    padding: 12px 15px;
-    cursor: pointer;  /* 显示手型光标，可点击 */
+    gap: 8px;
+    min-height: 30px;
+    padding: 4px 0;
+    cursor: pointer;
     user-select: none;
-    transition: background-color 0.2s;
-    border-radius: 10px;
-    margin-left: 20px; /* 与左侧边缘的距离 */
-}
-
-/* 悬停时显示背景色变化 */
-.thinking-header:hover {
-    background-color: #e9ecef;
-}
-
-/* 思考文字 */
-.thinking-text {
-    flex: 1;
+    color: #6b7280;
     font-size: 0.95em;
-    color: #495057;
-    font-weight: 500;
 }
 
-/* 点点点动画 */
+.thinking-header:hover {
+    color: #374151;
+}
+
+.thinking-text {
+    color: inherit;
+    font-weight: 400;
+}
+
+.thinking-duration {
+    font-variant-numeric: tabular-nums;
+    font-style: italic;
+    white-space: nowrap;
+}
+
+.thinking-status {
+    color: #9ca3af;
+    font-size: 0.9em;
+}
+
+/* 处理中保留轻量文字提示，不再使用独立背景框。 */
 .thinking-dots {
-    color: #6c757d;
-    animation: thinking-dots-animation 1.4s infinite;
-    margin-right: 8px;
+    color: #9ca3af;
+    margin-left: auto;
+    letter-spacing: 2px;
 }
 
-@keyframes thinking-dots-animation {
-    0%, 20% {
-        content: '.';
-    }
-    40% {
-        content: '..';
-    }
-    60%, 100% {
-        content: '...';
-    }
+/* 父子级统一使用右三角/倒三角表示收起与展开。 */
+.expand-icon,
+.step-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 16px;
+    width: 16px;
+    color: #9ca3af;
+    font-size: 0.9em;
+    line-height: 1;
 }
 
-/* 展开/收起图标 */
 .expand-icon {
-    font-size: 0.8em;
-    color: #6c757d;
-    transition: transform 0.3s;
-    display: inline-block;  /* 显示图标 */
+    order: 5;
 }
 
-/* 独立的详情面板容器 */
+/* 展开后的详情是直接文本流，不再使用边框、阴影或白色面板。 */
 .thinking-detail-container {
-    background-color: transparent;
-    border: none;
-    padding: 0;
-    margin-bottom: 15px;
-    margin-left: 20px;
-    max-width: 80%;
+    width: min(80%, 880px);
+    max-width: 880px;
+    box-sizing: border-box;
     align-self: flex-start;
-    /* 添加平滑的展开/收起动画 */
-    transition: opacity 0.3s ease, transform 0.3s ease;
-    opacity: 1;
-    transform: scaleY(1);
-    transform-origin: top;
-    
+    /* chat-area 的通用 gap 不应在入口和详情之间再制造一段空白。 */
+    margin-top: -20px;
+    margin-bottom: 12px;
+    padding-left: 24px;
 }
 
-/* 隐藏时的动画效果（虽然使用display控制，但可以在JS中配合使用） */
-.thinking-detail-container.hidden {
-    opacity: 0;
-    transform: scaleY(0.95);
-}
-
-/* 详情面板 - 独立显示样式 */
 .thinking-detail {
-    padding: 10px 15px 15px;
-    border: 1px solid #dee2e6;  /* 独立边框 */
-    border-radius: 10px;  /* 四角都圆角 */
-    background-color: #ffffff;
     max-height: 400px;
     overflow-y: auto;
-    display: flex;  /* 启用 Flexbox 布局 */
-    flex-direction: column;  /* 让子元素（步骤项）纵向排列 */
-    gap: 6px;  /* 步骤项之间的间距 */
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);  /* 添加轻微阴影增强独立感 */
-}
-
-/* 步骤项 */
-.step-item {
     display: flex;
-    align-items: center;
-    padding: 8px 12px;
-    margin-bottom: 0;  /* 改为0，因为父容器已经用 gap 控制间距 */
-    border-radius: 6px;
-    background-color: #f8f9fa;
-    transition: all 0.3s;
+    flex-direction: column;
+    gap: 4px;
+    padding: 2px 0 8px;
 }
 
-/* 步骤项状态 */
-.step-item.completed {
-    background-color: #d4edda;
-}
-
-.step-item.in-progress {
-    background-color: #fff3cd;
-    animation: pulse-progress 1.5s infinite;
+/* 阶段项只保留缩进和文本关系，避免出现嵌套卡片。 */
+.step-item {
+    display: block;
+    margin: 0;
+    border-radius: 0;
+    background: transparent;
 }
 
 .step-item.error {
-    background-color: #f8d7da;
+    background: transparent;
 }
 
-@keyframes pulse-progress {
-    0%, 100% {
-        opacity: 1;
-    }
-    50% {
-        opacity: 0.8;
-    }
+.step-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 30px;
+    padding: 4px 0;
+    cursor: pointer;
+}
+
+.step-header:hover .step-name {
+    color: #111827;
 }
 
 /* 状态图标 */
 .step-status {
-    font-size: 0.9em;
-    margin-right: 10px;
-    min-width: 20px;
-    text-align: center;
+    width: 12px;
+    height: 12px;
+    flex: 0 0 12px;
 }
 
 .step-item.completed .step-status {
-    color: #28a745;
+    visibility: hidden;
 }
 
 .step-item.in-progress .step-status {
-    color: #ffc107;
+    border: 2px solid #d1d5db;
+    border-top-color: #4b5563;
+    border-radius: 50%;
+    animation: timeline-spin 0.8s linear infinite;
 }
 
 .step-item.error .step-status {
-    color: #dc3545;
+    border-radius: 50%;
+    background: #dc3545;
+}
+
+@keyframes timeline-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* 子级详情用缩进和细线表达层级，不使用内容框。 */
+.step-details {
+    display: none;
+    margin-left: 24px;
+    padding: 1px 0 5px 16px;
+    border-left: 1px solid #e5e7eb;
+}
+
+.step-item.expanded .step-details {
+    display: block;
+}
+
+.step-detail {
+    padding: 3px 0;
+    color: #6b7280;
+    font-size: 0.85em;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.step-detail.error {
+    color: #b42318;
+}
+
+.step-detail.retry {
+    color: #6b7280;
+    font-weight: 500;
 }
 
 /* 步骤名称 */
 .step-name {
     flex: 1;
+    min-width: 0;
+    color: #4b5563;
     font-size: 0.9em;
-    color: #495057;
 }
 
 /* 步骤时间 */
 .step-time {
-    font-size: 0.85em;
-    color: #6c757d;
-    font-style: italic;
+    flex: 0 0 auto;
     margin-left: 10px;
+    color: #9ca3af;
+    font-size: 0.82em;
+    font-style: italic;
+    font-variant-numeric: tabular-nums;
 }
 
 /* 响应式调整 */
 @media (max-width: 768px) {
     .thinking-bubble,
     .thinking-detail-container {
+        width: 95%;
         max-width: 95%;
     }
-    
-    .thinking-text {
+
+    .thinking-detail-container {
+        padding-left: 16px;
+    }
+
+    .thinking-header,
+    .step-header {
         font-size: 0.9em;
     }
-    
+
     .step-name {
         font-size: 0.85em;
     }
 }
 
 /* === 思考过程样式结束 === */
+
+.streaming-draft .content::after {
+    content: '';
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    margin-left: 3px;
+    vertical-align: -0.12em;
+    background: #495057;
+    animation: draft-caret 0.9s steps(1) infinite;
+}
+
+@keyframes draft-caret {
+    50% { opacity: 0; }
+}
 
 

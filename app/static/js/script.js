@@ -72,6 +72,7 @@ const i18n = {
         sessionExpired: '会话已过期，请重新登录。',
         justNow: '刚刚',
         deleteBtn: '删除',
+        processed: '已处理',
         thinking: '正在思考...',
         thinkingWait: '请稍等...',
         inProgress: '进行中...',
@@ -126,6 +127,7 @@ const i18n = {
         sessionExpired: 'Session expired, please login again.',
         justNow: 'Just now',
         deleteBtn: 'Delete',
+        processed: 'Processed',
         thinking: 'Thinking...',
         thinkingWait: 'please wait...',
         inProgress: 'In progress...',
@@ -711,16 +713,16 @@ async function sendMessage() {
         
     } catch (error) {
         console.error("发送消息时出错:", error);
-        
-        // 移除思考过程的两个独立元素
-        if (thinkingElements.bubble && thinkingElements.bubble.parentNode) {
-            thinkingElements.bubble.parentNode.removeChild(thinkingElements.bubble);
+        if (!error.streamHandled) {
+            stopThinkingDuration(thinkingElements);
+            if (thinkingElements.bubble && thinkingElements.bubble.parentNode) {
+                thinkingElements.bubble.parentNode.removeChild(thinkingElements.bubble);
+            }
+            if (thinkingElements.detailContainer && thinkingElements.detailContainer.parentNode) {
+                thinkingElements.detailContainer.parentNode.removeChild(thinkingElements.detailContainer);
+            }
+            showError('发送消息时发生网络错误。');
         }
-        if (thinkingElements.detailContainer && thinkingElements.detailContainer.parentNode) {
-            thinkingElements.detailContainer.parentNode.removeChild(thinkingElements.detailContainer);
-        }
-        
-        showError('发送消息时发生网络错误。');
     } finally {
         //  无论成功或失败，都重新启用输入和发送按钮 
         userInput.disabled = false;
@@ -755,6 +757,7 @@ function subscribeToJobEvents(jobId, thinkingElements) {
                 try {
                     const eventData = JSON.parse(event.data);
                     eventData.type = eventData.type || type;
+                    eventData.event_id = event.lastEventId || '';
                     if (eventData.type === 'heartbeat') {
                         return;
                     }
@@ -762,7 +765,9 @@ function subscribeToJobEvents(jobId, thinkingElements) {
                     if (eventData.type === 'final_result' || eventData.type === 'interrupt') {
                         finish();
                     } else if (eventData.type === 'error') {
-                        finish(new Error(eventData.message || '任务执行失败'));
+                        const streamError = new Error(eventData.message || '任务执行失败');
+                        streamError.streamHandled = true;
+                        finish(streamError);
                     }
                 } catch (error) {
                     finish(error);
@@ -770,11 +775,28 @@ function subscribeToJobEvents(jobId, thinkingElements) {
             });
         };
 
-        ['node_start', 'node_end', 'final_result', 'interrupt', 'error', 'heartbeat'].forEach(bindEvent);
+        [
+            'node_start', 'progress', 'decision', 'tool_call_start',
+            'tool_call_result', 'node_retry', 'node_end', 'text_delta',
+            'final_result', 'interrupt', 'error', 'heartbeat'
+        ].forEach(bindEvent);
 
-        source.onerror = (event) => {
-            if (!settled && event && !event.data) {
-                console.warn('SSE连接中断，浏览器将尝试自动重连。');
+        source.onopen = () => {
+            if (!settled) setTimelineStatus(thinkingElements, '');
+        };
+
+        source.onerror = () => {
+            if (settled) {
+                return;
+            }
+            if (source.readyState === EventSource.CONNECTING) {
+                setTimelineStatus(thinkingElements, '连接中断，正在重连');
+            } else if (source.readyState === EventSource.CLOSED) {
+                const message = '任务连接失败，请刷新后重试';
+                handleStreamError({ type: 'error', message }, thinkingElements);
+                const streamError = new Error(message);
+                streamError.streamHandled = true;
+                finish(streamError);
             }
         };
     });
@@ -782,19 +804,71 @@ function subscribeToJobEvents(jobId, thinkingElements) {
 
 
 /**
- * 创建思考过程气泡
+ * 格式化聊天时间线的总耗时，短任务保留小数，长任务使用分/时单位。
+ */
+function formatElapsedDuration(milliseconds) {
+    const totalSeconds = Math.max(0, milliseconds) / 1000;
+    if (totalSeconds < 60) {
+        const seconds = totalSeconds.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+        return `${seconds || '0'}s`;
+    }
+
+    const wholeSeconds = Math.floor(totalSeconds);
+    const seconds = wholeSeconds % 60;
+    const minutes = Math.floor(wholeSeconds / 60) % 60;
+    const hours = Math.floor(wholeSeconds / 3600);
+    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+    return `${minutes}m ${seconds}s`;
+}
+
+/**
+ * 更新顶部总耗时，不依赖后端事件频率，避免长阶段看起来静止。
+ */
+function updateThinkingDuration(thinkingElements, now = performance.now()) {
+    const duration = now - thinkingElements.startedAt;
+    if (thinkingElements.durationElement) {
+        thinkingElements.durationElement.textContent = formatElapsedDuration(duration);
+    }
+}
+
+/**
+ * 停止时间线计时并固定最终显示值。
+ */
+function stopThinkingDuration(thinkingElements) {
+    if (thinkingElements.durationTimer) {
+        clearInterval(thinkingElements.durationTimer);
+        thinkingElements.durationTimer = null;
+    }
+    if (!thinkingElements.finishedAt) {
+        thinkingElements.finishedAt = performance.now();
+    }
+    updateThinkingDuration(thinkingElements, thinkingElements.finishedAt);
+}
+
+/**
+ * 创建无卡片背景的思考过程入口和可展开详情。
  */
 function addThinkingMessage() {
-    // 创建简洁的思考提示气泡
     const bubble = document.createElement('div');
-    bubble.className = 'message ai-message thinking-bubble';
+    bubble.className = 'thinking-bubble';
     
     const header = document.createElement('div');
     header.className = 'thinking-header';
+    header.setAttribute('role', 'button');
+    header.setAttribute('tabindex', '0');
+    header.setAttribute('aria-expanded', 'true');
     
     const text = document.createElement('span');
     text.className = 'thinking-text';
-    text.textContent = getText('thinking');
+    text.textContent = getText('processed');
+
+    const duration = document.createElement('span');
+    duration.className = 'thinking-duration';
+    duration.textContent = '0s';
+
+    const status = document.createElement('span');
+    status.className = 'thinking-status';
+    status.hidden = true;
     
     const dots = document.createElement('span');
     dots.className = 'thinking-dots';
@@ -803,9 +877,11 @@ function addThinkingMessage() {
     // 添加展开/收起图标
     const expandIcon = document.createElement('span');
     expandIcon.className = 'expand-icon';
-    expandIcon.textContent = '▶';  // 默认收起状态
+    expandIcon.textContent = '▾';  // 默认展开状态
     
     header.appendChild(text);
+    header.appendChild(duration);
+    header.appendChild(status);
     header.appendChild(dots);
     header.appendChild(expandIcon);
     
@@ -813,40 +889,83 @@ function addThinkingMessage() {
     
     // 创建独立的详情面板容器
     const detailContainer = document.createElement('div');
-    detailContainer.className = 'message ai-message thinking-detail-container';
-    detailContainer.style.display = 'none';  // 默认隐藏
+    detailContainer.className = 'thinking-detail-container';
+    detailContainer.style.display = 'block';  // 默认展开
+    detailContainer.setAttribute('aria-hidden', 'false');
     
     const detail = document.createElement('div');
     detail.className = 'thinking-detail';
-    
+
     detailContainer.appendChild(detail);
     
     // 添加点击事件来切换详情面板显示（使用闭包访问detailContainer）
-    header.onclick = () => toggleThinkingDetail(detailContainer, expandIcon);
+    const toggle = () => toggleThinkingDetail(detailContainer, expandIcon);
+    header.onclick = toggle;
+    header.onkeydown = (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggle();
+        }
+    };
     
     // 添加到聊天区域（两个独立的元素）
     chatArea.appendChild(bubble);
     chatArea.appendChild(detailContainer);
     chatArea.scrollTop = chatArea.scrollHeight;
     
-    return { bubble,detail, detailContainer };
+    const thinkingElements = {
+        bubble,
+        detail,
+        detailContainer,
+        durationElement: duration,
+        statusElement: status,
+        startedAt: performance.now(),
+        finishedAt: null,
+        durationTimer: null,
+        steps: new Map(),
+        streamState: ChatStreamState.createState(),
+        draftElement: null,
+        draftStreamId: null,
+    };
+
+    thinkingElements.durationTimer = setInterval(
+        () => updateThinkingDuration(thinkingElements),
+        100,
+    );
+    return thinkingElements;
 }
 
 /**
  * 切换思考过程详情显示（适配独立布局）
  */
 function toggleThinkingDetail(detailContainer, expandIcon) {
-    if (detailContainer.style.display === 'none') {
+    const expanded = detailContainer.style.display === 'none';
+    if (expanded) {
         detailContainer.style.display = 'block';
-        expandIcon.textContent = '▼';
-        // 滚动到底部以确保详情面板可见
-        setTimeout(() => {
-            chatArea.scrollTop = chatArea.scrollHeight;
-        }, 100);
+        detailContainer.setAttribute('aria-hidden', 'false');
+        expandIcon.textContent = '▾';
+        expandIcon.closest('.thinking-header')?.setAttribute('aria-expanded', 'true');
+        // 展开后滚动到聊天区域最后一个节点，兼容详情和回答同时改变高度的情况。
+        setTimeout(scrollChatToBottom, 0);
+        setTimeout(scrollChatToBottom, 120);
     } else {
         detailContainer.style.display = 'none';
-        expandIcon.textContent = '▶';
+        detailContainer.setAttribute('aria-hidden', 'true');
+        expandIcon.textContent = '▸';
+        expandIcon.closest('.thinking-header')?.setAttribute('aria-expanded', 'false');
     }
+}
+
+/**
+ * 将聊天滚动容器定位到当前内容的最底端。
+ */
+function scrollChatToBottom() {
+    const lastElement = chatArea.lastElementChild;
+    if (lastElement && typeof lastElement.scrollIntoView === 'function') {
+        lastElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        return;
+    }
+    chatArea.scrollTop = chatArea.scrollHeight;
 }
 
 
@@ -856,6 +975,7 @@ function toggleThinkingDetail(detailContainer, expandIcon) {
  */
 function handleStreamEvent(eventData, thinkingElements) {
     const eventType = eventData.type;
+    if (!ChatStreamState.acceptEventId(thinkingElements.streamState, eventData.event_id)) return;
     
     console.log('[SSE Event]:', eventType, eventData);
     
@@ -863,11 +983,21 @@ function handleStreamEvent(eventData, thinkingElements) {
         case 'node_start':
             handleNodeStart(eventData, thinkingElements);
             break;
-            
+        case 'progress':
+        case 'decision':
+        case 'tool_call_start':
+        case 'tool_call_result':
+            handleStepDetail(eventData, thinkingElements);
+            break;
+        case 'node_retry':
+            handleNodeRetry(eventData, thinkingElements);
+            break;
         case 'node_end':
             handleNodeEnd(eventData, thinkingElements);
             break;
-            
+        case 'text_delta':
+            handleTextDelta(eventData, thinkingElements);
+            break;
         case 'final_result':
             handleFinalResult(eventData, thinkingElements);
             break;
@@ -889,37 +1019,48 @@ function handleStreamEvent(eventData, thinkingElements) {
  * 处理节点开始事件
  */
 function handleNodeStart(eventData, thinkingElements) {
-    const { node_name, node_desc } = eventData;
-    
-    // 更新简洁视图的文字（在 bubble 中）
-    const thinkingText = thinkingElements.bubble.querySelector('.thinking-text');
-    if (thinkingText) {
-        thinkingText.textContent = node_desc + getText('thinkingWait');
+    const { step_id, title, node_name } = eventData;
+    if (!step_id || thinkingElements.steps.has(step_id)) {
+        return;
     }
 
-    // 在独立的详情面板中添加步骤项
+    // 阶段标题只放在展开后的层级列表中，顶部保留总耗时。
     const detail = thinkingElements.detail;
     const stepItem = document.createElement('div');
     stepItem.className = 'step-item in-progress';
-    stepItem.id = `step-${node_name}`;
+    stepItem.dataset.stepId = step_id;
+
+    const stepHeader = document.createElement('div');
+    stepHeader.className = 'step-header';
+
+    const stepToggle = document.createElement('span');
+    stepToggle.className = 'step-toggle';
+    stepToggle.textContent = '▸';
 
     const statusIcon = document.createElement('span');
     statusIcon.className = 'step-status';
-    statusIcon.textContent = '▶';
+    statusIcon.setAttribute('aria-label', '处理中');
 
     const stepName = document.createElement('span');
     stepName.className = 'step-name';
-    stepName.textContent = node_desc;
+    stepName.textContent = title || node_name;
 
     const stepTime = document.createElement('span');
     stepTime.className = 'step-time';
     stepTime.textContent = getText('inProgress');
     
-    stepItem.appendChild(statusIcon);
-    stepItem.appendChild(stepName);
-    stepItem.appendChild(stepTime);
+    stepHeader.appendChild(stepToggle);
+    stepHeader.appendChild(statusIcon);
+    stepHeader.appendChild(stepName);
+    stepHeader.appendChild(stepTime);
+    const stepDetails = document.createElement('div');
+    stepDetails.className = 'step-details';
+    stepHeader.onclick = () => toggleStepDetails(stepItem, stepToggle);
+    stepItem.appendChild(stepHeader);
+    stepItem.appendChild(stepDetails);
     
     detail.appendChild(stepItem);
+    thinkingElements.steps.set(step_id, { item: stepItem, details: stepDetails });
     
     // 滚动到底部
     chatArea.scrollTop = chatArea.scrollHeight;
@@ -929,23 +1070,127 @@ function handleNodeStart(eventData, thinkingElements) {
  * 处理节点结束事件
  */
 function handleNodeEnd(eventData, thinkingElements) {
-    const { node_name, duration } = eventData;
+    const { step_id, duration, status, message } = eventData;
     
     // 在独立的详情面板中查找并更新步骤项
-    const stepItem = thinkingElements.detail.querySelector(`#step-${node_name}`);
+    const step = thinkingElements.steps.get(step_id);
+    const stepItem = step && step.item;
     if (stepItem) {
-        stepItem.className = 'step-item completed';
+        stepItem.className = `step-item ${status === 'failed' ? 'error expanded' : 'completed'}`;
         
         const statusIcon = stepItem.querySelector('.step-status');
         if (statusIcon) {
-            statusIcon.textContent = '✓';
+            statusIcon.removeAttribute('aria-label');
         }
         
         const stepTime = stepItem.querySelector('.step-time');
         if (stepTime) {
             stepTime.textContent = `${duration}s`;
         }
+        if (status === 'failed' && message) {
+            appendStepDetail(step.details, `调用失败：${message}`, 'error');
+            setStepExpanded(stepItem, stepItem.querySelector('.step-toggle'), true);
+            expandTimeline(thinkingElements);
+        }
     }
+}
+
+/**
+ * 更新时间线顶部的连接或执行状态，不覆盖总耗时。
+ */
+function setTimelineStatus(thinkingElements, text) {
+    const statusElement = thinkingElements.statusElement;
+    if (!statusElement) return;
+    statusElement.textContent = text || '';
+    statusElement.hidden = !text;
+}
+
+/**
+ * 展开失败或重试详情，并同步父级倒三角。
+ */
+function expandTimeline(thinkingElements) {
+    thinkingElements.detailContainer.style.display = 'block';
+    thinkingElements.detailContainer.setAttribute('aria-hidden', 'false');
+    const icon = thinkingElements.bubble.querySelector('.expand-icon');
+    if (icon) {
+        icon.textContent = '▾';
+        icon.closest('.thinking-header')?.setAttribute('aria-expanded', 'true');
+    }
+}
+
+/**
+ * 切换阶段详情，并同步子级倒三角。
+ */
+function setStepExpanded(stepItem, stepToggle, expanded) {
+    stepItem.classList.toggle('expanded', expanded);
+    if (stepToggle) stepToggle.textContent = expanded ? '▾' : '▸';
+}
+
+/**
+ * 处理阶段标题点击，保持父子级展开状态一致。
+ */
+function toggleStepDetails(stepItem, stepToggle) {
+    setStepExpanded(stepItem, stepToggle, !stepItem.classList.contains('expanded'));
+}
+
+function appendStepDetail(container, text, className = '') {
+    // 以纯文本添加脱敏阶段详情，避免把协议内容当作 HTML。
+    if (!container || !text) return;
+    const row = document.createElement('div');
+    row.className = `step-detail ${className}`.trim();
+    row.textContent = text;
+    container.appendChild(row);
+}
+
+function handleStepDetail(eventData, thinkingElements) {
+    // 将进度、决策和工具摘要嵌套到对应父阶段。
+    const step = thinkingElements.steps.get(eventData.step_id);
+    if (!step) return;
+    let text = eventData.summary || '';
+    if (eventData.type === 'tool_call_start') {
+        const fields = (eventData.argument_keys || []).join('、');
+        text = `调用工具：${eventData.tool_name}${fields ? `（参数字段：${fields}）` : ''}`;
+    } else if (eventData.type === 'tool_call_result') {
+        text = `${eventData.tool_name}：${eventData.summary}`;
+    }
+    appendStepDetail(step.details, text);
+}
+
+function handleNodeRetry(eventData, thinkingElements) {
+    // 展示真实重试，并废弃失败生成实例对应的文字草稿。
+    const step = thinkingElements.steps.get(eventData.step_id);
+    if (step) {
+        step.item.className = 'step-item in-progress expanded';
+        appendStepDetail(step.details, `调用失败：${eventData.message}`, 'error');
+        appendStepDetail(step.details, '正在重试', 'retry');
+        setStepExpanded(step.item, step.item.querySelector('.step-toggle'), true);
+    }
+    if (eventData.discard_stream_id) {
+        ChatStreamState.discardStream(thinkingElements.streamState, eventData.discard_stream_id);
+        if (thinkingElements.draftStreamId === eventData.discard_stream_id) {
+            thinkingElements.draftElement?.remove();
+            thinkingElements.draftElement = null;
+            thinkingElements.draftStreamId = null;
+        }
+    }
+    expandTimeline(thinkingElements);
+}
+
+function handleTextDelta(eventData, thinkingElements) {
+    // 基于完整原始缓冲区重新渲染草稿 Markdown。
+    const { duplicate, buffer } = ChatStreamState.appendTextDelta(
+        thinkingElements.streamState,
+        eventData,
+    );
+    if (duplicate) return;
+    if (!thinkingElements.draftElement || thinkingElements.draftStreamId !== eventData.stream_id) {
+        thinkingElements.draftElement = addMessage('ai', { type: 'text', summary: ' ' });
+        thinkingElements.draftElement.classList.add('streaming-draft');
+        thinkingElements.draftStreamId = eventData.stream_id;
+    }
+    const content = thinkingElements.draftElement.querySelector('.content');
+    if (content) content.innerHTML = marked.parse(buffer);
+    chatArea.scrollTop = chatArea.scrollHeight;
 }
 
 /**
@@ -953,17 +1198,22 @@ function handleNodeEnd(eventData, thinkingElements) {
  */
 function handleFinalResult(eventData, thinkingElements) {
     const { data } = eventData;
-    
-    // 移除思考过程的两个独立元素
-    if (thinkingElements.bubble && thinkingElements.bubble.parentNode) {
-        thinkingElements.bubble.parentNode.removeChild(thinkingElements.bubble);
+    stopThinkingDuration(thinkingElements);
+    setTimelineStatus(thinkingElements, '');
+    const dots = thinkingElements.bubble.querySelector('.thinking-dots');
+    if (dots) dots.style.display = 'none';
+
+    const canCorrectDraft = ChatStreamState.shouldCorrectDraft(
+        Boolean(thinkingElements.draftElement),
+        data,
+    );
+    if (canCorrectDraft) {
+        thinkingElements.draftElement.classList.remove('streaming-draft');
+        const content = thinkingElements.draftElement.querySelector('.content');
+        if (content) content.innerHTML = marked.parse(data.summary || '');
+    } else {
+        addMessage('ai', data);
     }
-    if (thinkingElements.detailContainer && thinkingElements.detailContainer.parentNode) {
-        thinkingElements.detailContainer.parentNode.removeChild(thinkingElements.detailContainer);
-    }
-    
-    // 添加最终回复
-    addMessage('ai', data);
 }
 
 /**
@@ -971,6 +1221,7 @@ function handleFinalResult(eventData, thinkingElements) {
  */
 function handleInterrupt(eventData, thinkingElements) {
     const { message } = eventData;
+    stopThinkingDuration(thinkingElements);
     
     // 移除思考过程的两个独立元素
     if (thinkingElements.bubble && thinkingElements.bubble.parentNode) {
@@ -992,16 +1243,18 @@ function handleInterrupt(eventData, thinkingElements) {
  */
 function handleStreamError(eventData, thinkingElements) {
     const { message } = eventData;
-    
-    // 移除思考过程的两个独立元素
-    if (thinkingElements.bubble && thinkingElements.bubble.parentNode) {
-        thinkingElements.bubble.parentNode.removeChild(thinkingElements.bubble);
-    }
-    if (thinkingElements.detailContainer && thinkingElements.detailContainer.parentNode) {
-        thinkingElements.detailContainer.parentNode.removeChild(thinkingElements.detailContainer);
-    }
-    
-    // 显示错误消息
+    stopThinkingDuration(thinkingElements);
+    setTimelineStatus(thinkingElements, '执行失败');
+    const dots = thinkingElements.bubble.querySelector('.thinking-dots');
+    if (dots) dots.style.display = 'none';
+    thinkingElements.draftElement?.classList.remove('streaming-draft');
+    expandTimeline(thinkingElements);
+    thinkingElements.steps.forEach(({ item, details }) => {
+        if (item.classList.contains('in-progress')) {
+            item.className = 'step-item error expanded';
+            appendStepDetail(details, message, 'error');
+        }
+    });
     addMessage('ai', {
         type: 'text',
         summary: `错误：${message}`
