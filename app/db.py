@@ -389,6 +389,30 @@ def check_database_readiness():
 
             cursor.execute(
                 """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = 'analysis_jobs'
+                  AND column_name IN ('idempotency_key', 'request_fingerprint')
+                """,
+                (settings.MYSQL_DATABASE,),
+            )
+            job_request_columns = {row[0] for row in cursor.fetchall()}
+            missing_job_request_columns = {
+                "idempotency_key",
+                "request_fingerprint",
+            } - job_request_columns
+            if missing_job_request_columns:
+                error_msg = (
+                    "数据库关键字段缺失: "
+                    f"{sorted(f'analysis_jobs.{name}' for name in missing_job_request_columns)}。"
+                    "请先运行 'python -m Database.bootstrap'。"
+                )
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            cursor.execute(
+                """
                 SELECT table_name, index_name
                 FROM information_schema.statistics
                 WHERE table_schema = %s
@@ -402,6 +426,11 @@ def check_database_readiness():
                       AND index_name = 'uq_admin_operations_actor_idempotency'
                       AND non_unique = 0
                     )
+                    OR (
+                      table_name = 'analysis_jobs'
+                      AND index_name = 'uq_analysis_jobs_user_idempotency'
+                      AND non_unique = 0
+                    )
                   )
                 """,
                 (settings.MYSQL_DATABASE,),
@@ -412,6 +441,10 @@ def check_database_readiness():
                 (
                     "admin_operations",
                     "uq_admin_operations_actor_idempotency",
+                ),
+                (
+                    "analysis_jobs",
+                    "uq_analysis_jobs_user_idempotency",
                 ),
             }
             missing_indexes = required_indexes - critical_indexes

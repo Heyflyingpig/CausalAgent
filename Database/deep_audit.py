@@ -54,7 +54,8 @@ EXPECTED_COLUMNS = {
     },
     "analysis_jobs": {
         "id", "job_id", "user_id", "session_id", "status", "worker_id",
-        "created_at", "active_session_key",
+        "created_at", "active_session_key", "idempotency_key",
+        "request_fingerprint",
     },
     "analysis_job_events": {"id", "job_id", "event_type", "payload_json", "created_at"},
     "database_monitor_snapshots": {
@@ -82,7 +83,11 @@ EXPECTED_COLUMNS = {
 EXPECTED_INDEXES = {
     "users": {"PRIMARY", "idx_users_admin_role_active"},
     "sessions": {"PRIMARY", "idx_sessions_admin_activity"},
-    "analysis_jobs": {"PRIMARY", "idx_analysis_jobs_admin_created"},
+    "analysis_jobs": {
+        "PRIMARY",
+        "idx_analysis_jobs_admin_created",
+        "uq_analysis_jobs_user_idempotency",
+    },
     "uploaded_files": {"PRIMARY", "idx_uploaded_files_admin_uploaded"},
     "admin_audit_events": {"PRIMARY", "idx_admin_audit_target_created"},
     "checkpoint_cleanup_outbox": {

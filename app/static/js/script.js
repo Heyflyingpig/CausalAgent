@@ -610,6 +610,57 @@ function setupChatEventListeners() {
     chatEventListenersAttached = true; //  设置标志 
 }
 
+function createAgentRequestIdempotencyKey() {
+    // 每次逻辑发送生成唯一幂等键；同一请求重试时应沿用这个值。
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+    }
+    if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+        const bytes = new Uint8Array(16);
+        window.crypto.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        return Array.from(bytes, (value) => value.toString(16).padStart(2, '0'))
+            .join('')
+            .replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+    }
+    throw new Error('当前浏览器不支持安全的请求幂等键生成');
+}
+
+async function requestAgentJob(message, sessionId, idempotencyKey) {
+    // 对创建请求的未知结果最多重试一次，并始终复用同一个幂等键。
+    const request = async () => {
+        const response = await fetch('/api/agent/jobs', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Idempotency-Key': idempotencyKey,
+            },
+            body: JSON.stringify({
+                message: message,
+                username: currentUsername,
+                session_id: sessionId,
+            }),
+        });
+        const jobData = await response.json();
+        if (!response.ok || !jobData.success) {
+            const error = new Error(jobData.error || `HTTP错误: ${response.status}`);
+            error.retryable = response.status >= 500;
+            throw error;
+        }
+        return jobData;
+    };
+
+    try {
+        return await request();
+    } catch (error) {
+        if (error && error.retryable === false) {
+            throw error;
+        }
+        return request();
+    }
+}
+
 // 返回设置列表
 function showSettingOptions() {
     console.log("返回设置选项列表");
@@ -689,23 +740,8 @@ async function sendMessage() {
     const thinkingElements = addThinkingMessage();
 
     try {
-        const response = await fetch('/api/agent/jobs', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ 
-                message: message, 
-                username: currentUsername,
-                session_id: currentSessionId 
-            })
-        });
-
-        const jobData = await response.json();
-        if (!response.ok || !jobData.success) {
-            throw new Error(jobData.error || `HTTP错误: ${response.status}`);
-        }
-
+        const idempotencyKey = createAgentRequestIdempotencyKey();
+        const jobData = await requestAgentJob(message, currentSessionId, idempotencyKey);
         await subscribeToJobEvents(jobData.job_id, thinkingElements);
         
         // 加载历史记录
