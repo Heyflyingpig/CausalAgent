@@ -132,7 +132,8 @@
         /* 主聊天界面容器 */
         margin-left: 0; /* 初始状态下左边距为0 */
         transition: margin-left 0.3s; /* 当左边距变化时，平滑过渡 */
-        height: 100vh; /* 占满整个视口高度 */
+        min-height: 100vh; /* 空会话时仍占满视口，内容多时允许页面继续增长 */
+        height: auto;
         display: flex; /* 使用Flexbox布局 */
         flex-direction: column; /* 让聊天区和输入区垂直排列 */
     }
@@ -142,8 +143,9 @@
     }
     .chat-area {
         /* 显示所有聊天消息的区域 */
-        flex: 1; /* 占据所有可用的垂直空间 */
-        overflow-y: auto;  /* 当消息过多时，显示垂直滚动条 */
+        flex: none; /* 让内容高度由消息本身决定，滚动交给页面 */
+        min-height: calc(100vh - 110px); /* 空状态下把输入区保持在视口底部附近 */
+        overflow: visible;
         padding: 20px; /* 内边距 */
         transition: margin-left 0.3s;  /* 配合侧边栏的平滑过渡 */
         display: flex; /* 使用Flexbox布局 */
@@ -800,11 +802,11 @@
         /* 鼠标悬停在关闭按钮上时 */
         background-color: #5a6268;
     }
-    /* 用于诊断为什么整个页面超出限制 */
-    /* 整体页面内容高度超出了视口。不过要注意，这样做可能会隐藏掉本应可见但被"挤出"视口的内容（如果确实有内容被挤出的话） */
-    body{
-        /* 根元素样式 */
-        overflow: hidden; /* 防止整个页面出现滚动条，因为滚动由内部容器处理 */
+    /* 聊天内容使用文档级滚动，避免视口内再嵌套一个滚动区域。 */
+    body {
+        /* 聊天内容直接参与文档布局，不再创建独立的聊天滚动容器。 */
+        overflow-x: hidden;
+        overflow-y: auto;
     }
 
 /*  新增：AI加载动画  */
@@ -927,8 +929,8 @@
 }
 
 .thinking-detail {
-    max-height: 400px;
-    overflow-y: auto;
+    max-height: none;
+    overflow: visible;
     display: flex;
     flex-direction: column;
     gap: 4px;

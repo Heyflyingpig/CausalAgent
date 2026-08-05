@@ -72,6 +72,10 @@ DECISION_PROGRESS = {
     "preprocess": "文件与数据验证完成",
     "agent": "需要补充分析输入",
 }
+DECISION_FIELDS = {
+    "agent": "route_decision",
+    "fold": "fold_decision",
+}
 
 
 def _opaque_id(*parts: Any) -> str:
@@ -211,7 +215,8 @@ class LangGraphEventAdapter:
                 continue
             step = self._active_step(node_name)
             if step:
-                decision = output.get("route_decision") or output.get("fold_decision")
+                decision_field = DECISION_FIELDS.get(node_name)
+                decision = output.get(decision_field) if decision_field else None
                 if decision:
                     progress = self._base("progress", step)
                     progress["summary"] = DECISION_PROGRESS.get(decision, "路由判断完成")

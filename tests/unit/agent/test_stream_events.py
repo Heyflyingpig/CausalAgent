@@ -130,6 +130,23 @@ class StreamEventAdapterTests(unittest.TestCase):
         self.assertIn("因果分析", events[0]["summary"])
         self.assertIn("加载文件", events[1]["summary"])
 
+    def test_inherited_decision_is_not_reemitted_on_tool_stage(self):
+        """后续 MCP/RAG 阶段不能把继承的旧路由字段再次展示为新决策。"""
+        for stage in ("mcp", "rag"):
+            self.adapter.convert(task_start(f"task-{stage}", stage))
+            events = self.adapter.convert({
+                "type": "updates",
+                "ns": (),
+                "data": {
+                    stage: {
+                        "route_decision": "fold",
+                        "fold_decision": "preprocess",
+                    }
+                },
+            })
+
+            self.assertEqual(events, [])
+
     def test_tool_details_expose_names_and_keys_but_not_values_or_results(self):
         """工具事件不得持久化凭据、地址、完整 JSON 或结果正文。"""
         self.adapter.convert(task_start("task-mcp", "mcp"))

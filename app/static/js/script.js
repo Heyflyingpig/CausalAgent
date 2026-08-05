@@ -846,6 +846,13 @@ function stopThinkingDuration(thinkingElements) {
 }
 
 /**
+ * 新增聊天内容时保持页面停留在最新内容；展开或收起时间线不会调用此函数。
+ */
+function keepLatestChatContentVisible() {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+}
+
+/**
  * 创建无卡片背景的思考过程入口和可展开详情。
  */
 function addThinkingMessage() {
@@ -911,7 +918,7 @@ function addThinkingMessage() {
     // 添加到聊天区域（两个独立的元素）
     chatArea.appendChild(bubble);
     chatArea.appendChild(detailContainer);
-    chatArea.scrollTop = chatArea.scrollHeight;
+    keepLatestChatContentVisible();
     
     const thinkingElements = {
         bubble,
@@ -945,27 +952,12 @@ function toggleThinkingDetail(detailContainer, expandIcon) {
         detailContainer.setAttribute('aria-hidden', 'false');
         expandIcon.textContent = '▾';
         expandIcon.closest('.thinking-header')?.setAttribute('aria-expanded', 'true');
-        // 展开后滚动到聊天区域最后一个节点，兼容详情和回答同时改变高度的情况。
-        setTimeout(scrollChatToBottom, 0);
-        setTimeout(scrollChatToBottom, 120);
     } else {
         detailContainer.style.display = 'none';
         detailContainer.setAttribute('aria-hidden', 'true');
         expandIcon.textContent = '▸';
         expandIcon.closest('.thinking-header')?.setAttribute('aria-expanded', 'false');
     }
-}
-
-/**
- * 将聊天滚动容器定位到当前内容的最底端。
- */
-function scrollChatToBottom() {
-    const lastElement = chatArea.lastElementChild;
-    if (lastElement && typeof lastElement.scrollIntoView === 'function') {
-        lastElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
-        return;
-    }
-    chatArea.scrollTop = chatArea.scrollHeight;
 }
 
 
@@ -1062,8 +1054,7 @@ function handleNodeStart(eventData, thinkingElements) {
     detail.appendChild(stepItem);
     thinkingElements.steps.set(step_id, { item: stepItem, details: stepDetails });
     
-    // 滚动到底部
-    chatArea.scrollTop = chatArea.scrollHeight;
+    keepLatestChatContentVisible();
 }
 
 /**
@@ -1190,7 +1181,7 @@ function handleTextDelta(eventData, thinkingElements) {
     }
     const content = thinkingElements.draftElement.querySelector('.content');
     if (content) content.innerHTML = marked.parse(buffer);
-    chatArea.scrollTop = chatArea.scrollHeight;
+    keepLatestChatContentVisible();
 }
 
 /**
@@ -1987,7 +1978,7 @@ function addMessage(sender, messageData, isLoading = false) {
     messageElement.appendChild(contentElement);
 
     chatArea.appendChild(messageElement);
-    chatArea.scrollTop = chatArea.scrollHeight; // 自动滚动到底部
+    keepLatestChatContentVisible();
 
     // 返回消息元素，以便后续可以移除（例如加载动画）
     return messageElement;
