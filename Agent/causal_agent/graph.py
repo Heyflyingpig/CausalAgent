@@ -28,15 +28,24 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
     """
     workflow = StateGraph(CausalAgentState)
 
-    agent_node_with_llm = bind_node(nodes.agent_node, llm=llm)#将普通节点函数绑定llm，这些普通节点函数内部要调用大模型，但 LangGraph 执行节点时主要只传一个参数：state
-    fold_node_with_llm = bind_node(nodes.fold_node, llm=llm)
-    preprocess_node_with_llm = bind_node(nodes.preprocess_node, llm=llm)
+    streaming_llm = llm.model_copy(update={"streaming": True})
+    agent_node_with_llm = bind_node(nodes.agent_node, event_node_name="agent", llm=llm)#将普通节点函数绑定llm，这些普通节点函数内部要调用大模型，但 LangGraph 执行节点时主要只传一个参数：state
+    fold_node_with_llm = bind_node(nodes.fold_node, event_node_name="fold", llm=llm)
+    preprocess_node_with_llm = bind_node(nodes.preprocess_node, event_node_name="preprocess", llm=llm)
     mcp_subgraph = build_mcp_subgraph(llm=llm, mcp_tools=mcp_tools)#创建mcp子图
     rag_subgraph = build_rag_subgraph(llm=llm, rag_tools=rag_tools)#创建rag子图
-    postprocess_node_with_llm = bind_node(nodes.postprocess_node, llm=llm)
-    inquiry_answer_node_with_llm = bind_node(nodes.inquiry_answer_node, llm=llm)
-    report_node_with_llm = bind_node(nodes.report_node, llm=llm)
-    normal_chat_node_with_llm = bind_node(nodes.normal_chat_node, llm=llm)
+    postprocess_node_with_llm = bind_node(nodes.postprocess_node, event_node_name="postprocess", llm=llm)
+    inquiry_answer_node_with_llm = bind_node(
+        nodes.inquiry_answer_node,
+        event_node_name="inquiry_answer",
+        llm=streaming_llm,
+    )
+    report_node_with_llm = bind_node(nodes.report_node, event_node_name="report", llm=llm)
+    normal_chat_node_with_llm = bind_node(
+        nodes.normal_chat_node,
+        event_node_name="normal_chat",
+        llm=streaming_llm,
+    )
 
 #节点注册部分
     workflow.add_node(

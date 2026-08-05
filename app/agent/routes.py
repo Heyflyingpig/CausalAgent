@@ -28,6 +28,13 @@ def _sse(event_type: str, payload: dict, event_id: int | None = None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _public_event_payload(payload: dict) -> dict:
+    """移除只供 worker 审计和 fencing 使用的内部字段。"""
+    public_payload = dict(payload)
+    public_payload.pop("attempt", None)
+    return public_payload
+
+
 @agent_bp.route("/send_stream", methods=["POST"])
 def handle_message_stream():
     """旧流式接口已下线，前端应使用 analysis job API。"""
@@ -115,6 +122,8 @@ def stream_analysis_job_events(job_id: str):
                 payload = row["payload_json"] or {}
                 if isinstance(payload, dict) and "type" not in payload:
                     payload = {**payload, "type": row["event_type"]}
+                if isinstance(payload, dict):
+                    payload = _public_event_payload(payload)
                 yield _sse(row["event_type"], payload, after_id)
                 if row["event_type"] in job_service.TERMINAL_EVENTS:
                     return
