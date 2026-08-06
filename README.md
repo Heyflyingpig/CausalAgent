@@ -56,12 +56,12 @@ CausalAgent
 - [快速开始 | Quick Start](#快速开始--quick-start)
   - [Docker部署](#docker部署)
     - [数据库生产化配置](#数据库生产化配置)
+    - [管理员后台](#管理员后台)
   - [后端单元测试](#后端单元测试)
   - [windows部署](#windows部署)
 - [贡献](#贡献)
 - [Star 趋势](#star-趋势)
 - [项目结构](#项目结构)
-- [更新日志](./README/开发日志.md)
 
 
 
@@ -357,6 +357,18 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 │   ├── main/               # 通用页面相关路由
 │   ├── auth/               # 登录、注册等认证相关路由
 │   ├── admin/              # 管理 API、审计服务与受保护 Vue 入口
+│   ├── agent/              # 分析任务 API、队列服务与独立 worker
+│   │   ├── routes.py       # Web 进程创建任务与订阅 SSE
+│   │   ├── job_service.py  # Web、monitor、worker 共享的任务持久化服务
+│   │   ├── core.py         # 不持有运行时状态的兼容导入门面
+│   │   └── worker/         # python -m app.agent.worker 包入口
+│   │       ├── bootstrap.py        # 启动检查与 slot 编排
+│   │       ├── runtime.py          # 显式进程/slot runtime
+│   │       ├── execution.py        # 单 job 执行与 heartbeat
+│   │       ├── event_writer.py     # 顺序事件持久化
+│   │       ├── graph_runner.py     # LangGraph 流式执行
+│   │       ├── event_adapter.py    # 内部流到公开事件协议
+│   │       └── result_presenter.py # 最终结果展示结构
 │   ├── chat/               # 聊天 & 会话相关路由与服务
 │   ├── files/              # 文件上传/管理相关路由
 │   └── static/             # 前端静态资源

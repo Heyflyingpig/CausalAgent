@@ -60,6 +60,11 @@
 │   ├── main/               # 通用页面相关路由
 │   ├── auth/               # 登录、注册等认证相关路由
 │   ├── admin/              # 管理员 API、审计服务与受保护 Vue 入口
+│   ├── agent/              # 分析任务 API、共享队列服务与独立 worker
+│   │   ├── routes.py       # Web 任务创建与 SSE 订阅
+│   │   ├── job_service.py  # Web、monitor、worker 共享持久化服务
+│   │   ├── core.py         # 无运行时状态的兼容导入门面
+│   │   └── worker/         # worker package 与 python -m 入口
 │   ├── chat/               # 聊天与会话相关路由和服务
 │   ├── files/              # 文件上传与管理相关路由
 │   └── static/             # 前端静态资源
@@ -115,8 +120,8 @@
 - `create_app()` 会先执行 `app/db.py` 中的 `check_database_readiness()`，确认数据库和关键表已就绪，然后再注册蓝图。
 - 当前实际注册的蓝图有 7 个：`auth`、`chat`、`files`、`agent`、`main`、`admin`、`admin_page`。
 - Web 进程只负责登录态校验、短请求、analysis job 入队和 SSE 推送；Agent/RAG/MCP 长任务不在 Web 进程内执行，而是由独立 worker 进程处理。
-- 后台 worker 入口是 `python -m app.agent.worker`；worker 启动流程是：数据库就绪检查 -> 初始化 LLM -> 检查 RAG 可用性 -> 按 `JOB_WORKERS` 启动多个 slot。
-- 每个 worker slot 会独占一组 MCP server process、一个通过 `MultiServerMCPClient.session("causal")` 打开的持久 `ClientSession`、一组由 `load_mcp_tools(session)` 生成的 LangChain tools，以及一个编译好的 Agent graph；真实执行单元是 slot，不是 Flask 请求线程。旧 `open_mcp_session()` / 手写 `list_tools()` 包装仅保留作历史兼容入口。
+- 后台 worker 入口仍是 `python -m app.agent.worker`，实际由 `app/agent/worker/__main__.py` 调用 `bootstrap.main()`；启动流程是：数据库就绪检查 -> PostgreSQL checkpoint 检查 -> 创建显式进程 runtime（LLM、RAG 可用性）-> 按 `JOB_WORKERS` 启动多个 slot。
+- 每个 worker slot 会独占一组 MCP server process、一个通过 `MultiServerMCPClient.session("causal")` 打开的持久 `ClientSession`、一组由 `load_mcp_tools(session)` 生成的 LangChain tools，以及一个编译好的 Agent graph；`runtime.py` 通过 `ProcessRuntime` 和 `SlotRuntime` 显式返回这些依赖，执行函数不读取 `app.agent.core` 的全局 LLM 或 graph。真实执行单元是 slot，不是 Flask 请求线程。
 - 父图当前只暴露 `mcp`、`rag` 两个工具阶段节点：`mcp` 子图正常路径执行 `mcp_planner -> mcp_tool_node -> mcp_result_parser`，planner、ToolNode 和 parser 的失败路径会在子图内生成标准 `success=False` 结果并结束子图；`rag` 子图内部执行 `rag_question_planner -> rag_tool_node -> rag_result_parser`。worker 使用 LangGraph v2 `updates/messages/custom/tasks` 多流：根图 `tasks` 形成用户时间线，子图工具事件折叠到 `mcp`/`rag` 阶段，只有 `normal_chat` 和 `inquiry_answer` 的文字进入 `text_delta`，原始 Prompt、ToolMessage、完整工具结果和内部 attempt 不进入普通用户 SSE 协议。
 - Pydantic 结构化输出统一通过 `Agent/llm_structured_output.py` 的同步/异步入口执行，固定使用普通 `function_calling`；调用器仅对结构化请求发送 `thinking.type=disabled`，避免 DeepSeek Thinking 与固定 `tool_choice` 冲突。MCP 继续使用原生 Tool Calls；只有 MCP planner 使用关闭 Thinking 的 LLM 副本和 `tool_choice="required"`，确保模型必须自行选择一个已加载工具。
 - `agent` 与 `fold` 的条件路由只读取 `route_decision`、`fold_decision` 显式 State 字段；展示消息仅用于用户可见内容和审计，不参与控制流。
@@ -339,7 +344,7 @@ MYSQL_USER/MYSQL_PASSWORD：现在主要是兼容兜底，主从开发里不依�
 - 新增数据库表但忘了更新 `check_database_readiness`
 - 修改接口返回结构但没有检查前端 `script.js`
 - 改了上传或聊天附件结构却没同步恢复逻辑
-- 修改 MCP 或 RAG 初始化路径但没检查 `CausalAgent.py` 和 `app/agent/core.py`
+- 修改 MCP、RAG 或 worker 初始化路径但没检查 `app/agent/worker/runtime.py`、`bootstrap.py` 和 Docker Compose 入口
 
 ## 6. 修改后的验证要求
 
@@ -385,7 +390,9 @@ python CausalAgent.py
 
 至少核对：
 
-- `app/agent/core.py`
+- `app/agent/worker/runtime.py`
+- `app/agent/worker/bootstrap.py`
+- `app/agent/worker/graph_runner.py`
 - `Agent/causal_agent/`
 - `Agent/tool_node/`
 - `Agent/knowledge_base/`
