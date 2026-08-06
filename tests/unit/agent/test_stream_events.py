@@ -19,7 +19,7 @@ TEST_ENV = {
 for key, value in TEST_ENV.items():
     os.environ.setdefault(key, value)
 
-from app.agent.core import LangGraphEventAdapter  # noqa: E402
+from app.agent.worker.event_adapter import LangGraphEventAdapter  # noqa: E402
 from app.agent.routes import _public_event_payload  # noqa: E402
 from Agent.causal_agent.graph_utils import bind_node, bind_runnable_node  # noqa: E402
 from Agent.causal_agent.state import CausalAgentState  # noqa: E402

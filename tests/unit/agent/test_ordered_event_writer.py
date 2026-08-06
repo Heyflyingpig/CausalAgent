@@ -17,7 +17,7 @@ TEST_ENV = {
 for key, value in TEST_ENV.items():
     os.environ.setdefault(key, value)
 
-from app.agent.worker import (  # noqa: E402
+from app.agent.worker.event_writer import (  # noqa: E402
     OrderedEventWriter,
     TEXT_FLUSH_CHARACTER_LIMIT,
 )

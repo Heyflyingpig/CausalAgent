@@ -129,12 +129,14 @@ class ControlledAdminWriteTests(unittest.TestCase):
         inspection = Path("Database/checkpoint_inspection.py").read_text(
             encoding="utf-8"
         )
-        core = Path("app/agent/core.py").read_text(encoding="utf-8")
+        graph_runner = Path("app/agent/worker/graph_runner.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("CREATE TABLE checkpoint_cleanup_outbox", migration)
         self.assertIn("DROP TABLE IF EXISTS checkpoints", migration)
         self.assertIn("metadata ->> 'job_id' = %s", inspection)
         self.assertIn("ORDER BY checkpoint_id DESC", inspection)
-        self.assertIn('"job_id": job_id', core)
+        self.assertIn('"job_id": job_id', graph_runner)
 
     def test_lifecycle_repair_is_dry_run_and_requires_database_confirmation(self):
         """孤立修复 CLI 默认 dry-run，apply 必须精确确认数据库。"""
