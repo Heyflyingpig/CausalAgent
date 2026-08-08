@@ -62,10 +62,12 @@ python -m Database.checkpoint_setup
 `alembic downgrade -1`；例如回退到 `e4f5a6b7c8d9`。
 
 管理员任务详情和数据库审计复用 `CHECKPOINT_POSTGRES_*` 建立独立只读连接。
-新任务由 worker 把 `job_id` 写入 LangGraph `config.metadata`，管理员按
-`thread_id=session_id + metadata.job_id` 读取安全摘要；旧 checkpoint 缺少
-`job_id` 时不做时间归属猜测。quick integrity 检查连接、官方表集合和 setup
-版本；deep audit 只读取 schema、主键、估算行数及最多 20 个跨库关系样本。
+新任务由 worker 使用 `analysis_jobs.job_id` 作为 LangGraph `thread_id`，并把
+`job_id` 与业务 `session_id` 写入 `config.metadata`；根 `checkpoint_ns` 为空，管理员
+按 `thread_id=job_id + metadata.job_id` 读取安全摘要。旧 session-thread checkpoint
+不迁移、不读取、不清理，缺少 `job_id` 的记录不做时间归属猜测。quick integrity
+检查连接、官方表集合和 setup 版本；deep audit 只读取 schema、主键、估算行数及最多
+20 个跨库 Job 关系样本，cleanup outbox 过渡中的 Job 不视为孤儿。
 
 ## 启动 monitor
 
