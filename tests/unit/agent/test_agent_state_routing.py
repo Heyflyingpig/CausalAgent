@@ -63,10 +63,12 @@ def _state(message="普通问题", **updates):
         "username": "tester",
         "session_id": "session-1",
         "job_id": "job-1",
-        "input_user_file_id": 11,
-        "input_object_id": 22,
-        "input_file_hash": "a" * 64,
-        "input_filename": "data.csv",
+        "file_summary": {
+            "user_file_id": 11,
+            "object_id": 22,
+            "file_hash": "a" * 64,
+            "filename": "data.csv",
+        },
     }
     state.update(updates)
     return state
@@ -182,7 +184,11 @@ def test_fold_extraction_failure_uses_frozen_file_and_can_validate(monkeypatch):
         "require_frozen_file_for_job",
         lambda *args: {"file_content": b"A,B\n1,2\n"},
     )
-    monkeypatch.setattr(nodes, "get_data_summary", lambda df: {"columns": ["A", "B"]})
+    monkeypatch.setattr(
+        nodes,
+        "get_data_summary",
+        lambda df: {"n_rows": 2, "columns": ["A", "B"]},
+    )
     monkeypatch.setattr(nodes, "validate_analysis", lambda *args, **kwargs: (1, [], []))
 
     result = asyncio.run(nodes.fold_node(_state(), object()))
@@ -190,6 +196,7 @@ def test_fold_extraction_failure_uses_frozen_file_and_can_validate(monkeypatch):
     assert result["fold_decision"] == "preprocess"
     assert result["analysis_parameters"]["target"] is None
     assert result["analysis_parameters"]["treatment"] is None
+    assert result["file_summary"]["rows"] == 2
 
 
 @pytest.mark.parametrize("failure_stage", ["file", "validation"])

@@ -92,7 +92,7 @@ class JobIdempotencyTests(unittest.TestCase):
             "request_fingerprint": fingerprint,
         }
         connection = FakeConnection(
-            fetch_results=[{"id": "session-1"}, existing]
+            fetch_results=[existing]
         )
 
         with patch("app.agent.job_service.get_write_connection", return_value=connection):
@@ -113,7 +113,6 @@ class JobIdempotencyTests(unittest.TestCase):
         """同一幂等键不能被改用于另一个会话或消息。"""
         connection = FakeConnection(
             fetch_results=[
-                {"id": "session-1"},
                 {"job_id": "job-1", "request_fingerprint": "0" * 64},
             ]
         )
@@ -129,9 +128,9 @@ class JobIdempotencyTests(unittest.TestCase):
         """新 job 必须在同一事务中写入幂等键和请求指纹。"""
         connection = FakeConnection(
             fetch_results=[
+                None,
+                None,
                 {"id": "session-1"},
-                None,
-                None,
                 {"message_count": 0, "title": ""},
             ]
         )
@@ -171,7 +170,7 @@ class JobIdempotencyTests(unittest.TestCase):
             "request_fingerprint": fingerprint,
         }
         connection = FakeConnection(
-            fetch_results=[{"id": "session-1"}, None],
+            fetch_results=[None, None, {"id": "session-1"}],
             insert_error=duplicate_error,
         )
 

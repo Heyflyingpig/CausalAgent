@@ -173,11 +173,63 @@ class AgentJobIdempotencyMigrationTests(unittest.TestCase):
         audit_text = Path("Database/deep_audit.py").read_text(encoding="utf-8")
 
         self.assertIn("table_name = 'analysis_jobs'", db_text)
-        self.assertIn("column_name IN ('idempotency_key', 'request_fingerprint')", db_text)
+        self.assertIn("'idempotency_key', 'request_fingerprint', 'lease_epoch'", db_text)
         self.assertIn("uq_analysis_jobs_user_idempotency", db_text)
         self.assertIn('"idempotency_key"', audit_text)
         self.assertIn('"request_fingerprint"', audit_text)
         self.assertIn('"uq_analysis_jobs_user_idempotency"', audit_text)
+
+
+class FileLibraryAndJobRecoveryMigrationTests(unittest.TestCase):
+    """静态验证测试库文件库替换、Job 输入账本和回滚边界。"""
+
+    PATH = Path(
+        "Database/migrations/versions/a1b2c3d4e5f6_add_file_library_and_job_recovery.py"
+    )
+
+    def test_migration_extends_current_head_and_replaces_legacy_files_directly(self):
+        """新 revision 必须直接删除旧文件表，不读取或回填旧数据。"""
+        text = self.PATH.read_text(encoding="utf-8")
+
+        self.assertIn('revision: str = "a1b2c3d4e5f6"', text)
+        self.assertIn('down_revision: Union[str, Sequence[str], None] = "f9a0b1c2d3e4"', text)
+        self.assertIn('op.execute("DROP TABLE IF EXISTS uploaded_files")', text)
+        self.assertIn("CREATE TABLE file_objects", text)
+        self.assertIn("CREATE TABLE user_files", text)
+        self.assertNotIn("INSERT INTO file_objects", text)
+        self.assertNotIn("INSERT INTO user_files", text)
+        self.assertNotIn("INSERT INTO uploaded_files", text)
+        self.assertNotIn("拒绝迁移", text)
+
+    def test_migration_adds_frozen_inputs_and_recovery_schema(self):
+        """升级必须覆盖可恢复状态、冻结文件快照和用户输入账本。"""
+        text = self.PATH.read_text(encoding="utf-8")
+
+        for fragment in (
+            "waiting_input",
+            "lease_epoch",
+            "recovery_count",
+            "resume_count",
+            "input_user_file_id",
+            "input_object_id",
+            "current_question_id",
+            "analysis_job_inputs",
+            "uq_analysis_job_inputs_sequence",
+            "uq_analysis_job_inputs_idempotency",
+            "event_key",
+            "source_event_id",
+        ):
+            self.assertIn(fragment, text)
+
+    def test_downgrade_restores_empty_legacy_table_without_old_partition_layout(self):
+        """回滚只恢复空旧文件表，并保持当前 head 的非分区聊天表结构。"""
+        text = self.PATH.read_text(encoding="utf-8")
+        downgrade = text.split("def downgrade()", 1)[1]
+
+        self.assertIn("CREATE TABLE uploaded_files", downgrade)
+        self.assertNotIn("INSERT INTO uploaded_files", downgrade)
+        self.assertNotIn("PARTITION BY RANGE", downgrade)
+        self.assertNotIn("REMOVE PARTITIONING", text)
 
 
 if __name__ == "__main__":
