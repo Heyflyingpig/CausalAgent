@@ -119,15 +119,15 @@ async def _run_async() -> None:
                 await asyncio.to_thread(publish_runtime, force=True)
                 try:
                     logging.info(
-                        "[checkpoint-cleanup] deleting thread=%s attempt=%s",
-                        item["thread_id"],
+                        "[checkpoint-cleanup] deleting job=%s attempt=%s",
+                        item["job_id"],
                         item["attempts"],
                     )
-                    await saver.adelete_thread(item["thread_id"])
+                    await saver.adelete_thread(item["job_id"])
                 except Exception as exc:
                     logging.error(
-                        "[checkpoint-cleanup] failed thread=%s: %s",
-                        item["thread_id"],
+                        "[checkpoint-cleanup] failed job=%s: %s",
+                        item["job_id"],
                         exc,
                         exc_info=True,
                     )
