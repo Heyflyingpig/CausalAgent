@@ -486,10 +486,12 @@ export const adminApi = {
     jobId: string,
     kind: 'input' | 'result' | 'error',
     offset = 0,
+    sequence?: number,
   ) => apiRequest<SensitiveContentChunk>(
     withQuery(`/api/admin/business/jobs/${encodeURIComponent(jobId)}/content`, {
       kind,
       offset,
+      sequence,
     }),
     { cache: 'no-store' },
   ),

@@ -9,6 +9,7 @@ import type {
   AdminCheckpointPage,
   AdminJob,
   AdminJobEvent,
+  AdminJobInput,
   CursorPage,
   SensitiveContentChunk,
 } from '../types'
@@ -220,6 +221,19 @@ function reveal(kind: 'input' | 'result' | 'error'): void {
   contentVisible.value = true
 }
 
+/** 点击输入账本行后读取对应序号的敏感正文。 */
+function revealInput(input: AdminJobInput): void {
+  if (!detail.value) return
+  contentTitle.value = `任务输入 #${input.sequence} · ${detail.value.job_id}`
+  contentLoader.value = (offset) => adminApi.jobContent(
+    detail.value!.job_id,
+    'input',
+    offset,
+    input.sequence,
+  )
+  contentVisible.value = true
+}
+
 /** 把任务状态映射为 Element Plus 标签类型。 */
 function statusType(value: AdminJob['status']): 'success' | 'warning' | 'danger' | 'info' {
   if (value === 'succeeded') return 'success'
@@ -254,6 +268,7 @@ onMounted(() => {
       <div class="inline-metrics four-columns">
         <div><span>Queued</span><strong>{{ workerSummary?.summary.queued ?? '—' }}</strong></div>
         <div><span>Running</span><strong>{{ workerSummary?.summary.running ?? '—' }}</strong></div>
+        <div><span>等待输入</span><strong>{{ workerSummary?.summary.waiting_input ?? '—' }}</strong></div>
         <div><span>Stale</span><strong>{{ workerSummary?.summary.stale ?? '—' }}</strong></div>
         <div><span>达到最大尝试仍运行</span><strong>{{ workerSummary?.summary.max_attempts_running ?? '—' }}</strong></div>
       </div>
@@ -264,13 +279,13 @@ onMounted(() => {
         <el-table-column label="尝试次数" min-width="110"><template #default="{ row }">{{ row.attempt_count }} / {{ row.max_attempts }}</template></el-table-column>
         <el-table-column label="心跳时间" min-width="180"><template #default="{ row }">{{ formatDate(row.heartbeat_at) }}</template></el-table-column>
       </el-table>
-      <el-empty v-else description="当前没有 queued/running 任务" />
+      <el-empty v-else description="当前没有活动任务" />
     </section>
 
     <section class="filter-bar">
       <el-input v-model="q" clearable placeholder="Job ID" @keyup.enter="loadJobs(true)" />
       <el-select v-model="status" clearable placeholder="全部状态">
-        <el-option v-for="item in ['queued', 'running', 'succeeded', 'failed', 'canceled']" :key="item" :label="item" :value="item" />
+        <el-option v-for="item in ['queued', 'running', 'waiting_input', 'succeeded', 'failed', 'canceled']" :key="item" :label="item" :value="item" />
       </el-select>
       <el-input v-model="userId" clearable placeholder="用户 ID" @keyup.enter="loadJobs(true)" />
       <el-input v-model="sessionId" clearable placeholder="会话 ID" @keyup.enter="loadJobs(true)" />
@@ -316,14 +331,43 @@ onMounted(() => {
           <el-descriptions-item label="状态">{{ detail.status }}</el-descriptions-item>
           <el-descriptions-item label="会话" :span="2">{{ detail.session_id }}</el-descriptions-item>
           <el-descriptions-item label="Worker">{{ detail.worker_id || '未领取' }}</el-descriptions-item>
+          <el-descriptions-item label="Lease epoch">{{ detail.lease_epoch }}</el-descriptions-item>
           <el-descriptions-item label="尝试次数">{{ detail.attempt_count }} / {{ detail.max_attempts }}</el-descriptions-item>
+          <el-descriptions-item label="Stale recovery 次数">{{ detail.recovery_count }}</el-descriptions-item>
+          <el-descriptions-item label="恢复次数">{{ detail.resume_count }}</el-descriptions-item>
+          <el-descriptions-item label="当前问题 ID">{{ detail.current_question_id || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="等待提示" :span="2">{{ detail.current_waiting_prompt || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="冻结文件" :span="2">{{ detail.input_filename ? `${detail.input_filename} (#${detail.input_user_file_id})` : '无' }}</el-descriptions-item>
+          <el-descriptions-item label="输入条数">{{ detail.input_count ?? 0 }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDate(detail.created_at) }}</el-descriptions-item>
           <el-descriptions-item label="完成时间">{{ formatDate(detail.finished_at) }}</el-descriptions-item>
         </el-descriptions>
 
+        <section v-if="detail?.inputs?.length" class="job-input-ledger">
+          <div class="drawer-section-heading">
+            <h3 class="drawer-section-title">输入账本</h3>
+            <span v-if="detail.inputs_truncated" class="event-meta">仅展示前 50 条</span>
+          </div>
+          <el-table :data="detail.inputs" size="small" table-layout="auto">
+            <el-table-column prop="sequence" label="序列" width="80" />
+            <el-table-column prop="input_type" label="类型" width="100" />
+            <el-table-column prop="question_id" label="问题 ID" min-width="180" show-overflow-tooltip />
+            <el-table-column label="大小" width="100">
+              <template #default="{ row }">{{ row.input_bytes }} B</template>
+            </el-table-column>
+            <el-table-column label="创建时间" min-width="180">
+              <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="110">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="revealInput(row)">查看正文</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
+
         <div v-if="detail" class="sensitive-actions">
           <span>查看会被读取并审计！</span>
-          <el-button v-if="detail.has_input" @click="reveal('input')">查看输入</el-button>
           <el-button v-if="detail.has_result" @click="reveal('result')">查看结果</el-button>
           <el-button v-if="detail.has_error" type="danger" plain @click="reveal('error')">查看错误</el-button>
         </div>

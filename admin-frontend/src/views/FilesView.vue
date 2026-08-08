@@ -219,6 +219,7 @@ onMounted(() => loadFiles())
           <template #default="{ row }">{{ formatBytes(row.file_size) }}</template>
         </el-table-column>
         <el-table-column prop="access_count" label="使用次数" width="100" />
+        <el-table-column prop="object_reference_count" label="对象引用" width="100" />
         <el-table-column label="最近访问" min-width="180">
           <template #default="{ row }">{{ formatDate(row.last_accessed_at) }}</template>
         </el-table-column>
@@ -259,6 +260,7 @@ onMounted(() => loadFiles())
           <el-descriptions-item label="上传时间">{{ formatDate(detail.upload_timestamp) }}</el-descriptions-item>
           <el-descriptions-item label="最近访问">{{ formatDate(detail.last_accessed_at) }}</el-descriptions-item>
           <el-descriptions-item label="使用次数">{{ detail.access_count }}</el-descriptions-item>
+          <el-descriptions-item label="对象引用">{{ detail.object_reference_count }}</el-descriptions-item>
         </el-descriptions>
       </div>
     </el-drawer>

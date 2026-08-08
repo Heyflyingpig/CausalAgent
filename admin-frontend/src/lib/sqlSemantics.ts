@@ -99,15 +99,26 @@ const TABLE_RULES: Record<string, TableRule> = {
       DELETE: '删除聊天记录',
     },
   },
-  uploaded_files: {
+  user_files: {
     module: '文件管理',
     subject: '用户上传文件',
-    evidence: 'app/files/routes.py、Database/agent_connect.py',
+    evidence: 'app/files/routes.py、Database/agent_connect.py、app/admin/business_service.py',
     actions: {
       SELECT: '读取用户上传文件',
       INSERT: '保存用户上传文件',
-      UPDATE: '更新上传文件信息',
+      UPDATE: '更新文件访问信息',
       DELETE: '删除用户上传文件',
+    },
+  },
+  file_objects: {
+    module: '文件管理',
+    subject: '不可变文件对象',
+    evidence: 'app/files/routes.py、Database/agent_connect.py、app/admin/business_service.py',
+    actions: {
+      SELECT: '读取不可变文件对象',
+      INSERT: '保存不可变文件对象',
+      UPDATE: '不允许更新文件对象',
+      DELETE: '删除无引用文件对象',
     },
   },
   chat_attachments: {

@@ -33,7 +33,7 @@ CSV_PREVIEW_COLUMNS = 50
 CSV_PREVIEW_CELL_CHARS = 1000
 
 USER_ROLES = {"user", "admin"}
-JOB_STATUSES = {"queued", "running", "succeeded", "failed", "canceled"}
+JOB_STATUSES = {"queued", "running", "waiting_input", "succeeded", "failed", "canceled"}
 MESSAGE_TYPES = {"user", "ai"}
 CONTENT_KINDS = {"input", "result", "error"}
 
@@ -156,7 +156,8 @@ def get_business_overview() -> dict[str, Any]:
         "sessions": "会话",
         "chat_messages": "消息",
         "chat_attachments": "附件",
-        "uploaded_files": "文件",
+        "user_files": "文件",
+        "file_objects": "文件对象",
         "analysis_jobs": "分析任务",
         "analysis_job_events": "任务事件",
     }
@@ -587,10 +588,13 @@ def list_jobs(
         db_cursor.execute(
             f"""
             SELECT j.id AS row_id, j.job_id, j.user_id, u.username, j.session_id,
-                   j.status, j.worker_id, j.attempt_count, j.max_attempts,
+                   j.status, j.worker_id, j.lease_epoch, j.attempt_count,
+                   j.recovery_count, j.resume_count, j.max_attempts,
                    (j.result_json IS NOT NULL) AS has_result,
+                   (j.message IS NOT NULL) AS has_input,
                    j.locked_at, j.heartbeat_at, j.created_at, j.started_at,
-                   j.finished_at, j.chat_saved_at
+                   j.finished_at, j.chat_saved_at, j.current_question_id,
+                   (j.input_user_file_id IS NOT NULL) AS has_frozen_file
             FROM analysis_jobs AS j
             JOIN users AS u ON u.id = j.user_id
             WHERE {' AND '.join(clauses)}
@@ -601,7 +605,8 @@ def list_jobs(
         )
         rows = db_cursor.fetchall()
     for row in rows:
-        row["has_result"] = bool(row.get("has_result"))
+        for field in ("has_result", "has_input", "has_frozen_file"):
+            row[field] = bool(row.get(field))
     return page_result(
         rows,
         limit=limit,
@@ -610,15 +615,23 @@ def list_jobs(
 
 
 def get_job_detail(job_id: str) -> dict[str, Any]:
-    """读取任务元数据，不返回输入、结果或完整错误正文。"""
+    """读取任务元数据和有界输入账本，不返回输入正文。"""
     with get_read_connection(consistency="strong") as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             """
             SELECT j.job_id, j.user_id, u.username, j.session_id, j.status,
-                   j.worker_id, j.locked_at, j.heartbeat_at, j.attempt_count,
+                   j.worker_id, j.lease_epoch, j.locked_at, j.heartbeat_at,
+                   j.attempt_count, j.recovery_count, j.resume_count,
                    j.max_attempts, j.created_at, j.started_at, j.finished_at,
-                   j.chat_saved_at, (j.message IS NOT NULL) AS has_input,
+                   j.chat_saved_at, j.input_user_file_id, j.input_object_id,
+                   j.input_file_hash, j.input_filename, j.current_question_id,
+                   j.current_waiting_prompt, (j.message IS NOT NULL) AS has_input,
+                   (
+                       SELECT COUNT(*)
+                       FROM analysis_job_inputs AS i
+                       WHERE i.job_id = j.job_id
+                   ) AS input_count,
                    (j.result_json IS NOT NULL) AS has_result,
                    (
                        j.error_message IS NOT NULL OR j.last_error IS NOT NULL
@@ -632,8 +645,25 @@ def get_job_detail(job_id: str) -> dict[str, Any]:
         row = cursor.fetchone()
     if not row:
         raise AdminApiError("not_found", "分析任务不存在", 404)
+    row.pop("input_object_id", None)
     for field in ("has_input", "has_result", "has_error"):
         row[field] = bool(row.get(field))
+    with get_read_connection(consistency="strong") as conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT input_id, sequence, input_type, question_id, created_at,
+                   OCTET_LENGTH(input_text) AS input_bytes
+            FROM analysis_job_inputs
+            WHERE job_id = %s
+            ORDER BY sequence ASC
+            LIMIT 51
+            """,
+            (job_id,),
+        )
+        inputs = cursor.fetchall()
+    row["inputs"] = inputs[:50]
+    row["inputs_truncated"] = len(inputs) > 50
     return row
 
 
@@ -724,7 +754,7 @@ def list_job_checkpoints(
 
     try:
         result = list_job_checkpoint_summaries(
-            thread_id=str(job["session_id"]),
+            thread_id=str(job_id),
             job_id=job_id,
             limit=limit,
             before_checkpoint_id=before_checkpoint_id,
@@ -747,7 +777,7 @@ def list_job_checkpoints(
             else None
         ),
         "source_alias": CHECKPOINT_SOURCE_ALIAS,
-        "attribution": "thread_id+metadata.job_id",
+        "attribution": "thread_id=job_id",
     }
 
 
@@ -757,8 +787,9 @@ def get_job_content(
     kind: str | None,
     offset: int,
     limit: int,
+    sequence: int | None = None,
 ) -> dict[str, Any]:
-    """按固定类别读取任务输入、结果或错误正文片段。"""
+    """按固定类别读取任务正文；输入按 Job 输入账本序号读取。"""
     normalized_kind = _validated_enum(
         kind,
         field="kind",
@@ -770,19 +801,60 @@ def get_job_content(
             "kind 不能为空",
             fields={"kind": "必须指定 input、result 或 error"},
         )
-    content_sql = {
-        "input": "message",
-        "result": "CAST(result_json AS CHAR CHARACTER SET utf8mb4)",
-        "error": "CONCAT_WS('\\n', error_message, last_error)",
-    }[normalized_kind]
-    result = _read_text_chunk(
-        table="analysis_jobs",
-        id_column="job_id",
-        id_value=job_id,
-        content_sql=content_sql,
-        offset=offset,
-        limit=limit,
-    )
+    if normalized_kind == "input":
+        selected_sequence = 0 if sequence is None else sequence
+        if selected_sequence < 0:
+            raise AdminApiError(
+                "invalid_query",
+                "sequence 必须是非负整数",
+                fields={"sequence": "必须是非负整数"},
+            )
+        with get_read_connection(consistency="strong") as conn:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT SUBSTRING(CAST(input_text AS BINARY), %s, %s) AS content,
+                       OCTET_LENGTH(input_text) AS total_length
+                FROM analysis_job_inputs
+                WHERE job_id = %s AND sequence = %s
+                """,
+                (offset + 1, limit + 4, job_id, selected_sequence),
+            )
+            row = cursor.fetchone()
+        if not row:
+            raise AdminApiError("not_found", "任务输入不存在", 404)
+        content = row.get("content")
+        if content is None:
+            content = ""
+        if isinstance(content, (bytes, bytearray)):
+            content, returned_bytes = _decode_text_chunk(bytes(content), limit=limit)
+        else:
+            content = str(content)
+            returned_bytes = len(content.encode("utf-8"))
+        total_length = int(row.get("total_length") or returned_bytes)
+        next_offset = offset + returned_bytes
+        result = {
+            "content": content,
+            "offset": offset,
+            "limit": limit,
+            "total_length": total_length,
+            "complete": next_offset >= total_length,
+            "next_offset": None if next_offset >= total_length else next_offset,
+            "sequence": selected_sequence,
+        }
+    else:
+        content_sql = {
+            "result": "CAST(result_json AS CHAR CHARACTER SET utf8mb4)",
+            "error": "CONCAT_WS('\\n', error_message, last_error)",
+        }[normalized_kind]
+        result = _read_text_chunk(
+            table="analysis_jobs",
+            id_column="job_id",
+            id_value=job_id,
+            content_sql=content_sql,
+            offset=offset,
+            limit=limit,
+        )
     result["kind"] = normalized_kind
     return result
 
@@ -809,7 +881,7 @@ def list_files(
     clauses = ["1 = 1"]
     params: list[Any] = []
     if search:
-        clauses.append("f.original_filename LIKE %s")
+        clauses.append("f.filename LIKE %s")
         params.append(_prefix_like(search))
     if owner_id:
         clauses.append("f.user_id = %s")
@@ -821,8 +893,8 @@ def list_files(
         uploaded_at = _timestamp_cursor(cursor_values[0])
         file_id = _validated_positive_id(cursor_values[1], field="cursor")
         clauses.append(
-            "(f.upload_timestamp < %s "
-            "OR (f.upload_timestamp = %s AND f.id < %s))"
+            "(f.uploaded_at < %s "
+            "OR (f.uploaded_at = %s AND f.id < %s))"
         )
         params.extend((uploaded_at, uploaded_at, file_id))
     params.append(limit + 1)
@@ -830,13 +902,18 @@ def list_files(
         db_cursor = conn.cursor(dictionary=True)
         db_cursor.execute(
             f"""
-            SELECT f.id, f.user_id, u.username, f.filename, f.original_filename,
-                   f.mime_type, f.file_size, f.upload_timestamp,
-                   f.last_accessed_at, f.access_count
-            FROM uploaded_files AS f
+            SELECT f.id, f.user_id, u.username,
+                   f.filename, f.filename AS original_filename,
+                   o.content_hash AS file_hash, f.mime_type, f.file_size,
+                   f.uploaded_at AS upload_timestamp, f.last_accessed_at,
+                   f.access_count,
+                   (SELECT COUNT(*) FROM user_files AS refs
+                    WHERE refs.object_id = f.object_id) AS object_reference_count
+            FROM user_files AS f
+            JOIN file_objects AS o ON o.id = f.object_id
             JOIN users AS u ON u.id = f.user_id
             WHERE {' AND '.join(clauses)}
-            ORDER BY f.upload_timestamp DESC, f.id DESC
+            ORDER BY f.uploaded_at DESC, f.id DESC
             LIMIT %s
             """,
             tuple(params),
@@ -855,10 +932,15 @@ def get_file_detail(file_id: int) -> dict[str, Any]:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             """
-            SELECT f.id, f.user_id, u.username, f.filename, f.original_filename,
-                   f.mime_type, f.file_size, f.upload_timestamp,
-                   f.last_accessed_at, f.access_count
-            FROM uploaded_files AS f
+            SELECT f.id, f.user_id, u.username,
+                   f.filename, f.filename AS original_filename,
+                   o.content_hash AS file_hash, f.mime_type, f.file_size,
+                   f.uploaded_at AS upload_timestamp, f.last_accessed_at,
+                   f.access_count,
+                   (SELECT COUNT(*) FROM user_files AS refs
+                    WHERE refs.object_id = f.object_id) AS object_reference_count
+            FROM user_files AS f
+            JOIN file_objects AS o ON o.id = f.object_id
             JOIN users AS u ON u.id = f.user_id
             WHERE f.id = %s
             """,
@@ -896,34 +978,43 @@ def _record_file_access(
     file_id: int,
     actor: dict[str, Any],
     action: str,
+    cursor=None,
 ) -> None:
-    """在同一事务中更新访问计数并写入不含正文的审计事件。"""
+    """在调用方事务中更新访问计数并写入不含正文的审计事件。"""
+    if cursor is not None:
+        cursor.execute(
+            """
+            UPDATE user_files
+            SET last_accessed_at = UTC_TIMESTAMP(6),
+                access_count = access_count + 1
+            WHERE id = %s
+            """,
+            (file_id,),
+        )
+        if cursor.rowcount != 1:
+            raise AdminApiError("not_found", "文件不存在", 404)
+        insert_admin_audit_event(
+            cursor,
+            actor=actor,
+            action=action,
+            target_type="user_file",
+            target_id=str(file_id),
+            old_values=None,
+            new_values={"access_count_increment": 1},
+            result="success",
+            request_id=get_request_id(),
+            error_code=None,
+        )
+        return
+
     try:
         with get_write_connection() as conn:
             cursor = conn.cursor(dictionary=True)
-            cursor.execute(
-                """
-                UPDATE uploaded_files
-                SET last_accessed_at = UTC_TIMESTAMP(6),
-                    access_count = access_count + 1
-                WHERE id = %s
-                """,
-                (file_id,),
-            )
-            if cursor.rowcount != 1:
-                conn.rollback()
-                raise AdminApiError("not_found", "文件不存在", 404)
-            insert_admin_audit_event(
-                cursor,
+            _record_file_access(
+                file_id=file_id,
                 actor=actor,
                 action=action,
-                target_type="uploaded_file",
-                target_id=str(file_id),
-                old_values=None,
-                new_values={"access_count_increment": 1},
-                result="success",
-                request_id=get_request_id(),
-                error_code=None,
+                cursor=cursor,
             )
             conn.commit()
     except AdminApiError:
@@ -942,82 +1033,104 @@ def preview_file_csv(
     actor: dict[str, Any],
 ) -> dict[str, Any]:
     """安全解析受限 CSV 预览，并在成功后原子记录访问。"""
-    with get_read_connection(consistency="strong") as conn:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(
-            """
-            SELECT id, original_filename, mime_type, file_size,
-                   SUBSTRING(file_content, 1, %s) AS preview_content
-            FROM uploaded_files
-            WHERE id = %s
-            """,
-            (CSV_PREVIEW_BYTES + 4, file_id),
-        )
-        row = cursor.fetchone()
-    if not row:
-        raise AdminApiError("not_found", "文件不存在", 404)
-    filename = str(row.get("original_filename") or "")
-    mime_type = str(row.get("mime_type") or "")
-    if os.path.splitext(filename)[1].lower() != ".csv" or mime_type not in {
-        "text/csv",
-        "application/vnd.ms-excel",
-    }:
-        raise AdminApiError(
-            code="preview_not_supported",
-            message="仅支持 CSV 文件安全预览",
-            status=415,
-        )
-    content = bytes(row.get("preview_content") or b"")[:CSV_PREVIEW_BYTES]
-    decoded, encoding = _decode_csv_bytes(content)
-    reader = csv.reader(StringIO(decoded, newline=""))
-    parsed_rows: list[list[str]] = []
-    columns_truncated = False
-    cells_truncated = False
-    rows_truncated = False
     try:
-        for index, csv_row in enumerate(reader):
-            if index >= CSV_PREVIEW_ROWS + 1:
-                rows_truncated = True
-                break
-            if len(csv_row) > CSV_PREVIEW_COLUMNS:
-                columns_truncated = True
-            normalized_row = []
-            for cell in csv_row[:CSV_PREVIEW_COLUMNS]:
-                if len(cell) > CSV_PREVIEW_CELL_CHARS:
-                    cells_truncated = True
-                normalized_row.append(cell[:CSV_PREVIEW_CELL_CHARS])
-            parsed_rows.append(normalized_row)
-    except csv.Error as exc:
+        with get_write_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            conn.start_transaction()
+            cursor.execute(
+                """
+                SELECT f.id, f.filename AS original_filename, f.mime_type, f.file_size,
+                       SUBSTRING(o.file_content, 1, %s) AS preview_content
+                FROM user_files AS f
+                JOIN file_objects AS o ON o.id = f.object_id
+                WHERE f.id = %s
+                FOR UPDATE
+                """,
+                (CSV_PREVIEW_BYTES + 4, file_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise AdminApiError("not_found", "文件不存在", 404)
+            filename = str(row.get("original_filename") or "")
+            mime_type = str(row.get("mime_type") or "")
+            if os.path.splitext(filename)[1].lower() != ".csv" or mime_type not in {
+                "text/csv",
+                "application/vnd.ms-excel",
+            }:
+                raise AdminApiError(
+                    code="preview_not_supported",
+                    message="仅支持 CSV 文件安全预览",
+                    status=415,
+                )
+            content = bytes(row.get("preview_content") or b"")[:CSV_PREVIEW_BYTES]
+            decoded, encoding = _decode_csv_bytes(content)
+            reader = csv.reader(StringIO(decoded, newline=""))
+            parsed_rows: list[list[str]] = []
+            columns_truncated = False
+            cells_truncated = False
+            rows_truncated = False
+            try:
+                for index, csv_row in enumerate(reader):
+                    if index >= CSV_PREVIEW_ROWS + 1:
+                        rows_truncated = True
+                        break
+                    if len(csv_row) > CSV_PREVIEW_COLUMNS:
+                        columns_truncated = True
+                    normalized_row = []
+                    for cell in csv_row[:CSV_PREVIEW_COLUMNS]:
+                        if len(cell) > CSV_PREVIEW_CELL_CHARS:
+                            cells_truncated = True
+                        normalized_row.append(cell[:CSV_PREVIEW_CELL_CHARS])
+                    parsed_rows.append(normalized_row)
+            except csv.Error as exc:
+                raise AdminApiError(
+                    code="preview_parse_failed",
+                    message="CSV 内容解析失败",
+                    status=422,
+                ) from exc
+            columns = parsed_rows[0] if parsed_rows else []
+            data_rows = parsed_rows[1:] if len(parsed_rows) > 1 else []
+            byte_truncated = int(row.get("file_size") or 0) > CSV_PREVIEW_BYTES
+            _record_file_access(
+                file_id=file_id,
+                actor=actor,
+                action="business.file.preview",
+                cursor=cursor,
+            )
+            conn.commit()
+            return {
+                "file_id": file_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "encoding": encoding,
+                "columns": columns,
+                "rows": data_rows,
+                "truncated": bool(
+                    byte_truncated or rows_truncated or columns_truncated or cells_truncated
+                ),
+                "limits": {
+                    "bytes": CSV_PREVIEW_BYTES,
+                    "rows": CSV_PREVIEW_ROWS,
+                    "columns": CSV_PREVIEW_COLUMNS,
+                    "cell_chars": CSV_PREVIEW_CELL_CHARS,
+                },
+            }
+    except AdminApiError:
+        try:
+            conn.rollback()
+        except (UnboundLocalError, AttributeError):
+            pass
+        raise
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except (UnboundLocalError, AttributeError):
+            pass
         raise AdminApiError(
-            code="preview_parse_failed",
-            message="CSV 内容解析失败",
-            status=422,
+            code="audit_unavailable",
+            message="文件访问审计暂时不可用",
+            status=503,
         ) from exc
-    columns = parsed_rows[0] if parsed_rows else []
-    data_rows = parsed_rows[1:] if len(parsed_rows) > 1 else []
-    byte_truncated = int(row.get("file_size") or 0) > CSV_PREVIEW_BYTES
-    _record_file_access(
-        file_id=file_id,
-        actor=actor,
-        action="business.file.preview",
-    )
-    return {
-        "file_id": file_id,
-        "filename": filename,
-        "mime_type": mime_type,
-        "encoding": encoding,
-        "columns": columns,
-        "rows": data_rows,
-        "truncated": bool(
-            byte_truncated or rows_truncated or columns_truncated or cells_truncated
-        ),
-        "limits": {
-            "bytes": CSV_PREVIEW_BYTES,
-            "rows": CSV_PREVIEW_ROWS,
-            "columns": CSV_PREVIEW_COLUMNS,
-            "cell_chars": CSV_PREVIEW_CELL_CHARS,
-        },
-    }
 
 
 def download_file(
@@ -1026,23 +1139,46 @@ def download_file(
     actor: dict[str, Any],
 ) -> tuple[BytesIO, dict[str, Any]]:
     """读取完整文件并在返回前原子记录访问计数与审计。"""
-    with get_read_connection(consistency="strong") as conn:
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(
-            """
-            SELECT id, original_filename, mime_type, file_size, file_content
-            FROM uploaded_files
-            WHERE id = %s
-            """,
-            (file_id,),
-        )
-        row = cursor.fetchone()
-    if not row:
-        raise AdminApiError("not_found", "文件不存在", 404)
-    content = bytes(row.pop("file_content") or b"")
-    _record_file_access(
-        file_id=file_id,
-        actor=actor,
-        action="business.file.download",
-    )
-    return BytesIO(content), row
+    try:
+        with get_write_connection() as conn:
+            cursor = conn.cursor(dictionary=True)
+            conn.start_transaction()
+            cursor.execute(
+                """
+                SELECT f.id, f.filename AS original_filename, f.mime_type,
+                       f.file_size, o.file_content
+                FROM user_files AS f
+                JOIN file_objects AS o ON o.id = f.object_id
+                WHERE f.id = %s
+                FOR UPDATE
+                """,
+                (file_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise AdminApiError("not_found", "文件不存在", 404)
+            content = bytes(row.pop("file_content") or b"")
+            _record_file_access(
+                file_id=file_id,
+                actor=actor,
+                action="business.file.download",
+                cursor=cursor,
+            )
+            conn.commit()
+            return BytesIO(content), row
+    except AdminApiError:
+        try:
+            conn.rollback()
+        except (UnboundLocalError, AttributeError):
+            pass
+        raise
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except (UnboundLocalError, AttributeError):
+            pass
+        raise AdminApiError(
+            code="audit_unavailable",
+            message="文件访问审计暂时不可用",
+            status=503,
+        ) from exc

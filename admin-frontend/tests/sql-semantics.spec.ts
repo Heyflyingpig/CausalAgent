@@ -43,10 +43,10 @@ describe('SQL Digest 业务语义映射', () => {
     ['SELECT * FROM users WHERE id = ?', '用户与权限'],
     ['SELECT * FROM sessions WHERE user_id = ?', '聊天会话'],
     ['INSERT INTO chat_messages (content) VALUES (?)', '聊天消息'],
-    ['SELECT * FROM uploaded_files WHERE user_id = ?', '文件管理'],
+    ['SELECT * FROM user_files WHERE user_id = ?', '文件管理'],
+    ['SELECT * FROM file_objects WHERE owner_user_id = ?', '文件管理'],
     ['DELETE FROM chat_attachments WHERE message_id = ?', '消息附件'],
-    ['SELECT * FROM checkpoints WHERE thread_id = ?', 'Agent 运行状态'],
-    ['INSERT INTO checkpoint_writes (thread_id) VALUES (?)', 'Agent 运行状态'],
+    ['SELECT * FROM checkpoint_cleanup_outbox WHERE status = ?', 'Checkpoint 生命周期'],
     ['SELECT * FROM database_monitor_snapshots WHERE snapshot_key = ?', '数据库监控'],
     ['UPDATE database_monitor_settings SET version = ?', '监控配置'],
     ['INSERT INTO admin_audit_events (action) VALUES (?)', '管理员审计'],
@@ -54,6 +54,15 @@ describe('SQL Digest 业务语义映射', () => {
     const meaning = mapSqlBusinessMeaning(sql)
     expect(meaning.module).toBe(module)
     expect(meaning.confidence).toBe('confirmed')
+  })
+
+  it.each([
+    'SELECT * FROM checkpoints WHERE thread_id = ?',
+    'INSERT INTO checkpoint_writes (thread_id) VALUES (?)',
+  ])('已迁移的 MySQL checkpoint 表不再标记为现行 Agent 状态：%s', (sql) => {
+    const meaning = mapSqlBusinessMeaning(sql)
+    expect(meaning.module).toBe('其他数据库表')
+    expect(meaning.confidence).toBe('inferred')
   })
 
   it.each([

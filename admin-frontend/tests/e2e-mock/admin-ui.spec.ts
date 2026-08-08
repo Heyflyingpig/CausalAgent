@@ -305,6 +305,26 @@ test('3.2 业务页面、受控写入、敏感揭示和可收缩导航在 mock �
       'base64',
     ),
   }))
+  await page.route('**/api/admin/jobs/workers', route => route.fulfill({
+    json: {
+      success: true,
+      data: [],
+      summary: {
+        queued: 0,
+        running: 0,
+        waiting_input: 0,
+        stale: 0,
+        max_attempts_running: 0,
+      },
+      meta: {
+        status: 'healthy',
+        observed_at: observedAt,
+        source_alias: 'mock-worker-snapshot',
+        warning: null,
+      },
+      request_id: 'mock-workers',
+    },
+  }))
   await page.route('**/api/admin/business/**', async route => {
     const requestUrl = new URL(route.request().url())
     const path = requestUrl.pathname

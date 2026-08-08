@@ -22,7 +22,7 @@ for key, value in TEST_ENV.items():
 from app.agent.routes import agent_bp
 from app.agent.job_service import IdempotencyConflictError
 from app.chat.routes import chat_bp
-from app.files.routes import files_bp
+from app.files.routes import _file_payload, files_bp
 
 
 ADMIN = {
@@ -80,6 +80,22 @@ def build_app():
 
 class AdminUserCapabilityTests(unittest.TestCase):
     """验证管理员调用普通接口时只能使用自身用户 ID。"""
+
+    def test_user_file_payload_does_not_expose_blob_object_id(self):
+        """普通用户文件 DTO 只暴露逻辑 user_file_id，不返回 BLOB 对象 ID。"""
+        payload = _file_payload({
+            "id": 11,
+            "object_id": 22,
+            "filename": "data.csv",
+            "mime_type": "text/csv",
+            "file_size": 12,
+            "uploaded_at": None,
+            "last_accessed_at": None,
+            "access_count": 0,
+        })
+
+        self.assertEqual(payload["user_file_id"], 11)
+        self.assertNotIn("object_id", payload)
 
     def test_admin_session_list_is_scoped_to_own_user_id(self):
         """管理员读取会话列表时沿用普通用户的 user_id 条件。"""

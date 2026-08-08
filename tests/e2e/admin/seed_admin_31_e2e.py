@@ -19,6 +19,7 @@ USER_SESSION_ID = "31-user-session"
 ARCHIVED_SESSION_ID = "31-archived-session"
 JOB_ID = "31-job-succeeded"
 FILE_ID = 3101
+FILE_OBJECT_ID = 4101
 USER_MESSAGE_ID = 3101
 AI_MESSAGE_ID = 3102
 ATTACHMENT_ID = 3101
@@ -26,7 +27,9 @@ CONTROL_USER_A_ID = 3103
 CONTROL_USER_B_ID = 3104
 DELETE_USER_ID = 3105
 CONTROL_FILE_ID = 3201
+CONTROL_FILE_OBJECT_ID = 4201
 DELETE_FILE_ID = 3205
+DELETE_FILE_OBJECT_ID = 4205
 DELETE_SESSION_ID = "32-delete-session"
 DELETE_ARCHIVED_SESSION_ID = "32-delete-archived-session"
 DELETE_JOB_ID = "32-delete-job"
@@ -300,63 +303,83 @@ def seed() -> None:
         ).encode("utf-8")
         cursor.execute(
             """
-            INSERT INTO uploaded_files (
-                id, user_id, filename, original_filename, mime_type,
-                file_size, file_hash, file_content, upload_timestamp,
-                last_accessed_at, access_count
+            INSERT INTO file_objects (
+                id, owner_user_id, content_hash, file_size, mime_type, file_content
             ) VALUES (
-                %s, %s, %s, %s, 'text/csv',
-                %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0
+                %s, %s, %s, %s, 'text/csv', %s
             )
             """,
             (
-                FILE_ID,
+                FILE_OBJECT_ID,
                 USER_ID,
-                "31-stored.csv",
-                "31-report.csv",
-                len(file_content),
                 "31" * 32,
+                len(file_content),
                 file_content,
             ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO user_files (id, user_id, object_id, filename, mime_type, file_size)
+            VALUES (%s, %s, %s, %s, 'text/csv', %s)
+            """,
+            (FILE_ID, USER_ID, FILE_OBJECT_ID, "31-report.csv", len(file_content)),
         )
         controlled_file_content = b"name,value\ncontrolled,32\n"
         cursor.execute(
             """
-            INSERT INTO uploaded_files (
-                id, user_id, filename, original_filename, mime_type,
-                file_size, file_hash, file_content, upload_timestamp,
-                last_accessed_at, access_count
+            INSERT INTO file_objects (
+                id, owner_user_id, content_hash, file_size, mime_type, file_content
             ) VALUES (
-                %s, %s, '32-controlled-stored.csv', '32-delete-file.csv',
-                'text/csv', %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0
+                %s, %s, %s, 'text/csv', %s
             )
+            """,
+            (
+                CONTROL_FILE_OBJECT_ID,
+                CONTROL_USER_A_ID,
+                "32" * 32,
+                len(controlled_file_content),
+                controlled_file_content,
+            ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO user_files (id, user_id, object_id, filename, mime_type, file_size)
+            VALUES (%s, %s, %s, '32-delete-file.csv', 'text/csv', %s)
             """,
             (
                 CONTROL_FILE_ID,
                 CONTROL_USER_A_ID,
+                CONTROL_FILE_OBJECT_ID,
                 len(controlled_file_content),
-                "32" * 32,
-                controlled_file_content,
             ),
         )
         deleted_user_file_content = b"name,value\ndelete-user,32\n"
         cursor.execute(
             """
-            INSERT INTO uploaded_files (
-                id, user_id, filename, original_filename, mime_type,
-                file_size, file_hash, file_content, upload_timestamp,
-                last_accessed_at, access_count
+            INSERT INTO file_objects (
+                id, owner_user_id, content_hash, file_size, mime_type, file_content
             ) VALUES (
-                %s, %s, '32-user-delete-stored.csv', '32-user-delete.csv',
-                'text/csv', %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0
+                %s, %s, %s, 'text/csv', %s
             )
+            """,
+            (
+                DELETE_FILE_OBJECT_ID,
+                DELETE_USER_ID,
+                "33" * 32,
+                len(deleted_user_file_content),
+                deleted_user_file_content,
+            ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO user_files (id, user_id, object_id, filename, mime_type, file_size)
+            VALUES (%s, %s, %s, '32-user-delete.csv', 'text/csv', %s)
             """,
             (
                 DELETE_FILE_ID,
                 DELETE_USER_ID,
+                DELETE_FILE_OBJECT_ID,
                 len(deleted_user_file_content),
-                "33" * 32,
-                deleted_user_file_content,
             ),
         )
         cursor.execute(
