@@ -24,8 +24,7 @@ for key, value in {
 def _install_import_stubs():
     """隔离路由测试不需要的数据库、绘图和向量库依赖。"""
     agent_connect = types.ModuleType("Database.agent_connect")
-    agent_connect.get_file_content = lambda *args, **kwargs: None
-    agent_connect.get_recent_file = lambda *args, **kwargs: None
+    agent_connect.require_frozen_file_for_job = lambda *args, **kwargs: None
     sys.modules.setdefault("Database.agent_connect", agent_connect)
 
     data_visualize = types.ModuleType("Agent.Processing.data_visualize")
@@ -61,10 +60,31 @@ def _state(message="普通问题", **updates):
     state = {
         "messages": [HumanMessage(content=message)],
         "user_id": 1,
-        "fold_name": "",
+        "username": "tester",
+        "session_id": "session-1",
+        "job_id": "job-1",
+        "input_user_file_id": 11,
+        "input_object_id": 22,
+        "input_file_hash": "a" * 64,
+        "input_filename": "data.csv",
     }
     state.update(updates)
     return state
+
+
+def _mcp_tool(name="causal_pc"):
+    """构造声明运行时身份字段的 MCP 工具测试替身。"""
+    return types.SimpleNamespace(
+        name=name,
+        args={
+            "csv_data": {},
+            "target": {},
+            "user_id": None,
+            "job_id": None,
+            "input_user_file_id": None,
+            "input_object_id": None,
+        },
+    )
 
 
 @pytest.mark.parametrize(
@@ -147,8 +167,8 @@ def test_mcp_protocol_failure_returns_to_agent_without_restarting_fold():
     assert decision["route_decision"] == "normal_chat"
 
 
-def test_fold_extraction_failure_uses_recent_file_and_can_validate(monkeypatch):
-    """参数提取失败视为空值，仍继续最近文件与确定性校验。"""
+def test_fold_extraction_failure_uses_frozen_file_and_can_validate(monkeypatch):
+    """参数提取失败视为空值，仍使用 Job 冻结文件进行确定性校验。"""
     async def fail_structured(**kwargs):
         raise StructuredOutputError(
             node_name="fold",
@@ -157,14 +177,17 @@ def test_fold_extraction_failure_uses_recent_file_and_can_validate(monkeypatch):
         )
 
     monkeypatch.setattr(nodes, "ainvoke_structured", fail_structured)
-    monkeypatch.setattr(nodes, "get_recent_file", lambda user_id: (b"A,B\n1,2\n", "latest.csv"))
+    monkeypatch.setattr(
+        nodes,
+        "require_frozen_file_for_job",
+        lambda *args: {"file_content": b"A,B\n1,2\n"},
+    )
     monkeypatch.setattr(nodes, "get_data_summary", lambda df: {"columns": ["A", "B"]})
     monkeypatch.setattr(nodes, "validate_analysis", lambda *args, **kwargs: (1, [], []))
 
     result = asyncio.run(nodes.fold_node(_state(), object()))
 
     assert result["fold_decision"] == "preprocess"
-    assert result["fold_name"] == "latest.csv"
     assert result["analysis_parameters"]["target"] is None
     assert result["analysis_parameters"]["treatment"] is None
 
@@ -173,14 +196,22 @@ def test_fold_extraction_failure_uses_recent_file_and_can_validate(monkeypatch):
 def test_fold_resume_paths_return_to_agent(monkeypatch, failure_stage):
     """文件错误恢复与参数补充恢复都写 fold_decision=agent。"""
     async def extracted(**kwargs):
-        return nodes.foldQuery(filename="data.csv", target=None, treatment=None)
+        return nodes.foldQuery(target=None, treatment=None)
 
     monkeypatch.setattr(nodes, "ainvoke_structured", extracted)
     monkeypatch.setattr(nodes, "interrupt", lambda question: "用户补充信息")
     if failure_stage == "file":
-        monkeypatch.setattr(nodes, "get_file_content", lambda *args: (_ for _ in ()).throw(FileNotFoundError("missing")))
+        monkeypatch.setattr(
+            nodes,
+            "require_frozen_file_for_job",
+            lambda *args: (_ for _ in ()).throw(FileNotFoundError("missing")),
+        )
     else:
-        monkeypatch.setattr(nodes, "get_file_content", lambda *args: b"A,B\n1,2\n")
+        monkeypatch.setattr(
+            nodes,
+            "require_frozen_file_for_job",
+            lambda *args: {"file_content": b"A,B\n1,2\n"},
+        )
         monkeypatch.setattr(nodes, "get_data_summary", lambda df: {"columns": ["A", "B"]})
         monkeypatch.setattr(
             nodes,
@@ -297,8 +328,8 @@ def test_rag_question_failure_skips_tool_node_with_stable_result(monkeypatch):
 
 
 def test_mcp_adapter_preserves_standard_tool_calls_and_injects_runtime_data():
-    """MCP planner 的标准 AIMessage.tool_calls 可被 ToolNode 消费并补充运行时 CSV。"""
-    tool = types.SimpleNamespace(name="causal_pc", args={"csv_data": {}, "target": {}})
+    """MCP planner 只注入可信 Job 身份，绝不把 CSV 正文放入 ToolMessage。"""
+    tool = _mcp_tool()
     message = AIMessage(
         content="",
         tool_calls=[
@@ -313,13 +344,19 @@ def test_mcp_adapter_preserves_standard_tool_calls_and_injects_runtime_data():
 
     normalized = normalize_mcp_tool_call_message(
         message,
-        {"file_content": "A,Y\n1,2\n"},
+        _state(),
         [tool],
     )
 
     assert isinstance(normalized, AIMessage)
     assert normalized.tool_calls[0]["name"] == "causal_pc"
-    assert normalized.tool_calls[0]["args"]["csv_data"] == "A,Y\n1,2\n"
+    args = normalized.tool_calls[0]["args"]
+    assert args["target"] == "Y"
+    assert args["user_id"] == 1
+    assert args["job_id"] == "job-1"
+    assert args["input_user_file_id"] == 11
+    assert args["input_object_id"] == 22
+    assert "csv_data" not in args
 
 
 def test_mcp_planner_disables_thinking_and_requires_a_tool_choice():
@@ -357,14 +394,13 @@ def test_mcp_planner_disables_thinking_and_requires_a_tool_choice():
             observed["bind_kwargs"] = kwargs
             return FakeBoundLLM()
 
-    tool = types.SimpleNamespace(name="causal_pc", args={"csv_data": {}, "target": {}})
+    tool = _mcp_tool()
     result = asyncio.run(
-        nodes.mcp_planner_node(
-            _state(
-                file_content="A,Y\n1,2\n",
-                analysis_parameters={"target": "Y"},
-                preprocess_summary="数据已就绪",
-            ),
+            nodes.mcp_planner_node(
+                _state(
+                    analysis_parameters={"target": "Y"},
+                    preprocess_summary="数据已就绪",
+                ),
             FakeLLM(),
             [tool],
         )
@@ -381,7 +417,12 @@ def test_mcp_planner_disables_thinking_and_requires_a_tool_choice():
         "parallel_tool_calls": False,
     }
     assert result["messages"][0].tool_calls[0]["name"] == "causal_pc"
-    assert result["messages"][0].tool_calls[0]["args"]["csv_data"] == "A,Y\n1,2\n"
+    args = result["messages"][0].tool_calls[0]["args"]
+    assert args["user_id"] == 1
+    assert args["job_id"] == "job-1"
+    assert args["input_user_file_id"] == 11
+    assert args["input_object_id"] == 22
+    assert "csv_data" not in args
 
 
 def test_mcp_planner_deterministically_selects_explicit_direct_lingam():
@@ -395,15 +436,11 @@ def test_mcp_planner_deterministically_selects_explicit_direct_lingam():
         def model_copy(self, *, update):
             raise AssertionError("明确 DirectLiNGAM 请求不应调用 LLM 选工具")
 
-    tools = [
-        types.SimpleNamespace(name="causal_pc", args={"csv_data": {}}),
-        types.SimpleNamespace(name="causal_direct_lingam", args={"csv_data": {}}),
-    ]
+    tools = [_mcp_tool("causal_pc"), _mcp_tool("causal_direct_lingam")]
     result = asyncio.run(
         nodes.mcp_planner_node(
             _state(
                 "请使用 DirectLiNGAM 分析这份 CSV",
-                file_content="A,B\n1,2\n3,4\n",
             ),
             UnusedLLM(),
             tools,
@@ -412,7 +449,9 @@ def test_mcp_planner_deterministically_selects_explicit_direct_lingam():
 
     tool_call = result["messages"][0].tool_calls[0]
     assert tool_call["name"] == "causal_direct_lingam"
-    assert tool_call["args"]["csv_data"] == "A,B\n1,2\n3,4\n"
+    assert tool_call["args"]["user_id"] == 1
+    assert tool_call["args"]["job_id"] == "job-1"
+    assert "csv_data" not in tool_call["args"]
 
 
 def test_explicit_direct_lingam_mcp_stage_parses_and_routes_to_rag():
@@ -426,12 +465,9 @@ def test_explicit_direct_lingam_mcp_stage_parses_and_routes_to_rag():
         def model_copy(self, *, update):
             raise AssertionError("明确 DirectLiNGAM 请求不应调用 LLM 选工具")
 
-    tools = [
-        types.SimpleNamespace(name="causal_direct_lingam", args={"csv_data": {}}),
-    ]
+    tools = [_mcp_tool("causal_direct_lingam")]
     state = _state(
         "请使用 DirectLiNGAM 分析这份 CSV",
-        file_content="A,B\n1,2\n3,4\n",
     )
     planner_result = asyncio.run(
         nodes.mcp_planner_node(state, UnusedLLM(), tools)

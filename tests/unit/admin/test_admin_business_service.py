@@ -51,6 +51,7 @@ class FakeConnection:
         self.cursor_value = cursor
         self.commits = 0
         self.rollbacks = 0
+        self.started_transactions = 0
 
     def __enter__(self):
         """进入连接上下文。"""
@@ -67,6 +68,10 @@ class FakeConnection:
     def commit(self):
         """记录事务提交。"""
         self.commits += 1
+
+    def start_transaction(self):
+        """记录显式主库事务开始。"""
+        self.started_transactions += 1
 
     def rollback(self):
         """记录事务回滚。"""
@@ -164,15 +169,14 @@ class AdminBusinessServiceTests(unittest.TestCase):
         self.assertEqual(result["items"][0]["content_preview"], "正文 27 字符")
 
     def test_file_list_uses_upload_time_cursor_matching_new_index(self):
-        """文件分页的排序和游标必须与 upload_timestamp 索引一致。"""
+        """文件分页的排序和游标必须与 user_files.uploaded_at 索引一致。"""
         uploaded = datetime(2026, 7, 26, 13, 0, 0)
         cursor = FakeCursor(rows=[
             {
                 "id": 5,
                 "user_id": 1,
                 "username": "alice",
-                "filename": "stored.csv",
-                "original_filename": "report.csv",
+                "filename": "report.csv",
                 "mime_type": "text/csv",
                 "file_size": 10,
                 "upload_timestamp": uploaded,
@@ -194,7 +198,7 @@ class AdminBusinessServiceTests(unittest.TestCase):
             )
 
         self.assertIn(
-            "ORDER BY f.upload_timestamp DESC, f.id DESC",
+            "ORDER BY f.uploaded_at DESC, f.id DESC",
             cursor.executions[0][0],
         )
         self.assertEqual(
@@ -247,7 +251,7 @@ class AdminBusinessServiceTests(unittest.TestCase):
         actor = {"id": 7, "username": "admin"}
         with (
             patch(
-                "app.admin.business_service.get_read_connection",
+                "app.admin.business_service.get_write_connection",
                 return_value=FakeConnection(cursor),
             ),
             patch("app.admin.business_service._record_file_access") as record_access,
@@ -265,6 +269,7 @@ class AdminBusinessServiceTests(unittest.TestCase):
             file_id=3,
             actor=actor,
             action="business.file.preview",
+            cursor=cursor,
         )
 
     def test_file_access_count_and_audit_share_one_transaction(self):

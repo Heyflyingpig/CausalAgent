@@ -31,6 +31,7 @@ ADMIN = {
     "role": "admin",
     "is_active": True,
 }
+JOB_IDEMPOTENCY_KEY = "00000000-0000-4000-8000-000000000001"
 
 
 class RecordingCursor:
@@ -127,7 +128,7 @@ class AdminUserCapabilityTests(unittest.TestCase):
             response = client.post(
                 "/api/agent/jobs",
                 json={"session_id": "session-admin-1", "message": "分析数据"},
-                headers={"Idempotency-Key": "job-request-123456"},
+                headers={"Idempotency-Key": JOB_IDEMPOTENCY_KEY},
             )
 
         self.assertEqual(response.status_code, 202)
@@ -135,7 +136,8 @@ class AdminUserCapabilityTests(unittest.TestCase):
             ADMIN["id"],
             "session-admin-1",
             "分析数据",
-            "job-request-123456",
+            JOB_IDEMPOTENCY_KEY,
+            None,
         )
 
     def test_agent_job_creation_requires_idempotency_key(self):
@@ -171,7 +173,7 @@ class AdminUserCapabilityTests(unittest.TestCase):
             response = client.post(
                 "/api/agent/jobs",
                 json={"session_id": "session-admin-1", "message": "分析数据"},
-                headers={"Idempotency-Key": "job-request-123456"},
+                headers={"Idempotency-Key": JOB_IDEMPOTENCY_KEY},
             )
 
         self.assertEqual(response.status_code, 409)

@@ -26,6 +26,9 @@ from app.agent.job_service import (  # noqa: E402
 )
 
 
+JOB_REQUEST_KEY = "123e4567-e89b-42d3-a456-426614174000"
+
+
 class FakeCursor:
     """按顺序返回 session 和幂等记录，并记录 job 创建 SQL。"""
 
@@ -33,6 +36,7 @@ class FakeCursor:
         self.fetch_results = list(fetch_results or [])
         self.rowcount = rowcount
         self.insert_error = insert_error
+        self.lastrowid = 17
         self.statements = []
 
     def execute(self, sql, params=None):
@@ -96,7 +100,7 @@ class JobIdempotencyTests(unittest.TestCase):
                 7,
                 "session-1",
                 "hello",
-                "job-request-123456",
+                JOB_REQUEST_KEY,
             )
 
         self.assertEqual(job, existing)
@@ -116,14 +120,21 @@ class JobIdempotencyTests(unittest.TestCase):
 
         with patch("app.agent.job_service.get_write_connection", return_value=connection):
             with self.assertRaises(IdempotencyConflictError):
-                create_job(7, "session-1", "hello", "job-request-123456")
+                create_job(7, "session-1", "hello", JOB_REQUEST_KEY)
 
         self.assertEqual(connection.commits, 0)
         self.assertEqual(connection.rollbacks, 1)
 
     def test_new_job_persists_key_and_fingerprint_in_same_transaction(self):
         """新 job 必须在同一事务中写入幂等键和请求指纹。"""
-        connection = FakeConnection(fetch_results=[{"id": "session-1"}, None])
+        connection = FakeConnection(
+            fetch_results=[
+                {"id": "session-1"},
+                None,
+                None,
+                {"message_count": 0, "title": ""},
+            ]
+        )
         created = {"job_id": "job-new", "status": "queued"}
 
         with (
@@ -134,7 +145,7 @@ class JobIdempotencyTests(unittest.TestCase):
                 7,
                 "session-1",
                 "hello",
-                "job-request-123456",
+                JOB_REQUEST_KEY,
             )
 
         insert_params = next(
@@ -144,7 +155,7 @@ class JobIdempotencyTests(unittest.TestCase):
         )
         self.assertEqual(job, created)
         self.assertFalse(was_existing)
-        self.assertEqual(insert_params[-2], "job-request-123456")
+        self.assertEqual(insert_params[-2], JOB_REQUEST_KEY)
         self.assertEqual(insert_params[-1], _request_fingerprint("session-1", "hello"))
         self.assertEqual(connection.commits, 1)
         self.assertEqual(connection.rollbacks, 0)
@@ -175,7 +186,7 @@ class JobIdempotencyTests(unittest.TestCase):
                 7,
                 "session-1",
                 "hello",
-                "job-request-123456",
+                JOB_REQUEST_KEY,
             )
 
         self.assertEqual(job, existing)
