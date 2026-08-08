@@ -36,6 +36,7 @@
     }
     .sidebar-content {
         flex: 1; /* 这个元素将占据父容器的所有可用剩余空间 */
+        min-height: 0; /* 允许内部列表在固定视口内收缩并独立滚动 */
         overflow: hidden; /* 隐藏自身滚动条，由子容器处理滚动 */
         display: flex;
         flex-direction: column;
@@ -44,6 +45,7 @@
     /* 历史记录滚动容器 */
     .history-list-container {
         flex: 1; /* 占据所有可用的剩余空间 */
+        min-height: 0;
         overflow-y: auto; /* 内容溢出时显示垂直滚动条 */
     }
 
@@ -55,6 +57,7 @@
     .file-list-container {
         /* 文件列表的容器 */
         flex-shrink: 0; /* 防止此容器在空间不足时被压缩 */
+        min-height: 0;
         height: 28%; /* 固定占据侧边栏下半部分自定义的高度 */
         display: flex; /* 使用Flexbox布局 */
         flex-direction: column; 
@@ -132,8 +135,9 @@
         /* 主聊天界面容器 */
         margin-left: 0; /* 初始状态下左边距为0 */
         transition: margin-left 0.3s; /* 当左边距变化时，平滑过渡 */
-        min-height: 100vh; /* 空会话时仍占满视口，内容多时允许页面继续增长 */
-        height: auto;
+        height: 100vh; /* 主界面固定在视口内，长内容由聊天区域滚动 */
+        min-height: 0;
+        overflow: hidden;
         display: flex; /* 使用Flexbox布局 */
         flex-direction: column; /* 让聊天区和输入区垂直排列 */
     }
@@ -143,9 +147,11 @@
     }
     .chat-area {
         /* 显示所有聊天消息的区域 */
-        flex: none; /* 让内容高度由消息本身决定，滚动交给页面 */
-        min-height: calc(100vh - 110px); /* 空状态下把输入区保持在视口底部附近 */
-        overflow: visible;
+        flex: 1 1 auto; /* 在固定视口内占用输入区之外的剩余空间 */
+        min-height: 0; /* 允许 flex 子项缩小，否则长报告会撑开页面 */
+        overflow-y: auto; /* 长报告和历史消息只在聊天区域内滚动 */
+        overflow-x: hidden;
+        overscroll-behavior: contain;
         padding: 20px; /* 内边距 */
         transition: margin-left 0.3s;  /* 配合侧边栏的平滑过渡 */
         display: flex; /* 使用Flexbox布局 */
@@ -291,8 +297,8 @@
 
     .input-area {
         /* 页面底部的输入区域容器 */
-        position: sticky;/* "粘性"定位，使其在滚动到视口底部时固定 */
-        bottom: 0; /* 粘在底部 */
+        position: relative;
+        flex: 0 0 auto; /* 输入区域固定在聊天滚动区域之外 */
         background: white; /* 白色背景，覆盖下方内容 */
         padding: 15px 20px 18px; /* 内边距 */
         box-shadow: 0 -2px 10px rgba(0,0,0,0.05); /* 顶部的细微阴影，与聊天区分隔 */
@@ -374,6 +380,7 @@
         /* 所有消息（用户和AI）的通用容器 */
         display: flex; /* 使用Flexbox布局 */
         max-width: min(80%, 880px); /* 消息最大宽度不超过父容器的80% */
+        min-width: 0;
         position: relative; /* 为内部绝对定位的元素提供基准 */
         z-index: 1; /* 确保消息在水印之上 */
         margin-bottom: 10px; /* 消息之间的外边距 */
@@ -386,6 +393,9 @@
         word-break: break-word; /* 长单词或URL自动换行 */
         line-height: 1.4; /* 行高，增加可读性 */
         width: 100%; /* 占满.message容器 */
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
         user-select: text; /* 新增：确保在所有环境中都可以选中文本 */
     }
 
@@ -435,6 +445,24 @@
         background-color: #f5f5f5;
         border-radius: 8px;
         padding: 16px 20px;
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow-wrap: anywhere;
+    }
+
+    .causal-report img {
+        max-width: 100%;
+        height: auto;
+    }
+
+    .causal-report pre,
+    .causal-report table {
+        max-width: 100%;
+        overflow-x: auto;
+    }
+
+    .causal-report table {
+        display: block;
     }
 
     /* AI 消息中的 Markdown 标题样式，避免标题过大占屏 */
@@ -946,11 +974,19 @@
         /* 鼠标悬停在关闭按钮上时 */
         background-color: #5a6268;
     }
-    /* 聊天内容使用文档级滚动，避免视口内再嵌套一个滚动区域。 */
+    /* 页面固定在视口内，聊天内容由 .chat-area 单独滚动。 */
+    html,
     body {
-        /* 聊天内容直接参与文档布局，不再创建独立的聊天滚动容器。 */
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+    }
+
+    body {
+        /* 输入区保持可见，长报告不会把页面整体撑高。 */
         overflow-x: hidden;
-        overflow-y: auto;
+        overflow-y: hidden;
     }
 
 /*  新增：AI加载动画  */

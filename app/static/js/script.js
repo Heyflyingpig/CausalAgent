@@ -165,6 +165,15 @@ function formatSelectedFileSize(bytes) {
     return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
+/**
+ * 只显示文件上传时间中的年月日，避免侧栏被完整时间戳撑宽。
+ */
+function formatFileDate(value) {
+    const raw = String(value ?? '').trim();
+    const match = raw.match(/^\d{4}-\d{2}-\d{2}/);
+    return match ? match[0] : '';
+}
+
 function selectedFileExtension(filename) {
     const parts = String(filename || '').split('.');
     return parts.length > 1 && parts[parts.length - 1]
@@ -1215,10 +1224,11 @@ function stopThinkingDuration(thinkingElements) {
 }
 
 /**
- * 新增聊天内容时保持页面停留在最新内容；展开或收起时间线不会调用此函数。
+ * 新增聊天内容时保持聊天区域停留在最新内容；展开或收起时间线不会调用此函数。
  */
 function keepLatestChatContentVisible() {
-    window.scrollTo(0, document.documentElement.scrollHeight);
+    if (!chatArea) return;
+    chatArea.scrollTop = chatArea.scrollHeight;
 }
 
 /**
@@ -2394,7 +2404,7 @@ async function loadFiles() {
                 
                 const timeDiv = document.createElement('div');
                 timeDiv.className = 'session-time';
-                timeDiv.textContent = file.uploaded_at || '';
+                timeDiv.textContent = formatFileDate(file.uploaded_at);
                 
                 const previewDiv = document.createElement('div');
                 previewDiv.className = 'preview-text';
