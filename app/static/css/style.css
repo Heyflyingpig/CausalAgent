@@ -174,27 +174,154 @@
         font-size: 0.9em;  /* 相对父元素设置字体大小 */
         /* 颜色由下面的 .session-time 控制 */
     }
+    /* hidden 属性必须优先于组件自身的 display 声明，避免空状态占位。 */
+    [hidden] {
+        display: none !important;
+    }
+
+    .selected-file-draft {
+        width: 100%;
+    }
+
+    .selected-file-card {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: min(100%, 460px);
+        min-height: 64px;
+        padding: 10px 12px;
+        box-sizing: border-box;
+        border: 1px solid #dfe4ea;
+        border-radius: 12px;
+        background: #ffffff;
+    }
+
+    .selected-file-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 40px;
+        width: 40px;
+        height: 40px;
+        border-radius: 9px;
+        background: #e9f2ff;
+        color: #2f7cf6;
+        font-size: 0.68em;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+    }
+
+    .selected-file-details {
+        display: flex;
+        flex: 1 1 auto;
+        min-width: 0;
+        flex-direction: column;
+        gap: 3px;
+    }
+
+    .selected-file-name {
+        overflow: hidden;
+        color: #1f2937;
+        font-size: 0.95em;
+        font-weight: 600;
+        line-height: 1.3;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .selected-file-meta {
+        color: #7b8490;
+        font-size: 0.85em;
+        line-height: 1.2;
+    }
+
+    .selected-file-card .clear-selected-file-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 28px;
+        width: 28px;
+        height: 28px;
+        margin-left: auto;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        color: #6b7280;
+        cursor: pointer;
+        font-size: 1.25em;
+        line-height: 1;
+    }
+
+    .selected-file-card .clear-selected-file-button:hover {
+        background: #f1f5f9;
+        color: #1f2937;
+    }
+
+    .waiting-job-status {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 20px;
+        background: #f7f9fb;
+        border-top: 1px solid #e7ebef;
+        color: #334155;
+        font-size: 0.9em;
+    }
+
+    .waiting-job-status span {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .waiting-job-status button {
+        flex: 0 0 auto;
+        margin-left: auto;
+        padding: 7px 11px;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        background: #ffffff;
+        color: #334155;
+        cursor: pointer;
+    }
+
+    .waiting-job-status button:hover {
+        background: #eef2f7;
+    }
+
     .input-area {
         /* 页面底部的输入区域容器 */
         position: sticky;/* "粘性"定位，使其在滚动到视口底部时固定 */
         bottom: 0; /* 粘在底部 */
         background: white; /* 白色背景，覆盖下方内容 */
-        padding: 15px 20px; /* 内边距 */
+        padding: 15px 20px 18px; /* 内边距 */
         box-shadow: 0 -2px 10px rgba(0,0,0,0.05); /* 顶部的细微阴影，与聊天区分隔 */
         display: flex; /* 使用Flexbox布局 */
-        align-items: center; /* 垂直居中输入框和按钮 */
-        gap: 10px;  /* 项目之间的间距 */
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
     }
 
     /* 让输入框占据剩余空间 */
-    #userInput { 
+    #userInput {
         /* 文本输入框 */
-        flex: 1; /* 占据所有可用的水平空间 */
+        flex: none;
+        width: 100%;
+        min-height: 96px;
+        box-sizing: border-box;
         border: 1px solid #ccc; /* 灰色边框 */
         border-radius: 5px; /* 边框圆角 */
         padding: 10px; /* 内边距 */
         font-size: 1em; /* 字体大小 */
         resize: none;  /* 禁止用户手动调整输入框大小 */
+    }
+
+    .input-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        width: 100%;
     }
 
     /* 发送按钮样式 */
@@ -211,6 +338,18 @@
     .input-area button:hover {
         /* 鼠标悬停在按钮上时的样式 */
         background-color: #0056b3; 
+    }
+
+    .input-area .waiting-job-status button {
+        padding: 7px 11px;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        background: #ffffff;
+        color: #334155;
+    }
+
+    .input-area .waiting-job-status button:hover {
+        background: #eef2f7;
     }
     
     /* 上传按钮样式 */
@@ -390,6 +529,11 @@
      .file-item-content:hover {
          /* 鼠标悬停在文件列表项上时的样式 */
          background-color: #f9f9f9; /* 浅灰色背景 */
+     }
+
+     .file-item.selected .file-item-content {
+         background-color: #eef6ff;
+         box-shadow: inset 3px 0 0 #1473e6;
      }
 
 /*  新增：滑动删除样式  */
@@ -1038,6 +1182,14 @@
 
 /* 响应式调整 */
 @media (max-width: 768px) {
+    .input-area {
+        padding: 12px;
+    }
+
+    .selected-file-card {
+        width: 100%;
+    }
+
     .thinking-bubble,
     .thinking-detail-container {
         width: 95%;

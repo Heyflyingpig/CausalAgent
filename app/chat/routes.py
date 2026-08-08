@@ -6,7 +6,7 @@ from app.auth.session_guard import get_current_session_user
 import logging
 import json
 from app.chat.response_storage import render_summary_for_display
-from app.agent.checkpoint_cleanup import enqueue_checkpoint_cleanup
+from app.agent.checkpoint_cleanup import enqueue_checkpoint_cleanup_many
 
 chat_bp = Blueprint('chat', __name__, url_prefix='/api')
 import uuid
@@ -268,39 +268,46 @@ def delete_session():
 
     try:
         with get_write_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(dictionary=True)
             
             # 开启事务
             conn.start_transaction()
             
+            # 与创建、恢复、取消 Job 保持一致：先锁 Job，再锁 session，避免并发
+            # 删除和任务生命周期操作形成 InnoDB 锁环。
+            cursor.execute("""
+                SELECT job_id, status
+                FROM analysis_jobs
+                WHERE session_id = %s
+                  AND user_id = %s
+                ORDER BY id
+                FOR UPDATE
+            """, (session_id, user_id))
+            session_jobs = cursor.fetchall()
+
             # 锁定目标会话，阻止删除过程中并发创建引用该会话的新任务。
             cursor.execute(
                 "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
                 (session_id, user_id),
             )
             session_exists = cursor.fetchone()
-            
+
             if not session_exists:
                 conn.rollback()
                 logging.info(f"用户 {user_id} 请求删除不存在或无权访问的会话 {session_id}")
                 return jsonify({"success": False, "error": "会话不存在或无权访问"}), 404
 
-            cursor.execute("""
-                SELECT 1
-                FROM analysis_jobs
-                WHERE session_id = %s
-                  AND user_id = %s
-                  AND status IN ('queued', 'running')
-                LIMIT 1
-            """, (session_id, user_id))
-            if cursor.fetchone():
+            if any(row["status"] in {"queued", "running", "waiting_input"} for row in session_jobs):
                 conn.rollback()
                 logging.info(f"用户 {user_id} 尝试删除仍有 active job 的会话 {session_id}")
                 return jsonify({"success": False, "error": "当前会话仍有任务正在运行，请等待完成后再删除"}), 409
 
             try:
                 # 跨库删除不能加入 MySQL 事务；outbox 与会话删除同事务提交。
-                enqueue_checkpoint_cleanup(cursor, session_id)
+                cleanup_count = enqueue_checkpoint_cleanup_many(
+                    cursor,
+                    [str(row["job_id"]) for row in session_jobs],
+                )
 
                 # 2. 删除与该会话相关的附件 (通过连接 chat_messages)
                 # 这是为了处理 chat_attachments 和 chat_messages 之间没有直接外键的情况
@@ -328,7 +335,7 @@ def delete_session():
                 return jsonify({
                     "success": True,
                     "message": "会话已删除，checkpoint 正在后台清理",
-                    "checkpoint_cleanup": "pending",
+                    "checkpoint_cleanup": "pending" if cleanup_count else "succeeded",
                 }), 202
             except Exception:
                 conn.rollback()

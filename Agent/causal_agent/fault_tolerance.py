@@ -57,12 +57,22 @@ def timeout(run_timeout: float, idle_timeout: float | None = None) -> TimeoutPol
 
 
 def _error_message(error: NodeError) -> str:
-    return f"{error.node} 节点执行失败: {error.error}"
+    """生成不包含异常原文的节点失败摘要。"""
+    return f"{error.node} 节点执行失败"
 
 
 def sanitize_error(exc: BaseException) -> str:
-    """Return a display-safe error string without exposing implementation detail."""
-    return str(exc) or exc.__class__.__name__
+    """把异常归类为有限的公开错误，避免泄露路径、连接串或文件正文。"""
+    normalized = str(exc).lower()
+    if "timeout" in normalized:
+        return "调用超时"
+    if any(token in normalized for token in ("connection", "connect", "network")):
+        return "服务连接失败"
+    if any(token in normalized for token in ("permission", "auth")):
+        return "服务授权失败"
+    if any(token in normalized for token in ("rate", "limit")):
+        return "服务当前繁忙"
+    return "节点执行失败"
 
 
 def route_to_normal_chat(state: CausalAgentState, error: NodeError) -> Command:

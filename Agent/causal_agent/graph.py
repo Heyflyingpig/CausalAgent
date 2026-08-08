@@ -116,7 +116,8 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
         edges.fold_router,#由fold_router函数决定路由
         {
             "preprocess": "preprocess",
-            "agent": "agent"
+            "agent": "agent",
+            "normal_chat": "normal_chat",
         }
     )
 
