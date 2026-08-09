@@ -60,7 +60,7 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 
 ## 本地 Python 回退方式
 
-未使用 Docker 时，需要自行在当前 Python 环境安装项目依赖和 `pytest`，然后运行：
+未使用 Docker 时，需要先跟用户说明目前本地docker环境未启动/出错，需要在当前 Python 环境安装项目依赖和 `pytest`，用户同一之后然后运行：
 
 ```bash
 python -m pytest tests/unit

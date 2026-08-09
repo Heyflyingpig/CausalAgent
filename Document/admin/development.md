@@ -1,5 +1,9 @@
 # 管理员前端开发与部署
 
+文档职责：记录管理员 Vue 前端的本地开发、生产构建、初始管理员入口和它依赖的系统级服务。
+
+适用范围：修改 `admin-frontend/`、管理员静态资源托管或管理员开发/发布命令时使用；完整 Docker/数据库部署事实分别见 [`../development/deployment.md`](../development/deployment.md) 与 [`../database/migrations-checkpoints.md`](../database/migrations-checkpoints.md)。
+
 ## 生产部署
 
 Dockerfile 使用 Node 24 构建 `admin-frontend/`，再把产物复制到最终 Python 镜像的 `/opt/causalagent-admin`。运行镜像不包含 Node、不启动 Vite，也不开放 Node 端口。
@@ -31,10 +35,9 @@ docker compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli p
 
 该命令只做幂等提升，不创建用户，也不负责降级管理员。管理员登录后进入 `/admin/database`。
 
-## PostgreSQL checkpoint
+## 系统服务依赖
 
-迁移前请在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`。数据库初始化统一由
-`db-bootstrap` 完成，Docker 和本地都调用同一个 Python 入口：
+管理员后台依赖数据库 bootstrap、PostgreSQL checkpoint、monitor 和 cleanup worker。迁移前请在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`；完整初始化顺序和破坏性迁移规则见 [`../database/migrations-checkpoints.md`](../database/migrations-checkpoints.md)。常用入口为：
 
 ```bash
 docker compose -f docker-compose.yml run --rm db-bootstrap
@@ -43,31 +46,11 @@ docker compose -f docker-compose.yml run --rm db-bootstrap
 python -m Database.bootstrap
 ```
 
-该入口按顺序执行 MySQL 建库、Alembic migration 和 LangGraph 官方 PostgreSQL
-checkpoint setup。`checkpoint-cleanup` 仍是持续运行的跨库清理 worker：
+数据库初始化统一由 `db-bootstrap` 完成，`checkpoint-cleanup` 是持续运行的跨库清理 worker：
 
 ```bash
 python -m Database.checkpoint_cleanup_worker
 ```
-
-如需只检查或重新执行 PostgreSQL checkpoint schema，也可以单独运行：
-
-```bash
-python -m Database.checkpoint_setup
-```
-
-统一 bootstrap 中的 Alembic migration 会删除 MySQL checkpoint 表和数据；
-`alembic downgrade` 只重建空的兼容表结构，不恢复已删除数据。
-由于该迁移合并了两个历史 head，回退时必须指定明确目标 revision，不能使用
-`alembic downgrade -1`；例如回退到 `e4f5a6b7c8d9`。
-
-管理员任务详情和数据库审计复用 `CHECKPOINT_POSTGRES_*` 建立独立只读连接。
-新任务由 worker 使用 `analysis_jobs.job_id` 作为 LangGraph `thread_id`，并把
-`job_id` 与业务 `session_id` 写入 `config.metadata`；根 `checkpoint_ns` 为空，管理员
-按 `thread_id=job_id + metadata.job_id` 读取安全摘要。旧 session-thread checkpoint
-不迁移、不读取、不清理，缺少 `job_id` 的记录不做时间归属猜测。quick integrity
-检查连接、官方表集合和 setup 版本；deep audit 只读取 schema、主键、估算行数及最多
-20 个跨库 Job 关系样本，cleanup outbox 过渡中的 Job 不视为孤儿。
 
 ## 启动 monitor
 
@@ -77,7 +60,7 @@ python -m Database.checkpoint_setup
 python -m Database.monitor_worker
 ```
 
-如果 monitor 未运行，页面仍可读取已有快照，但自动刷新和手动刷新请求不会产生新的采集结果。
+如果 monitor 未运行，页面仍可读取已有快照，但自动刷新和手动刷新请求不会产生新的采集结果。快照、配置优先级和 quick/deep audit 的内部事实见 [`../database/monitoring.md`](../database/monitoring.md)。
 
 ## 本地 Vite 开发
 
@@ -99,4 +82,4 @@ Flask 仍先完成管理员页面鉴权，再跳转到 Vite。Vite 只代理 `/a
 
 ## 发布产物
 
-`admin-frontend/dist/` 是随管理员 Vue 源码同步更新的发布产物。`.dockerignore` 排除本地产物，因为镜像会从当前源码重新构建；最终镜像使用 `/opt/causalagent-admin` 中的构建结果。
+`admin-frontend/dist/` 是管理员 Vue 的构建结果。`.dockerignore` 排除本地产物，因为镜像会从当前源码重新构建；最终镜像使用 `/opt/causalagent-admin` 中的构建结果。系统整体部署顺序见 [`../development/deployment.md`](../development/deployment.md)。
