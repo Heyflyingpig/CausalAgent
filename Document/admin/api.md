@@ -1,5 +1,9 @@
 # 管理员 API 契约
 
+文档职责：记录 `/api/admin` 管理员 API、`/admin` 页面入口、响应边界和受控业务操作契约。
+
+适用范围：修改 `app/admin/routes.py`、管理员 service、鉴权/CSRF 或 Vue API 调用时使用；数据库 monitor、主从和 checkpoint 内部实现见 [`../database/overview.md`](../database/overview.md) 与 [`../database/monitoring.md`](../database/monitoring.md)。
+
 管理员 API 统一使用 `/api/admin` 前缀。除特别说明外，接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问；后端每次请求都会通过主库强一致读重新确认用户状态，不把浏览器 Session 中的角色缓存作为授权依据。
 
 ## 通用约定
@@ -99,4 +103,4 @@ SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序�
 | `GET` | `/api/admin/business/files/<id>/delete-impact` | 预览文件删除影响 |
 | `DELETE` | `/api/admin/business/files/<id>` | 物理删除文件和 BLOB |
 
-操作者不能禁用、降级或删除自己，也不能移除最后一个启用管理员。角色、状态或密码实际变化会通过 `users.auth_version` 使目标用户旧 Session 失效。用户删除先提交 MySQL 业务数据，PostgreSQL checkpoint 清理由 outbox worker 异步完成；接口可能返回 `202`，可通过操作查询接口读取 `running/succeeded/failed`。物理删除没有回收站，详细删除/保留矩阵见 [数据库治理文档](../../setting/database_governance.md)。
+操作者不能禁用、降级或删除自己，也不能移除最后一个启用管理员。角色、状态或密码实际变化会通过 `users.auth_version` 使目标用户旧 Session 失效。用户删除先提交 MySQL 业务数据，PostgreSQL checkpoint 清理由 outbox worker 异步完成；接口可能返回 `202`，可通过操作查询接口读取 `running/succeeded/failed`。物理删除没有回收站，Job/file 生命周期和跨库清理边界见 [`../architecture/job-file-lifecycle.md`](../architecture/job-file-lifecycle.md) 与 [`../database/migrations-checkpoints.md`](../database/migrations-checkpoints.md)。
