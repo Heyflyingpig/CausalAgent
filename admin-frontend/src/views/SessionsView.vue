@@ -232,6 +232,13 @@ onMounted(() => loadSessions())
         </el-descriptions>
 
         <h3 class="drawer-section-title">消息摘要</h3>
+        <el-alert
+          class="sensitive-notice"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="读取正文将会记录管理员、目标、结果和 request ID。"
+        />
         <el-table :data="messages?.items || []" empty-text="该会话暂无消息">
           <el-table-column prop="id" label="ID" width="80" />
           <el-table-column prop="message_type" label="类型" width="90" />
@@ -284,6 +291,7 @@ onMounted(() => loadSessions())
       v-model="contentVisible"
       :title="contentTitle"
       :load-chunk="contentLoader"
+      :show-audit-notice="false"
     />
   </section>
 </template>
