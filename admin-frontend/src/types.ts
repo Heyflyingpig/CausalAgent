@@ -271,9 +271,12 @@ export interface AdminJob {
   user_id: number
   username: string
   session_id: string
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+  status: 'queued' | 'running' | 'waiting_input' | 'succeeded' | 'failed' | 'canceled'
   worker_id: string | null
+  lease_epoch: number
   attempt_count: number
+  recovery_count: number
+  resume_count: number
   max_attempts: number
   error_preview?: string | null
   has_input?: boolean
@@ -285,6 +288,23 @@ export interface AdminJob {
   started_at: string | null
   finished_at: string | null
   chat_saved_at: string | null
+  input_user_file_id?: number | null
+  input_file_hash?: string | null
+  input_filename?: string | null
+  current_question_id?: string | null
+  current_waiting_prompt?: string | null
+  input_count?: number
+  inputs?: AdminJobInput[]
+  inputs_truncated?: boolean
+}
+
+export interface AdminJobInput {
+  input_id: number
+  sequence: number
+  input_type: 'initial' | 'resume'
+  question_id: string | null
+  created_at: string
+  input_bytes: number
 }
 
 export interface AdminJobEvent {
@@ -303,6 +323,7 @@ export interface AgentWorkerSummary {
   summary: {
     queued?: number | null
     running?: number | null
+    waiting_input?: number | null
     stale?: number | null
     max_attempts_running?: number | null
   }
@@ -331,11 +352,13 @@ export interface AdminFile {
   username: string
   filename: string
   original_filename: string
+  file_hash: string
   mime_type: string
   file_size: number
   upload_timestamp: string
   last_accessed_at: string
   access_count: number
+  object_reference_count: number
 }
 
 export interface FileDeleteImpact {
@@ -344,6 +367,7 @@ export interface FileDeleteImpact {
     database_rows: number
     blob_bytes: number
     owner_active_jobs: number
+    object_reference_count: number
   }
   can_delete: boolean
   blockers: string[]

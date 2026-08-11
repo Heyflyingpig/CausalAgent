@@ -38,6 +38,8 @@ async def _complete_terminal_event(
         payload,
         response_data,
         result,
+        lease_epoch=int(job.get("lease_epoch") or 0),
+        question_id=payload.get("question_id"),
     )
 
 
@@ -89,6 +91,7 @@ class OrderedEventWriter:
                 self.worker_id,
                 attempt_count,
                 payload.get("message", "任务执行失败"),
+                lease_epoch=int(self.job.get("lease_epoch") or 0),
             )
             self.terminal_seen = True
             return
@@ -99,6 +102,7 @@ class OrderedEventWriter:
             attempt_count,
             event_type,
             payload,
+            lease_epoch=int(self.job.get("lease_epoch") or 0),
         )
 
     async def _flush_text(self) -> None:

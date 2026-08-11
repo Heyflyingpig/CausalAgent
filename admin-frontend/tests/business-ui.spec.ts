@@ -68,8 +68,32 @@ describe('3.1 管理员界面交互边界', () => {
     await flushPromises()
 
     expect(loadChunk).toHaveBeenCalledOnce()
+    expect(wrapper.find('.sensitive-notice').exists()).toBe(true)
     expect(wrapper.find('pre').text()).toBe('<img src=x onerror=alert(1)>')
     expect(wrapper.find('img').exists()).toBe(false)
+  })
+
+  it('敏感正文弹窗允许由上层页面承载审计提示', async () => {
+    const wrapper = mount(SensitiveContentDialog, {
+      props: {
+        modelValue: true,
+        title: '消息正文',
+        loadChunk: vi.fn(async () => ({
+          content: '正文',
+          offset: 0,
+          limit: 65536,
+          total_length: 6,
+          complete: true,
+          next_offset: null,
+        })),
+        showAuditNotice: false,
+        'onUpdate:modelValue': () => undefined,
+      },
+      global: { stubs: elementStubs },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('.sensitive-notice').exists()).toBe(false)
   })
 
   it('桌面侧栏在 248/76 模式间切换并持久化，Logo 始终复用受保护原图', async () => {

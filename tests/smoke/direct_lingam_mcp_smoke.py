@@ -72,7 +72,8 @@ def run_mcp_smoke() -> None:
         columns=node_names,
     ).to_csv(index=False)
 
-    result = asyncio.run(mcp_server.causal_direct_lingam(csv_data))
+    mcp_server._load_csv = lambda user_id, job_id, input_user_file_id, input_object_id: csv_data
+    result = asyncio.run(mcp_server.causal_direct_lingam(1, "smoke-job", 2, 3))
 
     assert "causal_direct_lingam" in mcp_server.mcp.registered_tools
     assert result["success"] is True, result

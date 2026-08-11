@@ -31,7 +31,22 @@ from .back_prompt import causal_rag_prompt
 from .back_prompt import causal_report_prompt
 
 # 数据库
-from Database.agent_connect import get_file_content, get_recent_file
+from Database.agent_connect import require_frozen_file_for_job
+
+
+def resume_value_to_message_content(value: Any) -> str:
+    """把 interrupt 恢复值转成消息可接受的文本，保留原值供节点逻辑继续使用。"""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def llm_prompt_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -175,11 +190,7 @@ async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     return {"messages": [response_message], "route_decision": route_decision}
 
 class foldQuery(BaseModel):
-    """从用户对话中提取文件名及因果分析所需的关键参数。"""
-    filename: Optional[str] = Field(
-        None,
-        description="从用户对话中识别出的要分析的数据文件名 (e.g., 'data.csv')。如果未明确提及，则留空。"
-    )
+    """只从用户对话中提取因果分析所需的关键参数。"""
     target: Optional[str] = Field(
         None,
         description="从用户对话中识别出的目标变量(target)或结果变量(outcome)。如果未提及，则留空。"
@@ -195,6 +206,11 @@ from Agent.Processing.fold_verify import validate_analysis
 from Agent.Processing.data_visualize import generate_visualizations
 
 
+FILE_LOAD_INTERRUPT_MESSAGE = (
+    "当前任务冻结的 CSV 文件无法读取或解析。请取消任务，重新上传可用的 CSV 文件后再试。"
+)
+
+
 def _normalize_optional_llm_text(value: str | None) -> str | None:
     """将 LLM 可空文本中的明确缺失哨兵转换为 None。"""
     if value is None:
@@ -208,34 +224,44 @@ def _normalize_optional_llm_text(value: str | None) -> str | None:
 async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     文件加载、解析与验证节点。
-    1.  使用LLM从对话中一次性提取文件名、目标和处理变量。
-    2.  从数据库加载文件内容。
+    1.  使用LLM从对话中提取目标和处理变量。
+    2.  按 Job 冻结的对象 ID 从数据库加载文件内容。
     3.  运行 get_data_summary 进行全面的数据分析。
     4.  调用 validate_analysis 进行严格的条件验证。
     5.  根据验证结果，决策进入 'preprocess' 节点或 'ask_human' 节点。
     """
     logging.info(" 步骤: 文件加载、解析与验证节点 ")
     user_id = state.get("user_id")
+    file_summary = state.get("file_summary") or {}
+    input_user_file_id = file_summary.get("user_file_id")
+    input_object_id = file_summary.get("object_id")
 
-    # 1. 使用LLM一次性提取文件名和分析意图
+    if not input_user_file_id or not input_object_id:
+        return {
+            "messages": [
+                AIMessage(
+                    content="请先上传并选择一个 CSV 文件，再开始因果分析。",
+                    name="fold",
+                )
+            ],
+            "fold_decision": "normal_chat",
+        }
+
+    # 1. 使用 LLM 提取分析参数，不从自然语言选择文件
     prompt = ChatPromptTemplate.from_messages([
             ("system",
             """你是一个智能助手，你的任务是从用户的最新消息中识别出以下信息，并以JSON格式返回：
-            1.  用户想要分析的文件名 (通常以 `.csv` 结尾)。
-            2.  用户关心的目标变量 (target/outcome)。
-            3.  用户想要评估效果的处理变量 (treatment/intervention)。
+            1. 用户关心的目标变量 (target/outcome)。
+            2. 用户想要评估效果的处理变量 (treatment/intervention)。
 
-            - 如果用户明确提到了文件名，请提取它。
-            - 如果用户只是说"分析数据"或"用最新的文件"，没有指定具体名称，请将 `filename` 字段设为 null（不要使用字符串 "None"）。
-            - 如果用户提到了目标或处理变量，请提取它们。如果没提，请设为 null（不要使用字符串 "None"）。
+            文件已经由当前 Job 的冻结输入确定，严禁从自然语言选择文件。
+            如果用户没有提到目标或处理变量，请将对应字段设为 null。
 
             示例:
-            - 用户: "用 `marketing_campaign.csv` 帮我分析一下'销售额'和'促销活动'的关系..."
-            -> 提取: `filename='marketing_campaign.csv'`, `target='销售额'`, `treatment='促销活动'`
+            - 用户: "帮我分析销售额和促销活动的关系..."
+            -> 提取: `target='销售额'`, `treatment='促销活动'`
             - 用户: "分析一下我的数据，看看是什么影响了客户流失"
-            -> 提取: `filename=null`, `target='客户流失'`, `treatment=null`
-            - 用户: "帮我跑一下最新的数据"
-            -> 提取: `filename=null`, `target=null`, `treatment=null`
+            -> 提取: `target='客户流失'`, `treatment=null`
             
             你必须严格按照 `foldQuery` 的 schema 返回一个 JSON 对象。
             **绝对不要**在你的回复中包含任何Markdown格式或解释性文字。
@@ -243,14 +269,12 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
 
             示例输出（所有字段都有值）:
             {{
-                "filename": "marketing_campaign.csv",
                 "target": "销售额",
                 "treatment": "促销活动"
             }}
             
             示例输出（部分字段为空）:
             {{
-                "filename": null,
                 "target": "客户流失",
                 "treatment": null
             }}
@@ -267,56 +291,48 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
             node_name="fold",
         )
 
-        filename = _normalize_optional_llm_text(structured_response.filename)
         target = _normalize_optional_llm_text(structured_response.target)
         treatment = _normalize_optional_llm_text(structured_response.treatment)
         
-    except StructuredOutputError as e:
-        logging.error(f"无法从LLM响应中解析或验证提取信息: {e}。将返回错误值")
-        filename = None
+    except StructuredOutputError:
+        logging.error("无法从 LLM 响应中解析或验证 fold 参数，将返回空值")
         target = None
         treatment = None
-    
-    loaded_filename = None
-    
-    logging.info(f"filename: {filename}, state.get('fold_name'): {state.get('fold_name')}")
+
     try:
-        if filename :
-            file_content_bytes = await asyncio.to_thread(get_file_content, user_id, filename)
-            state['fold_name'] = filename
-            
-            # 注意这里的文件名后续并没有用到
-            loaded_filename = filename
-        elif state.get('fold_name'):
-            loaded_filename = state.get('fold_name')
-            file_content_bytes = await asyncio.to_thread(get_file_content, user_id, loaded_filename)
-
-        else:
-            file_content_bytes , loaded_filename = await asyncio.to_thread(get_recent_file, user_id)
-
-        if not file_content_bytes or not loaded_filename:
-            raise FileNotFoundError("找不到任何可供分析的文件。请先上传一个CSV文件。")
-        
-        state['fold_name'] = loaded_filename
-        file_content_str = file_content_bytes.decode('utf-8')
+        file_row = await asyncio.to_thread(
+            require_frozen_file_for_job,
+            user_id,
+            state.get("job_id", ""),
+            input_user_file_id,
+            input_object_id,
+        )
+        file_content_str = file_row["file_content"].decode("utf-8")
         df = await asyncio.to_thread(pd.read_csv, io.StringIO(file_content_str))
         data_summary = await asyncio.to_thread(get_data_summary, df)
     
-    except Exception as e:
-        error_msg = f"在文件加载或解析阶段发生错误: {e}"
-        logging.error(error_msg, exc_info=True)
+    except Exception as exc:
+        logging.error(
+            "文件加载或解析阶段失败: error_type=%s",
+            type(exc).__name__,
+        )
         
         # 使用 interrupt() 暂停并等待用户输入
-        user_response = interrupt(error_msg)
-        new_message = HumanMessage(content=user_response)
+        user_response = interrupt(FILE_LOAD_INTERRUPT_MESSAGE)
+        new_message = HumanMessage(content=resume_value_to_message_content(user_response))
         
         return {"messages": [new_message], "fold_decision": "agent"}
 
-    ## 优化：只保存 file_content 和摘要，不保存 DataFrame
-    # 原因：DataFrame 序列化体积大，file_content 可随时重新生成 DataFrame
-    state['file_content'] = file_content_str
-    # state['dataframe'] = df  # 避免序列化开销
     state['analysis_parameters'] = data_summary
+    file_summary = {
+        "user_file_id": input_user_file_id,
+        "object_id": input_object_id,
+        "file_hash": file_summary.get("file_hash"),
+        "filename": file_summary.get("filename"),
+        "rows": data_summary.get("n_rows"),
+        "columns": data_summary.get("columns", []),
+    }
+    state["file_summary"] = file_summary
     
     # 运行确定性验证
     is_ready, issues, recommends = await asyncio.to_thread(
@@ -343,8 +359,7 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         
         return {"messages": new_messages, 
                 "analysis_parameters": state['analysis_parameters'], 
-                "fold_name": state['fold_name'], 
-                "file_content": state['file_content'],
+                "file_summary": file_summary,
                 "tool_call_request": False,
                 "fold_decision": "preprocess",
                 }
@@ -380,12 +395,11 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         # 让 fold_router 知道需要回到 agent 重新判断
         return {
             "messages": [
-                HumanMessage(content=user_response),
+                HumanMessage(content=resume_value_to_message_content(user_response)),
                 AIMessage(content="决策：已收到用户输入，返回 agent 重新判断", name="fold")
             ],
-            "fold_name": state['fold_name'],
-            "file_content": state['file_content'],
             "analysis_parameters": state['analysis_parameters'],
+            "file_summary": state.get("file_summary"),
             "fold_decision": "agent",
         }
 
@@ -401,22 +415,33 @@ async def preprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     logging.info(" 步骤: 数据预处理与分析节点 ")
 
-    # 从 file_content 动态生成 DataFrame
-    file_content = state.get("file_content")
     analysis_parameters = state.get("analysis_parameters", {})
 
-    if file_content is None or not analysis_parameters:
+    file_summary = state.get("file_summary") or {}
+    input_user_file_id = file_summary.get("user_file_id")
+    input_object_id = file_summary.get("object_id")
+
+    if (
+        not analysis_parameters
+        or not input_user_file_id
+        or not input_object_id
+    ):
         error_msg = "无法执行预处理，因为数据或其摘要信息在状态中丢失。"
         logging.error(error_msg)
-        
-        user_response = interrupt(error_msg)
-        new_message = HumanMessage(content=user_response)
-        
-        return {"messages": [new_message]}
+        raise RuntimeError(error_msg)
 
-    # 动态生成 DataFrame（从 file_content）
-    df = await asyncio.to_thread(pd.read_csv, io.StringIO(file_content))
-    logging.info(f"从 file_content 重新生成 DataFrame，shape: {df.shape}")
+    file_row = await asyncio.to_thread(
+        require_frozen_file_for_job,
+        state.get("user_id"),
+        state.get("job_id", ""),
+        input_user_file_id,
+        input_object_id,
+    )
+    df = await asyncio.to_thread(
+        pd.read_csv,
+        io.BytesIO(file_row["file_content"]),
+    )
+    logging.info("已从 Job 冻结文件重新生成 DataFrame，shape=%s", df.shape)
 
     # 生成可视化图表 
     visualizations = {}

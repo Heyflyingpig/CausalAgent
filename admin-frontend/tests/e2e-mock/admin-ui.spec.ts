@@ -305,6 +305,26 @@ test('3.2 业务页面、受控写入、敏感揭示和可收缩导航在 mock �
       'base64',
     ),
   }))
+  await page.route('**/api/admin/jobs/workers', route => route.fulfill({
+    json: {
+      success: true,
+      data: [],
+      summary: {
+        queued: 0,
+        running: 0,
+        waiting_input: 0,
+        stale: 0,
+        max_attempts_running: 0,
+      },
+      meta: {
+        status: 'healthy',
+        observed_at: observedAt,
+        source_alias: 'mock-worker-snapshot',
+        warning: null,
+      },
+      request_id: 'mock-workers',
+    },
+  }))
   await page.route('**/api/admin/business/**', async route => {
     const requestUrl = new URL(route.request().url())
     const path = requestUrl.pathname
@@ -701,8 +721,19 @@ test('3.2 业务页面、受控写入、敏感揭示和可收缩导航在 mock �
   expect(messageContentReads).toBe(0)
   await page.getByRole('button', { name: '查看详情' }).click()
   await expect(page.getByText('只读摘要')).toBeVisible()
+  const sessionDrawer = page.locator('.el-drawer').filter({ hasText: '会话详情' })
+  const auditNotice = sessionDrawer.locator('.drawer-section-title + .sensitive-notice')
+  await expect(auditNotice).toHaveText('读取正文将会记录管理员、目标、结果和 request ID。')
   expect(messageContentReads).toBe(0)
+
+  await page.setViewportSize({ width: 720, height: 900 })
+  await expect(auditNotice).toBeVisible()
+  expect(await auditNotice.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await page.setViewportSize({ width: 1280, height: 900 })
+
   await page.getByRole('button', { name: '查看正文' }).click()
+  const contentDialog = page.getByRole('dialog', { name: '消息 #11 正文' })
+  await expect(contentDialog.locator('.sensitive-notice')).toHaveCount(0)
   await expect(page.getByText('<b>只作为文本</b>', { exact: true })).toBeVisible()
   expect(messageContentReads).toBe(1)
   await expect(page.locator('.sensitive-content b')).toHaveCount(0)

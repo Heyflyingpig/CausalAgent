@@ -556,3 +556,32 @@
   - 新增显式 `ProcessRuntime` 与 `SlotRuntime`：LLM 在进程级创建，MCP session、tools 与 graph 在 slot 级创建；任务执行不再读取 `app.agent.core.llm` 等模块全局变量。
   - `job_service.py` 和 `routes.py` 保持在 worker package 外，继续供 Web、monitor、管理员看板与 worker 共用；管理员任务、checkpoint 和 SSE 数据契约不变。
   - 测试改为直接导入新职责模块，并将管理员 checkpoint 约束检查指向实际写入 `job_id` metadata 的 `graph_runner.py`。
+
+---
+2026.8.8
+- 【文件库与可恢复 Job】
+  - 将文件存储拆为 `file_objects` 不可变 BLOB 和 `user_files` 逻辑文件记录，上传、选择草稿和创建 Job 的职责边界分离；Job 创建时冻结文件对象、hash 和文件名。
+  - 新增 `analysis_job_inputs` 输入账本，支持同一 Job 的 interrupt、`waiting_input`、resume、取消和稳定生命周期事件；stale worker 通过 lease epoch fencing，旧 worker 不能覆盖新 worker 的结果。
+  - Agent、MCP 和管理员预览/下载按主库事务读取冻结文件并累计访问次数；完整 CSV 不进入 State、ToolMessage、checkpoint、事件、日志或 SSE。
+  - 新增 `a1b2c3d4e5f6_add_file_library_and_job_recovery`。该 migration 只面向开发/测试库，直接删除旧 `uploaded_files` 表，不回填旧数据、不提供 fallback、不拒绝旧数据迁移；downgrade 只恢复空旧表结构。
+  - 补充迁移静态测试、Job 恢复定向测试和管理员文件访问事务测试；完整 Docker 后端、管理员前端和隔离数据库往返验证在本次执行中单独记录。
+- 【聊天文件附件预览与等待任务提示】
+  - 修复 `hidden` 属性被 CSS `display` 覆盖导致的空白文件栏和空白任务栏；无文件、无等待输入时不再占据输入区空间。
+  - 文件上传或从文件列表选择后，在输入区内部显示 CSV 文件卡片，包含文件名、类型、大小和清除按钮；输入区随附件卡片自然增高，并覆盖桌面端与 390px 移动端布局。
+  - 将按钮文案明确为“取消等待任务”；当前接口只取消 `waiting_input` Job，不中断 `queued`/`running` Job 或正在执行的 LLM/MCP 调用。
+  - 完成真实 Flask 页面 DOM 检查、桌面/移动端视觉检查、JavaScript 语法检查和 `git diff --check`。
+- 【修复：Job checkpoint identity 与跨 Job 聊天历史】
+  - LangGraph 根图统一使用 `analysis_jobs.job_id` 作为 `thread_id`，根 `checkpoint_ns` 保持为空；业务 `session_id` 继续作为会话外键和 State 上下文，不再使用 `job:<job_id>` namespace 或 session-thread identity。
+  - 新 Job 按创建事务记录的 `chat_message_id` 从 MySQL 读取同一业务会话的最近消息窗口；同一 Job 的 interrupt/resume 和 stale recovery 继续使用原 checkpoint，当前用户消息不会重复注入。
+  - 输入账本按 `initial`/`resume` 区分运行时解析，结构化 resume 值仅作为 `Command(resume=...)` 的原值传入，并在图消息中统一转换为 JSON 文本；PostgreSQL checkpoint 不可用时阻止 stale Job 盲目重放。
+  - 会话和管理员用户删除按全部 `analysis_jobs.job_id` 写入 cleanup outbox；管理员 checkpoint/deep audit 按 Job ID 归属，并识别 cleanup outbox 过渡状态。
+- 【聊天页面滚动与文件日期显示修复】
+  - 将页面和主聊天容器固定在视口内，长报告、时间线和历史消息只在 `chat-area` 内滚动，输入区保持固定可见。
+  - 自动滚动目标改为聊天区域，避免新增报告内容继续推动整个页面滚动。
+  - 文件列表时间仅显示 `YYYY-MM-DD`，并补充报告图片、表格和代码块的宽度约束，避免内容超出聊天区域。
+
+---
+2026.8.10
+- 【管理员会话正文审计提示前置】
+  - 将“读取正文将会记录管理员、目标、结果和 request ID。”从会话正文弹窗移至会话详情的消息摘要标题下方，使管理员在读取正文前即可看到提示。
+  - 保留分析任务等其他敏感正文弹窗的默认审计提示，并补充组件与 Mock E2E 覆盖。

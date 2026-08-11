@@ -608,7 +608,13 @@ EXPECTED_FOREIGN_KEYS = (
     ("chat_attachments", "fk_chat_attachments_message", (("message_id", "chat_messages", "id"),)),
     ("analysis_jobs", "fk_analysis_jobs_user", (("user_id", "users", "id"),)),
     ("analysis_jobs", "fk_analysis_jobs_session", (("session_id", "sessions", "id"),)),
+    ("analysis_jobs", "fk_analysis_jobs_input_user_file", (("input_user_file_id", "user_files", "id"),)),
+    ("analysis_jobs", "fk_analysis_jobs_input_object", (("input_object_id", "file_objects", "id"),)),
     ("analysis_job_events", "fk_analysis_job_events_job", (("job_id", "analysis_jobs", "job_id"),)),
+    ("analysis_job_inputs", "fk_analysis_job_inputs_job", (("job_id", "analysis_jobs", "job_id"),)),
+    ("file_objects", "fk_file_objects_owner", (("owner_user_id", "users", "id"),)),
+    ("user_files", "fk_user_files_user", (("user_id", "users", "id"),)),
+    ("user_files", "fk_user_files_object", (("object_id", "file_objects", "id"),)),
     (
         "checkpoint_cleanup_outbox",
         "fk_checkpoint_cleanup_outbox_operation",
@@ -621,6 +627,36 @@ EXPECTED_UNIQUE_INDEXES = (
         "analysis_jobs",
         "uq_analysis_jobs_user_idempotency",
         ("user_id", "idempotency_key"),
+    ),
+    (
+        "analysis_jobs",
+        "uq_analysis_jobs_cancel_idempotency",
+        ("job_id", "cancel_idempotency_key"),
+    ),
+    (
+        "user_files",
+        "uq_user_files_name_object",
+        ("user_id", "object_id", "filename"),
+    ),
+    (
+        "analysis_job_inputs",
+        "uq_analysis_job_inputs_sequence",
+        ("job_id", "sequence"),
+    ),
+    (
+        "analysis_job_inputs",
+        "uq_analysis_job_inputs_idempotency",
+        ("job_id", "idempotency_key"),
+    ),
+    (
+        "analysis_job_events",
+        "uq_analysis_job_events_event_key",
+        ("job_id", "event_key"),
+    ),
+    (
+        "chat_messages",
+        "uq_chat_messages_source_event",
+        ("source_event_id",),
     ),
 )
 

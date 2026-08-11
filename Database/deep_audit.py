@@ -33,16 +33,20 @@ EXPECTED_COLUMNS = {
     },
     "chat_messages": {
         "id", "session_id", "user_id", "message_type", "content",
-        "has_attachment", "created_at",
+        "has_attachment", "analysis_job_id", "analysis_job_input_id",
+        "source_event_id", "created_at",
     },
     "chat_attachments": {
         "id", "message_id", "attachment_type", "content",
         "content_size", "created_at",
     },
-    "uploaded_files": {
-        "id", "user_id", "filename", "original_filename", "mime_type",
-        "file_size", "file_content", "upload_timestamp", "last_accessed_at",
-        "access_count",
+    "file_objects": {
+        "id", "owner_user_id", "content_hash", "file_size", "mime_type",
+        "file_content", "created_at",
+    },
+    "user_files": {
+        "id", "user_id", "object_id", "filename", "mime_type", "file_size",
+        "uploaded_at", "last_accessed_at", "access_count",
     },
     "archived_sessions": {
         "id", "user_id", "original_session_data", "message_count", "archived_at",
@@ -54,10 +58,21 @@ EXPECTED_COLUMNS = {
     },
     "analysis_jobs": {
         "id", "job_id", "user_id", "session_id", "status", "worker_id",
-        "created_at", "active_session_key", "idempotency_key",
-        "request_fingerprint",
+        "lease_epoch", "locked_at", "heartbeat_at", "attempt_count",
+        "recovery_count", "resume_count", "finished_at", "created_at",
+        "active_session_key", "idempotency_key", "request_fingerprint",
+        "input_user_file_id", "input_object_id", "input_file_hash",
+        "input_filename", "current_question_id", "current_waiting_prompt",
+        "cancel_idempotency_key", "cancel_request_fingerprint",
     },
-    "analysis_job_events": {"id", "job_id", "event_type", "payload_json", "created_at"},
+    "analysis_job_events": {
+        "id", "job_id", "event_type", "event_key", "payload_json", "created_at",
+    },
+    "analysis_job_inputs": {
+        "input_id", "job_id", "sequence", "input_type", "input_text",
+        "question_id", "idempotency_key", "request_fingerprint",
+        "chat_message_id", "created_at",
+    },
     "database_monitor_snapshots": {
         "snapshot_key", "payload_json", "observed_at",
         "refresh_requested_at", "updated_at",
@@ -86,9 +101,23 @@ EXPECTED_INDEXES = {
     "analysis_jobs": {
         "PRIMARY",
         "idx_analysis_jobs_admin_created",
-        "uq_analysis_jobs_user_idempotency",
+        "idx_analysis_jobs_input_user_file_status",
+        "uq_analysis_jobs_user_idempotency", "uq_analysis_jobs_cancel_idempotency",
     },
-    "uploaded_files": {"PRIMARY", "idx_uploaded_files_admin_uploaded"},
+    "analysis_job_events": {"PRIMARY", "uq_analysis_job_events_event_key"},
+    "analysis_job_inputs": {
+        "PRIMARY",
+        "uq_analysis_job_inputs_sequence",
+        "uq_analysis_job_inputs_idempotency",
+    },
+    "file_objects": {
+        "PRIMARY", "uq_file_objects_owner_hash", "idx_file_objects_owner_created",
+    },
+    "user_files": {
+        "PRIMARY", "uq_user_files_name_object", "idx_user_files_user_accessed",
+        "idx_user_files_user_filename", "idx_user_files_object",
+    },
+    "chat_messages": {"PRIMARY", "uq_chat_messages_source_event"},
     "admin_audit_events": {"PRIMARY", "idx_admin_audit_target_created"},
     "checkpoint_cleanup_outbox": {
         "PRIMARY",
@@ -108,10 +137,15 @@ EXPECTED_FOREIGN_KEYS = {
     "fk_chat_messages_session",
     "fk_chat_messages_user",
     "fk_chat_attachments_message",
-    "fk_uploaded_files_user",
+    "fk_file_objects_owner",
+    "fk_user_files_user",
+    "fk_user_files_object",
     "fk_analysis_jobs_user",
     "fk_analysis_jobs_session",
+    "fk_analysis_jobs_input_user_file",
+    "fk_analysis_jobs_input_object",
     "fk_analysis_job_events_job",
+    "fk_analysis_job_inputs_job",
     "fk_checkpoint_cleanup_outbox_operation",
     "fk_admin_operations_actor",
     "fk_admin_operation_items_operation",
@@ -395,15 +429,22 @@ def _relationship_check() -> dict[str, Any]:
             SELECT job_id AS sample_id
             FROM analysis_jobs
             WHERE (
-                status IN ('queued', 'running')
+                status IN ('queued', 'running', 'waiting_input')
                 AND (
                     active_session_key IS NULL
                     OR active_session_key <> CONCAT(user_id, ':', session_id)
                 )
             ) OR (
-                status NOT IN ('queued', 'running')
+                status NOT IN ('queued', 'running', 'waiting_input')
                 AND active_session_key IS NOT NULL
             )
+            LIMIT %s
+        """,
+        "waiting_input_with_lease": """
+            SELECT job_id AS sample_id
+            FROM analysis_jobs
+            WHERE status = 'waiting_input'
+              AND (worker_id IS NOT NULL OR locked_at IS NOT NULL OR heartbeat_at IS NOT NULL)
             LIMIT %s
         """,
     }
@@ -433,7 +474,7 @@ def _relationship_check() -> dict[str, Any]:
 
 
 def _checkpoint_postgres_checks() -> list[dict[str, Any]]:
-    """检查 PostgreSQL checkpoint schema、统计与跨库会话关系样本。"""
+    """检查 PostgreSQL checkpoint schema、统计与 Job 关系样本。"""
     try:
         facts = collect_checkpoint_deep_facts(
             timeout_ms=int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS),
@@ -458,8 +499,8 @@ def _checkpoint_postgres_checks() -> list[dict[str, Any]]:
                 "检查失败或查询超时",
             ),
             _check(
-                "checkpoint_session_relationships",
-                "Checkpoint thread 与 MySQL 会话关系样本",
+                "checkpoint_job_relationships",
+                "Checkpoint thread 与 analysis_jobs Job 关系样本",
                 "unknown",
                 "检查失败或查询超时",
             ),
@@ -503,7 +544,8 @@ def _checkpoint_postgres_checks() -> list[dict[str, Any]]:
     )
 
     thread_ids = facts["thread_ids"]
-    existing_sessions: set[str] = set()
+    existing_jobs: set[str] = set()
+    cleanup_jobs: set[str] = set()
     try:
         if thread_ids:
             placeholders = ", ".join(["%s"] * len(thread_ids))
@@ -512,13 +554,24 @@ def _checkpoint_postgres_checks() -> list[dict[str, Any]]:
                 cursor.execute(
                     f"""
                     SELECT /*+ MAX_EXECUTION_TIME({int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS)}) */
-                           id
-                    FROM sessions
-                    WHERE id IN ({placeholders})
+                           job_id
+                    FROM analysis_jobs
+                    WHERE job_id IN ({placeholders})
                     """,
                     tuple(thread_ids),
                 )
-                existing_sessions = {str(row["id"]) for row in cursor.fetchall()}
+                existing_jobs = {str(row["job_id"]) for row in cursor.fetchall()}
+                cursor.execute(
+                    f"""
+                    SELECT /*+ MAX_EXECUTION_TIME({int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS)}) */
+                           thread_id
+                    FROM checkpoint_cleanup_outbox
+                    WHERE thread_id IN ({placeholders})
+                      AND status <> 'succeeded'
+                    """,
+                    tuple(thread_ids),
+                )
+                cleanup_jobs = {str(row["thread_id"]) for row in cursor.fetchall()}
     except Exception as exc:
         LOGGER.warning(
             "checkpoint thread 跨库关系抽样失败: %s",
@@ -529,8 +582,8 @@ def _checkpoint_postgres_checks() -> list[dict[str, Any]]:
             schema_check,
             stats_check,
             _check(
-                "checkpoint_session_relationships",
-                "Checkpoint thread 与 MySQL 会话关系样本",
+                "checkpoint_job_relationships",
+                "Checkpoint thread 与 analysis_jobs Job 关系样本",
                 "unknown",
                 "检查失败或查询超时",
             ),
@@ -538,24 +591,29 @@ def _checkpoint_postgres_checks() -> list[dict[str, Any]]:
     samples = [
         {
             "thread_id": thread_id,
-            "session_exists": thread_id in existing_sessions,
+            "job_exists": thread_id in existing_jobs,
+            "cleanup_pending": thread_id in cleanup_jobs,
         }
         for thread_id in thread_ids
     ]
-    missing_count = sum(1 for item in samples if not item["session_exists"])
+    missing_count = sum(
+        1
+        for item in samples
+        if not item["job_exists"] and not item["cleanup_pending"]
+    )
     relationship_check = _check(
-        "checkpoint_session_relationships",
-        "Checkpoint thread 与 MySQL 会话关系样本",
+        "checkpoint_job_relationships",
+        "Checkpoint thread 与 analysis_jobs Job 关系样本",
         "healthy" if missing_count == 0 else "error",
         (
-            "抽样 thread 均可关联 MySQL 会话"
+            "抽样 thread 均可关联 analysis_jobs Job 或处于 cleanup outbox 过渡"
             if missing_count == 0
-            else "发现无法关联 MySQL 会话的 checkpoint thread 样本"
+            else "发现无法关联 analysis_jobs Job 且不在 cleanup outbox 中的 checkpoint thread 样本"
         ),
         {
             "sample_limit": ANOMALY_SAMPLE_LIMIT,
             "sample_count": len(samples),
-            "missing_session_count": missing_count,
+            "missing_job_count": missing_count,
             "samples": samples,
         },
     )

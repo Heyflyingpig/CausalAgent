@@ -1,5 +1,9 @@
 # 管理员系统测试
 
+文档职责：记录管理员后端、Vue、Mock E2E 和隔离主从/PostgreSQL checkpoint 验收的专项验证。
+
+适用范围：修改管理员 API、页面、migration 交界或隔离验收脚本时使用；全仓测试矩阵见 [`../development/testing.md`](../development/testing.md)。
+
 后端测试的统一目录与执行顺序见 [`tests/README.md`](../../tests/README.md)。管理员系统同时包含 Python 后端测试、Vue 组件测试、Mock E2E 和隔离主从 + PostgreSQL checkpoint E2E。
 
 ## 前端快速验证

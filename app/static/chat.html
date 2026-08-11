@@ -139,10 +139,28 @@
            
         
         <div class="input-area">
+            <div id="waitingJobStatus" class="waiting-job-status" hidden>
+                <span id="waitingJobPrompt"></span>
+                <button id="cancelWaitingJobButton" type="button" data-i18n="cancelWaitingJob"
+                        title="仅取消等待用户输入的任务，不会中断正在运行的任务">取消等待任务</button>
+            </div>
+            <div id="selectedFileDraft" class="selected-file-draft" hidden>
+                <div class="selected-file-card">
+                    <div class="selected-file-icon" aria-hidden="true">CSV</div>
+                    <div class="selected-file-details">
+                        <strong id="selectedFileName" class="selected-file-name"></strong>
+                        <span id="selectedFileMeta" class="selected-file-meta"></span>
+                    </div>
+                    <button id="clearSelectedFileButton" class="clear-selected-file-button" type="button"
+                            title="清除文件选择" aria-label="清除文件选择">&times;</button>
+                </div>
+            </div>
             <textarea id="userInput" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息..." rows = "4"></textarea>
-            <input type="file" id="csvUploader" accept=".csv" style="display: none;">
-            <button id="uploadCsvButton" title="上传" data-i18n="upload">上传</button>
-            <button id="sendButton" data-i18n="send">发送</button>
+            <div class="input-actions">
+                <input type="file" id="csvUploader" accept=".csv" style="display: none;">
+                <button id="uploadCsvButton" title="上传" data-i18n="upload">上传</button>
+                <button id="sendButton" data-i18n="send">发送</button>
+            </div>
         </div>
     </div>
 

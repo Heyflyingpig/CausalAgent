@@ -25,7 +25,7 @@ describe('SqlDigestTable', () => {
             avg_seconds: 0.12,
           },
           {
-            digest_text: 'SELECT * FROM uploaded_files WHERE user_id = ?',
+            digest_text: 'SELECT * FROM user_files WHERE user_id = ?',
             total_seconds: 9,
             avg_seconds: 'invalid',
           },

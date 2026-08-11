@@ -315,11 +315,13 @@ def check_database_readiness():
                 "sessions",
                 "chat_messages",
                 "chat_attachments",
-                "uploaded_files",
+                "file_objects",
+                "user_files",
                 "archived_sessions",
                 "checkpoint_cleanup_outbox",
                 "analysis_jobs",
                 "analysis_job_events",
+                "analysis_job_inputs",
                 "database_monitor_snapshots",
                 "database_monitor_settings",
                 "admin_audit_events",
@@ -393,7 +395,13 @@ def check_database_readiness():
                 FROM information_schema.columns
                 WHERE table_schema = %s
                   AND table_name = 'analysis_jobs'
-                  AND column_name IN ('idempotency_key', 'request_fingerprint')
+                  AND column_name IN (
+                    'idempotency_key', 'request_fingerprint', 'lease_epoch',
+                    'recovery_count', 'resume_count', 'input_user_file_id',
+                    'input_object_id', 'input_file_hash', 'input_filename',
+                    'current_question_id', 'current_waiting_prompt',
+                    'cancel_idempotency_key', 'cancel_request_fingerprint'
+                  )
                 """,
                 (settings.MYSQL_DATABASE,),
             )
@@ -401,6 +409,17 @@ def check_database_readiness():
             missing_job_request_columns = {
                 "idempotency_key",
                 "request_fingerprint",
+                "lease_epoch",
+                "recovery_count",
+                "resume_count",
+                "input_user_file_id",
+                "input_object_id",
+                "input_file_hash",
+                "input_filename",
+                "current_question_id",
+                "current_waiting_prompt",
+                "cancel_idempotency_key",
+                "cancel_request_fingerprint",
             } - job_request_columns
             if missing_job_request_columns:
                 error_msg = (
@@ -431,6 +450,35 @@ def check_database_readiness():
                       AND index_name = 'uq_analysis_jobs_user_idempotency'
                       AND non_unique = 0
                     )
+                    OR (
+                      table_name = 'analysis_jobs'
+                      AND index_name = 'idx_analysis_jobs_input_user_file_status'
+                    )
+                    OR (
+                      table_name = 'analysis_jobs'
+                      AND index_name = 'uq_analysis_jobs_cancel_idempotency'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'analysis_job_inputs'
+                      AND index_name = 'uq_analysis_job_inputs_sequence'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'analysis_job_inputs'
+                      AND index_name = 'uq_analysis_job_inputs_idempotency'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'analysis_job_events'
+                      AND index_name = 'uq_analysis_job_events_event_key'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'chat_messages'
+                      AND index_name = 'uq_chat_messages_source_event'
+                      AND non_unique = 0
+                    )
                   )
                 """,
                 (settings.MYSQL_DATABASE,),
@@ -446,6 +494,18 @@ def check_database_readiness():
                     "analysis_jobs",
                     "uq_analysis_jobs_user_idempotency",
                 ),
+                (
+                    "analysis_jobs",
+                    "idx_analysis_jobs_input_user_file_status",
+                ),
+                (
+                    "analysis_jobs",
+                    "uq_analysis_jobs_cancel_idempotency",
+                ),
+                ("analysis_job_inputs", "uq_analysis_job_inputs_sequence"),
+                ("analysis_job_inputs", "uq_analysis_job_inputs_idempotency"),
+                ("analysis_job_events", "uq_analysis_job_events_event_key"),
+                ("chat_messages", "uq_chat_messages_source_event"),
             }
             missing_indexes = required_indexes - critical_indexes
             if missing_indexes:

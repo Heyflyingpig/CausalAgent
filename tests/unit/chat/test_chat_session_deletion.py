@@ -40,7 +40,11 @@ class FakeCursor:
 
     def fetchone(self):
         """返回当前 SQL 对应的预设单行结果。"""
-        return self.fetch_results.pop(0)
+        return self.fetch_results.pop(0) if self.fetch_results else None
+
+    def fetchall(self):
+        """返回当前 SQL 对应的预设多行结果。"""
+        return self.fetch_results.pop(0) if self.fetch_results else []
 
 
 class FakeConnection:
@@ -60,7 +64,7 @@ class FakeConnection:
         """不吞掉路由中的异常。"""
         return False
 
-    def cursor(self):
+    def cursor(self, **_kwargs):
         """返回记录 SQL 的游标。"""
         return self.fake_cursor
 
@@ -101,7 +105,13 @@ class DeleteSessionTests(unittest.TestCase):
 
     def test_delete_session_enqueues_checkpoint_cleanup_in_the_same_transaction(self):
         """正常删除按锁定、任务检查、outbox、业务数据的顺序提交一次。"""
-        connection = FakeConnection(fetch_results=[("session-1",), None, {"status": "pending"}])
+        connection = FakeConnection(
+            fetch_results=[
+                [{"job_id": "job-1", "status": "succeeded"}],
+                ("session-1",),
+                {"status": "pending"},
+            ]
+        )
 
         response = self._post_delete(connection)
 
@@ -114,12 +124,19 @@ class DeleteSessionTests(unittest.TestCase):
         self.assertEqual(
             statements[0],
             (
+                "SELECT job_id, status FROM analysis_jobs WHERE session_id = %s AND user_id = %s ORDER BY id FOR UPDATE",
+                ("session-1", 7),
+            ),
+        )
+        self.assertEqual(
+            statements[1],
+            (
                 "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
                 ("session-1", 7),
             ),
         )
-        self.assertIn("FROM analysis_jobs", statements[1][0])
         self.assertIn("INSERT INTO checkpoint_cleanup_outbox", statements[2][0])
+        self.assertEqual(statements[2][1], ("job-1", None))
         self.assertIn("SELECT status FROM checkpoint_cleanup_outbox", statements[3][0])
         self.assertTrue(statements[4][0].startswith("DELETE ca FROM chat_attachments"))
         self.assertEqual(
@@ -133,7 +150,12 @@ class DeleteSessionTests(unittest.TestCase):
 
     def test_active_job_blocks_all_delete_statements(self):
         """有 queued/running job 时回滚并拒绝删除 checkpoint 和会话数据。"""
-        connection = FakeConnection(fetch_results=[("session-1",), (1,)])
+        connection = FakeConnection(
+            fetch_results=[
+                [{"job_id": "job-1", "status": "running"}],
+                ("session-1",),
+            ]
+        )
 
         response = self._post_delete(connection)
 
@@ -148,7 +170,10 @@ class DeleteSessionTests(unittest.TestCase):
     def test_checkpoint_outbox_failure_rolls_back_the_whole_transaction(self):
         """outbox 写入异常时，不提交消息或会话的后续删除。"""
         connection = FakeConnection(
-            fetch_results=[("session-1",), None],
+            fetch_results=[
+                [{"job_id": "job-1", "status": "succeeded"}],
+                ("session-1",),
+            ],
             raise_on_prefix="INSERT INTO checkpoint_cleanup_outbox",
         )
 

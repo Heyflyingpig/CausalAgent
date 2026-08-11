@@ -351,7 +351,12 @@ def test_direct_lingam_mcp_tool_delegates_to_runner(monkeypatch) -> None:
         return {"success": True, "algorithm": "direct_lingam"}
 
     monkeypatch.setattr(mcp_server, "run_direct_lingam_analysis", fake_runner)
-    result = asyncio.run(mcp_server.causal_direct_lingam("A,B\n1,2\n3,4\n"))
+    monkeypatch.setattr(
+        mcp_server,
+        "_load_csv",
+        lambda user_id, job_id, input_user_file_id, input_object_id: "A,B\n1,2\n3,4\n",
+    )
+    result = asyncio.run(mcp_server.causal_direct_lingam(1, "job-1", 2, 3))
 
     assert "causal_direct_lingam" in FakeFastMCP.registered_tools
     assert observed["csv_data"] == "A,B\n1,2\n3,4\n"

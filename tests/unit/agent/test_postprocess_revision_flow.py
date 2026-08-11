@@ -23,8 +23,7 @@ for key, value in {
 def _install_import_stubs():
     """隔离后处理测试不需要的数据库、绘图和向量库依赖。"""
     agent_connect = types.ModuleType("Database.agent_connect")
-    agent_connect.get_file_content = lambda *args, **kwargs: None
-    agent_connect.get_recent_file = lambda *args, **kwargs: None
+    agent_connect.require_frozen_file_for_job = lambda *args, **kwargs: None
     sys.modules["Database.agent_connect"] = agent_connect
 
     data_visualize = types.ModuleType("Agent.Processing.data_visualize")
