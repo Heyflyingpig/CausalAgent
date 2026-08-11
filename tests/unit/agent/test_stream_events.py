@@ -191,10 +191,18 @@ class StreamEventAdapterTests(unittest.TestCase):
 
     def test_sse_public_payload_removes_backend_attempt(self):
         """job attempt 可以持久化，但不能进入普通用户 SSE 协议。"""
-        payload = {"type": "node_start", "attempt": 4, "step_id": "opaque"}
+        payload = {
+            "type": "node_start",
+            "attempt": 4,
+            "step_id": "opaque",
+            "prompt": "private prompt",
+            "tool_result": {"csv": "private file body"},
+        }
         public = _public_event_payload(payload)
 
         self.assertNotIn("attempt", public)
+        self.assertNotIn("prompt", public)
+        self.assertNotIn("tool_result", public)
         self.assertEqual(payload["attempt"], 4)
 
 
