@@ -28,6 +28,8 @@ worker 使用 LangGraph v2 的 `updates`、`messages`、`custom` 和 `tasks` 流
 
 事件写入由 Job 的 `lease_epoch`、worker、attempt 和稳定 `event_key` 共同保护。终态事件与 assistant 消息、Job 状态在同一个 MySQL 事务中落盘；旧 worker 失去 lease 后不能覆盖新执行结果。前端断线恢复使用 Event ID 读取 MySQL 事件，不依赖 worker 内存。
 
+普通用户历史与实时 SSE 共用字段白名单。历史阶段排除 `text_delta` 和所有边界事件，只重放节点、进度、决策、工具摘要、重试与节点结束；边界事件只在服务端用于阶段切分。页面刷新活动 Job 时，`load_session` 先重放已持久化节点事件并记录实际处理到的 `rendered_event_id`，随后活动 Job API 只补充状态，不能用数据库最新事件 ID 推进该游标；SSE 从 `rendered_event_id` 之后补发，避免加载与订阅之间的事件被跳过。
+
 ## 修改时的验证边界
 
 - 修改图节点或路由时，必须核对显式 State 字段和失败路径，不能只验证成功样例。

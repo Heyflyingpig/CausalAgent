@@ -39,6 +39,12 @@ Agent 产生 interrupt 后，Job 进入 `waiting_input`，保留 `active_session
 
 恢复输入只允许文本或受限 JSON，服务端限制长度、深度、字段/数组项数和 UTF-8 字节数。恢复与取消操作各自要求 UUID v4 `Idempotency-Key`，相同键重放相同请求时返回原结果，不同参数返回冲突。取消只作用于 `waiting_input` Job，并写入稳定 `canceled` 生命周期事件。
 
+## 会话历史中的执行阶段
+
+`ExecutionPhase` 是接口和前端展示概念，不新增表或字段。一个 `analysis_job_inputs` 记录对应至多一个阶段：initial 输入形成 sequence 0，后续 resume 依次形成 sequence 1、2 等。公开节点事件从上一个边界之后开始，归入下一个 `interrupt`、`final_result`、`error` 或 `canceled` 边界所关联的输入；活动 Job 最后尚无边界的区间归入最新输入。
+
+用户消息通过 `chat_messages.analysis_job_input_id` 与输入账本精确关联；边界 assistant 消息同时通过 `source_event_id` 指向事件、通过 `analysis_job_input_id` 指向输入。同一输入先 interrupt 后取消时仍只有一个阶段，取消只把该阶段状态更新为 `canceled`。任一关系缺失、多义或与 `analysis_job_inputs.chat_message_id` 不一致时，该区间不进入历史展示。
+
 ## Checkpoint 身份和跨库清理
 
 当前 checkpoint 身份是：
