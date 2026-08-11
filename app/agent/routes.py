@@ -11,6 +11,7 @@ import time
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from app.agent import job_service
+from app.agent.public_events import public_event_payload
 from app.auth.session_guard import get_current_session_user
 from config.settings import settings
 
@@ -29,10 +30,8 @@ def _sse(event_type: str, payload: dict, event_id: int | None = None) -> str:
 
 
 def _public_event_payload(payload: dict) -> dict:
-    """移除只供 worker 审计和 fencing 使用的内部字段。"""
-    public_payload = dict(payload)
-    public_payload.pop("attempt", None)
-    return public_payload
+    """兼容既有测试与调用，实际清洗规则集中在公共事件模块。"""
+    return public_event_payload(str(payload.get("type") or ""), payload)
 
 
 @agent_bp.route("/send_stream", methods=["POST"])
@@ -165,8 +164,7 @@ def stream_analysis_job_events(job_id: str):
                 payload = row["payload_json"] or {}
                 if isinstance(payload, dict) and "type" not in payload:
                     payload = {**payload, "type": row["event_type"]}
-                if isinstance(payload, dict):
-                    payload = _public_event_payload(payload)
+                payload = public_event_payload(row["event_type"], payload)
                 yield _sse(row["event_type"], payload, after_id)
                 if row["event_type"] in job_service.TERMINAL_EVENTS or row["event_type"] == "interrupt":
                     return

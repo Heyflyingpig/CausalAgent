@@ -235,6 +235,17 @@ function rememberActiveJob(job) {
     return next;
 }
 
+function rememberRestoredActiveJob(job) {
+    const key = activeJobKey(job && job.job_id);
+    if (!key) return null;
+    const next = ExecutionPhaseState.mergeActiveJob(activeJobsById.get(key), {
+        ...job,
+        job_id: key,
+    });
+    activeJobsById.set(key, next);
+    return next;
+}
+
 function forgetActiveJob(jobId) {
     const key = activeJobKey(jobId);
     const source = jobEventSources.get(key);
@@ -868,6 +879,9 @@ function updateActiveJobFromEvent(jobId, eventData) {
     } else if (eventData.type === 'error') {
         state.status = 'failed';
         activeJobsById.delete(key);
+    } else if (eventData.type === 'canceled') {
+        state.status = 'canceled';
+        activeJobsById.delete(key);
     }
 }
 
@@ -881,7 +895,7 @@ function ensureActiveJobSubscription(job, thinkingElements = null) {
     const subscription = subscribeToJobEvents(
         key,
         null,
-        Number(state.last_event_id || 0),
+        Number(state.rendered_event_id ?? state.last_event_id ?? 0),
     );
     jobSubscriptions.set(key, subscription);
     subscription.then(
@@ -896,12 +910,13 @@ function ensureActiveJobSubscription(job, thinkingElements = null) {
 }
 
 function restoreOneActiveJob(job, visible) {
-    const state = rememberActiveJob(job);
+    const state = rememberRestoredActiveJob(job);
     if (state.status === 'waiting_input') {
         state.thinkingElements = null;
         if (visible) setWaitingJob(state);
         return Promise.resolve();
     }
+    if (!visible) return Promise.resolve();
 
     if (state.thinkingElements && !state.thinkingElements.bubble.isConnected) {
         state.thinkingElements = null;
@@ -1064,6 +1079,7 @@ async function sendMessage() {
             session_id: currentSessionId,
             status: jobData.status || 'queued',
             last_event_id: resumeAfterEventId,
+            rendered_event_id: resumeAfterEventId,
         });
         await ensureActiveJobSubscription(activeJob, thinkingElements);
         
@@ -1130,9 +1146,20 @@ function subscribeToJobEvents(jobId, thinkingElements, afterEventId = 0) {
                     const state = activeJobsById.get(key) || stateBeforeEvent;
                     const target = thinkingElements || state?.thinkingElements || null;
                     if (target && target.bubble.isConnected) {
-                        handleStreamEvent(eventData, target, jobId);
+                        const rendered = handleStreamEvent(eventData, target, jobId);
+                        const renderedEventId = Number(eventData.event_id);
+                        if (rendered && state && Number.isFinite(renderedEventId)) {
+                            state.rendered_event_id = Math.max(
+                                Number(state.rendered_event_id || 0),
+                                renderedEventId,
+                            );
+                        }
                     }
-                    if (eventData.type === 'final_result' || eventData.type === 'interrupt') {
+                    if (
+                        eventData.type === 'final_result' ||
+                        eventData.type === 'interrupt' ||
+                        eventData.type === 'canceled'
+                    ) {
                         finish();
                     } else if (eventData.type === 'error') {
                         const streamError = new Error(eventData.message || '任务执行失败');
@@ -1148,7 +1175,7 @@ function subscribeToJobEvents(jobId, thinkingElements, afterEventId = 0) {
         [
             'node_start', 'progress', 'decision', 'tool_call_start',
             'tool_call_result', 'node_retry', 'node_end', 'text_delta',
-            'final_result', 'interrupt', 'error', 'heartbeat'
+            'final_result', 'interrupt', 'error', 'canceled', 'heartbeat'
         ].forEach(bindEvent);
 
         source.onopen = () => {
@@ -1234,7 +1261,9 @@ function keepLatestChatContentVisible() {
 /**
  * 创建无卡片背景的思考过程入口和可展开详情。
  */
-function addThinkingMessage() {
+function addThinkingMessage(options = {}) {
+    const elapsedSeconds = Math.max(0, Number(options.elapsedSeconds || 0));
+    const isActive = options.active !== false;
     const bubble = document.createElement('div');
     bubble.className = 'thinking-bubble';
     
@@ -1250,7 +1279,7 @@ function addThinkingMessage() {
 
     const duration = document.createElement('span');
     duration.className = 'thinking-duration';
-    duration.textContent = '0s';
+    duration.textContent = formatElapsedDuration(elapsedSeconds * 1000);
 
     const status = document.createElement('span');
     status.className = 'thinking-status';
@@ -1305,8 +1334,8 @@ function addThinkingMessage() {
         detailContainer,
         durationElement: duration,
         statusElement: status,
-        startedAt: performance.now(),
-        finishedAt: null,
+        startedAt: performance.now() - (elapsedSeconds * 1000),
+        finishedAt: isActive ? null : performance.now(),
         durationTimer: null,
         steps: new Map(),
         streamState: ChatStreamState.createState(),
@@ -1314,10 +1343,17 @@ function addThinkingMessage() {
         draftStreamId: null,
     };
 
-    thinkingElements.durationTimer = setInterval(
-        () => updateThinkingDuration(thinkingElements),
-        100,
-    );
+    if (isActive) {
+        thinkingElements.durationTimer = setInterval(
+            () => updateThinkingDuration(thinkingElements),
+            100,
+        );
+    } else {
+        dots.style.display = 'none';
+        if (options.status === 'failed') setTimelineStatus(thinkingElements, '执行失败');
+        if (options.status === 'canceled') setTimelineStatus(thinkingElements, '已取消');
+        if (options.status === 'waiting_input') setTimelineStatus(thinkingElements, '等待补充输入');
+    }
     return thinkingElements;
 }
 
@@ -1344,9 +1380,10 @@ function toggleThinkingDetail(detailContainer, expandIcon) {
 /**
  * 处理流式事件
  */
-function handleStreamEvent(eventData, thinkingElements, jobId = null) {
+function handleStreamEvent(eventData, thinkingElements, jobId = null, historyMode = false) {
     const eventType = eventData.type;
-    if (!ChatStreamState.acceptEventId(thinkingElements.streamState, eventData.event_id)) return;
+    if (historyMode && !ExecutionPhaseState.isHistoryEvent(eventType)) return false;
+    if (!ChatStreamState.acceptEventId(thinkingElements.streamState, eventData.event_id)) return false;
     
     console.log('[SSE Event]:', eventType, eventData);
     
@@ -1380,10 +1417,17 @@ function handleStreamEvent(eventData, thinkingElements, jobId = null) {
         case 'error':
             handleStreamError(eventData, thinkingElements);
             break;
+
+        case 'canceled':
+            stopThinkingDuration(thinkingElements);
+            setTimelineStatus(thinkingElements, '已取消');
+            thinkingElements.bubble.querySelector('.thinking-dots').style.display = 'none';
+            break;
             
         default:
             console.warn('未知的事件类型:', eventType);
     }
+    return true;
 }
 
 /**
@@ -1592,14 +1636,9 @@ function handleFinalResult(eventData, thinkingElements) {
 function handleInterrupt(eventData, thinkingElements, jobId) {
     const { message } = eventData;
     stopThinkingDuration(thinkingElements);
-    
-    // 移除思考过程的两个独立元素
-    if (thinkingElements.bubble && thinkingElements.bubble.parentNode) {
-        thinkingElements.bubble.parentNode.removeChild(thinkingElements.bubble);
-    }
-    if (thinkingElements.detailContainer && thinkingElements.detailContainer.parentNode) {
-        thinkingElements.detailContainer.parentNode.removeChild(thinkingElements.detailContainer);
-    }
+    setTimelineStatus(thinkingElements, '等待补充输入');
+    const dots = thinkingElements.bubble.querySelector('.thinking-dots');
+    if (dots) dots.style.display = 'none';
     
     // 添加需要用户输入的消息
     addMessage('ai', {
@@ -1612,6 +1651,29 @@ function handleInterrupt(eventData, thinkingElements, jobId) {
         prompt: message,
         last_event_id: eventData.event_id || 0,
     });
+}
+
+function renderThinkingPhase(phase) {
+    const active = ExecutionPhaseState.isActivePhase(phase.status);
+    const thinkingElements = addThinkingMessage({
+        elapsedSeconds: phase.elapsed_seconds,
+        status: phase.status,
+        active,
+    });
+    (phase.events || []).forEach(eventData => {
+        handleStreamEvent(eventData, thinkingElements, phase.analysis_job_id, true);
+    });
+    if (active) {
+        rememberActiveJob({
+            job_id: phase.analysis_job_id,
+            session_id: currentSessionId,
+            status: phase.status,
+            last_event_id: Number(phase.last_event_id || 0),
+            rendered_event_id: Number(phase.last_event_id || 0),
+            thinkingElements,
+        });
+    }
+    return thinkingElements;
 }
 
 /**
@@ -2102,6 +2164,7 @@ async function loadSession(sessionId) {
             setWaitingJob(null);
             data.messages.forEach(msg => {
                 addMessage(msg.sender, msg.text);
+                if (msg.thinking_after) renderThinkingPhase(msg.thinking_after);
             });
             await restoreActiveJobs(sessionId);
             // 确保加载会话后事件监听器也是最新的

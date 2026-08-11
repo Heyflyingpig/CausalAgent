@@ -39,7 +39,7 @@
 
 ## 活动 Job
 
-`GET /api/agent/jobs/active` 返回当前用户的活动 Job 摘要，并附带当前公开事件最大 ID `last_event_id`。可传 `session_id` 只恢复指定会话。摘要包含状态、worker/lease 观测、尝试和恢复次数、冻结文件名以及等待输入的问题 ID/公开提示，但不返回内部 checkpoint 状态或文件正文。
+`GET /api/agent/jobs/active` 返回当前用户的活动 Job 摘要，并附带当前公开事件最大 ID `last_event_id`。可传 `session_id` 只恢复指定会话。摘要包含状态、worker/lease 观测、尝试和恢复次数、冻结文件名以及等待输入的问题 ID/公开提示，但不返回内部 checkpoint 状态或文件正文。前端刷新时以会话历史实际回放到的 `rendered_event_id` 作为 SSE 游标，活动摘要中的最新 ID 不能覆盖它。
 
 ## SSE 订阅
 
@@ -49,7 +49,7 @@
 Last-Event-ID: 42
 ```
 
-也兼容 `last_event_id=42` 查询参数。服务端从 `analysis_job_events.id > 42` 读取事件，返回标准 SSE 的 `id`、`event`、`data` 字段；没有新事件时按配置轮询并发送 heartbeat。事件 payload 经过 `_public_event_payload` 清理，worker 的 `attempt` 等内部字段不会对外可见。
+也兼容 `last_event_id=42` 查询参数。服务端从 `analysis_job_events.id > 42` 读取事件，返回标准 SSE 的 `id`、`event`、`data` 字段；没有新事件时按配置轮询并发送 heartbeat。事件 payload 按事件类型执行字段白名单清洗，worker 的 `attempt`、未知附加字段和内部对象不会对外可见。
 
 收到 `interrupt` 后，前端应展示公开问题并等待恢复；收到 `final_result`、`error` 或 `canceled` 后连接结束。若 Job 已经进入终态，即使数据库查询时没有新的事件，服务端也会结束连接。
 
