@@ -266,6 +266,10 @@ class AppConfig:
             default=10,
         )
         self.JOB_STALE_AFTER_SECONDS = self._get_int_config("JOB_STALE_AFTER_SECONDS", default=120)
+        self.JOB_DRAINING_STALE_AFTER_SECONDS = self._get_int_config(
+            "JOB_DRAINING_STALE_AFTER_SECONDS",
+            default=420,
+        )
         self.JOB_MAX_ATTEMPTS = self._get_int_config("JOB_MAX_ATTEMPTS", default=3)
         self.JOB_CHAT_HISTORY_LIMIT = self._get_int_config("JOB_CHAT_HISTORY_LIMIT", default=20)
         self.SSE_POLL_INTERVAL_SECONDS = self._get_float_config("SSE_POLL_INTERVAL_SECONDS", default=1.0)

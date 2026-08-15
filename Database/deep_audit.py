@@ -58,7 +58,8 @@ EXPECTED_COLUMNS = {
     },
     "analysis_jobs": {
         "id", "job_id", "user_id", "session_id", "status", "worker_id",
-        "lease_epoch", "locked_at", "heartbeat_at", "attempt_count",
+        "lease_epoch", "execution_state", "locked_at", "heartbeat_at",
+        "execution_released_at", "execution_release_reason", "attempt_count",
         "recovery_count", "resume_count", "finished_at", "created_at",
         "active_session_key", "idempotency_key", "request_fingerprint",
         "input_user_file_id", "input_object_id", "input_file_hash",
@@ -102,6 +103,7 @@ EXPECTED_INDEXES = {
         "PRIMARY",
         "idx_analysis_jobs_admin_created",
         "idx_analysis_jobs_input_user_file_status",
+        "idx_analysis_jobs_execution_state_heartbeat",
         "uq_analysis_jobs_user_idempotency", "uq_analysis_jobs_cancel_idempotency",
     },
     "analysis_job_events": {"PRIMARY", "uq_analysis_job_events_event_key"},
@@ -445,6 +447,21 @@ def _relationship_check() -> dict[str, Any]:
             FROM analysis_jobs
             WHERE status = 'waiting_input'
               AND (worker_id IS NOT NULL OR locked_at IS NOT NULL OR heartbeat_at IS NOT NULL)
+            LIMIT %s
+        """,
+        "invalid_execution_state": """
+            SELECT job_id AS sample_id
+            FROM analysis_jobs
+            WHERE (status = 'running' AND (execution_state IS NULL OR execution_state <> 'leased'))
+               OR (status <> 'running' AND execution_state = 'leased')
+               OR (execution_state = 'draining' AND status <> 'canceled')
+               OR (execution_state IN ('leased', 'draining')
+                   AND (worker_id IS NULL OR locked_at IS NULL OR heartbeat_at IS NULL))
+               OR (execution_state IS NULL
+                   AND (worker_id IS NOT NULL OR locked_at IS NOT NULL))
+               OR (execution_state IS NOT NULL
+                   AND (execution_released_at IS NOT NULL OR execution_release_reason IS NOT NULL))
+               OR ((execution_released_at IS NULL) <> (execution_release_reason IS NULL))
             LIMIT %s
         """,
     }

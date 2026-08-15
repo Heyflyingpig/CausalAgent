@@ -397,6 +397,7 @@ def check_database_readiness():
                   AND table_name = 'analysis_jobs'
                   AND column_name IN (
                     'idempotency_key', 'request_fingerprint', 'lease_epoch',
+                    'execution_state', 'execution_released_at', 'execution_release_reason',
                     'recovery_count', 'resume_count', 'input_user_file_id',
                     'input_object_id', 'input_file_hash', 'input_filename',
                     'current_question_id', 'current_waiting_prompt',
@@ -410,6 +411,9 @@ def check_database_readiness():
                 "idempotency_key",
                 "request_fingerprint",
                 "lease_epoch",
+                "execution_state",
+                "execution_released_at",
+                "execution_release_reason",
                 "recovery_count",
                 "resume_count",
                 "input_user_file_id",
@@ -460,6 +464,10 @@ def check_database_readiness():
                       AND non_unique = 0
                     )
                     OR (
+                      table_name = 'analysis_jobs'
+                      AND index_name = 'idx_analysis_jobs_execution_state_heartbeat'
+                    )
+                    OR (
                       table_name = 'analysis_job_inputs'
                       AND index_name = 'uq_analysis_job_inputs_sequence'
                       AND non_unique = 0
@@ -501,6 +509,10 @@ def check_database_readiness():
                 (
                     "analysis_jobs",
                     "uq_analysis_jobs_cancel_idempotency",
+                ),
+                (
+                    "analysis_jobs",
+                    "idx_analysis_jobs_execution_state_heartbeat",
                 ),
                 ("analysis_job_inputs", "uq_analysis_job_inputs_sequence"),
                 ("analysis_job_inputs", "uq_analysis_job_inputs_idempotency"),

@@ -342,7 +342,7 @@ def delete_session():
             # 与创建、恢复、取消 Job 保持一致：先锁 Job，再锁 session，避免并发
             # 删除和任务生命周期操作形成 InnoDB 锁环。
             cursor.execute("""
-                SELECT job_id, status
+                SELECT job_id, status, execution_state
                 FROM analysis_jobs
                 WHERE session_id = %s
                   AND user_id = %s
@@ -363,10 +363,14 @@ def delete_session():
                 logging.info(f"用户 {user_id} 请求删除不存在或无权访问的会话 {session_id}")
                 return jsonify({"success": False, "error": "会话不存在或无权访问"}), 404
 
-            if any(row["status"] in {"queued", "running", "waiting_input"} for row in session_jobs):
+            if any(
+                row["status"] in {"queued", "running", "waiting_input"}
+                or row.get("execution_state") in {"leased", "draining"}
+                for row in session_jobs
+            ):
                 conn.rollback()
                 logging.info(f"用户 {user_id} 尝试删除仍有 active job 的会话 {session_id}")
-                return jsonify({"success": False, "error": "当前会话仍有任务正在运行，请等待完成后再删除"}), 409
+                return jsonify({"success": False, "error": "当前会话仍有活动或 draining 任务，请等待执行占用释放后再删除"}), 409
 
             try:
                 # 跨库删除不能加入 MySQL 事务；outbox 与会话删除同事务提交。

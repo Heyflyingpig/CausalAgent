@@ -19,6 +19,7 @@ for key, value in TEST_ENV.items():
 
 from app.agent.job_service import (  # noqa: E402
     MAX_ATTEMPTS_ERROR,
+    FailJobResult,
     claim_next_job,
     complete_job,
     complete_job_with_chat,
@@ -52,6 +53,13 @@ class FakeCursor:
         statement = self.statements[-1][0] if self.statements else ""
         if "FROM analysis_job_events" in statement and "event_key" in statement:
             return self.event
+        if (
+            "SELECT *" in statement
+            and "FROM analysis_jobs" in statement
+            and "FOR UPDATE" in statement
+            and "SKIP LOCKED" not in statement
+        ):
+            return self.lock_job
         if "SELECT status, worker_id, attempt_count, lease_epoch" in statement:
             return self.lock_job
         if "FROM analysis_job_inputs" in statement:
@@ -218,10 +226,68 @@ class JobLifecycleTests(unittest.TestCase):
         ):
             failed = fail_job("job-1", "worker-old", 2, "old failure")
 
-        self.assertFalse(failed)
+        self.assertEqual(failed, FailJobResult.OTHER_FENCED)
         self.assertEqual(fail_connection.commits, 0)
         self.assertEqual(fail_connection.rollbacks, 1)
         self.assertFalse(any("SET status = 'failed'" in sql for sql, _ in fail_connection.fake_cursor.statements))
+
+    def test_fail_job_reports_canceled_fencing_without_error_event(self):
+        """取消事务先获胜时，失败路径只能报告 canceled fencing。"""
+        connection = FakeConnection(
+            lock_job={
+                "job_id": "job-1",
+                "status": "canceled",
+                "execution_state": "draining",
+                "worker_id": "worker-a",
+                "attempt_count": 2,
+                "lease_epoch": 9,
+            }
+        )
+
+        with patch("app.agent.job_service.get_write_connection", return_value=connection):
+            failed = fail_job(
+                "job-1",
+                "worker-a",
+                2,
+                "迟到的 graph failure",
+                lease_epoch=9,
+            )
+
+        self.assertEqual(failed, FailJobResult.CANCELED_FENCED)
+        self.assertEqual(connection.commits, 0)
+        self.assertEqual(connection.rollbacks, 1)
+        self.assertFalse(any("INSERT INTO analysis_job_events" in sql for sql, _ in connection.fake_cursor.statements))
+
+    def test_fail_job_applies_error_event_and_chat_after_locked_match(self):
+        """当前 worker 获得 Job 行锁后，失败事件、聊天和 failed 状态同事务提交。"""
+        connection = FakeConnection(
+            lock_job={
+                "job_id": "job-1",
+                "user_id": 7,
+                "session_id": "session-1",
+                "status": "running",
+                "execution_state": "leased",
+                "worker_id": "worker-a",
+                "attempt_count": 2,
+                "lease_epoch": 9,
+            }
+        )
+
+        with patch("app.agent.job_service.get_write_connection", return_value=connection):
+            failed = fail_job(
+                "job-1",
+                "worker-a",
+                2,
+                "节点执行失败",
+                lease_epoch=9,
+            )
+
+        self.assertEqual(failed, FailJobResult.APPLIED)
+        self.assertEqual(connection.commits, 1)
+        self.assertEqual(connection.rollbacks, 0)
+        sql = [statement for statement, _params in connection.fake_cursor.statements]
+        self.assertTrue(any("INSERT INTO analysis_job_events" in statement for statement in sql))
+        self.assertTrue(any("SET status = 'failed'" in statement for statement in sql))
 
     def test_complete_job_sql_requires_worker_and_attempt(self):
         """非聊天成功更新也必须在 SQL 层带上 worker 和 attempt fencing。"""

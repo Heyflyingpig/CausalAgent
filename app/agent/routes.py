@@ -237,7 +237,7 @@ def resume_analysis_job(job_id: str):
 
 @agent_bp.route("/agent/jobs/<job_id>/cancel", methods=["POST"])
 def cancel_analysis_job(job_id: str):
-    """取消 waiting_input Job。"""
+    """即时逻辑取消 queued/running/waiting_input Job。"""
     current_user = get_current_session_user()
     if not current_user:
         return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
