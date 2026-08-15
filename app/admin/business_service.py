@@ -588,12 +588,13 @@ def list_jobs(
         db_cursor.execute(
             f"""
             SELECT j.id AS row_id, j.job_id, j.user_id, u.username, j.session_id,
-                   j.status, j.worker_id, j.lease_epoch, j.attempt_count,
+                   j.status, j.execution_state, j.worker_id, j.lease_epoch, j.attempt_count,
                    j.recovery_count, j.resume_count, j.max_attempts,
                    (j.result_json IS NOT NULL) AS has_result,
                    (j.message IS NOT NULL) AS has_input,
                    j.locked_at, j.heartbeat_at, j.created_at, j.started_at,
-                   j.finished_at, j.chat_saved_at, j.current_question_id,
+                   j.finished_at, j.execution_released_at, j.execution_release_reason,
+                   j.chat_saved_at, j.current_question_id,
                    (j.input_user_file_id IS NOT NULL) AS has_frozen_file
             FROM analysis_jobs AS j
             JOIN users AS u ON u.id = j.user_id
@@ -621,7 +622,8 @@ def get_job_detail(job_id: str) -> dict[str, Any]:
         cursor.execute(
             """
             SELECT j.job_id, j.user_id, u.username, j.session_id, j.status,
-                   j.worker_id, j.lease_epoch, j.locked_at, j.heartbeat_at,
+                   j.execution_state, j.worker_id, j.lease_epoch, j.locked_at, j.heartbeat_at,
+                   j.execution_released_at, j.execution_release_reason,
                    j.attempt_count, j.recovery_count, j.resume_count,
                    j.max_attempts, j.created_at, j.started_at, j.finished_at,
                    j.chat_saved_at, j.input_user_file_id, j.input_object_id,

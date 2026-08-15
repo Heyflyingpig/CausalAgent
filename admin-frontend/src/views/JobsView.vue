@@ -271,10 +271,14 @@ onMounted(() => {
         <div><span>等待输入</span><strong>{{ workerSummary?.summary.waiting_input ?? '—' }}</strong></div>
         <div><span>Stale</span><strong>{{ workerSummary?.summary.stale ?? '—' }}</strong></div>
         <div><span>达到最大尝试仍运行</span><strong>{{ workerSummary?.summary.max_attempts_running ?? '—' }}</strong></div>
+        <div><span>Draining</span><strong>{{ workerSummary?.summary.draining ?? '—' }}</strong></div>
+        <div><span>最长 Draining</span><strong>{{ workerSummary?.summary.oldest_draining_age_seconds ?? 0 }} 秒</strong></div>
+        <div><span>释放确认 / 失联回收</span><strong>{{ workerSummary?.summary.worker_confirmed ?? '—' }} / {{ workerSummary?.summary.lease_expired ?? '—' }}</strong></div>
       </div>
       <el-table v-if="workerSummary?.jobs?.length" :data="workerSummary.jobs" table-layout="auto">
         <el-table-column prop="job_id" label="Job ID" min-width="250" />
         <el-table-column prop="status" label="状态" min-width="100" />
+        <el-table-column prop="execution_state" label="执行占用" min-width="110" />
         <el-table-column prop="worker_id" label="Worker" min-width="160" />
         <el-table-column label="尝试次数" min-width="110"><template #default="{ row }">{{ row.attempt_count }} / {{ row.max_attempts }}</template></el-table-column>
         <el-table-column label="心跳时间" min-width="180"><template #default="{ row }">{{ formatDate(row.heartbeat_at) }}</template></el-table-column>
@@ -305,6 +309,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="worker_id" label="Worker" min-width="170" show-overflow-tooltip />
+        <el-table-column prop="execution_state" label="执行占用" min-width="110" />
         <el-table-column label="创建时间" min-width="180">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
@@ -329,6 +334,7 @@ onMounted(() => {
           <el-descriptions-item label="Job ID" :span="2">{{ detail.job_id }}</el-descriptions-item>
           <el-descriptions-item label="用户">{{ detail.username }} (#{{ detail.user_id }})</el-descriptions-item>
           <el-descriptions-item label="状态">{{ detail.status }}</el-descriptions-item>
+          <el-descriptions-item label="执行占用">{{ detail.execution_state || '已释放' }}</el-descriptions-item>
           <el-descriptions-item label="会话" :span="2">{{ detail.session_id }}</el-descriptions-item>
           <el-descriptions-item label="Worker">{{ detail.worker_id || '未领取' }}</el-descriptions-item>
           <el-descriptions-item label="Lease epoch">{{ detail.lease_epoch }}</el-descriptions-item>
@@ -341,6 +347,8 @@ onMounted(() => {
           <el-descriptions-item label="输入条数">{{ detail.input_count ?? 0 }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatDate(detail.created_at) }}</el-descriptions-item>
           <el-descriptions-item label="完成时间">{{ formatDate(detail.finished_at) }}</el-descriptions-item>
+          <el-descriptions-item label="执行释放时间">{{ formatDate(detail.execution_released_at) }}</el-descriptions-item>
+          <el-descriptions-item label="执行释放原因">{{ detail.execution_release_reason || '—' }}</el-descriptions-item>
         </el-descriptions>
 
         <section v-if="detail?.inputs?.length" class="job-input-ledger">

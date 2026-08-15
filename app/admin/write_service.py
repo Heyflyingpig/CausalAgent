@@ -847,7 +847,11 @@ def _user_impact(cursor, user: dict[str, Any]) -> dict[str, Any]:
             (
                 SELECT COUNT(*)
                 FROM analysis_jobs
-                WHERE user_id = %s AND status IN ('queued', 'running', 'waiting_input')
+                WHERE user_id = %s
+                  AND (
+                      status IN ('queued', 'running', 'waiting_input')
+                      OR execution_state IN ('leased', 'draining')
+                  )
             ) AS active_jobs
         """,
         (user_id,) * 9,
@@ -900,7 +904,7 @@ def get_user_delete_impact(
     if user["role"] == "admin" and user["is_active"] and enabled_admin_count <= 1:
         blockers.append("不能删除最后一个启用管理员")
     if impact["active_jobs"]:
-        blockers.append("目标用户仍有 queued/running/waiting_input 分析任务")
+        blockers.append("目标用户仍有活动或 draining 执行中的分析任务")
     if impact["total_related_rows"] > settings.ADMIN_DELETE_MAX_RELATED_ROWS:
         blockers.append(
             "关联记录超过同步删除安全上限，需在维护窗口使用专用流程处理"
@@ -1011,7 +1015,7 @@ def delete_user(
             )
         cursor.execute(
             """
-            SELECT job_id, status
+            SELECT job_id, status, execution_state
             FROM analysis_jobs
             WHERE user_id = %s
             ORDER BY id
@@ -1020,10 +1024,14 @@ def delete_user(
             (user_id,),
         )
         job_rows = cursor.fetchall()
-        if any(row["status"] in {"queued", "running", "waiting_input"} for row in job_rows):
+        if any(
+            row["status"] in {"queued", "running", "waiting_input"}
+            or row.get("execution_state") in {"leased", "draining"}
+            for row in job_rows
+        ):
             raise AdminApiError(
                 "active_jobs_block_delete",
-                "目标用户仍有 queued/running/waiting_input 分析任务",
+                "目标用户仍有活动或 draining 执行中的分析任务",
                 status=409,
             )
         impact = _user_impact(cursor, user)
@@ -1247,13 +1255,16 @@ def get_file_delete_impact(file_id: int) -> dict[str, Any]:
             SELECT COUNT(*) AS count_value
             FROM analysis_jobs
             WHERE input_user_file_id = %s
-              AND status IN ('queued', 'running', 'waiting_input')
+              AND (
+                  status IN ('queued', 'running', 'waiting_input')
+                  OR execution_state IN ('leased', 'draining')
+              )
             """,
             (file_id,),
         )
         active_jobs = int((cursor.fetchone() or {}).get("count_value") or 0)
     blockers = (
-        ["文件仍被 queued/running/waiting_input 任务冻结使用"]
+        ["文件仍被活动或 draining 任务冻结使用"]
         if active_jobs
         else []
     )
@@ -1371,10 +1382,13 @@ def delete_file(
             )
         cursor.execute(
             """
-            SELECT job_id
+            SELECT job_id, execution_state
             FROM analysis_jobs
             WHERE input_user_file_id = %s
-              AND status IN ('queued', 'running', 'waiting_input')
+              AND (
+                  status IN ('queued', 'running', 'waiting_input')
+                  OR execution_state IN ('leased', 'draining')
+              )
             ORDER BY id
             FOR UPDATE
             """,
@@ -1383,7 +1397,7 @@ def delete_file(
         if cursor.fetchall():
             raise AdminApiError(
                 "active_jobs_block_delete",
-                "文件仍被 queued/running/waiting_input 任务冻结使用",
+                "文件仍被活动或 draining 任务冻结使用",
                 status=409,
             )
         cursor.execute(
