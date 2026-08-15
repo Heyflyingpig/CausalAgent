@@ -139,11 +139,6 @@
            
         
         <div class="input-area">
-            <div id="waitingJobStatus" class="waiting-job-status" hidden>
-                <span id="waitingJobPrompt"></span>
-                <button id="cancelWaitingJobButton" type="button" data-i18n="cancelWaitingJob"
-                        title="仅取消等待用户输入的任务，不会中断正在运行的任务">取消等待任务</button>
-            </div>
             <div id="selectedFileDraft" class="selected-file-draft" hidden>
                 <div class="selected-file-card">
                     <div class="selected-file-icon" aria-hidden="true">CSV</div>
@@ -159,13 +154,20 @@
             <div class="input-actions">
                 <input type="file" id="csvUploader" accept=".csv" style="display: none;">
                 <button id="uploadCsvButton" title="上传" data-i18n="upload">上传</button>
-                <button id="sendButton" data-i18n="send">发送</button>
+                <button id="cancelJobButton" class="cancel-job-button" type="button" data-i18n="cancelJob"
+                        title="取消任务；已发出的远端调用会自然返回" hidden>取消任务</button>
+                <button id="sendButton" class="send-button" type="button" aria-label="发送">
+                    <span class="send-button-label" data-i18n="send">发送</span>
+                    <span class="send-button-spinner" aria-hidden="true"></span>
+                    <span class="send-button-stop" aria-hidden="true"></span>
+                </button>
             </div>
         </div>
     </div>
 
     <script src="static/js/stream_state.js"></script>
     <script src="static/js/execution_phase_state.js"></script>
+    <script src="static/js/job_subscription_state.js"></script>
     <script src="static/js/script.js"></script>
 </body>
 </html>

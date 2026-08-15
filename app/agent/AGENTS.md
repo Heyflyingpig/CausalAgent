@@ -15,7 +15,7 @@
 - 创建、resume、cancel 操作必须使用标准 UUID v4 `Idempotency-Key`；相同键重试必须复用原请求，不同请求参数必须返回冲突。
 - 同一 `user_id + session_id` 同时最多允许一个 `queued/running/waiting_input` Job；不能通过绕过服务层或重建 Session 破坏这个约束。
 - Job 初始输入必须在 MySQL 事务中写入 `analysis_job_inputs`，并冻结 `input_user_file_id`、对象 ID、hash 和文件名快照；浏览器未发送的文件选择不是持久化输入。
-- `waiting_input` 必须保留活动会话锁但释放 worker lease；resume 追加 input 后重新排队同一个 Job；cancel 只允许作用于等待输入的 Job。
+- `waiting_input` 必须保留活动会话锁但释放 worker lease；resume 追加 input 后重新排队同一个 Job；cancel 支持 `queued/running/waiting_input`。running 取消先转为 `canceled/draining`，只有 worker cleanup 或失联 lease 回收后才释放执行占用。
 - 所有 worker 状态、事件和终态更新必须校验 worker、attempt 和 `lease_epoch`；失去 lease 的旧 worker 禁止覆盖新尝试。
 
 ## 公共事件与安全

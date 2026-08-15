@@ -232,5 +232,34 @@ class FileLibraryAndJobRecoveryMigrationTests(unittest.TestCase):
         self.assertNotIn("REMOVE PARTITIONING", text)
 
 
+class JobExecutionReleaseMigrationTests(unittest.TestCase):
+    """验证即时逻辑取消所需的执行占用字段和安全回滚边界。"""
+
+    PATH = Path(
+        "Database/migrations/versions/b2c3d4e5f6a7_add_job_execution_release_state.py"
+    )
+
+    def test_migration_extends_current_job_head(self):
+        text = self.PATH.read_text(encoding="utf-8")
+        self.assertIn('revision: str = "b2c3d4e5f6a7"', text)
+        self.assertIn('down_revision: Union[str, Sequence[str], None] = "a1b2c3d4e5f6"', text)
+        for fragment in (
+            "execution_state",
+            "execution_released_at",
+            "execution_release_reason",
+            "idx_analysis_jobs_execution_state_heartbeat",
+            "worker_confirmed",
+            "lease_expired",
+        ):
+            self.assertIn(fragment, text)
+
+    def test_downgrade_only_removes_new_execution_structure(self):
+        text = self.PATH.read_text(encoding="utf-8")
+        downgrade = text.split("def downgrade()", 1)[1]
+        self.assertIn("DROP INDEX idx_analysis_jobs_execution_state_heartbeat", downgrade)
+        self.assertIn("DROP COLUMN execution_state", downgrade)
+        self.assertNotIn("DROP TABLE", downgrade)
+
+
 if __name__ == "__main__":
     unittest.main()

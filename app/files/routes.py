@@ -248,10 +248,13 @@ def delete_file():
 
             cursor.execute(
                 """
-                SELECT job_id
+                SELECT job_id, execution_state
                 FROM analysis_jobs
                 WHERE input_user_file_id = %s
-                  AND status IN ('queued', 'running', 'waiting_input')
+                  AND (
+                      status IN ('queued', 'running', 'waiting_input')
+                      OR execution_state IN ('leased', 'draining')
+                  )
                 ORDER BY id
                 FOR UPDATE
                 """,
@@ -261,7 +264,7 @@ def delete_file():
                 connection.rollback()
                 return jsonify({
                     "success": False,
-                    "error": "当前文件仍被活动任务使用，请等待任务结束后再删除",
+                    "error": "当前文件仍被活动或 draining 任务使用，请等待执行占用释放后再删除",
                 }), 409
 
             cursor.execute("DELETE FROM user_files WHERE id = %s", (file_id,))

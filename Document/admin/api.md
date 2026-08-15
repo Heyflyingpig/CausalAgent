@@ -88,7 +88,7 @@ SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序�
 | `GET` | `/api/admin/business/files/<id>/download` | 下载文件 |
 | `GET` | `/api/admin/operations/<operation_id>` | 查询受控用户删除及 checkpoint cleanup 状态 |
 
-密码哈希、Cookie、Token、文件哈希、数据库账号、host 和 grants 不进入列表 DTO。任务事件接口只从 MySQL payload 提取节点名、说明和耗时；checkpoint 接口按 `thread_id=analysis_jobs.job_id` 与 `metadata.job_id` 精确归属任务，根 namespace 为空，默认 20、最多 50 条并按不透明 `checkpoint_id` 游标分页，只返回 ID、父 ID、namespace、时间、step、source 和更新通道。它不读取或返回 checkpoint 状态正文、blob 和 pending writes；旧 session-thread checkpoint 不迁移、不读取、不清理。历史记录缺少 `job_id` 时不会按时间猜测归属。PostgreSQL 不可用时返回 `503 checkpoint_unavailable`，任务详情和 MySQL 事件接口仍可用。
+密码哈希、Cookie、Token、文件哈希、数据库账号、host 和 grants 不进入列表 DTO。Job DTO 额外返回 `execution_state`、`execution_released_at` 和 `execution_release_reason`；worker 汇总返回 draining 数量、最长 draining 时长以及 `worker_confirmed`/`lease_expired` 计数。任务事件接口只从 MySQL payload 提取节点名、说明和耗时；checkpoint 接口按 `thread_id=analysis_jobs.job_id` 与 `metadata.job_id` 精确归属任务，根 namespace 为空，默认 20、最多 50 条并按不透明 `checkpoint_id` 游标分页，只返回 ID、父 ID、namespace、时间、step、source 和更新通道。它不读取或返回 checkpoint 状态正文、blob 和 pending writes；旧 session-thread checkpoint 不迁移、不读取、不清理。历史记录缺少 `job_id` 时不会按时间猜测归属。PostgreSQL 不可用时返回 `503 checkpoint_unavailable`，任务详情和 MySQL 事件接口仍可用。
 
 消息、附件及任务内容最多按 64 KiB 源字节分块读取；成功的敏感读取要求审计可写。CSV 预览最多读取 256 KiB、100 行、50 列，单元格最多 1000 字符，并且只按文本渲染。
 

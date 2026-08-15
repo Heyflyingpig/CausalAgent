@@ -272,6 +272,34 @@ class JobRecoveryTests(unittest.TestCase):
         self.assertTrue(any("SET status = 'canceled'" in statement for statement in sql))
         self.assertTrue(any("active_session_key = NULL" in statement for statement in sql))
 
+    def test_cancel_running_job_keeps_draining_execution_ownership(self):
+        """运行中取消必须立即终止业务状态，但保留原 worker 的 draining 身份。"""
+        job = {
+            "job_id": "job-running",
+            "user_id": 7,
+            "session_id": "session-1",
+            "status": "running",
+            "execution_state": "leased",
+            "worker_id": "worker-a",
+            "attempt_count": 2,
+            "lease_epoch": 9,
+        }
+        refreshed = {**job, "status": "canceled", "execution_state": "draining"}
+        connection = ScriptedConnection([job, None, None, {"input_id": 42}, None])
+
+        with (
+            patch("app.agent.job_service.get_write_connection", return_value=connection),
+            patch("app.agent.job_service.get_job_for_user", return_value=refreshed),
+        ):
+            result, existing = cancel_job(7, "job-running", CANCEL_KEY)
+
+        self.assertEqual(result, refreshed)
+        self.assertFalse(existing)
+        self.assertEqual(connection.commits, 1)
+        sql = [statement for statement, _params in connection.cursor_value.statements]
+        self.assertTrue(any("WHEN status = 'running' THEN 'draining'" in statement for statement in sql))
+        self.assertTrue(any("WHEN status = 'running' THEN worker_id" in statement for statement in sql))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,11 @@ from langgraph.errors import NodeError
 from langgraph.types import Command, RetryPolicy, TimeoutPolicy, default_retry_on
 
 from .state import CausalAgentState
+from app.agent.worker.execution_guard import (
+    JobExecutionRevoked,
+    current_execution_guard,
+    raise_if_execution_revoked,
+)
 
 
 def retry_transient_errors(exc: BaseException) -> bool:
@@ -23,6 +28,11 @@ def retry_transient_errors(exc: BaseException) -> bool:
     默认策略已排除常见编程错误，并会重试 NodeTimeoutError 以及常见 5xx/网络类异常；
     这里单独排除 LangGraph interrupt 相关异常，避免“需要用户输入”的业务中断被当作故障重试。
     """
+    if isinstance(exc, JobExecutionRevoked):
+        return False
+    guard = current_execution_guard()
+    if guard is not None and guard.revoked:
+        return False
     exc_name = exc.__class__.__name__.lower()
     if "interrupt" in exc_name:
         return False
@@ -58,11 +68,13 @@ def timeout(run_timeout: float, idle_timeout: float | None = None) -> TimeoutPol
 
 def _error_message(error: NodeError) -> str:
     """生成不包含异常原文的节点失败摘要。"""
+    raise_if_execution_revoked(getattr(error, "error", error))
     return f"{error.node} 节点执行失败"
 
 
 def sanitize_error(exc: BaseException) -> str:
     """把异常归类为有限的公开错误，避免泄露路径、连接串或文件正文。"""
+    raise_if_execution_revoked(exc)
     normalized = str(exc).lower()
     if "timeout" in normalized:
         return "调用超时"

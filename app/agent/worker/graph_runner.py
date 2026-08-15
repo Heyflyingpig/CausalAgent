@@ -15,6 +15,7 @@ from app.agent.worker.event_adapter import (
     LangGraphEventAdapter,
     sanitize_public_error,
 )
+from app.agent.worker.execution_guard import JobExecutionGuard, JobExecutionRevoked
 from app.agent.worker.result_presenter import process_final_result
 from config.settings import settings
 
@@ -158,10 +159,13 @@ async def ai_call_stream(
     claim_kind: str = "initial",
     input_record: dict[str, Any] | None = None,
     initial_input_record: dict[str, Any] | None = None,
+    execution_guard: JobExecutionGuard | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """在显式传入的 graph 上执行一次调用并产出公开事件。"""
     if graph is None:
         raise RuntimeError("Agent Graph 尚未初始化")
+    if execution_guard is not None:
+        await execution_guard.ensure_active()
 
     current_input = input_record or (
         text if isinstance(text, dict) and "input_type" in text else _legacy_input_record(text)
@@ -179,6 +183,8 @@ async def ai_call_stream(
     )
 
     state = await graph.aget_state(config)
+    if execution_guard is not None:
+        await execution_guard.check_after_call()
     interrupts = _snapshot_interrupts(state)
     has_checkpoint = _snapshot_has_checkpoint(state)
     if interrupts:
@@ -201,6 +207,8 @@ async def ai_call_stream(
                 input_file_hash=input_file_hash,
                 input_filename=input_filename,
             )
+            if execution_guard is not None:
+                await execution_guard.check_after_call()
     elif input_type == "resume":
         raise RuntimeError("resume 输入没有对应的 pending interrupt")
     elif claim_kind == "user_resume" or has_checkpoint:
@@ -218,16 +226,26 @@ async def ai_call_stream(
             input_filename=input_filename,
         )
 
+    if execution_guard is not None:
+        await execution_guard.check_after_call()
+
     adapter = LangGraphEventAdapter(job_id, job_attempt)
     streamed_interrupts: list[Any] = []
+    stream_kwargs = {
+        "stream_mode": ["updates", "messages", "custom", "tasks"],
+        "subgraphs": True,
+        "version": "v2",
+    }
+    if execution_guard is not None:
+        stream_kwargs["context"] = execution_guard
     try:
         async for chunk in graph.astream(
             input_data,
             config,
-            stream_mode=["updates", "messages", "custom", "tasks"],
-            subgraphs=True,
-            version="v2",
+            **stream_kwargs,
         ):
+            if execution_guard is not None:
+                await execution_guard.ensure_active()
             if chunk.get("type") == "updates" and isinstance(chunk.get("data"), dict):
                 interrupt_data = chunk["data"].get("__interrupt__")
                 if interrupt_data:
@@ -237,9 +255,15 @@ async def ai_call_stream(
                         else [interrupt_data]
                     )
             for event_data in adapter.convert(chunk):
+                if execution_guard is not None:
+                    await execution_guard.check_after_call()
                 yield event_data
 
+        if execution_guard is not None:
+            await execution_guard.ensure_active()
         state = await graph.aget_state(config)
+        if execution_guard is not None:
+            await execution_guard.check_after_call()
         interrupts = _snapshot_interrupts(state) or streamed_interrupts
         if interrupts:
             interrupt_obj = interrupts[0]
@@ -248,6 +272,8 @@ async def ai_call_stream(
                 if hasattr(interrupt_obj, "value")
                 else str(interrupt_obj)
             )
+            if execution_guard is not None:
+                await execution_guard.check_after_call()
             yield {
                 "type": "interrupt",
                 "message": question,
@@ -257,13 +283,22 @@ async def ai_call_stream(
             logging.info("[SSE] 图已暂停，等待用户输入")
             return
 
+        if execution_guard is not None:
+            await execution_guard.ensure_active()
+        final_result = process_final_result(state.values)
+        if execution_guard is not None:
+            await execution_guard.check_after_call()
         yield {
             "type": "final_result",
-            "data": process_final_result(state.values),
+            "data": final_result,
             "attempt": job_attempt,
         }
         logging.info("[SSE] 发送最终结果")
+    except JobExecutionRevoked:
+        raise
     except Exception as exc:
+        if execution_guard is not None:
+            await execution_guard.check_after_call()
         logging.error("[流式] 执行 LangGraph Agent 时发生错误: %s", exc, exc_info=True)
         yield {
             "type": "error",

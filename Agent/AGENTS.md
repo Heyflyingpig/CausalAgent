@@ -16,6 +16,7 @@
 - 涉及到修改agent链路的，需要告诉用户修改后的逻辑和目前的逻辑区别。
 - 结构化输出必须使用统一的 `Agent/llm_structured_output.py` 入口和当前 function calling 约定；修改 thinking、tool choice 或 schema 时必须同步检查调用器和测试。
 - MCP planner 使用原生 Tool Calls
+- 当前工具调用契约是业务只读而非数据库完全只读：读取冻结文件允许更新 `last_accessed_at` 和 `access_count`，取消不会回滚该运行审计副作用。新增业务写工具前必须设计工具幂等键、写入 fencing、补偿/确认语义，并明确取消后的外部副作用边界。
 - RAG 启动检查与完整加载是两个阶段；知识库不可用时必须遵守当前无知识库模式，不得在 worker 启动中擅自增加全量加载。
 - 因果工具必须记录输入限制、矩阵方向、边权语义和方法假设；修改 DirectLiNGAM 时必须保持连续数值 CSV 和 `target_to_source` 契约。
 

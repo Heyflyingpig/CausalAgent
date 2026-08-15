@@ -1,7 +1,7 @@
 import asyncio
 import os
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 
 TEST_ENV = {
@@ -21,6 +21,8 @@ from app.agent.worker.event_writer import (  # noqa: E402
     OrderedEventWriter,
     TEXT_FLUSH_CHARACTER_LIMIT,
 )
+from app.agent.worker.execution_guard import JobExecutionRevoked  # noqa: E402
+from app.agent.job_service import FailJobResult  # noqa: E402
 
 
 def build_job() -> dict:
@@ -117,6 +119,68 @@ class OrderedEventWriterTests(unittest.IsolatedAsyncioTestCase):
 
         deltas = [payload for payload in persisted if payload["type"] == "text_delta"]
         self.assertEqual([payload["sequence"] for payload in deltas], [1, 2])
+
+    async def test_abort_discards_buffer_and_is_idempotent(self):
+        """取消后文字 buffer 不得再 flush，重复 cleanup 不得悬挂。"""
+        writer = OrderedEventWriter(build_job(), "worker-a")
+        persisted = []
+        writer._persist = AsyncMock(side_effect=lambda payload: persisted.append(payload))
+
+        await writer.submit(text_chunk("late text"))
+        await writer.abort(JobExecutionRevoked("revoked"))
+        await writer.abort(JobExecutionRevoked("revoked again"))
+
+        self.assertEqual(persisted, [])
+        self.assertTrue(writer.aborted)
+
+    async def test_abort_surfaces_unexpected_consumer_error_and_is_repeatable(self):
+        """consumer 的数据库异常不能被 abort 伪装成清理成功。"""
+        writer = OrderedEventWriter(build_job(), "worker-a")
+        writer._persist = AsyncMock(side_effect=RuntimeError("database write failed"))
+
+        with self.assertRaisesRegex(RuntimeError, "database write failed"):
+            await writer.submit({"type": "progress", "step_id": "step-1"})
+        with self.assertRaisesRegex(RuntimeError, "database write failed"):
+            await writer.abort()
+        with self.assertRaisesRegex(RuntimeError, "database write failed"):
+            await writer.abort()
+
+        self.assertTrue(writer.task.done())
+
+    async def test_abort_preserves_consumer_cancellation(self):
+        """consumer 被取消时，abort 不能把 CancelledError 伪装成成功。"""
+        writer = OrderedEventWriter(build_job(), "worker-a")
+        started = asyncio.Event()
+        blocked = asyncio.Event()
+
+        async def persist(_payload):
+            started.set()
+            await blocked.wait()
+
+        writer._persist = persist
+        submit_task = asyncio.create_task(
+            writer.submit({"type": "progress", "step_id": "step-1"})
+        )
+        await started.wait()
+        writer.task.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await writer.abort()
+        with self.assertRaises(asyncio.CancelledError):
+            await submit_task
+
+    async def test_fenced_error_does_not_mark_terminal_seen(self):
+        """canceled fencing 拒绝 error 终态时，terminal_seen 必须保持 False。"""
+        writer = OrderedEventWriter(build_job(), "worker-a")
+        with patch(
+            "app.agent.job_service.fail_job",
+            return_value=FailJobResult.CANCELED_FENCED,
+        ):
+            with self.assertRaises(JobExecutionRevoked):
+                await writer.submit({"type": "error", "message": "迟到错误"})
+
+        self.assertFalse(writer.terminal_seen)
+        await writer.abort(JobExecutionRevoked("cancelled"))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 import hashlib
 import hmac
 import json
@@ -31,6 +32,19 @@ MAX_STRUCTURED_INPUT_BYTES = 8192
 MAX_STRUCTURED_INPUT_DEPTH = 4
 MAX_STRUCTURED_INPUT_ITEMS = 64
 CHECKPOINT_RECOVERY_TIMEOUT_MS = 3000
+JOB_DRAINING_STALE_AFTER_SECONDS = 420
+
+
+class FailJobResult(str, Enum):
+    """说明一次失败终态写入是成功还是被哪一种 fencing 拒绝。"""
+
+    APPLIED = "applied"
+    CANCELED_FENCED = "canceled_fenced"
+    OTHER_FENCED = "other_fenced"
+
+    def __bool__(self) -> bool:
+        """保留旧调用方的真假语义，同时允许 worker 区分 fencing 原因。"""
+        return self is FailJobResult.APPLIED
 
 
 class InvalidIdempotencyKeyError(ValueError):
@@ -244,7 +258,7 @@ def get_active_jobs(user_id: int, session_id: str | None = None) -> list[dict[st
         cursor = connection.cursor(dictionary=True)
         cursor.execute(
             f"""
-            SELECT job_id, user_id, session_id, status, worker_id, lease_epoch,
+            SELECT job_id, user_id, session_id, status,
                    attempt_count, recovery_count, resume_count, max_attempts,
                    current_question_id, current_waiting_prompt, input_user_file_id,
                    input_filename, created_at
@@ -510,7 +524,7 @@ def _lock_owned_running_job(
     """锁定 Job 并确认 worker、attempt 和 lease epoch 仍然匹配。"""
     cursor.execute(
         """
-        SELECT status, worker_id, attempt_count, lease_epoch,
+        SELECT status, worker_id, attempt_count, lease_epoch, execution_state,
                user_id, session_id
         FROM analysis_jobs
         WHERE job_id = %s
@@ -519,7 +533,7 @@ def _lock_owned_running_job(
         (job_id,),
     )
     job = cursor.fetchone()
-    if not job or job["status"] != "running":
+    if not job or job["status"] != "running" or job.get("execution_state", "leased") != "leased":
         return False
     if job["worker_id"] != worker_id or int(job["attempt_count"]) != int(attempt_count):
         return False
@@ -647,6 +661,9 @@ def _repair_pending_interrupt(cursor, job: dict[str, Any]) -> bool:
         UPDATE analysis_jobs
         SET status = 'waiting_input', worker_id = NULL,
             locked_at = NULL, heartbeat_at = NULL,
+            execution_state = NULL,
+            execution_released_at = UTC_TIMESTAMP(6),
+            execution_release_reason = 'worker_confirmed',
             current_question_id = %s, current_waiting_prompt = %s,
             finished_at = NULL
         WHERE job_id = %s AND status = 'running'
@@ -727,6 +744,9 @@ def _complete_job_lifecycle(
                     UPDATE analysis_jobs
                     SET status = 'waiting_input', worker_id = NULL,
                         locked_at = NULL, heartbeat_at = NULL,
+                        execution_state = NULL,
+                        execution_released_at = UTC_TIMESTAMP(6),
+                        execution_release_reason = 'worker_confirmed',
                         current_question_id = %s, current_waiting_prompt = %s,
                         finished_at = NULL
                     WHERE job_id = %s AND status = 'running'
@@ -744,6 +764,9 @@ def _complete_job_lifecycle(
                     SET status = 'succeeded', result_json = %s,
                         active_session_key = NULL, worker_id = NULL,
                         locked_at = NULL, heartbeat_at = UTC_TIMESTAMP(6),
+                        execution_state = NULL,
+                        execution_released_at = UTC_TIMESTAMP(6),
+                        execution_release_reason = 'worker_confirmed',
                         chat_saved_at = UTC_TIMESTAMP(6), finished_at = UTC_TIMESTAMP(6),
                         current_question_id = NULL, current_waiting_prompt = NULL
                     WHERE job_id = %s AND status = 'running'
@@ -757,6 +780,9 @@ def _complete_job_lifecycle(
                     SET status = 'failed', error_message = %s, last_error = %s,
                         active_session_key = NULL, worker_id = NULL,
                         locked_at = NULL, heartbeat_at = UTC_TIMESTAMP(6),
+                        execution_state = NULL,
+                        execution_released_at = UTC_TIMESTAMP(6),
+                        execution_release_reason = 'worker_confirmed',
                         chat_saved_at = UTC_TIMESTAMP(6), finished_at = UTC_TIMESTAMP(6),
                         current_question_id = NULL, current_waiting_prompt = NULL
                     WHERE job_id = %s AND status = 'running'
@@ -794,6 +820,7 @@ def _finalize_exhausted_job(cursor, stale_after: int) -> bool:
         SELECT job_id, user_id, session_id, attempt_count, lease_epoch
         FROM analysis_jobs
         WHERE status = 'running'
+          AND execution_state = 'leased'
           AND recovery_count >= max_attempts
           AND (heartbeat_at IS NULL OR heartbeat_at <
                (UTC_TIMESTAMP(6) - INTERVAL {stale_after} SECOND))
@@ -829,13 +856,36 @@ def _finalize_exhausted_job(cursor, stale_after: int) -> bool:
         UPDATE analysis_jobs
         SET status = 'failed', error_message = %s, last_error = %s,
             active_session_key = NULL, worker_id = NULL, locked_at = NULL,
-            heartbeat_at = UTC_TIMESTAMP(6), chat_saved_at = UTC_TIMESTAMP(6),
+            heartbeat_at = UTC_TIMESTAMP(6), execution_state = NULL,
+            execution_released_at = UTC_TIMESTAMP(6),
+            execution_release_reason = 'worker_confirmed',
+            chat_saved_at = UTC_TIMESTAMP(6),
             finished_at = UTC_TIMESTAMP(6)
         WHERE job_id = %s AND status = 'running'
         """,
         (MAX_ATTEMPTS_ERROR, MAX_ATTEMPTS_ERROR, job["job_id"]),
     )
     return cursor.rowcount == 1
+
+
+def _reap_stale_draining(cursor, stale_after: int) -> int:
+    """回收失联的 canceled/draining 执行占用，不重排队、不读取 checkpoint。"""
+    cursor.execute(
+        f"""
+        UPDATE analysis_jobs
+        SET execution_state = NULL,
+            worker_id = NULL,
+            locked_at = NULL,
+            heartbeat_at = NULL,
+            execution_released_at = UTC_TIMESTAMP(6),
+            execution_release_reason = 'lease_expired'
+        WHERE status = 'canceled'
+          AND execution_state = 'draining'
+          AND heartbeat_at IS NOT NULL
+          AND heartbeat_at < (UTC_TIMESTAMP(6) - INTERVAL {stale_after} SECOND)
+        """
+    )
+    return int(cursor.rowcount or 0)
 
 
 def claim_next_job(worker_id: str, stale_after_seconds: int | None = None) -> dict[str, Any] | None:
@@ -845,6 +895,10 @@ def claim_next_job(worker_id: str, stale_after_seconds: int | None = None) -> di
     try:
         cursor = connection.cursor(dictionary=True)
         connection.start_transaction()
+        _reap_stale_draining(
+            cursor,
+            int(getattr(settings, "JOB_DRAINING_STALE_AFTER_SECONDS", JOB_DRAINING_STALE_AFTER_SECONDS)),
+        )
         _finalize_exhausted_job(cursor, stale_after)
         cursor.execute(
             f"""
@@ -854,6 +908,7 @@ def claim_next_job(worker_id: str, stale_after_seconds: int | None = None) -> di
                 status = 'queued'
                 OR (
                     status = 'running'
+                    AND execution_state = 'leased'
                     AND (heartbeat_at IS NULL OR heartbeat_at <
                          (UTC_TIMESTAMP(6) - INTERVAL {stale_after} SECOND))
                     AND recovery_count < max_attempts
@@ -876,6 +931,9 @@ def claim_next_job(worker_id: str, stale_after_seconds: int | None = None) -> di
             """
             UPDATE analysis_jobs
             SET status = 'running', worker_id = %s,
+                execution_state = 'leased',
+                execution_released_at = NULL,
+                execution_release_reason = NULL,
                 lease_epoch = lease_epoch + 1,
                 locked_at = UTC_TIMESTAMP(6), heartbeat_at = UTC_TIMESTAMP(6),
                 started_at = COALESCE(started_at, UTC_TIMESTAMP(6)),
@@ -1002,7 +1060,10 @@ def update_heartbeat(
                 """
                 UPDATE analysis_jobs SET heartbeat_at = UTC_TIMESTAMP(6)
                 WHERE job_id = %s AND worker_id = %s AND attempt_count = %s
-                  AND status = 'running'
+                  AND (
+                      (status = 'running' AND execution_state = 'leased')
+                      OR (status = 'canceled' AND execution_state = 'draining')
+                  )
                 """,
                 (job_id, worker_id, attempt_count),
             )
@@ -1011,10 +1072,107 @@ def update_heartbeat(
                 """
                 UPDATE analysis_jobs SET heartbeat_at = UTC_TIMESTAMP(6)
                 WHERE job_id = %s AND worker_id = %s AND attempt_count = %s
-                  AND lease_epoch = %s AND status = 'running'
+                  AND lease_epoch = %s
+                  AND (
+                      (status = 'running' AND execution_state = 'leased')
+                      OR (status = 'canceled' AND execution_state = 'draining')
+                  )
                 """,
                 (job_id, worker_id, attempt_count, lease_epoch),
             )
+        connection.commit()
+        return cursor.rowcount == 1
+
+
+def get_execution_authority(
+    job_id: str,
+    worker_id: str,
+    attempt_count: int,
+    lease_epoch: int,
+) -> dict[str, Any]:
+    """从主库读取当前 invocation 的执行资格和取消状态。"""
+    with get_read_connection(consistency="strong") as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT status, execution_state, worker_id, attempt_count, lease_epoch
+            FROM analysis_jobs
+            WHERE job_id = %s
+            """,
+            (job_id,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        return {"status": "missing", "execution_state": None, "active": False}
+    active = (
+        row.get("status") == "running"
+        and row.get("execution_state") == "leased"
+        and row.get("worker_id") == worker_id
+        and int(row.get("attempt_count") or 0) == int(attempt_count)
+        and int(row.get("lease_epoch") or 0) == int(lease_epoch)
+    )
+    return {
+        "status": row.get("status"),
+        "execution_state": row.get("execution_state"),
+        "active": active,
+    }
+
+
+def refresh_execution_lease(
+    job_id: str,
+    worker_id: str,
+    attempt_count: int,
+    lease_epoch: int,
+) -> dict[str, Any]:
+    """刷新 leased/draining 心跳，并返回取消后的本地观察结果。"""
+    with get_write_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            UPDATE analysis_jobs
+            SET heartbeat_at = UTC_TIMESTAMP(6)
+            WHERE job_id = %s AND worker_id = %s AND attempt_count = %s
+              AND lease_epoch = %s
+              AND (
+                  (status = 'running' AND execution_state = 'leased')
+                  OR (status = 'canceled' AND execution_state = 'draining')
+              )
+            """,
+            (job_id, worker_id, attempt_count, lease_epoch),
+        )
+        connection.commit()
+        refreshed = cursor.rowcount == 1
+    if not refreshed:
+        return get_execution_authority(job_id, worker_id, attempt_count, lease_epoch)
+    authority = get_execution_authority(job_id, worker_id, attempt_count, lease_epoch)
+    authority["heartbeat_refreshed"] = True
+    return authority
+
+
+def release_execution_ownership(
+    job_id: str,
+    worker_id: str,
+    attempt_count: int,
+    lease_epoch: int,
+) -> bool:
+    """在完整 cleanup 后条件释放 canceled/draining 的执行占用。"""
+    with get_write_connection() as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            UPDATE analysis_jobs
+            SET execution_state = NULL,
+                worker_id = NULL,
+                locked_at = NULL,
+                heartbeat_at = NULL,
+                execution_released_at = UTC_TIMESTAMP(6),
+                execution_release_reason = 'worker_confirmed'
+            WHERE job_id = %s AND status = 'canceled'
+              AND execution_state = 'draining'
+              AND worker_id = %s AND attempt_count = %s AND lease_epoch = %s
+            """,
+            (job_id, worker_id, attempt_count, lease_epoch),
+        )
         connection.commit()
         return cursor.rowcount == 1
 
@@ -1152,48 +1310,99 @@ def fail_job(
     *,
     lease_epoch: int | None = None,
     write_error_event: bool = True,
-) -> bool:
-    """以当前 lease 将 Job 失败，并原子写入 error 事件和 assistant 消息。"""
+) -> FailJobResult:
+    """在 Job 行锁内收敛失败，并明确返回 fencing 原因。
+
+    取消与普通失败可能同时到达。不能先用无锁读取判断 attempt，再在后续
+    事务中写失败；这里先锁住 Job 行，锁获胜者才允许写入 failed。若锁住时
+    已经是 canceled，调用方必须进入撤销清理路径，不能再生成 error 事件。
+    """
     logging.error("analysis job %s failed", job_id)
-    job = get_job_by_id(job_id)
-    if not job or int(job.get("attempt_count") or 0) != int(attempt_count):
-        return False
-    if not write_error_event:
-        with get_write_connection() as connection:
-            cursor = connection.cursor()
+    payload = {"type": "error", "message": message}
+    with get_write_connection() as connection:
+        try:
+            connection.start_transaction()
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT *
+                FROM analysis_jobs
+                WHERE job_id = %s
+                FOR UPDATE
+                """,
+                (job_id,),
+            )
+            job = _row_to_job(cursor.fetchone())
+            if not job:
+                connection.rollback()
+                return FailJobResult.OTHER_FENCED
+            if job.get("status") == "canceled":
+                connection.rollback()
+                return FailJobResult.CANCELED_FENCED
+            if (
+                job.get("status") != "running"
+                or job.get("execution_state", "leased") != "leased"
+                or job.get("worker_id") != worker_id
+                or int(job.get("attempt_count") or 0) != int(attempt_count)
+                or (
+                    lease_epoch is not None
+                    and int(job.get("lease_epoch") or 0) != int(lease_epoch)
+                )
+            ):
+                connection.rollback()
+                return FailJobResult.OTHER_FENCED
+
+            if write_error_event:
+                event_id = _insert_event(
+                    cursor,
+                    job_id=job_id,
+                    event_type="error",
+                    payload=payload,
+                    event_key="terminal:error",
+                )
+                save_assistant_for_job_in_transaction(
+                    cursor,
+                    job_id=job_id,
+                    user_id=int(job["user_id"]),
+                    session_id=job["session_id"],
+                    ai_response={"type": "text", "summary": message},
+                    source_event_id=event_id,
+                    analysis_job_input_id=_latest_input_id(cursor, job_id),
+                )
+
+            lease_clause = ""
+            params: tuple[Any, ...]
             if lease_epoch is None:
-                cursor.execute(
-                    """
-                    UPDATE analysis_jobs
-                    SET status = 'failed', error_message = %s, last_error = %s,
-                        active_session_key = NULL, finished_at = UTC_TIMESTAMP(6)
-                    WHERE job_id = %s AND worker_id = %s AND attempt_count = %s
-                      AND status = 'running'
-                    """,
-                    (message, message, job_id, worker_id, attempt_count),
-                )
+                params = (message, message, job_id, worker_id, attempt_count)
             else:
-                cursor.execute(
-                    """
-                    UPDATE analysis_jobs
-                    SET status = 'failed', error_message = %s, last_error = %s,
-                        active_session_key = NULL, finished_at = UTC_TIMESTAMP(6)
-                    WHERE job_id = %s AND worker_id = %s AND attempt_count = %s
-                      AND lease_epoch = %s AND status = 'running'
-                    """,
-                    (message, message, job_id, worker_id, attempt_count, lease_epoch),
-                )
+                lease_clause = " AND lease_epoch = %s"
+                params = (message, message, job_id, worker_id, attempt_count, lease_epoch)
+            cursor.execute(
+                f"""
+                UPDATE analysis_jobs
+                SET status = 'failed', error_message = %s, last_error = %s,
+                    active_session_key = NULL, worker_id = NULL,
+                    locked_at = NULL, heartbeat_at = UTC_TIMESTAMP(6),
+                    execution_state = NULL,
+                    execution_released_at = UTC_TIMESTAMP(6),
+                    execution_release_reason = 'worker_confirmed',
+                    chat_saved_at = UTC_TIMESTAMP(6),
+                    finished_at = UTC_TIMESTAMP(6),
+                    current_question_id = NULL, current_waiting_prompt = NULL
+                WHERE job_id = %s AND worker_id = %s AND attempt_count = %s
+                  {lease_clause}
+                  AND status = 'running' AND execution_state = 'leased'
+                """,
+                params,
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                return FailJobResult.OTHER_FENCED
             connection.commit()
-            return cursor.rowcount == 1
-    return _complete_job_lifecycle(
-        job,
-        worker_id,
-        "error",
-        {"type": "error", "message": message},
-        lease_epoch=lease_epoch,
-        chat_response={"type": "text", "summary": message},
-        status="failed",
-    )
+            return FailJobResult.APPLIED
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def resume_job(
@@ -1300,7 +1509,7 @@ def cancel_job(
     job_id: str,
     idempotency_key: str,
 ) -> tuple[dict[str, Any], bool]:
-    """取消 waiting_input Job，并幂等写入 canceled 生命周期事件。"""
+    """原子取消 queued/running/waiting_input Job，并保留 running 的 draining 占用。"""
     idempotency_key = normalize_idempotency_key(idempotency_key)
     fingerprint = _action_fingerprint(job_id=job_id, action="cancel")
     payload = {"type": "canceled", "message": "任务已取消"}
@@ -1322,16 +1531,19 @@ def cancel_job(
                     raise IdempotencyConflictError("Idempotency-Key 已用于不同的取消请求")
                 connection.commit()
                 return job, True
+            if stored_key and stored_key != idempotency_key:
+                raise JobStateConflictError("任务已经取消", job)
             existing = _existing_event(cursor, job_id, event_key)
             if existing:
                 if not _payload_matches(existing["payload_json"], payload):
                     raise IdempotencyConflictError("取消事件 payload 不一致")
-                connection.commit()
-                return job, True
+                raise JobStateConflictError("任务已经取消", job)
             if job["status"] == "canceled":
                 raise JobStateConflictError("任务已经取消", job)
-            if job["status"] != "waiting_input":
-                raise JobStateConflictError("只有 waiting_input 任务可以取消", job)
+            if job["status"] not in ACTIVE_STATUSES:
+                raise JobStateConflictError("任务当前状态不允许取消", job)
+            if job["status"] == "running" and job.get("execution_state") != "leased":
+                raise JobStateConflictError("任务当前没有可取消的执行租约", job)
             event_id = _insert_event(
                 cursor,
                 job_id=job_id,
@@ -1355,8 +1567,16 @@ def cancel_job(
                     current_question_id = NULL, current_waiting_prompt = NULL,
                     cancel_idempotency_key = %s,
                     cancel_request_fingerprint = %s,
-                    finished_at = UTC_TIMESTAMP(6)
-                WHERE job_id = %s AND status = 'waiting_input'
+                    finished_at = UTC_TIMESTAMP(6),
+                    execution_state = CASE
+                        WHEN status = 'running' THEN 'draining'
+                        ELSE NULL
+                    END,
+                    worker_id = CASE WHEN status = 'running' THEN worker_id ELSE NULL END,
+                    locked_at = CASE WHEN status = 'running' THEN locked_at ELSE NULL END,
+                    heartbeat_at = CASE WHEN status = 'running' THEN heartbeat_at ELSE NULL END
+                WHERE job_id = %s
+                  AND status IN ('queued', 'running', 'waiting_input')
                 """,
                 (idempotency_key, fingerprint, job_id),
             )
@@ -1378,7 +1598,7 @@ def get_worker_snapshot() -> list[dict[str, Any]]:
 
 
 def get_worker_snapshot_report() -> dict[str, Any]:
-    """返回 queued/running/waiting_input 汇总和 worker 活动摘要。"""
+    """返回活动/ draining Job 汇总和管理员可见的执行释放摘要。"""
     observed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z"
     )
@@ -1396,19 +1616,26 @@ def get_worker_snapshot_report() -> dict[str, Any]:
                     SUM(status = 'waiting_input') AS waiting_input,
                     SUM(status = 'running' AND (heartbeat_at IS NULL OR
                         heartbeat_at < (UTC_TIMESTAMP(6) - INTERVAL {stale_after} SECOND))) AS stale,
-                    SUM(status = 'running' AND recovery_count >= max_attempts) AS max_attempts_running
+                    SUM(status = 'running' AND recovery_count >= max_attempts) AS max_attempts_running,
+                    SUM(execution_state = 'draining') AS draining,
+                    MAX(CASE WHEN execution_state = 'draining'
+                        THEN TIMESTAMPDIFF(SECOND, finished_at, UTC_TIMESTAMP(6))
+                        ELSE NULL END) AS oldest_draining_age_seconds,
+                    SUM(execution_release_reason = 'worker_confirmed') AS worker_confirmed,
+                    SUM(execution_release_reason = 'lease_expired') AS lease_expired
                 FROM analysis_jobs
-                WHERE status IN ('queued', 'running', 'waiting_input')
                 """
             )
             summary_row = cursor.fetchone() or {}
             cursor.execute(
                 f"""
                 SELECT /*+ MAX_EXECUTION_TIME({timeout_ms}) */
-                    job_id, status, worker_id, lease_epoch, heartbeat_at,
+                    job_id, status, execution_state, worker_id, lease_epoch, heartbeat_at,
+                    execution_released_at, execution_release_reason,
                     attempt_count, recovery_count, resume_count, max_attempts, created_at
                 FROM analysis_jobs
                 WHERE status IN ('queued', 'running', 'waiting_input')
+                   OR execution_state = 'draining'
                 ORDER BY created_at ASC
                 LIMIT 100
                 """
@@ -1416,13 +1643,21 @@ def get_worker_snapshot_report() -> dict[str, Any]:
             jobs = cursor.fetchall()
         summary = {
             key: int(summary_row.get(key) or 0)
-            for key in ("queued", "running", "waiting_input", "stale", "max_attempts_running")
+            for key in (
+                "queued", "running", "waiting_input", "stale", "max_attempts_running",
+                "draining", "worker_confirmed", "lease_expired",
+            )
         }
+        summary["oldest_draining_age_seconds"] = (
+            int(summary_row.get("oldest_draining_age_seconds"))
+            if summary_row.get("oldest_draining_age_seconds") is not None
+            else 0
+        )
         warning = None
         status = "healthy"
-        if summary["stale"] or summary["max_attempts_running"]:
+        if summary["stale"] or summary["max_attempts_running"] or summary["draining"]:
             status = "warning"
-            warning = "存在心跳过期或 stale recovery 达到上限的任务"
+            warning = "存在心跳过期、draining 或 stale recovery 达到上限的任务"
         return {
             "jobs": jobs,
             "summary": summary,
@@ -1442,6 +1677,10 @@ def get_worker_snapshot_report() -> dict[str, Any]:
                 "waiting_input": None,
                 "stale": None,
                 "max_attempts_running": None,
+                "draining": None,
+                "oldest_draining_age_seconds": None,
+                "worker_confirmed": None,
+                "lease_expired": None,
             },
             "status": "unknown",
             "observed_at": observed_at,

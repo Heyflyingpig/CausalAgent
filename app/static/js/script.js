@@ -28,9 +28,11 @@ let isNewSessionPendingDisplay = false; //  用于跟踪新会话是否已在UI�
 let chatEventListenersAttached = false; // 跟踪事件监听器是否已附加
 let selectedUserFile = null; // 仅保存在当前页面的文件草稿，不写入 session
 let waitingJob = null; // 当前 waiting_input Job 的恢复草稿
+let sendRequestInFlight = false; // 防止创建/恢复请求尚未返回时重复提交
 const activeJobsById = new Map(); // 当前用户所有活动 Job，按 job_id 隔离
 const jobSubscriptions = new Map(); // 每个 Job 最多一个 SSE 订阅 Promise
 const jobEventSources = new Map(); // 用于登出或切换时关闭 SSE 连接
+const jobUiState = JobSubscriptionState.createState(); // 取消请求和 SSE 订阅代次按 Job 隔离
 let currentLanguage = localStorage.getItem('language') || 'zh'; // 当前语言，默认中文，从localStorage读取
 const initialNavigationParams = new URLSearchParams(window.location.search);
 let requestedLoginNext = initialNavigationParams.get('next');
@@ -68,7 +70,9 @@ const i18n = {
         inputPlaceholder: '输入消息...',
         upload: '上传',
         send: '发送',
-        cancelWaitingJob: '取消等待任务',
+        cancelJob: '取消任务',
+        cancelingJob: '取消中...',
+        jobCanceled: '任务已取消',
         // 动态消息
         accountPrefix: '账号: ',
         noHistoryMessage: '还没有任何对话记录。',
@@ -124,7 +128,9 @@ const i18n = {
         inputPlaceholder: 'Type a message...',
         upload: 'Upload',
         send: 'Send',
-        cancelWaitingJob: 'Cancel waiting task',
+        cancelJob: 'Cancel task',
+        cancelingJob: 'Canceling...',
+        jobCanceled: 'Task canceled',
         // Dynamic messages
         accountPrefix: 'Account: ',
         noHistoryMessage: 'No conversation history yet.',
@@ -232,6 +238,7 @@ function rememberActiveJob(job) {
     const previous = activeJobsById.get(key) || {};
     const next = { ...previous, ...job, job_id: key };
     activeJobsById.set(key, next);
+    if (next.session_id === currentSessionId) renderActiveJobControl(next);
     return next;
 }
 
@@ -243,11 +250,13 @@ function rememberRestoredActiveJob(job) {
         job_id: key,
     });
     activeJobsById.set(key, next);
+    if (next.session_id === currentSessionId) renderActiveJobControl(next);
     return next;
 }
 
 function forgetActiveJob(jobId) {
     const key = activeJobKey(jobId);
+    JobSubscriptionState.invalidate(jobUiState, key);
     const source = jobEventSources.get(key);
     if (source) source.close();
     jobEventSources.delete(key);
@@ -257,6 +266,11 @@ function forgetActiveJob(jobId) {
 }
 
 function closeAllActiveJobStreams() {
+    new Set([
+        ...activeJobsById.keys(),
+        ...jobSubscriptions.keys(),
+        ...jobEventSources.keys(),
+    ]).forEach(key => JobSubscriptionState.invalidate(jobUiState, key));
     jobEventSources.forEach(source => source.close());
     jobEventSources.clear();
     jobSubscriptions.clear();
@@ -267,18 +281,69 @@ function setWaitingJob(job) {
     waitingJob = job ? {
         job_id: activeJobKey(job.job_id),
         session_id: job.session_id || currentSessionId,
+        status: job.status || 'waiting_input',
         question_id: job.question_id || job.current_question_id || '',
         prompt: job.prompt || job.current_waiting_prompt || '',
         last_event_id: Number(job.last_event_id || job.event_id || 0),
     } : null;
-    const status = document.getElementById('waitingJobStatus');
-    const prompt = document.getElementById('waitingJobPrompt');
     const userInput = document.getElementById('userInput');
-    if (status) status.hidden = !waitingJob;
-    if (prompt) prompt.textContent = waitingJob ? (waitingJob.prompt || '请补充信息') : '';
     if (userInput) userInput.placeholder = waitingJob
         ? (waitingJob.prompt || '请输入恢复任务的回答...')
         : getText('inputPlaceholder');
+    renderActiveJobControl();
+}
+
+function currentSessionActiveJob() {
+    if (!currentSessionId) return null;
+
+    if (waitingJob && waitingJob.session_id === currentSessionId) {
+        const key = activeJobKey(waitingJob.job_id);
+        const stored = activeJobsById.get(key);
+        const merged = stored ? { ...waitingJob, ...stored } : waitingJob;
+        if (['queued', 'running', 'waiting_input'].includes(merged.status)) {
+            return merged;
+        }
+    }
+
+    return [...activeJobsById.values()].find(job =>
+        job.session_id === currentSessionId
+        && ['queued', 'running', 'waiting_input'].includes(job.status),
+    ) || null;
+}
+
+function renderActiveJobControl(job = null) {
+    const sendButton = document.getElementById('sendButton');
+    const sendLabel = sendButton?.querySelector('.send-button-label');
+    const cancelButton = document.getElementById('cancelJobButton');
+    if (!sendButton) return;
+
+    const activeJob = job || currentSessionActiveJob();
+    const status = activeJob?.status || '';
+    const canceling = activeJob
+        ? JobSubscriptionState.isCancelInFlight(jobUiState, activeJob.job_id)
+        : false;
+    const inputMode = JobSubscriptionState.classifyInputMode(activeJob, canceling);
+    const isRunning = ['running', 'running_canceling'].includes(inputMode);
+    const isWaitingForInput = ['waiting_input', 'waiting_canceling'].includes(inputMode);
+    const inputActionLocked = canceling || (sendRequestInFlight && !isRunning);
+
+    sendButton.classList.toggle('is-running', isRunning);
+    sendButton.dataset.jobStatus = status || 'idle';
+    sendButton.disabled = inputActionLocked;
+    sendButton.setAttribute('aria-busy', String(inputActionLocked));
+    sendButton.setAttribute(
+        'aria-label',
+        isRunning ? (canceling ? getText('cancelingJob') : getText('cancelJob')) : getText('send'),
+    );
+    sendButton.title = isRunning ? getText('cancelJob') : getText('send');
+    if (sendLabel) sendLabel.textContent = getText('send');
+
+    if (cancelButton) {
+        cancelButton.hidden = !isWaitingForInput;
+        cancelButton.disabled = canceling || sendRequestInFlight;
+        cancelButton.textContent = canceling ? getText('cancelingJob') : getText('cancelJob');
+        cancelButton.title = getText('cancelJob');
+    }
 }
 
 // 应用语言到所有带有 data-i18n 属性的元素
@@ -303,6 +368,8 @@ function applyLanguage() {
     if (currentUsername) {
         userInfoContent.textContent = getText('accountPrefix') + currentUsername;
     }
+
+    renderActiveJobControl();
 }
 
 // 切换语言
@@ -724,7 +791,7 @@ function setupChatEventListeners() {
     // 聊天输入和发送
     const sendButton = document.getElementById('sendButton');
     const userInput = document.getElementById('userInput');
-    if (sendButton) sendButton.addEventListener('click', sendMessage);
+    if (sendButton) sendButton.addEventListener('click', handleSendButtonClick);
     if (userInput) {
         userInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -742,7 +809,7 @@ function setupChatEventListeners() {
     const userAvatar = document.getElementById('userAvatar');
     const uploadCsvButton = document.getElementById('uploadCsvButton');
     const clearSelectedFileButton = document.getElementById('clearSelectedFileButton');
-    const cancelWaitingJobButton = document.getElementById('cancelWaitingJobButton');
+    const cancelJobButton = document.getElementById('cancelJobButton');
     
     if (menuIcon) menuIcon.addEventListener('click', toggleSidebar);
     if (sidebarToggle) sidebarToggle.addEventListener('click', toggleSidebar);
@@ -751,9 +818,18 @@ function setupChatEventListeners() {
     if (userAvatar) userAvatar.addEventListener('click', showUserInfoPopup);
     if (uploadCsvButton) uploadCsvButton.addEventListener('click', triggerCsvUpload);
     if (clearSelectedFileButton) clearSelectedFileButton.addEventListener('click', clearSelectedUserFile);
-    if (cancelWaitingJobButton) cancelWaitingJobButton.addEventListener('click', cancelWaitingAnalysisJob);
+    if (cancelJobButton) cancelJobButton.addEventListener('click', cancelCurrentJob);
 
     chatEventListenersAttached = true; //  设置标志 
+}
+
+function handleSendButtonClick() {
+    const activeJob = cancellableCurrentJob();
+    if (activeJob && ['queued', 'running'].includes(activeJob.status)) {
+        void cancelCurrentJob();
+        return;
+    }
+    void sendMessage();
 }
 
 function createAgentRequestIdempotencyKey() {
@@ -837,11 +913,13 @@ async function requestJobResume(job, answer, idempotencyKey) {
     }
 }
 
-async function cancelWaitingAnalysisJob() {
-    if (!waitingJob) return;
-    const job = waitingJob;
-    const idempotencyKey = createAgentRequestIdempotencyKey();
-    try {
+function cancellableCurrentJob() {
+    return currentSessionActiveJob();
+}
+
+async function requestJobCancel(job, idempotencyKey) {
+    // 未知网络结果必须复用同一个键；canceled 的 409 是另一标签页已完成取消的成功对账。
+    const request = async () => {
         const response = await fetch(`/api/agent/jobs/${encodeURIComponent(job.job_id)}/cancel`, {
             method: 'POST',
             headers: {
@@ -851,13 +929,90 @@ async function cancelWaitingAnalysisJob() {
             body: '{}',
         });
         const data = await response.json();
+        const outcome = JobSubscriptionState.classifyCancelResponse(response.status, data);
+        if (outcome.kind === 'reconciled') {
+            return { ...data, success: true, reconciled: true };
+        }
+        if (outcome.kind === 'conflict') {
+            const conflict = new Error(data.error || `HTTP错误: ${response.status}`);
+            conflict.status = outcome.status;
+            conflict.retryable = false;
+            throw conflict;
+        }
         if (!response.ok || !data.success) {
-            throw new Error(data.error || `HTTP错误: ${response.status}`);
+            const error = new Error(data.error || `HTTP错误: ${response.status}`);
+            error.retryable = response.status >= 500;
+            throw error;
+        }
+        return data;
+    };
+    try {
+        return await request();
+    } catch (error) {
+        if (error && error.retryable === false) throw error;
+        return request();
+    }
+}
+
+async function cancelCurrentJob() {
+    const job = cancellableCurrentJob();
+    if (!job) return;
+    const idempotencyKey = createAgentRequestIdempotencyKey();
+    const cancelKey = JobSubscriptionState.beginCancel(jobUiState, job.job_id, idempotencyKey);
+    if (!cancelKey) return;
+    renderActiveJobControl(job);
+    try {
+        await requestJobCancel(job, cancelKey);
+        const state = activeJobsById.get(activeJobKey(job.job_id));
+        const thinkingElements = state?.thinkingElements || null;
+        if (thinkingElements?.bubble?.isConnected) {
+            handleStreamEvent(
+                { type: 'canceled', event_id: '', message: '任务已取消' },
+                thinkingElements,
+                job.job_id,
+            );
         }
         forgetActiveJob(job.job_id);
-        loadHistory();
+        setWaitingJob(null);
+        await loadHistory();
+        await restoreActiveJobs(currentSessionId);
     } catch (error) {
-        showError(error.message || '取消任务失败，请稍后重试。');
+        const conflictStatus = error.status;
+        if (['succeeded', 'failed'].includes(conflictStatus)) {
+            const state = rememberActiveJob({ ...job, status: conflictStatus });
+            const thinkingElements = state?.thinkingElements || null;
+            if (thinkingElements?.bubble?.isConnected) {
+                stopThinkingDuration(thinkingElements);
+                const dots = thinkingElements.bubble.querySelector('.thinking-dots');
+                if (dots) dots.style.display = 'none';
+                setTimelineStatus(
+                    thinkingElements,
+                    conflictStatus === 'succeeded' ? '任务已完成' : '任务执行失败',
+                );
+            }
+            forgetActiveJob(job.job_id);
+            setWaitingJob(null);
+            await loadHistory();
+        } else {
+            showError(error.message || '取消任务失败，请稍后重试。');
+        }
+        if (conflictStatus && ['queued', 'running', 'waiting_input'].includes(conflictStatus)) {
+            const state = rememberActiveJob({ ...job, status: conflictStatus });
+            if (conflictStatus === 'waiting_input') {
+                if (state.session_id === currentSessionId) setWaitingJob(state);
+            } else if (
+                state.session_id === currentSessionId
+                && !jobSubscriptions.has(activeJobKey(job.job_id))
+            ) {
+                if (!state.thinkingElements) state.thinkingElements = addThinkingMessage();
+                ensureActiveJobSubscription(state, state.thinkingElements).catch(subscriptionError => {
+                    console.error(`恢复 Job ${job.job_id} 的事件订阅失败:`, subscriptionError);
+                });
+            }
+        }
+    } finally {
+        JobSubscriptionState.finishCancel(jobUiState, job.job_id, cancelKey);
+        renderActiveJobControl();
     }
 }
 
@@ -873,16 +1028,21 @@ function updateActiveJobFromEvent(jobId, eventData) {
         state.status = 'waiting_input';
         state.current_question_id = eventData.question_id || state.current_question_id || '';
         state.current_waiting_prompt = eventData.message || state.current_waiting_prompt || '';
+        if (state.session_id === currentSessionId) setWaitingJob(state);
     } else if (eventData.type === 'final_result') {
         state.status = 'succeeded';
         activeJobsById.delete(key);
+        if (state.session_id === currentSessionId) setWaitingJob(null);
     } else if (eventData.type === 'error') {
         state.status = 'failed';
         activeJobsById.delete(key);
+        if (state.session_id === currentSessionId) setWaitingJob(null);
     } else if (eventData.type === 'canceled') {
         state.status = 'canceled';
         activeJobsById.delete(key);
+        if (state.session_id === currentSessionId) setWaitingJob(null);
     }
+    if (state.session_id === currentSessionId && activeJobsById.has(key)) renderActiveJobControl(state);
 }
 
 function ensureActiveJobSubscription(job, thinkingElements = null) {
@@ -892,10 +1052,13 @@ function ensureActiveJobSubscription(job, thinkingElements = null) {
     const existing = jobSubscriptions.get(key);
     if (existing) return existing;
 
+    const generation = JobSubscriptionState.nextGeneration(jobUiState, key);
+
     const subscription = subscribeToJobEvents(
         key,
         null,
         Number(state.rendered_event_id ?? state.last_event_id ?? 0),
+        generation,
     );
     jobSubscriptions.set(key, subscription);
     subscription.then(
@@ -1006,7 +1169,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function sendMessage() {
     const userInput = document.getElementById('userInput');
-    const sendButton = document.getElementById('sendButton'); // 获取发送按钮
+    if (!userInput) return;
+
+    if (sendRequestInFlight) return;
+
+    const activeJob = cancellableCurrentJob();
+    if (activeJob && ['queued', 'running'].includes(activeJob.status)) {
+        return;
+    }
+
     const message = userInput.value.trim();
 
     if (!message) {
@@ -1018,8 +1189,11 @@ async function sendMessage() {
         return;
     }
 
-    const resumeJob = waitingJob;
+    const resumeJob = activeJob?.status === 'waiting_input' ? activeJob : null;
     const resumeAfterEventId = resumeJob ? (resumeJob.last_event_id || 0) : 0;
+
+    sendRequestInFlight = true;
+    renderActiveJobControl();
 
     // 新会话由后端创建并持久化，这里只负责取得其 ID。
     if (!resumeJob && !currentSessionId) {
@@ -1033,11 +1207,15 @@ async function sendMessage() {
                 console.log(`新会话ID已获取: ${currentSessionId}`);
             } else {
                 showError(data.error || "创建新对话失败。");
+                sendRequestInFlight = false;
+                renderActiveJobControl();
                 return; // 创建失败则中止发送
             }
         } catch (error) {
             showError("创建新对话时发生网络错误。");
             console.error("创建新对话错误:", error);
+            sendRequestInFlight = false;
+            renderActiveJobControl();
             return; // 创建失败则中止发送
         }
     }
@@ -1050,9 +1228,6 @@ async function sendMessage() {
 
     addMessage('user', message);
     userInput.value = ''; // 清空输入框
-
-    userInput.disabled = true;
-    sendButton.disabled = true;
 
     // 创建思考过程元素（独立的气泡和详情面板）
     const thinkingElements = addThinkingMessage();
@@ -1081,10 +1256,15 @@ async function sendMessage() {
             last_event_id: resumeAfterEventId,
             rendered_event_id: resumeAfterEventId,
         });
-        await ensureActiveJobSubscription(activeJob, thinkingElements);
+        const subscription = ensureActiveJobSubscription(activeJob, thinkingElements);
+        subscription.catch(error => {
+            if (!error?.streamHandled) {
+                console.error(`订阅 Job ${activeJob.job_id} 的事件失败:`, error);
+            }
+        });
         
         // 加载历史记录
-        loadHistory();
+        void loadHistory();
         
     } catch (error) {
         console.error("发送消息时出错:", error);
@@ -1100,16 +1280,20 @@ async function sendMessage() {
             showError('发送消息时发生网络错误。');
         }
     } finally {
-        //  无论成功或失败，都重新启用输入和发送按钮 
-        userInput.disabled = false;
-        sendButton.disabled = false;
+        sendRequestInFlight = false;
+        renderActiveJobControl();
         userInput.focus(); // 重新聚焦到输入框，方便用户继续输入
     }
 }
 
-function subscribeToJobEvents(jobId, thinkingElements, afterEventId = 0) {
+function subscribeToJobEvents(jobId, thinkingElements, afterEventId = 0, generation) {
     return new Promise((resolve, reject) => {
         const key = activeJobKey(jobId);
+        const isCurrent = () => JobSubscriptionState.isCurrentGeneration(
+            jobUiState,
+            key,
+            generation,
+        );
         const query = afterEventId ? `?last_event_id=${encodeURIComponent(afterEventId)}` : '';
         const source = new EventSource(`/api/agent/jobs/${encodeURIComponent(jobId)}/events${query}`);
         jobEventSources.set(key, source);
@@ -1121,6 +1305,7 @@ function subscribeToJobEvents(jobId, thinkingElements, afterEventId = 0) {
             }
             settled = true;
             source.close();
+            if (isCurrent()) JobSubscriptionState.invalidate(jobUiState, key);
             if (jobEventSources.get(key) === source) jobEventSources.delete(key);
             if (error) {
                 reject(error);
@@ -1131,11 +1316,19 @@ function subscribeToJobEvents(jobId, thinkingElements, afterEventId = 0) {
 
         const bindEvent = (type) => {
             source.addEventListener(type, (event) => {
+                if (!isCurrent()) {
+                    finish();
+                    return;
+                }
                 if (!event.data) {
                     return;
                 }
                 try {
                     const eventData = JSON.parse(event.data);
+                    if (!isCurrent()) {
+                        finish();
+                        return;
+                    }
                     eventData.type = eventData.type || type;
                     eventData.event_id = event.lastEventId || '';
                     if (eventData.type === 'heartbeat') {
@@ -1179,13 +1372,18 @@ function subscribeToJobEvents(jobId, thinkingElements, afterEventId = 0) {
         ].forEach(bindEvent);
 
         source.onopen = () => {
+            if (!isCurrent()) {
+                finish();
+                return;
+            }
             const state = activeJobsById.get(key);
             const target = thinkingElements || state?.thinkingElements || null;
             if (!settled && target && target.bubble.isConnected) setTimelineStatus(target, '');
         };
 
         source.onerror = () => {
-            if (settled) {
+            if (settled || !isCurrent()) {
+                if (!settled && !isCurrent()) finish();
                 return;
             }
             const state = activeJobsById.get(key);
@@ -1418,11 +1616,10 @@ function handleStreamEvent(eventData, thinkingElements, jobId = null, historyMod
             handleStreamError(eventData, thinkingElements);
             break;
 
-        case 'canceled':
-            stopThinkingDuration(thinkingElements);
-            setTimelineStatus(thinkingElements, '已取消');
-            thinkingElements.bubble.querySelector('.thinking-dots').style.display = 'none';
+        case 'canceled': {
+            markThinkingCanceled(thinkingElements, eventData.message || getText('jobCanceled'));
             break;
+        }
             
         default:
             console.warn('未知的事件类型:', eventType);
@@ -1545,6 +1742,31 @@ function setStepExpanded(stepItem, stepToggle, expanded) {
  */
 function toggleStepDetails(stepItem, stepToggle) {
     setStepExpanded(stepItem, stepToggle, !stepItem.classList.contains('expanded'));
+}
+
+/**
+ * 取消 Job 时同时收尾所有仍在执行中的阶段，避免子阶段的转圈动画残留。
+ */
+function markThinkingCanceled(thinkingElements, message = getText('jobCanceled')) {
+    if (!thinkingElements) return;
+
+    stopThinkingDuration(thinkingElements);
+    setTimelineStatus(thinkingElements, message);
+    const dots = thinkingElements.bubble?.querySelector('.thinking-dots');
+    if (dots) dots.style.display = 'none';
+
+    thinkingElements.draftElement?.remove();
+    thinkingElements.draftElement = null;
+    thinkingElements.draftStreamId = null;
+
+    thinkingElements.detail?.querySelectorAll('.step-item.in-progress').forEach(stepItem => {
+        stepItem.classList.remove('in-progress');
+        stepItem.classList.add('canceled');
+        const statusIcon = stepItem.querySelector('.step-status');
+        if (statusIcon) statusIcon.removeAttribute('aria-label');
+        const stepTime = stepItem.querySelector('.step-time');
+        if (stepTime) stepTime.textContent = message;
+    });
 }
 
 function appendStepDetail(container, text, className = '') {

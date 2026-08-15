@@ -272,6 +272,7 @@ export interface AdminJob {
   username: string
   session_id: string
   status: 'queued' | 'running' | 'waiting_input' | 'succeeded' | 'failed' | 'canceled'
+  execution_state: 'leased' | 'draining' | null
   worker_id: string | null
   lease_epoch: number
   attempt_count: number
@@ -287,6 +288,8 @@ export interface AdminJob {
   created_at: string
   started_at: string | null
   finished_at: string | null
+  execution_released_at?: string | null
+  execution_release_reason?: 'worker_confirmed' | 'lease_expired' | null
   chat_saved_at: string | null
   input_user_file_id?: number | null
   input_file_hash?: string | null
@@ -326,6 +329,10 @@ export interface AgentWorkerSummary {
     waiting_input?: number | null
     stale?: number | null
     max_attempts_running?: number | null
+    draining?: number | null
+    oldest_draining_age_seconds?: number | null
+    worker_confirmed?: number | null
+    lease_expired?: number | null
   }
   meta: SnapshotMeta
 }

@@ -1,7 +1,7 @@
 from langgraph.graph import StateGraph, END
 from .state import CausalAgentState
 from . import nodes, edges
-from .graph_utils import bind_node
+from .graph_utils import bind_node, guarded_error_handler, guarded_router
 from .tool_subgraphs import build_mcp_subgraph, build_rag_subgraph
 from .fault_tolerance import (
     recover_postprocess_to_report,
@@ -53,21 +53,21 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
         agent_node_with_llm,#这个节点真正执行的函数
         retry_policy=short_retry(),#出错怎么重试
         timeout=timeout(run_timeout=45, idle_timeout=20),#执行多久算超时
-        error_handler=route_to_normal_chat,#最后失败怎么兜底
+        error_handler=guarded_error_handler(route_to_normal_chat),#最后失败怎么兜底
     )
     workflow.add_node(
         "fold",
         fold_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=120, idle_timeout=45),
-        error_handler=recover_fold_to_agent,
+        error_handler=guarded_error_handler(recover_fold_to_agent),
     )
     workflow.add_node(
         "preprocess",
         preprocess_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=recover_preprocess_to_agent,
+        error_handler=guarded_error_handler(recover_preprocess_to_agent),
     )
 
     workflow.add_node("mcp", mcp_subgraph)#mcp子图注册成节点
@@ -76,34 +76,34 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
         "postprocess",
         postprocess_node_with_llm,
         timeout=timeout(run_timeout=240, idle_timeout=90),
-        error_handler=recover_postprocess_to_report,
+        error_handler=guarded_error_handler(recover_postprocess_to_report),
     )
     workflow.add_node(
         "report",
         report_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=recover_report,
+        error_handler=guarded_error_handler(recover_report),
     )
     workflow.add_node(
         "normal_chat",
         normal_chat_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=60, idle_timeout=30),
-        error_handler=recover_terminal_message,
+        error_handler=guarded_error_handler(recover_terminal_message),
     )
     workflow.add_node(
         "inquiry_answer",
         inquiry_answer_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=90, idle_timeout=30),
-        error_handler=recover_terminal_message,
+        error_handler=guarded_error_handler(recover_terminal_message),
     )
 
     workflow.set_entry_point("agent")#节点入口
     workflow.add_conditional_edges(#节点的边
         "agent",#从agent节点出发
-        edges.decision_router,#由decision_router函数决定路由？
+        guarded_router(edges.decision_router),#由decision_router函数决定路由？
         {
             "fold": "fold",#"路由函数返回值": "要跳转到的节点名"
             "normal_chat": "normal_chat",
@@ -113,7 +113,7 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
     )
     workflow.add_conditional_edges(
         "fold",
-        edges.fold_router,#由fold_router函数决定路由
+        guarded_router(edges.fold_router),#由fold_router函数决定路由
         {
             "preprocess": "preprocess",
             "agent": "agent",
@@ -125,7 +125,7 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
 
     workflow.add_conditional_edges(
         "mcp", 
-        edges.mcp_router, 
+        guarded_router(edges.mcp_router),
         {
             "rag": "rag", 
             "agent": "agent"
@@ -138,7 +138,7 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
     )
     workflow.add_conditional_edges(
         "postprocess", 
-        edges.postprocess_router, 
+        guarded_router(edges.postprocess_router),
         {
             "report": "report"
         }

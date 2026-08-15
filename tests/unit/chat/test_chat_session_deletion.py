@@ -124,7 +124,7 @@ class DeleteSessionTests(unittest.TestCase):
         self.assertEqual(
             statements[0],
             (
-                "SELECT job_id, status FROM analysis_jobs WHERE session_id = %s AND user_id = %s ORDER BY id FOR UPDATE",
+                "SELECT job_id, status, execution_state FROM analysis_jobs WHERE session_id = %s AND user_id = %s ORDER BY id FOR UPDATE",
                 ("session-1", 7),
             ),
         )
@@ -152,7 +152,7 @@ class DeleteSessionTests(unittest.TestCase):
         """有 queued/running job 时回滚并拒绝删除 checkpoint 和会话数据。"""
         connection = FakeConnection(
             fetch_results=[
-                [{"job_id": "job-1", "status": "running"}],
+                [{"job_id": "job-1", "status": "running", "execution_state": "leased"}],
                 ("session-1",),
             ]
         )
