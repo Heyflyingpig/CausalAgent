@@ -593,3 +593,21 @@
   - 历史时间线只返回脱敏节点事件，排除 `text_delta` 与边界事件；关联缺失或多义时跳过对应区间并记录服务端告警，不使用时间猜测。
   - 前端复用实时节点处理器回放多次 interrupt/resume 阶段，interrupt 后保留已完成时间线；活动 Job 从实际回放游标继续 SSE，避免刷新期间重复或跳过事件。
   - 普通用户历史与 SSE 统一使用按事件类型的字段白名单，移除 `attempt` 和未知内部字段。
+
+---
+2026.8.15
+- 【即时取消与 Worker补强】
+  - 增 execution_state、释放时间/原因字段、索引及数据库约束。
+  - 实现 queued/running/waiting_input 取消、幂等重放和 fencing。
+  - running 取消后进入 canceled/draining，支持 worker cleanup 或 420 秒失联回收。
+  - 修复 EventWriter abort、迟到结果、终态 fencing 和 worker cleanup。
+  - 更新 Session、用户、文件删除阻断规则。
+  - 更新管理员 DTO、worker 看板、普通用户取消按钮、文档和测试。
+  - `fail_job()` 在 Job 行锁内区分 `APPLIED`、`CANCELED_FENCED` 和 `OTHER_FENCED`；取消获胜时不再补写普通失败事件或失败聊天投影。
+  - `OrderedEventWriter.abort()` 改为幂等且可观察：丢弃文字 buffer、结束排队 Future，并向 worker 传递未预期 consumer/数据库异常；只有被接受的终态写入才设置 `terminal_seen`。
+  - `JobExecutionGuard` 覆盖节点、ToolNode、parser、router、retry backoff、error handler、终态生成和事件持久化边界；cleanup 未完成时不确认 `worker_confirmed` 释放。
+  - 普通用户取消改为按 Job 隔离幂等键和 SSE subscription generation，支持 `409 canceled` 对账、真实终态展示，并丢弃取消后的迟到事件。
+- 【聊天输入区与取消时间线修复】
+  - 移除任务排队状态框；Job 进入 queued/running 后，发送按钮显示旋转外环与中心停止方块，输入框保持可编辑。
+  - 创建或恢复 Job 后立即释放输入区，不再等待整个 SSE 订阅生命周期；waiting_input 继续保留恢复发送和紧凑取消入口。
+  - 取消 Job 时统一收尾所有仍处于进行中的时间线阶段、文字草稿和动画，避免子阶段继续显示“进行中”。

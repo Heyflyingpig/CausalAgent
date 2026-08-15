@@ -26,7 +26,9 @@ RAG 启动时只检查知识库目录是否可用，不在 worker 启动阶段�
 
 worker 使用 LangGraph v2 的 `updates`、`messages`、`custom` 和 `tasks` 流，将内部执行事件转换为 `analysis_job_events`。根图 `tasks` 构成用户时间线，子图工具事件折叠为 `mcp` 或 `rag` 阶段。普通用户 SSE 只允许 `normal_chat` 和 `inquiry_answer` 的公开文字进入 `text_delta`；原始 prompt、ToolMessage、完整工具结果、图状态、内部 attempt 和隐藏推理都不能进入普通用户协议。
 
-事件写入由 Job 的 `lease_epoch`、worker、attempt 和稳定 `event_key` 共同保护。终态事件与 assistant 消息、Job 状态在同一个 MySQL 事务中落盘；旧 worker 失去 lease 后不能覆盖新执行结果。前端断线恢复使用 Event ID 读取 MySQL 事件，不依赖 worker 内存。
+事件写入由 Job 的 `lease_epoch`、worker、attempt、`execution_state=leased` 和稳定 `event_key` 共同保护。终态事件与 assistant 消息、Job 状态在同一个 MySQL 事务中落盘；旧 worker 失去 lease 或收到取消撤销后不能覆盖新执行结果。`JobExecutionGuard` 通过 LangGraph invocation runtime context 传递到父图、子图、ToolNode 包装器和 parser；节点开始、调用返回、异常处理、路由和事件持久化前均检查执行资格。`JobExecutionRevoked` 是内部控制流，不进入 RetryPolicy、error handler 或公开 error 事件。前端断线恢复使用 Event ID 读取 MySQL 事件，不依赖 worker 内存。
+
+普通异常的失败收敛会先在 Job 行锁内确认 worker、attempt、lease epoch 和 `leased` 状态；若锁住时发现业务取消，返回 `CANCELED_FENCED`，不再补写普通 `error` 事件。`OrderedEventWriter.abort()` 会丢弃未刷新的文字、结束排队 Future，并向调用方暴露消费协程的非预期异常；只有终态写入被接受后才设置 `terminal_seen`。worker 只有在 graph stream、EventWriter 和 heartbeat monitor 都完成 cleanup 后，才可以把 canceled/draining 执行占用标记为 `worker_confirmed`；cleanup 失败时保留 draining，交由租约回收路径处理。
 
 普通用户历史与实时 SSE 共用字段白名单。历史阶段排除 `text_delta` 和所有边界事件，只重放节点、进度、决策、工具摘要、重试与节点结束；边界事件只在服务端用于阶段切分。页面刷新活动 Job 时，`load_session` 先重放已持久化节点事件并记录实际处理到的 `rendered_event_id`，随后活动 Job API 只补充状态，不能用数据库最新事件 ID 推进该游标；SSE 从 `rendered_event_id` 之后补发，避免加载与订阅之间的事件被跳过。
 
