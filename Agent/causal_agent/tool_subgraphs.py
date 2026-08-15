@@ -12,7 +12,12 @@ from Agent.causal_agent.fault_tolerance import (
     timeout,
     tool_retry,
 )
-from Agent.causal_agent.graph_utils import bind_node, bind_runnable_node
+from Agent.causal_agent.graph_utils import (
+    bind_node,
+    bind_runnable_node,
+    guarded_error_handler,
+    guarded_router,
+)
 from Agent.causal_agent.state import CausalAgentState
 
 
@@ -56,30 +61,30 @@ def build_mcp_subgraph(llm, mcp_tools):
         ),
         retry_policy=short_retry(max_attempts=2),
         timeout=timeout(run_timeout=60, idle_timeout=30),
-        error_handler=recover_mcp_tool_failure,
+        error_handler=guarded_error_handler(recover_mcp_tool_failure),
     )
     graph.add_node(
         "mcp_tool_node",
         bind_runnable_node(ToolNode(mcp_tools), event_node_name="mcp_tool_node"),
         retry_policy=tool_retry(max_attempts=3),
         timeout=timeout(run_timeout=360, idle_timeout=120),
-        error_handler=recover_mcp_tool_failure,
+        error_handler=guarded_error_handler(recover_mcp_tool_failure),
     )
     graph.add_node(
         "mcp_result_parser",
-        nodes.mcp_result_parser_node,
-        error_handler=recover_mcp_tool_failure,
+        bind_node(nodes.mcp_result_parser_node, event_node_name="mcp_result_parser"),
+        error_handler=guarded_error_handler(recover_mcp_tool_failure),
     )
     graph.set_entry_point("mcp_planner")
 
     graph.add_conditional_edges(
         "mcp_planner",
-        route_mcp_planner,
+        guarded_router(route_mcp_planner),
         {"tool": "mcp_tool_node", "failed": END},
     )
     graph.add_conditional_edges(
         "mcp_tool_node",
-        route_mcp_tool_result,
+        guarded_router(route_mcp_tool_result),
         {"parse": "mcp_result_parser", "failed": END},
     )
     graph.add_edge("mcp_result_parser", END)
@@ -99,21 +104,24 @@ def build_rag_subgraph(llm, rag_tools):
         ),
         retry_policy=short_retry(max_attempts=2),
         timeout=timeout(run_timeout=60, idle_timeout=30),
-        error_handler=degrade_rag_tool_result,
+        error_handler=guarded_error_handler(degrade_rag_tool_result),
     )
     graph.add_node(
         "rag_tool_node",
         bind_runnable_node(ToolNode(rag_tools), event_node_name="rag_tool_node"),
         retry_policy=tool_retry(max_attempts=2),
         timeout=timeout(run_timeout=120, idle_timeout=45),
-        error_handler=degrade_rag_tool_result,
+        error_handler=guarded_error_handler(degrade_rag_tool_result),
     )
-    graph.add_node("rag_result_parser", nodes.rag_result_parser_node)
+    graph.add_node(
+        "rag_result_parser",
+        bind_node(nodes.rag_result_parser_node, event_node_name="rag_result_parser"),
+    )
     graph.set_entry_point("rag_question_planner")
     
     graph.add_conditional_edges(
         "rag_question_planner",
-        route_rag_planner,
+        guarded_router(route_rag_planner),
         {"tool": "rag_tool_node", "skip": END},
     )
     graph.add_edge("rag_tool_node", "rag_result_parser")
