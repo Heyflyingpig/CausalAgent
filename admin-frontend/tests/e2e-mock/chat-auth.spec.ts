@@ -9,9 +9,10 @@ test('管理员可停留在聊天页，普通用户看不到后台入口且越�
   page,
 }) => {
   let role: 'user' | 'admin' = 'admin'
-  const [chatHtml, chatScript, chatStyle, markedScript] = await Promise.all([
+  const [chatHtml, chatScript, jobSubscriptionStateScript, chatStyle, markedScript] = await Promise.all([
     readFile(new URL('app/static/chat.html', repositoryRoot), 'utf8'),
     readFile(new URL('app/static/js/script.js', repositoryRoot), 'utf8'),
+    readFile(new URL('app/static/js/job_subscription_state.js', repositoryRoot), 'utf8'),
     readFile(new URL('app/static/css/style.css', repositoryRoot), 'utf8'),
     readFile(new URL('app/static/js/marked.min.js', repositoryRoot), 'utf8'),
   ])
@@ -23,6 +24,10 @@ test('管理员可停留在聊天页，普通用户看不到后台入口且越�
   await page.route('**/static/js/script.js', route => route.fulfill({
     contentType: 'application/javascript; charset=utf-8',
     body: chatScript,
+  }))
+  await page.route('**/static/js/job_subscription_state.js', route => route.fulfill({
+    contentType: 'application/javascript; charset=utf-8',
+    body: jobSubscriptionStateScript,
   }))
   await page.route('**/static/js/marked.min.js', route => route.fulfill({
     contentType: 'application/javascript; charset=utf-8',

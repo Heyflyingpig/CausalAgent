@@ -264,37 +264,6 @@
         color: #1f2937;
     }
 
-    .waiting-job-status {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 8px 20px;
-        background: #f7f9fb;
-        border-top: 1px solid #e7ebef;
-        color: #334155;
-        font-size: 0.9em;
-    }
-
-    .waiting-job-status span {
-        min-width: 0;
-        overflow-wrap: anywhere;
-    }
-
-    .waiting-job-status button {
-        flex: 0 0 auto;
-        margin-left: auto;
-        padding: 7px 11px;
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        background: #ffffff;
-        color: #334155;
-        cursor: pointer;
-    }
-
-    .waiting-job-status button:hover {
-        background: #eef2f7;
-    }
-
     .input-area {
         /* 页面底部的输入区域容器 */
         position: relative;
@@ -346,18 +315,98 @@
         background-color: #0056b3; 
     }
 
-    .input-area .waiting-job-status button {
-        padding: 7px 11px;
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        background: #ffffff;
-        color: #334155;
+    .input-area button:disabled {
+        cursor: not-allowed;
+        opacity: 0.65;
     }
 
-    .input-area .waiting-job-status button:hover {
-        background: #eef2f7;
+    .cancel-job-button {
+        padding: 9px 12px !important;
+        border: 1px solid #cbd5e1 !important;
+        background: #ffffff !important;
+        color: #475569 !important;
+        white-space: nowrap;
     }
-    
+
+    .cancel-job-button:hover {
+        background: #eef2f7 !important;
+        color: #1e293b !important;
+    }
+
+    .send-button {
+        position: relative;
+        min-width: 64px;
+        min-height: 42px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        overflow: visible;
+        transition: width 0.15s ease, height 0.15s ease, border-radius 0.15s ease,
+            background-color 0.15s ease;
+    }
+
+    .send-button-label {
+        display: inline-block;
+    }
+
+    .send-button-spinner,
+    .send-button-stop {
+        display: none;
+    }
+
+    .send-button.is-running {
+        width: 42px;
+        min-width: 42px;
+        height: 42px;
+        min-height: 42px;
+        padding: 0;
+        border-radius: 50%;
+        background: #007bff;
+    }
+
+    .send-button.is-running::before {
+        position: absolute;
+        inset: -4px;
+        content: '';
+        border: 2px solid #d8e7ff;
+        border-top-color: #007bff;
+        border-right-color: #007bff;
+        border-radius: 50%;
+        animation: send-button-spin 0.85s linear infinite;
+        pointer-events: none;
+    }
+
+    .send-button.is-running .send-button-label {
+        display: none;
+    }
+
+    .send-button.is-running .send-button-stop {
+        display: block;
+        width: 11px;
+        height: 11px;
+        border-radius: 2px;
+        background: #ffffff;
+    }
+
+    .send-button.is-running:hover {
+        background: #0056b3;
+    }
+
+    .send-button.is-running:hover::before {
+        border-top-color: #0056b3;
+        border-right-color: #0056b3;
+    }
+
+    @keyframes send-button-spin {
+        to { transform: rotate(360deg); }
+    }
+
+    .send-button:focus-visible,
+    .cancel-job-button:focus-visible {
+        outline: 3px solid rgba(0, 123, 255, 0.28);
+        outline-offset: 2px;
+    }
+
     /* 上传按钮样式 */
     #uploadCsvButton {
         /* 上传文件按钮的特定样式 */
@@ -1150,6 +1199,10 @@
 }
 
 .step-item.completed .step-status {
+    visibility: hidden;
+}
+
+.step-item.canceled .step-status {
     visibility: hidden;
 }
 
