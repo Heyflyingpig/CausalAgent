@@ -8,6 +8,7 @@ from typing import Dict, List, Union
 from langgraph.func import task
 
 from Agent.knowledge_base.query_rag import get_rag_response
+from app.agent.worker.execution_guard import JobExecutionRevoked
 
 
 @task
@@ -27,10 +28,14 @@ async def rag_query_task(questions: List[Union[str, Dict]]) -> Dict:
         logging.info("Task: 知识库查询完成")
         return rag_response
     
+    except (JobExecutionRevoked, asyncio.CancelledError):
+        raise
     except Exception as exc:
         logging.error(f"Task: 知识库查询失败: {exc}", exc_info=True)
         return {
             "success": False,
+            "status": "unavailable",
+            "error_type": "RAGQueryError",
             "summary": f"知识库查询失败：{exc}",
             "questions": [],
             "evidence_count": 0,

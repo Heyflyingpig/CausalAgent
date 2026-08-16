@@ -80,7 +80,12 @@ def test_slot_runtime_builds_graph_from_explicit_dependencies():
         )
 
     build_checkpointer.assert_called_once()
-    create_graph.assert_called_once_with(llm, tools, checkpointer)
+    create_graph.assert_called_once_with(
+        llm,
+        tools,
+        checkpointer,
+        rag_available=True,
+    )
     assert slot_runtime.llm is llm
     assert slot_runtime.mcp_resources is resources
     assert slot_runtime.mcp_tools is tools

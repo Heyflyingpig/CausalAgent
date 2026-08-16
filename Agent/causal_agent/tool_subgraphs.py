@@ -7,6 +7,8 @@ from langgraph.prebuilt import ToolNode
 from Agent.causal_agent import nodes
 from Agent.causal_agent.fault_tolerance import (
     degrade_rag_tool_result,
+    degrade_rag_parser_failure,
+    degrade_rag_finalize_failure,
     recover_mcp_tool_failure,
     short_retry,
     timeout,
@@ -18,14 +20,17 @@ from Agent.causal_agent.graph_utils import (
     guarded_error_handler,
     guarded_router,
 )
-from Agent.causal_agent.state import CausalAgentState
+from Agent.causal_agent.state import CausalAgentState, RagSubgraphState
 
 
-def route_rag_planner(state: CausalAgentState) -> str:
-    """仅在 RAG planner 产生标准 tool_calls 时进入 ToolNode。当失败时，跳过子图"""
-    messages = state.get("messages", [])
-    latest_message = messages[-1] if messages else None
-    return "tool" if getattr(latest_message, "tool_calls", None) else "skip"
+def route_rag_planner(state: RagSubgraphState) -> str:
+    """根据 Planner 写入的显式 route 决定调用工具或进入 Finalize。"""
+    return "call_tool" if state.get("rag_route") == "call_tool" else "finish"
+
+
+def route_rag_tool_result(state: RagSubgraphState) -> str:
+    """ToolNode 正常返回（包括 success=False）统一进入 Parser。"""
+    return "finish" if state.get("rag_route") == "finish" else "parse"
 
 
 def route_mcp_planner(state: CausalAgentState) -> str:
@@ -46,6 +51,19 @@ def route_mcp_tool_result(state: CausalAgentState) -> str:
     if isinstance(result, dict) and result.get("success") is False:
         return "failed"
     return "parse"
+
+
+class _RagToolNode:
+    """给 ToolNode 的正常结果补写私有 parse route，不污染父 State。"""
+
+    def __init__(self, tools):
+        self._tool_node = ToolNode(tools)
+
+    async def ainvoke(self, state: RagSubgraphState, config):
+        result = await self._tool_node.ainvoke(state, config)
+        if not isinstance(result, dict):
+            raise TypeError("RAG ToolNode 必须返回 State update dict。")
+        return {**result, "rag_route": "parse"}
 
 
 def build_mcp_subgraph(llm, mcp_tools):
@@ -91,9 +109,9 @@ def build_mcp_subgraph(llm, mcp_tools):
     return graph.compile(name="mcp")
 
 
-def build_rag_subgraph(llm, rag_tools):
+def build_rag_subgraph(llm, rag_tools, rag_available: bool = True):
     """Build the RAG enrichment subgraph used as one parent-graph stage."""
-    graph = StateGraph(CausalAgentState)
+    graph = StateGraph(RagSubgraphState)
     graph.add_node(
         "rag_question_planner",
         bind_node(
@@ -101,6 +119,7 @@ def build_rag_subgraph(llm, rag_tools):
             event_node_name="rag_question_planner",
             llm=llm,
             rag_tools=rag_tools,
+            rag_available=rag_available,
         ),
         retry_policy=short_retry(max_attempts=2),
         timeout=timeout(run_timeout=60, idle_timeout=30),
@@ -108,7 +127,7 @@ def build_rag_subgraph(llm, rag_tools):
     )
     graph.add_node(
         "rag_tool_node",
-        bind_runnable_node(ToolNode(rag_tools), event_node_name="rag_tool_node"),
+        bind_runnable_node(_RagToolNode(rag_tools), event_node_name="rag_tool_node"),
         retry_policy=tool_retry(max_attempts=2),
         timeout=timeout(run_timeout=120, idle_timeout=45),
         error_handler=guarded_error_handler(degrade_rag_tool_result),
@@ -116,14 +135,25 @@ def build_rag_subgraph(llm, rag_tools):
     graph.add_node(
         "rag_result_parser",
         bind_node(nodes.rag_result_parser_node, event_node_name="rag_result_parser"),
+        error_handler=guarded_error_handler(degrade_rag_parser_failure),
+    )
+    graph.add_node(
+        "rag_finalize",
+        bind_node(nodes.rag_finalize_node, event_node_name="rag_finalize"),
+        error_handler=guarded_error_handler(degrade_rag_finalize_failure),
     )
     graph.set_entry_point("rag_question_planner")
-    
+
     graph.add_conditional_edges(
         "rag_question_planner",
         guarded_router(route_rag_planner),
-        {"tool": "rag_tool_node", "skip": END},
+        {"call_tool": "rag_tool_node", "finish": "rag_finalize"},
     )
-    graph.add_edge("rag_tool_node", "rag_result_parser")
-    graph.add_edge("rag_result_parser", END)
+    graph.add_conditional_edges(
+        "rag_tool_node",
+        guarded_router(route_rag_tool_result),
+        {"parse": "rag_result_parser", "finish": "rag_finalize"},
+    )
+    graph.add_edge("rag_result_parser", "rag_finalize")
+    graph.add_edge("rag_finalize", END)
     return graph.compile(name="rag")

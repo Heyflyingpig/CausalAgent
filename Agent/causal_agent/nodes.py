@@ -1,8 +1,9 @@
 import asyncio
-from .state import CausalAgentState
+from .state import CausalAgentState, RagSubgraphState
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, Any, List, Tuple, Dict
@@ -14,8 +15,13 @@ import numpy as np
 import networkx as nx
 from mcp import ClientSession
 from langgraph.func import task
+from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 from Agent.llm_structured_output import StructuredOutputError, ainvoke_structured
+from .fault_tolerance import (
+    RAG_DEGRADATION_SUMMARY,
+    build_rag_degradation_result,
+)
 
 ## 基本配置
 from config.settings import settings
@@ -640,6 +646,12 @@ async def mcp_result_parser_node(state: CausalAgentState) -> dict:
         }
 
     parsed = parse_tool_message_json(latest_tool_message)
+    if parsed.get("error_type") == "ToolMessageProtocolError":
+        parsed = {
+            "success": False,
+            "error": parsed.get("error", "MCP ToolMessage 不是合法 JSON。"),
+            "error_type": "MCPProtocolError",
+        }
     if type(parsed.get("success")) is not bool:
         logging.warning(
             "MCP 返回结果缺少布尔型 success 字段: keys=%s",
@@ -672,9 +684,27 @@ async def mcp_result_parser_node(state: CausalAgentState) -> dict:
     }
 
 
-async def rag_question_planner_node(state: CausalAgentState, llm: ChatOpenAI, rag_tools: list) -> dict:
-    """生成 RAG 问题；结构化失败时写入稳定降级结果并跳过工具调用。"""
+async def rag_question_planner_node(
+    state: RagSubgraphState,
+    llm: ChatOpenAI,
+    rag_tools: list,
+    rag_available: bool = True,
+) -> dict:
+    """生成 RAG 问题，并通过私有 route 字段决定是否调用工具。"""
     logging.info("正在启动 RAG 问题生成任务...")
+
+    if not rag_available or not rag_tools:
+        logging.warning(
+            "RAG 知识库或工具不可用，将在 Planner 预检阶段跳过 ToolNode。"
+        )
+        return {
+            "rag_route": "finish",
+            "rag_status": "unavailable",
+            "rag_questions": [],
+            "rag_parse_result": build_rag_degradation_result(
+                "RAG 知识库未初始化或工具未注册。"
+            ),
+        }
 
     max_questions = 3
     try:
@@ -682,23 +712,13 @@ async def rag_question_planner_node(state: CausalAgentState, llm: ChatOpenAI, ra
     except StructuredOutputError as exc:
         logging.warning("RAG 问题生成失败，将跳过知识库工具: %s", exc)
         return {
-            "messages": [
-                AIMessage(
-                    content="知识库问题生成失败，已跳过知识库增强。",
-                    name="rag_question_planner",
-                )
-            ],
-            "knowledge_base_result": {
-                "success": False,
-                "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
-                "questions": [],
-                "evidence_count": 0,
-                "error": str(exc),
-            },
+            "rag_route": "finish",
+            "rag_status": "unavailable",
+            "rag_questions": [],
+            "rag_parse_result": build_rag_degradation_result(str(exc)),
         }
     tool_name = "rag_enrichment_search"
-    if rag_tools:
-        tool_name = getattr(rag_tools[0], "name", tool_name)
+    tool_name = getattr(rag_tools[0], "name", tool_name)
 
     ai_message = AIMessage(
         content="",
@@ -713,50 +733,132 @@ async def rag_question_planner_node(state: CausalAgentState, llm: ChatOpenAI, ra
             }
         ],
     )
-    return {"messages": [ai_message]}
+    return {
+        "messages": [ai_message],
+        "rag_questions": rag_questions,
+        "rag_route": "call_tool",
+        "rag_status": "available",
+    }
 
 
-async def rag_result_parser_node(state: CausalAgentState) -> dict:
-    """子节点：获取rag返回内容，注入state当中"""
+async def rag_result_parser_node(state: RagSubgraphState) -> dict:
+    """解析 RAG ToolMessage，只写入子图私有的中间结果。"""
     messages = state.get("messages", [])
     latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
     if latest_tool_message is None:
-        if latest_ai_tool_call_ids(messages):
-            return {
-                "knowledge_base_result": {
-                    "success": False,
-                    "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
-                    "questions": [],
-                    "evidence_count": 0,
-                    "error": "No RAG tool result was produced.",
-                }
-            }
-        existing_result = state.get("knowledge_base_result")
-        if isinstance(existing_result, dict):
-            return {"knowledge_base_result": existing_result}
+        error_message = (
+            "No RAG tool result was produced."
+            if latest_ai_tool_call_ids(messages)
+            else "RAG ToolMessage 与本次调用不匹配。"
+        )
         return {
-            "knowledge_base_result": {
-                "success": False,
-                "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
-                "questions": [],
-                "evidence_count": 0,
-                "error": "No RAG tool result was produced.",
-            }
+            "rag_route": "finish",
+            "rag_status": "protocol_error",
+            "rag_tool_message": None,
+            "rag_parse_result": build_rag_degradation_result(
+                error_message,
+                status="protocol_error",
+            ),
         }
 
     parsed = parse_tool_message_json(latest_tool_message)
-    if not parsed.get("success"):
-        parsed.setdefault("summary", "知识库增强暂不可用，报告将仅基于因果分析结果生成。")
-        parsed.setdefault("questions", [])
-        parsed.setdefault("evidence_count", 0)
+    if parsed.get("error_type") == "ToolMessageProtocolError":
+        parsed = build_rag_degradation_result(
+            parsed.get("error", "RAG ToolMessage 不是合法 JSON。"),
+            status="protocol_error",
+        )
+        parsed["error_type"] = "ToolMessageProtocolError"
+        rag_status = "protocol_error"
+    elif type(parsed.get("success")) is not bool:
+        parsed = build_rag_degradation_result(
+            "RAG 工具返回结果缺少布尔型 success 字段。",
+            status="protocol_error",
+        )
+        rag_status = "protocol_error"
+    elif not parsed.get("success"):
+        error_type = parsed.get("error_type")
+        parsed = build_rag_degradation_result(
+            parsed.get("error", "RAG 工具返回失败结果。"),
+            status="unavailable",
+        )
+        if error_type:
+            parsed["error_type"] = error_type
+        rag_status = "unavailable"
+    else:
+        parsed["status"] = "available"
+        rag_status = "available"
     result = attach_tool_call_metadata(
         parsed,
         latest_tool_message,
         latest_tool_call,
     )
     return {
-        "knowledge_base_result": result,
+        "rag_route": "finish",
+        "rag_status": rag_status,
+        "rag_tool_message": latest_tool_message,
+        "rag_parse_result": result,
     }
+
+
+async def rag_finalize_node(state: RagSubgraphState) -> dict:
+    """统一生成子图最终输出，确保任何降级都具有稳定结构。"""
+    status = state.get("rag_status")
+    if status not in {"available", "unavailable", "protocol_error"}:
+        status = "unavailable"
+
+    parsed_result = state.get("rag_parse_result")
+    if isinstance(parsed_result, dict):
+        rag_output = dict(parsed_result)
+        if rag_output.get("success") is False:
+            if rag_output.get("status") not in {"unavailable", "protocol_error"}:
+                rag_output["status"] = status
+            rag_output.setdefault("summary", RAG_DEGRADATION_SUMMARY)
+            rag_output.setdefault("questions", [])
+            rag_output.setdefault("evidence_count", 0)
+            rag_output.setdefault("error", "RAG 子图未生成有效结果。")
+        else:
+            rag_output.setdefault("status", "available")
+            status = "available"
+    else:
+        rag_output = build_rag_degradation_result(
+            "RAG 子图未生成有效解析结果。",
+            status=status,
+        )
+
+    return {
+        "rag_route": "finish",
+        "rag_status": status,
+        "rag_output": rag_output,
+    }
+
+
+async def rag_subgraph_adapter_node(
+    state: CausalAgentState,
+    *,
+    rag_subgraph: Any,
+    runtime: Runtime,
+    config: RunnableConfig,
+) -> dict:
+    """把父 State 映射为 RAG 子图输入，并只投影最终结果回父图。"""
+    rag_input: RagSubgraphState = {
+        "messages": list(state.get("messages", [])),
+        "analysis_parameters": state.get("analysis_parameters"),
+        "preprocess_summary": state.get("preprocess_summary"),
+        "causal_analysis_result": state.get("causal_analysis_result"),
+    }
+    subgraph_result = await rag_subgraph.ainvoke(
+        rag_input,
+        config=config,
+        context=getattr(runtime, "context", None),
+    )
+    rag_output = (
+        subgraph_result.get("rag_output")
+        if isinstance(subgraph_result, dict)
+        else None
+    )
+    if not isinstance(rag_output, dict):
+        raise RuntimeError("RAG 子图未返回有效 rag_output。")
+    return {"knowledge_base_result": rag_output}
 
 
 # 环路检测模块

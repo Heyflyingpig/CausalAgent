@@ -39,4 +39,5 @@ def test_parse_mcp_result_keeps_plain_invalid_json_as_failure():
     result = parse_tool_message_json(message)
 
     assert result["success"] is False
+    assert result["error_type"] == "ToolMessageProtocolError"
     assert "not valid JSON" in result["error"]

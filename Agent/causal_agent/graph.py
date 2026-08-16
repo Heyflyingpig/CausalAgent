@@ -1,7 +1,7 @@
 from langgraph.graph import StateGraph, END
 from .state import CausalAgentState
 from . import nodes, edges
-from .graph_utils import bind_node, guarded_error_handler, guarded_router
+from .graph_utils import bind_node, bind_subgraph_node, guarded_error_handler, guarded_router
 from .tool_subgraphs import build_mcp_subgraph, build_rag_subgraph
 from .fault_tolerance import (
     recover_postprocess_to_report,
@@ -10,6 +10,7 @@ from .fault_tolerance import (
     recover_tools_to_agent,
     recover_fold_to_agent,
     recover_preprocess_to_agent,
+    degrade_rag_adapter_result,
     route_to_normal_chat,
     short_retry,
     timeout,
@@ -20,7 +21,13 @@ import logging
 
 
 
-def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointer):
+def build_graph(
+    llm: "ChatOpenAI",
+    mcp_tools: list,
+    rag_tools: list,
+    checkpointer,
+    rag_available: bool = True,
+):
     """
     构建父图。
 
@@ -33,7 +40,17 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
     fold_node_with_llm = bind_node(nodes.fold_node, event_node_name="fold", llm=llm)
     preprocess_node_with_llm = bind_node(nodes.preprocess_node, event_node_name="preprocess", llm=llm)
     mcp_subgraph = build_mcp_subgraph(llm=llm, mcp_tools=mcp_tools)#创建mcp子图
-    rag_subgraph = build_rag_subgraph(llm=llm, rag_tools=rag_tools)#创建rag子图
+    rag_subgraph = build_rag_subgraph(
+        llm=llm,
+        rag_tools=rag_tools,
+        rag_available=rag_available,
+    )
+    # 映射rag子state，隔离父子状态
+    rag_adapter_node = bind_subgraph_node(
+        nodes.rag_subgraph_adapter_node,
+        event_node_name="rag",
+        rag_subgraph=rag_subgraph,
+    )
     postprocess_node_with_llm = bind_node(nodes.postprocess_node, event_node_name="postprocess", llm=llm)
     inquiry_answer_node_with_llm = bind_node(
         nodes.inquiry_answer_node,
@@ -71,7 +88,11 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
     )
 
     workflow.add_node("mcp", mcp_subgraph)#mcp子图注册成节点
-    workflow.add_node("rag", rag_subgraph)#rag子图注册成节点
+    workflow.add_node(
+        "rag",
+        rag_adapter_node,
+        error_handler=guarded_error_handler(degrade_rag_adapter_result),
+    )
     workflow.add_node(
         "postprocess",
         postprocess_node_with_llm,
@@ -155,7 +176,12 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_tools: list, checkpointe
 
 
 
-def create_graph_from_tools(llm: "ChatOpenAI", mcp_tools: list, checkpointer):
+def create_graph_from_tools(
+    llm: "ChatOpenAI",
+    mcp_tools: list,
+    checkpointer,
+    rag_available: bool = True,
+):
     """使用已加载的 MCP tools 构建父图，返回可直接执行的 compiled graph。"""
     from Agent.tool_node.rag_tool_registry import build_rag_tools
     # graph 层不再关心 MCP session。
@@ -165,6 +191,7 @@ def create_graph_from_tools(llm: "ChatOpenAI", mcp_tools: list, checkpointer):
         mcp_tools=mcp_tools,
         rag_tools=rag_tools,
         checkpointer=checkpointer,
+        rag_available=rag_available,
     )
 
 
