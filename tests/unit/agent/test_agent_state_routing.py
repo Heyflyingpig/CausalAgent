@@ -327,11 +327,11 @@ def test_rag_question_failure_skips_tool_node_with_stable_result(monkeypatch):
     monkeypatch.setattr(nodes, "get_rag_questions", fail_questions)
     state = _state()
     result = asyncio.run(nodes.rag_question_planner_node(state, object(), []))
-    routed_state = {**state, "messages": state["messages"] + result["messages"]}
 
-    assert result["knowledge_base_result"]["success"] is False
-    assert result["knowledge_base_result"]["questions"] == []
-    assert route_rag_planner(routed_state) == "skip"
+    assert result["rag_route"] == "finish"
+    assert result["rag_parse_result"]["success"] is False
+    assert result["rag_parse_result"]["questions"] == []
+    assert route_rag_planner({**state, **result}) == "finish"
 
 
 def test_mcp_adapter_preserves_standard_tool_calls_and_injects_runtime_data():
