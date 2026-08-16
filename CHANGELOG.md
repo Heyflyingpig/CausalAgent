@@ -611,3 +611,15 @@
   - 移除任务排队状态框；Job 进入 queued/running 后，发送按钮显示旋转外环与中心停止方块，输入框保持可编辑。
   - 创建或恢复 Job 后立即释放输入区，不再等待整个 SSE 订阅生命周期；waiting_input 继续保留恢复发送和紧凑取消入口。
   - 取消 Job 时统一收尾所有仍处于进行中的时间线阶段、文字草稿和动画，避免子阶段继续显示“进行中”。
+
+---
+2026.8.16
+- 【RAG 子图 State 隔离与父图统一输出】
+  - 新增 `RagSubgraphState`，将 RAG route、问题列表、ToolMessage、Parser 中间结果和最终输出限制在子图内部。
+  - 增加父子 State 适配节点，显式透传 LangGraph `config` 与执行上下文，父图只接收 `knowledge_base_result`，并保持 `mcp -> rag -> agent` 路径。
+  - 将 RAG 子图统一为 Planner、ToolNode、Parser、Finalize 条件路由；保留 Planner、RAG task 和 ToolNode 的既有重试次数及普通异常降级边界。
+  - 统一 RAG 降级结构，保留 `success`、单问题 `insufficient_evidence` 语义，并继续向 worker 传播 `JobExecutionRevoked` 与 `CancelledError`。
+- 【RAG 不可用预检与协议错误分流】
+  - 将已有 worker 进程级 `rag_available` 和空工具列表传入 RAG Planner；知识库未初始化或工具未注册时在 Planner 预检阶段跳过 ToolNode，经 Finalize 继续回到 Agent。
+  - 为 RAG 查询失败和非法 ToolMessage JSON 增加明确错误标记，分别保持 `unavailable` 与 `protocol_error` 语义，不改变取消/撤销异常传播和既有重试边界。
+  - 补充 RAG 预检、查询错误标记、协议错误分流和权威验证边界文档。
