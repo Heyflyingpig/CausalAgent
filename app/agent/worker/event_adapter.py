@@ -26,6 +26,7 @@ TOOL_STAGE_NODES = {
     "rag_question_planner": "rag",
     "rag_tool_node": "rag",
     "rag_result_parser": "rag",
+    "rag_finalize": "rag",
 }
 DECISION_PROGRESS = {
     "fold": "已识别为因果分析请求",
@@ -209,12 +210,12 @@ class LangGraphEventAdapter:
                     {"tool_name": tool_name, "argument_keys": argument_keys}
                 )
                 events.append(event)
-            result_key = (
-                "causal_analysis_result"
-                if TOOL_STAGE_NODES[node_name] == "mcp"
-                else "knowledge_base_result"
-            )
-            result = output.get(result_key)
+            if TOOL_STAGE_NODES[node_name] == "mcp":
+                result = output.get("causal_analysis_result")
+            elif node_name == "rag_finalize":
+                result = output.get("rag_output")
+            else:
+                result = output.get("knowledge_base_result")
             if isinstance(result, dict):
                 metadata = result.get("_tool_call") or {}
                 event = self._base("tool_call_result", tool_step)

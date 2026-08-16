@@ -1,7 +1,7 @@
 from operator import add
 from typing import Annotated, Any, Dict, List, Literal, NotRequired, Optional, TypedDict
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, ToolMessage
 
 
 class FileSummary(TypedDict, total=False):
@@ -64,3 +64,25 @@ class CausalAgentState(TypedDict):
     visualization_mapping: Optional[dict]
 
     visualizations: Optional[dict]
+
+
+class RagSubgraphState(TypedDict, total=False):
+    """RAG 子图的私有状态。
+
+    父图只通过适配节点提供四个只读上下文字段，并最终接收
+    ``rag_output`` 的投影结果；问题列表、ToolMessage 和解析中间结果
+    不会回写到 ``CausalAgentState``。
+    """
+
+    messages: Annotated[List[BaseMessage], add]
+
+    analysis_parameters: Optional[dict]
+    preprocess_summary: Optional[str]
+    causal_analysis_result: Optional[dict]
+
+    rag_route: Literal["call_tool", "parse", "finish"]
+    rag_questions: List[Dict[str, Any]]
+    rag_tool_message: Optional[ToolMessage]
+    rag_parse_result: Optional[Dict[str, Any]]
+    rag_status: Literal["available", "unavailable", "protocol_error"]
+    rag_output: Optional[Dict[str, Any]]

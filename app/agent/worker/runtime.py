@@ -127,6 +127,7 @@ async def create_slot_runtime(
         process_runtime.llm,
         mcp_resources.tools,
         checkpointer,
+        rag_available=process_runtime.rag_available,
     )
     return SlotRuntime(
         llm=process_runtime.llm,
