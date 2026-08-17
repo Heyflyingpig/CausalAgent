@@ -178,7 +178,7 @@ cython_debug/
 # Sensitive configuration files
 secrets.json
 config.json
-searxng/
+searxng/core-config/settings.yml
 
 #  demo
 杂项/
