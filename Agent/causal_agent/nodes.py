@@ -36,6 +36,8 @@ from .back_prompt import causal_rag_prompt
 ## 报告人设
 from .back_prompt import causal_report_prompt
 
+from Agent.causal_agent.web_search_node import format_web_search_summary_for_prompt
+
 # 数据库
 from Database.agent_connect import require_frozen_file_for_job
 
@@ -168,7 +170,7 @@ async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
             schema=RouteQuery,
             prompt=prompt,
             inputs={
-                "messages": state["messages"][-1],
+                "messages": latest_human_text,
                 "has_tool_results": has_tool_results,
                 "final_report": state.get("final_report", None)
             },
@@ -1191,8 +1193,9 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
          2. 预处理元数据：{preprocess_meta_data}
          2. 因果分析结果：{causal_analysis_result}
         3. 知识库结果：{knowledge_base_result}
-        4. 后处理结果：{postprocess_result}
-        5. 算法解释补充：{method_context}
+        4. 联网搜索结果：{web_search_result}
+        5. 后处理结果：{postprocess_result}
+        6. 算法解释补充：{method_context}
 
         ## 因果分析结果解读规则
         - 如果因果分析结果包含 error_type，请明确说明算法未能产生有效因果图，不要声称“没有因果关系”。
@@ -1252,6 +1255,9 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         max_questions=3,
         include_evidence=True
     )
+    web_summary = format_web_search_summary_for_prompt(
+        state.get("web_search_result", {})
+    )
 
     response = await runnable.ainvoke({
         "messages": llm_prompt_messages(state["messages"]),
@@ -1259,6 +1265,7 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         "preprocess_summary": state.get("preprocess_summary", {}),
         "causal_analysis_result": state.get("causal_analysis_result", {}),
         "knowledge_base_result": knowledge_summary,
+        "web_search_result": web_summary,
         "postprocess_result": state.get("postprocess_result", {}),
         "method_context": _causal_method_context_for_report(
             state.get("causal_analysis_result", {})
@@ -1332,8 +1339,9 @@ async def inquiry_answer_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         # 当前状态摘要
         1. 因果分析结果：{causal_analysis_result}
         2. 知识库结果：{knowledge_base_result}
-        3. 后处理结果：{postprocess_result}
-        4. 报告：{final_report}
+        3. 联网搜索结果：{web_search_result}
+        4. 后处理结果：{postprocess_result}
+        5. 报告：{final_report}
         
         # 你的任务：根据历史摘要和所有分析结果，回答用户问题
         - 用户的问题：{messages}
@@ -1352,11 +1360,15 @@ async def inquiry_answer_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         max_questions=2,
         include_evidence=True
     )
+    web_summary = format_web_search_summary_for_prompt(
+        state.get("web_search_result", {})
+    )
 
     response = await runnable.ainvoke({
         "messages": llm_prompt_messages(state["messages"]),
         "causal_analysis_result": state.get("causal_analysis_result", {}),
         "knowledge_base_result": knowledge_summary,
+        "web_search_result": web_summary,
         "postprocess_result": state.get("postprocess_result", {}),
         "final_report": state.get("final_report", {}),
         "system_role": causal_prompt()

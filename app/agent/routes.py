@@ -59,6 +59,7 @@ def create_analysis_job():
     message = data.get("message")
     session_id = data.get("session_id")
     input_user_file_id = data.get("input_user_file_id")
+    web_search_enabled = bool(data.get("web_search_enabled", False))
     if not isinstance(message, str) or not message.strip():
         return jsonify({"success": False, "error": "消息不能为空"}), 400
     if not session_id:
@@ -78,6 +79,7 @@ def create_analysis_job():
             message,
             idempotency_key,
             input_user_file_id,
+            web_search_enabled=web_search_enabled,
         )
         logging.info(
             "[job-api] user=%s session=%s job=%s existing=%s",

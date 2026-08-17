@@ -124,6 +124,7 @@ async def run_job(
             claim_kind=job.get("claim_kind", "initial"),
             initial_input_record=initial_input,
             execution_guard=guard,
+            web_search_enabled=bool(job.get("web_search_enabled")),
         )
         try:
             async for payload in graph_stream:

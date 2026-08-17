@@ -298,6 +298,23 @@ class AppConfig:
             default="CausalAgent-Default-Project",
         )
 
+        # 联网搜索 provider 配置
+        self.WEB_SEARCH_PROVIDER = self._get_config(
+            "WEB_SEARCH_PROVIDER",
+            required=False,
+            default="searxng",
+        )
+        self.SEARXNG_URL = self._get_config(
+            "SEARXNG_URL",
+            required=False,
+            default="http://searxng:8080",
+        ).rstrip("/")
+        self.ARXIV_API_URL = self._get_config(
+            "ARXIV_API_URL",
+            required=False,
+            default="http://export.arxiv.org/api/query",
+        ).rstrip("/")
+
         # 初始化完成后，自动设置 LangSmith
         self._setup_langsmith()
 

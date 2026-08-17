@@ -56,6 +56,7 @@ class CausalAgentState(TypedDict):
 
     causal_analysis_result: Optional[dict]
     knowledge_base_result: Optional[Dict[str, Any]]
+    web_search_result: Optional[dict]
 
     preprocess_summary: Optional[str]
     postprocess_result: Optional[dict]

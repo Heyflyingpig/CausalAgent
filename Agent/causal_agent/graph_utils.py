@@ -15,7 +15,8 @@ from app.agent.worker.execution_guard import (
 def _runtime_guard(runtime: Runtime):
     """读取 LangGraph runtime context；测试/旧直接调用退回当前异步上下文。"""
     context = getattr(runtime, "context", None)
-    return context if hasattr(context, "ensure_active") else current_execution_guard()
+    guard = getattr(context, "execution_guard", None)
+    return guard if hasattr(guard, "ensure_active") else current_execution_guard()
 
 
 def bind_node(func, *, event_node_name: str | None = None, **bound_kwargs):
@@ -166,6 +167,25 @@ def guarded_router(func):
         return result
 
     _router.__name__ = getattr(func, "__name__", "guarded_router")
+    return _router
+
+
+def guarded_context_router(func):
+    """在 conditional edge 检查执行资格，并把 runtime.context 一并传给路由函数。"""
+
+    async def _router(state, runtime: Runtime):
+        guard = _runtime_guard(runtime)
+        if guard is not None:
+            await guard.ensure_active()
+        context = getattr(runtime, "context", None)
+        result = func(state, context)
+        if inspect.isawaitable(result):
+            result = await result
+        if guard is not None:
+            await guard.check_after_call()
+        return result
+
+    _router.__name__ = getattr(func, "__name__", "guarded_context_router")
     return _router
 
 

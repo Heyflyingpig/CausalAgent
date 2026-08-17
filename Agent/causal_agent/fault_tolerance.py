@@ -244,6 +244,41 @@ def degrade_rag_adapter_result(state: CausalAgentState, error: NodeError) -> Com
     )
 
 
+def degrade_web_search_planner(state: CausalAgentState, error: NodeError) -> dict:
+    """web_search planner 失败后的降级：写 planner 组 success=False。"""
+    return {
+        "planner": {
+            "success": False,
+            "query": "",
+            "reason": "",
+            "error": sanitize_error(error.error),
+        }
+    }
+
+
+def degrade_web_search_search(state: CausalAgentState, error: NodeError) -> dict:
+    """searxng_search 失败后的降级：写 searxng 组 success=False。"""
+    return {
+        "searxng": {
+            "success": False,
+            "results": [],
+            "number_of_results": 0,
+            "error": sanitize_error(error.error),
+        }
+    }
+
+
+def degrade_web_search_content(state: CausalAgentState, error: NodeError) -> dict:
+    """content_fetch 失败后的降级：写 content 组 success=False。"""
+    return {
+        "content": {
+            "success": False,
+            "fetched": [],
+            "error": sanitize_error(error.error),
+        }
+    }
+
+
 def recover_postprocess_to_report(state: CausalAgentState, error: NodeError) -> Command:
     """后处理失败后的恢复：使用原始分析结果继续报告生成。"""
     message = f"{_error_message(error)}；将使用原始分析结果继续生成报告。"

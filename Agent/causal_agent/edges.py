@@ -68,4 +68,11 @@ def postprocess_router(state:CausalAgentState) -> str:
     return "report"
 
 
+def web_search_router(state: CausalAgentState, context) -> str:
+    """读 context.web_search_enabled 决定 rag 后是否走联网搜索子图。"""
+    enabled = getattr(context, "web_search_enabled", False)
+    logging.info("路由: 联网搜索决策 -> %s", "web_search" if enabled else "agent")
+    return "web_search" if enabled else "agent"
+
+
 

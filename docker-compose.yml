@@ -133,6 +133,8 @@ services:
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
       - JOB_CHAT_HISTORY_LIMIT=${JOB_CHAT_HISTORY_LIMIT:-20}
+      - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-searxng}
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
       - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-20}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
@@ -201,6 +203,8 @@ services:
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
       - JOB_CHAT_HISTORY_LIMIT=${JOB_CHAT_HISTORY_LIMIT:-20}
+      - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-searxng}
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
@@ -373,6 +377,36 @@ services:
       - causalagent_replica_network
     restart: unless-stopped
 
+  searxng:
+    image: searxng/searxng:latest
+    container_name: causalagent_searxng
+    restart: unless-stopped
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+    volumes:
+      - ./searxng/core-config:/etc/searxng
+      - searxng_core_data:/var/cache/searxng
+    depends_on:
+      valkey:
+        condition: service_healthy
+    networks:
+      - causalagent_replica_network
+
+  valkey:
+    image: valkey/valkey:9-alpine
+    container_name: causalagent_valkey
+    command: valkey-server --save 30 1 --loglevel warning
+    restart: unless-stopped
+    volumes:
+      - searxng_valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - causalagent_replica_network
+
 networks:
   causalagent_replica_network:
     driver: bridge
@@ -383,4 +417,8 @@ volumes:
   mysql_replica_data:
     driver: local
   postgres_checkpoint_data:
+    driver: local
+  searxng_core_data:
+    driver: local
+  searxng_valkey_data:
     driver: local
