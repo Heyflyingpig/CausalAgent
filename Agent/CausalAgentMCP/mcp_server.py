@@ -14,6 +14,7 @@ for path in (PROJECT_ROOT, AGENT_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+from observability.logging_runtime import configure_logging, current_environment
 from mcp.server.fastmcp import FastMCP
 
 from Agent.causal.causalachieve import (
@@ -23,13 +24,6 @@ from Agent.causal.causalachieve import (
 )
 from Database.agent_connect import require_frozen_file_for_job
 
-
-log_file_path = os.path.join(CURRENT_DIR, "mcp_server.log")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(log_file_path, encoding="utf-8")],
-)
 
 mcp = FastMCP("causal-analyzer")
 
@@ -183,11 +177,32 @@ async def causal_direct_lingam(
         return _error_result("执行 DirectLiNGAM 分析时发生内部错误", "AnalysisError")
 
 
-if __name__ == "__main__":
-    logging.info("MCP 因果分析服务器启动")
+def main() -> None:
+    """启动 stdio MCP server；应用日志只写 stderr，stdout 留给协议。"""
+    configure_logging("mcp", current_environment(), logging.INFO)
+    logging.info(
+        "MCP 因果分析服务器启动",
+        extra={
+            "event_code": "mcp.startup.ready",
+            "category": "lifecycle",
+            "details": {"component": "causal-analyzer"},
+        },
+    )
     try:
         mcp.run(transport="stdio")
     except Exception:
-        logging.error("MCP 服务器运行时出现致命错误", exc_info=True)
+        logging.error(
+            "MCP 服务器运行时出现致命错误",
+            extra={
+                "event_code": "mcp.startup.failed",
+                "category": "dependency",
+                "details": {"component": "causal-analyzer"},
+            },
+            exc_info=True,
+        )
     finally:
         logging.info("MCP 服务器关闭")
+
+
+if __name__ == "__main__":
+    main()

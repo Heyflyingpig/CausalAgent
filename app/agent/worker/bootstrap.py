@@ -9,6 +9,11 @@ import socket
 import sys
 from typing import Any
 
+from observability.logging_runtime import configure_logging, current_environment
+
+if __name__ == "__main__":
+    configure_logging("worker", current_environment(), logging.INFO)
+
 from Agent.causal_agent.postgres_checkpointer import (
     open_checkpoint_pool,
     verify_checkpoint_schema,
@@ -63,6 +68,14 @@ async def main_async() -> None:
             logging.warning("RAG 系统不可用，worker 将以无知识库模式运行。")
 
         slot_count = max(1, settings.JOB_WORKERS)
+        logging.info(
+            "worker 启动检查完成",
+            extra={
+                "event_code": "worker.startup.ready",
+                "category": "lifecycle",
+                "details": {"slot_count": slot_count},
+            },
+        )
         logging.info("[worker] starting slot_count=%s", slot_count)
         await asyncio.gather(
             *[
@@ -76,9 +89,5 @@ def main() -> None:
     """命令行入口：``python -m app.agent.worker``。"""
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        force=True,
-    )
+    configure_logging("worker", current_environment(), logging.INFO)
     asyncio.run(main_async())

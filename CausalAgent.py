@@ -1,28 +1,42 @@
 # app.py (Flask后端)
 # Agent/MCP 长任务请通过 worker 进程运行。
-from flask import Flask, jsonify, request, send_from_directory
 import os
 import logging
-import json 
 import sys
-from flask import session
-from app import create_app
+
+from observability.logging_runtime import configure_logging, current_environment
+
+
+configure_logging("web", current_environment(), logging.INFO)
+
 try:
     from config.settings import settings
 except (ValueError, FileNotFoundError) as e:
-    logging.critical(f"无法加载应用配置，程序终止。错误: {e}")
+    logging.critical(
+        "无法加载应用配置，程序终止",
+        extra={
+            "event_code": "web.startup.failed",
+            "category": "dependency",
+            "details": {"reason_code": "configuration_invalid"},
+        },
+        exc_info=True,
+    )
     sys.exit(1)
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# 再次获取根logger并显式设置级别，以防被其他库覆盖
-logging.getLogger().setLevel(logging.INFO)
+from app import create_app
 
 app = create_app()
+logging.getLogger(__name__).info(
+    "Flask Web 层已就绪",
+    extra={
+        "event_code": "web.startup.ready",
+        "category": "lifecycle",
+        "details": {"component": "web"},
+    },
+)
 
 # 主程序入口
 if __name__ == '__main__':
-    logging.info("启动 Flask Web 层。Agent/MCP 长任务请通过 worker 进程运行。")
     # 启动 Flask 应用
     #
     # Docker环境注意：

@@ -1,9 +1,11 @@
 from flask import Flask
-from config.settings import settings
 import logging
+
+LOGGER = logging.getLogger(__name__)
 
 
 def create_app():
+    from config.settings import settings
     from app.db import check_database_readiness
     from app.auth.routes import auth_bp
     from app.chat.routes import chat_bp
@@ -19,10 +21,20 @@ def create_app():
 
     try:
         check_database_readiness()
-    except Exception as e:
-        logging.critical(f"数据库检查失败，应用无法启动: {e}")
-        print(f"数据库检查失败: {e}")
-        raise e
+    except Exception:
+        LOGGER.critical(
+            "数据库检查失败，应用无法启动",
+            extra={
+                "event_code": "web.startup.failed",
+                "category": "dependency",
+                "details": {
+                    "dependency": "mysql",
+                    "reason_code": "readiness_failed",
+                },
+            },
+            exc_info=True,
+        )
+        raise
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
