@@ -6,13 +6,15 @@
 
 ## Worker 启动与 slot
 
-`python -m app.agent.worker` 进入 `app/agent/worker/__main__.py`，再调用 bootstrap。启动顺序是数据库就绪检查、PostgreSQL checkpoint 检查、创建显式进程 runtime，然后按 `JOB_WORKERS` 启动 slot。每个 slot 持有一组独立运行依赖：
+`python -m app.agent.worker` 进入 `app/agent/worker/__main__.py`，先配置共享 JSON stderr 日志，再调用 bootstrap。启动顺序是数据库就绪检查、PostgreSQL checkpoint 检查、创建显式进程 runtime，然后按 `JOB_WORKERS` 启动 slot。每个 slot 持有一组独立运行依赖：
 
 1. MCP server process 与一个通过 `MultiServerMCPClient.session("causal")` 建立的持久 `ClientSession`。
 2. 由该 session 加载的 LangChain tools。
 3. 当前配置下的 LLM、RAG 可用性和编译后的 Agent graph。
 
 `runtime.py` 通过 `ProcessRuntime` 和 `SlotRuntime` 显式传递这些对象；执行函数不能从 `app.agent.core` 读取全局 graph 或 LLM。这样可以把真实并发单元限定为 slot，并让 MCP session 与 graph 的生命周期一致。
+
+MCP server 是 worker 内的 stdio 子进程。MCP client 将子进程 stderr 绑定到 worker stderr，因果分析协议仍只使用 stdout；MCP 应用日志由共享运行时输出为单行 JSON，不创建本地日志文件。
 
 ## 父图与工具阶段
 

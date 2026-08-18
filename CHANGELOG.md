@@ -631,3 +631,8 @@
   - 新增 `c3d4e5f6a7b8_add_analysis_job_request_id` migration，保存创建 Job 的原始 `X-Request-ID`；历史行保持 `NULL`，不新增索引。
   - 将请求 ID 从创建路由传入 Job service，服务层执行格式校验；幂等重放保留首次请求 ID，不被后续请求覆盖。
   - 同步 readiness、deep audit、迁移链测试、Job 创建测试、迁移 head 文档和 E2E head 预期。
+- 【日志管理第一阶段 1.2：共享 JSON 运行时与进程接入】
+  - 新增共享 `observability` 日志运行时，统一 UTC、单行 JSON stderr、标准 `logging.extra` 事件字段、contextvars 上下文、递归脱敏、体积限制、异常栈清理和序列化失败降级。
+  - 接入 Web、worker、monitor、db-bootstrap、checkpoint-cleanup 及维护脚本的启动日志，新增稳定启动事件；旧业务日志保持合法 JSON，无法可靠分类时不伪造 `event_code/category`。
+  - 移除 MCP server 本地 `FileHandler` 和数据库初始化文件日志；MCP stdout 保留协议，应用日志经 worker stderr 进入容器日志。
+  - 补充日志运行时、并发上下文和 MCP stdio 边界单元测试；未执行真实 Docker、数据库、PostgreSQL checkpoint 和模型/MCP 端到端验收。
