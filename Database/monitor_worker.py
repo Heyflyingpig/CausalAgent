@@ -10,6 +10,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 import time
 
+from observability.logging_runtime import configure_logging, current_environment
+
+if __name__ == "__main__":
+    configure_logging("monitor", current_environment(), logging.INFO)
+
 from Database.monitoring import SNAPSHOT_KEYS, collect_snapshot, get_due_snapshot_keys
 from app.db import check_database_readiness
 from config.settings import settings
@@ -26,6 +31,14 @@ def run_forever() -> None:
         settings.MYSQL_POOL_SIZE_WRITE,
         settings.MYSQL_POOL_SIZE_READ,
     ))
+    logging.info(
+        "数据库 monitor 启动检查完成",
+        extra={
+            "event_code": "monitor.startup.ready",
+            "category": "lifecycle",
+            "details": {"max_workers": max_workers},
+        },
+    )
     logging.info("数据库 monitor 已启动，分层采集并发数=%s。", max_workers)
     if max_workers < len(SNAPSHOT_KEYS):
         logging.warning(
@@ -65,11 +78,7 @@ def run_forever() -> None:
 
 def main() -> None:
     """配置日志并运行数据库监控主循环。"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        force=True,
-    )
+    configure_logging("monitor", current_environment(), logging.INFO)
     try:
         run_forever()
     except KeyboardInterrupt:

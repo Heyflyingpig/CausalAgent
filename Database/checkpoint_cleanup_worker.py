@@ -10,6 +10,11 @@ import sys
 from datetime import datetime, timezone
 import time
 
+from observability.logging_runtime import configure_logging, current_environment
+
+if __name__ == "__main__":
+    configure_logging("maintenance", current_environment(), logging.INFO)
+
 from Agent.causal_agent.postgres_checkpointer import (
     build_checkpointer,
     open_checkpoint_pool,
@@ -97,6 +102,14 @@ async def _run_async() -> None:
     async with open_checkpoint_pool() as checkpoint_pool:
         await verify_checkpoint_schema(checkpoint_pool)
         saver = build_checkpointer(checkpoint_pool)
+        logging.info(
+            "checkpoint cleanup 启动检查完成",
+            extra={
+                "event_code": "maintenance.startup.ready",
+                "category": "lifecycle",
+                "details": {"component": "checkpoint-cleanup"},
+            },
+        )
         logging.info("[checkpoint-cleanup] worker ready id=%s", worker_id)
         await asyncio.to_thread(publish_runtime, force=True)
         heartbeat_task = asyncio.create_task(heartbeat_loop())
@@ -161,11 +174,7 @@ def main() -> None:
     """命令行入口：python -m Database.checkpoint_cleanup_worker。"""
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        force=True,
-    )
+    configure_logging("maintenance", current_environment(), logging.INFO)
     asyncio.run(_run_async())
 
 

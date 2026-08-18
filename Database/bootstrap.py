@@ -6,10 +6,13 @@ import asyncio
 import logging
 from pathlib import Path
 
+from observability.logging_runtime import configure_logging, current_environment
+
+if __name__ == "__main__":
+    configure_logging("maintenance", current_environment(), logging.INFO)
+
 from alembic import command
 from alembic.config import Config
-
-from Database.checkpoint_setup import setup_checkpoint_schema_once
 
 
 LOGGER = logging.getLogger(__name__)
@@ -30,6 +33,8 @@ def upgrade_mysql_schema(project_root: Path | None = None) -> None:
 
 def setup_postgres_checkpoint_schema() -> None:
     """执行 LangGraph 官方 PostgreSQL checkpoint schema setup。"""
+    from Database.checkpoint_setup import setup_checkpoint_schema_once
+
     LOGGER.info("开始执行 PostgreSQL checkpoint schema setup")
     asyncio.run(setup_checkpoint_schema_once())
 
@@ -51,20 +56,31 @@ def run_bootstrap(project_root: Path | None = None) -> None:
 
     upgrade_mysql_schema(project_root)
     setup_postgres_checkpoint_schema()
-    LOGGER.info("统一数据库 bootstrap 完成")
+    LOGGER.info(
+        "统一数据库 bootstrap 完成",
+        extra={
+            "event_code": "maintenance.startup.ready",
+            "category": "lifecycle",
+            "details": {"component": "db-bootstrap"},
+        },
+    )
 
 
 def main() -> int:
     """命令行入口：python -m Database.bootstrap。"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        force=True,
-    )
+    configure_logging("maintenance", current_environment(), logging.INFO)
     try:
         run_bootstrap()
-    except Exception as exc:
-        LOGGER.error("统一数据库 bootstrap 失败: %s", exc, exc_info=True)
+    except Exception:
+        LOGGER.error(
+            "统一数据库 bootstrap 失败",
+            extra={
+                "event_code": "maintenance.startup.failed",
+                "category": "dependency",
+                "details": {"component": "db-bootstrap"},
+            },
+            exc_info=True,
+        )
         return 1
     return 0
 

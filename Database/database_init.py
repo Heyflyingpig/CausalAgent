@@ -9,20 +9,11 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-import sys
 
 import mysql.connector
 from mysql.connector import errorcode
 
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("database_init.log", encoding="utf-8"),
-    ],
-)
+from observability.logging_runtime import configure_logging, current_environment
 
 
 class DatabaseBootstrap:
@@ -38,7 +29,7 @@ class DatabaseBootstrap:
             env_path = self.project_root / ".env"
             if env_path.exists():
                 load_dotenv(dotenv_path=env_path)
-                logging.info("从 %s 加载环境变量", env_path)
+                logging.info("已加载环境变量")
         except ImportError:
             logging.info("未安装 python-dotenv，使用系统环境变量")
 
@@ -63,9 +54,7 @@ class DatabaseBootstrap:
             "database": os.environ["MYSQL_DATABASE"],
         }
         logging.info(
-            "数据库配置已加载: host=%s, database=%s",
-            self.mysql_config["host"],
-            self.mysql_config["database"],
+            "数据库配置已加载",
         )
 
     def create_database_if_not_exists(self) -> None:
@@ -86,7 +75,7 @@ class DatabaseBootstrap:
             conn.commit()
             cursor.close()
             conn.close()
-            logging.info("数据库 '%s' 已确保存在", database_name)
+            logging.info("数据库已确保存在")
         except mysql.connector.Error as err:
             if err.errno in (errorcode.ER_DBACCESS_DENIED_ERROR, errorcode.ER_ACCESS_DENIED_ERROR):
                 logging.error("当前账号没有创建数据库权限，请使用具备权限的账号初始化。")
@@ -104,8 +93,16 @@ class DatabaseBootstrap:
             if ok:
                 logging.info("数据库连接检查通过")
             return ok
-        except mysql.connector.Error as err:
-            logging.error("数据库连接检查失败: %s", err)
+        except mysql.connector.Error:
+            logging.error(
+                "数据库连接检查失败",
+                extra={
+                    "event_code": "maintenance.database.connection_failed",
+                    "category": "dependency",
+                    "details": {"component": "mysql"},
+                },
+                exc_info=True,
+            )
             return False
 
     def bootstrap(self) -> bool:
@@ -114,10 +111,11 @@ class DatabaseBootstrap:
 
 
 def main() -> int:
+    configure_logging("maintenance", current_environment(), logging.INFO)
     print("CausalAgent 数据库初始化引导")
     bootstrap = DatabaseBootstrap()
     if not bootstrap.bootstrap():
-        print("\n数据库初始化引导失败，请检查 database_init.log。")
+        print("\n数据库初始化引导失败，请查看 stderr 中的结构化日志。")
         return 1
 
     print("\n数据库已存在且连接可用。")
