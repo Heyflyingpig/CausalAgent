@@ -23,6 +23,7 @@ from app.agent.routes import agent_bp
 from app.agent.job_service import IdempotencyConflictError
 from app.chat.routes import chat_bp
 from app.files.routes import _file_payload, files_bp
+from app.request_context import register_request_context
 
 
 ADMIN = {
@@ -72,6 +73,7 @@ def build_app():
     """构造仅包含普通用户能力接口的最小 Flask 应用。"""
     app = Flask(__name__)
     app.secret_key = "admin-user-capability-test"
+    register_request_context(app)
     app.register_blueprint(chat_bp)
     app.register_blueprint(files_bp)
     app.register_blueprint(agent_bp)
@@ -144,7 +146,10 @@ class AdminUserCapabilityTests(unittest.TestCase):
             response = client.post(
                 "/api/agent/jobs",
                 json={"session_id": "session-admin-1", "message": "分析数据"},
-                headers={"Idempotency-Key": JOB_IDEMPOTENCY_KEY},
+                headers={
+                    "Idempotency-Key": JOB_IDEMPOTENCY_KEY,
+                    "X-Request-ID": "job-create-request",
+                },
             )
 
         self.assertEqual(response.status_code, 202)
@@ -154,6 +159,7 @@ class AdminUserCapabilityTests(unittest.TestCase):
             "分析数据",
             JOB_IDEMPOTENCY_KEY,
             None,
+            request_id="job-create-request",
         )
 
     def test_agent_job_creation_requires_idempotency_key(self):

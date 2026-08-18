@@ -20,6 +20,7 @@ from app.chat.services import (
     save_user_input_for_job_in_transaction,
 )
 from app.db import get_read_connection, get_read_connection_with_source, get_write_connection
+from app.request_context import REQUEST_ID_PATTERN
 from config.settings import settings
 
 
@@ -87,6 +88,13 @@ def normalize_idempotency_key(value: str | None) -> str:
     if parsed.version != 4 or str(parsed) != normalized.lower():
         raise InvalidIdempotencyKeyError("Idempotency-Key 必须是标准 UUID v4")
     return str(parsed)
+
+
+def _validate_request_id(value: str) -> str:
+    """校验必须落库的原始创建请求 ID，避免绕过 HTTP 入口写入越界值。"""
+    if not isinstance(value, str) or REQUEST_ID_PATTERN.fullmatch(value) is None:
+        raise ValueError("request_id 必须符合 [A-Za-z0-9._:-]{1,64}")
+    return value
 
 
 def _validate_input_text(value: Any) -> str:
@@ -338,10 +346,13 @@ def create_job(
     message: str,
     idempotency_key: str,
     input_user_file_id: int | None = None,
+    *,
+    request_id: str,
 ) -> tuple[dict[str, Any], bool]:
     """在一个 MySQL 事务中创建或重放带冻结文件输入的 Job。"""
     normalized_message = _validate_input_text(message)
     idempotency_key = normalize_idempotency_key(idempotency_key)
+    request_id = _validate_request_id(request_id)
     if input_user_file_id is not None:
         try:
             input_user_file_id = int(input_user_file_id)
@@ -401,12 +412,12 @@ def create_job(
         cursor.execute(
             """
             INSERT INTO analysis_jobs (
-                job_id, user_id, session_id, message,
+                job_id, user_id, session_id, request_id, message,
                 input_user_file_id, input_object_id, input_file_hash, input_filename,
                 status, max_attempts, active_session_key,
                 idempotency_key, request_fingerprint
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 'queued', %s, %s, %s, %s
             )
             """,
@@ -414,6 +425,7 @@ def create_job(
                 job_id,
                 user_id,
                 session_id,
+                request_id,
                 normalized_message,
                 snapshot_values["input_user_file_id"],
                 snapshot_values["input_object_id"],

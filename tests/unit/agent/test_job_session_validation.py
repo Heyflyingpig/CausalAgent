@@ -65,6 +65,7 @@ class JobSessionValidationTests(unittest.TestCase):
                     "missing-session",
                     "hello",
                     "123e4567-e89b-42d3-a456-426614174000",
+                    request_id="create.req-1",
                 )
 
         self.assertTrue(connection.rolled_back)

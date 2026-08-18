@@ -13,6 +13,7 @@ from flask import Blueprint, Response, jsonify, request, stream_with_context
 from app.agent import job_service
 from app.agent.public_events import public_event_payload
 from app.auth.session_guard import get_current_session_user
+from app.request_context import get_request_id
 from config.settings import settings
 
 
@@ -78,6 +79,7 @@ def create_analysis_job():
             message,
             idempotency_key,
             input_user_file_id,
+            request_id=get_request_id(),
         )
         logging.info(
             "[job-api] user=%s session=%s job=%s existing=%s",
