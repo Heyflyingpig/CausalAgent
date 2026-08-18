@@ -623,3 +623,11 @@
   - 将已有 worker 进程级 `rag_available` 和空工具列表传入 RAG Planner；知识库未初始化或工具未注册时在 Planner 预检阶段跳过 ToolNode，经 Finalize 继续回到 Agent。
   - 为 RAG 查询失败和非法 ToolMessage JSON 增加明确错误标记，分别保持 `unavailable` 与 `protocol_error` 语义，不改变取消/撤销异常传播和既有重试边界。
   - 补充 RAG 预检、查询错误标记、协议错误分流和权威验证边界文档。
+
+---
+2026.8.18
+- 【日志管理第一阶段 1.1：日志契约与 Job 请求关联】
+  - 新增可观测性日志 v1 契约、现状盘点、敏感信息边界和第二阶段布点清单，并接入 `Document/` 导航。
+  - 新增 `c3d4e5f6a7b8_add_analysis_job_request_id` migration，保存创建 Job 的原始 `X-Request-ID`；历史行保持 `NULL`，不新增索引。
+  - 将请求 ID 从创建路由传入 Job service，服务层执行格式校验；幂等重放保留首次请求 ID，不被后续请求覆盖。
+  - 同步 readiness、deep audit、迁移链测试、Job 创建测试、迁移 head 文档和 E2E head 预期。

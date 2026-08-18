@@ -17,7 +17,7 @@ Docker Compose 中 `db-bootstrap` 是一次性服务，`app`、worker、monitor 
 
 ## 当前迁移链
 
-当前 head 是 `a1b2c3d4e5f6`。迁移按职责演进如下，最终链路和 down revision 以文件内容为准：
+当前 head 是 `c3d4e5f6a7b8`。迁移按职责演进如下，最终链路和 down revision 以文件内容为准：
 
 | Revision | 当前作用 |
 | --- | --- |
@@ -31,13 +31,16 @@ Docker Compose 中 `db-bootstrap` 是一次性服务，`app`、worker、monitor 
 | `f8b9c0d1e2f3` | MySQL checkpoint -> PostgreSQL，建立 cleanup outbox |
 | `f9a0b1c2d3e4` | Job 请求幂等键和请求指纹 |
 | `a1b2c3d4e5f6` | 文件库替换、冻结文件快照、resume 输入账本和 Job 恢复字段 |
+| `b2c3d4e5f6a7` | 取消后的执行占用、释放时间/原因和 worker fencing 状态 |
+| `c3d4e5f6a7b8` | `analysis_jobs.request_id` 创建请求关联字段 |
 
-`f8b9c0d1e2f3` 的 `down_revision` 声明为 `e4f5a6b7c8d9` 与 `e7a9b2c3d4f5`，随后由 `f9a0b1c2d3e4` 和 `a1b2c3d4e5f6` 继续。回退这类合并迁移必须指定明确目标 revision，不能用 `alembic downgrade -1` 代替。
+`f8b9c0d1e2f3` 的 `down_revision` 声明为 `e4f5a6b7c8d9` 与 `e7a9b2c3d4f5`，随后由 `f9a0b1c2d3e4`、`a1b2c3d4e5f6`、`b2c3d4e5f6a7` 和 `c3d4e5f6a7b8` 继续。回退这类合并迁移必须指定明确目标 revision，不能用 `alembic downgrade -1` 代替。
 
 ## 破坏性事实
 
 - `f8b9c0d1e2f3` 建立 `checkpoint_cleanup_outbox` 后直接删除 MySQL `checkpoint_writes` 和 `checkpoints` 表及其数据；PostgreSQL 才是运行时 checkpoint 真相。downgrade 只重建空的兼容表结构，不恢复数据。
 - `a1b2c3d4e5f6` 直接 `DROP TABLE IF EXISTS uploaded_files`，创建 `file_objects`、`user_files` 和 Job 输入结构；不回填旧数据、不提供旧数据 fallback，也不增加旧数据拒绝迁移逻辑。downgrade 只恢复空的旧 `uploaded_files` 表结构。
+- `c3d4e5f6a7b8` 为 `analysis_jobs` 增加可空的 `request_id VARCHAR(64)`；历史行不回填，创建请求由服务层保存首次请求 ID，幂等重放不覆盖该值。该字段没有索引，downgrade 只删除本字段。
 - 迁移脚本属于高风险历史事实，不应为了让本地旧库“看起来能升级”而静默删除、回填或修改历史 migration。
 
 ## PostgreSQL checkpoint
