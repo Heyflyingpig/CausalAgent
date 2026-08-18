@@ -636,3 +636,11 @@
   - 接入 Web、worker、monitor、db-bootstrap、checkpoint-cleanup 及维护脚本的启动日志，新增稳定启动事件；旧业务日志保持合法 JSON，无法可靠分类时不伪造 `event_code/category`。
   - 移除 MCP server 本地 `FileHandler` 和数据库初始化文件日志；MCP stdout 保留协议，应用日志经 worker stderr 进入容器日志。
   - 补充日志运行时、并发上下文和 MCP stdio 边界单元测试；未执行真实 Docker、数据库、PostgreSQL checkpoint 和模型/MCP 端到端验收。
+
+---
+2026.8.18
+- 【日志管理第一阶段 1.3：默认开发可观测拓扑】
+  - 在默认开发 Compose 中锁定 Grafana 13.1.1、Loki 3.7.4 和 Alloy v1.18.0，新增独立 observability network、Grafana/Loki/Alloy 持久卷和资源上限；Grafana 仅绑定 127.0.0.1:3000，并要求非空 GRAFANA_ADMIN_PASSWORD。
+  - 通过 Compose 静态标签限定 Alloy 只采集 Web、worker、monitor、MCP 转发和维护容器，排除数据库与可观测组件自身；MCP 继续复用 worker stderr。
+  - 新增 Loki 单节点 TSDB/filesystem、72 小时保留、compactor、写入/查询限制、Logs Drilldown 能力配置，以及 Alloy Docker 解包、应用 JSON 提取、低基数标签和持久 positions 配置。
+  - 新增 Grafana Loki datasource、最小错误仪表盘和可观测拓扑静态契约测试；本次未执行真实 Docker 镜像拉取、全栈启动、positions 重启、Loki 暂停恢复和 30 分钟负载验收。

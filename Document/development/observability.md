@@ -6,7 +6,7 @@
 
 ## 1. 当前结论与实施边界
 
-共享 JSON 日志运行时现已位于 [`observability/logging_runtime.py`](../../observability/logging_runtime.py)，并由 Web、worker、monitor、db-bootstrap 和 checkpoint-cleanup 入口配置。旧 `LogRecord` 继续通过标准 `logging` 输出为单行 JSON；MCP 已删除本地 `FileHandler`，其 stdio transport 的应用日志只写 stderr。Alloy/Loki/Grafana 仍留在第 1.3 步。
+共享 JSON 日志运行时现已位于 [`observability/logging_runtime.py`](../../observability/logging_runtime.py)，并由 Web、worker、monitor、db-bootstrap 和 checkpoint-cleanup 入口配置。旧 `LogRecord` 继续通过标准 `logging` 输出为单行 JSON；MCP 已删除本地 `FileHandler`，其 stdio transport 的应用日志只写 stderr。默认开发 Compose 已在第 1.3 步接入 Alloy、Loki 和 Grafana；生产 Compose 仍不包含这套拓扑。
 
 当前代码中的旧日志不被伪造分类。无法可靠判断的 `event_code` 和 `category` 保持 `null`；只有新增的受管事件才提供完整 v1 分类。事件详情的业务字段白名单仍由后续业务布点负责，运行时只做递归脱敏、JSON object 形状校验和体积边界保护。
 
@@ -86,6 +86,29 @@
 4. `app/agent/worker/execution.py`、MCP server、数据库 bootstrap 和多个路由使用 `exc_info=True` 或记录异常原文；栈帧必须清理，禁止出现连接串、文件正文、Token、提示词和数据库账号。
 5. Web、worker、monitor、bootstrap、checkpoint cleanup 和数据库脚本现在由共享运行时幂等收敛；后续新增维护入口也必须复用该配置，不能重新调用 `basicConfig()`。
 6. `Database/database_init.py` 和 `app/db.py` 当前会记录 host、database 名称或连接异常摘要；这些连接元数据不能进入新的受管日志字段，失败只能保留稳定原因码。
+
+### 3.3 第 1.3 步开发采集拓扑
+
+默认开发 Compose 在 [`docker-compose.yml`](../../docker-compose.yml) 中增加独立的 `observability_network`，并锁定以下镜像：`grafana/loki:3.7.4`、`grafana/alloy:v1.18.0` 和 `grafana/grafana:13.1.1`。Loki、Alloy 不映射宿主机端口；Grafana 仅映射到 `127.0.0.1:3000`，并要求 `GRAFANA_ADMIN_PASSWORD` 非空。Loki 数据、Grafana 数据和 Alloy positions 分别使用命名卷，生产 Compose 不复用这些服务或卷。
+
+采集范围由 Compose 静态标签控制：`app`、`worker`、`monitor`、`db-bootstrap` 和 `checkpoint-cleanup` 才带有 `causalagent_observability=true`。数据库容器和可观测组件自身没有该标签，因此 Alloy 不会递归采集它们。MCP 是 worker 内的 stdio 子进程，子进程应用日志进入 worker stderr，采集后再按 JSON 中的 `service=mcp` 覆盖 `service_name`；这不是一个额外 Docker 容器。
+
+Alloy 先用 `stage.docker` 解包 Docker `json-file` 包装层，再用 `stage.json` 提取 `service`、`environment`、`level` 和 `category`。`drop_malformed=false` 保证非法或旧格式行保留原文，未解析字段不被伪造。最终只保留 `service_name`、`environment`、`level`、`category` 四类低基数标签；`request_id`、`job_id`、`user_id`、`session_id`、`node`、`tool`、`instance` 等仍只在 JSON 行正文中。positions 位于 Alloy 的 `/var/lib/alloy/data` 命名卷，重启续读由 `loki.source.docker` 管理。
+
+Loki 使用单节点 TSDB + filesystem，启用 compactor 和 72 小时保留，写入速率为 4 MiB/s、突发 8 MiB，单次查询最多返回 5000 条、查询超时 30 秒。Logs Drilldown 所需的 pattern ingestion、structured metadata、volume endpoint 和 log level discovery 已启用；Grafana 13.1.1 自带 Logs Drilldown，Loki datasource 与最小错误仪表盘由 [`observability/grafana/provisioning/`](../../observability/grafana/provisioning/) 自动 provision。
+
+本地验证至少执行：
+
+```powershell
+docker compose config --quiet
+docker compose pull loki alloy grafana
+docker compose up -d
+docker compose ps
+```
+
+上述固定版本镜像采用最小运行时，默认 Compose 不在容器内部调用 `wget` 或 `curl` 伪造健康检查，也不为 Loki 和 Alloy 暴露宿主机端口。实际验收应以 `docker compose ps`、启动日志、Grafana `/api/health`、Loki 数据源连通性和固定面板是否出现新日志为准；需要单独检查 Alloy 的 `/-/ready` 时，应在临时验证覆盖配置中执行，不改变默认开发拓扑。
+
+随后应在 Alloy 运行期间为 `web`、`worker`、`monitor`、`mcp`、`maintenance` 各写入一个唯一测试事件，查询字段/时间/标签，重启 Alloy 和 Loki 核对 positions，暂停 Loki 核对应用 stderr 不阻塞，并检查 Loki `/loki/api/v1/series` 不出现请求、Job、用户、节点、工具或实例字段标签。代表性负载需另外记录 30 分钟的行数、字节数、stream 数和 72 小时预计磁盘占用；这些数据不能由静态测试推导。
 
 ## 4. 第二阶段日志布点清单
 

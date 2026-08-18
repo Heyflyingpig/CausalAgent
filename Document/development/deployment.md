@@ -27,8 +27,11 @@
 | `worker` | Agent Job worker |
 | `monitor` | 数据库共享快照采集 |
 | `checkpoint-cleanup` | 跨库 checkpoint 删除 |
+| `loki` / `alloy` / `grafana` | 开发环境运行日志采集、存储和查看；只加入独立的 observability network |
 
 `app`、worker、monitor 和 cleanup 依赖 `db-bootstrap` 成功退出；开发拓扑当前不提供自动故障切换。启动命令见 [`setup.md`](setup.md)。
+
+开发 Compose 的可观测组件使用固定版本和独立命名卷：Loki、Alloy 不开放宿主机端口，Grafana 只绑定 `127.0.0.1:3000`。启动 Grafana 前必须设置非空的 `GRAFANA_ADMIN_PASSWORD`；采集范围由应用容器的 `causalagent_observability` 标签筛选，不包含 MySQL、PostgreSQL、Loki、Alloy 或 Grafana 自身。完整字段、标签和真实验收边界见 [`observability.md`](observability.md)。
 
 ## 生产部署
 
