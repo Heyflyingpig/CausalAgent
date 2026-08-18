@@ -1,0 +1,82 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+// Discover Docker containers, then retain only the explicitly labelled
+// application, worker, monitor, MCP-forwarding, and maintenance streams.
+discovery.docker "causalagent" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+discovery.relabel "causalagent" {
+  targets = discovery.docker.causalagent.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_causalagent_observability"]
+    regex         = "true"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_causalagent_service"]
+    regex         = "(.+)"
+    target_label  = "service_name"
+    replacement   = "$1"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_causalagent_environment"]
+    regex         = "(.+)"
+    target_label  = "environment"
+    replacement   = "$1"
+  }
+}
+
+loki.source.docker "causalagent" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.causalagent.output
+  labels           = {}
+  refresh_interval  = "5s"
+  forward_to       = [loki.process.causalagent.receiver]
+}
+
+loki.process "causalagent" {
+  forward_to = [loki.write.causalagent.receiver]
+
+  // Unpack the Docker json-file envelope before inspecting the application
+  // record. The JSON stage deliberately retains malformed and legacy lines.
+  stage.docker {}
+
+  stage.json {
+    expressions = {
+      service     = "service"
+      environment = "environment"
+      level       = "level"
+      category    = "category"
+    }
+    drop_malformed = false
+  }
+
+  stage.labels {
+    values = {
+      service_name = "service"
+      environment  = "environment"
+      level        = "level"
+      category     = "category"
+    }
+  }
+
+  // Keep only bounded, low-cardinality labels. Request, job, user, node,
+  // tool, and instance fields remain in the JSON line and never become labels.
+  stage.label_keep {
+    values = ["service_name", "environment", "level", "category"]
+  }
+}
+
+loki.write "causalagent" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
