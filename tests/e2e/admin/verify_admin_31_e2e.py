@@ -55,7 +55,7 @@ def verify() -> None:
     with get_read_connection(consistency="strong") as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT version_num FROM alembic_version")
-        assert (cursor.fetchone() or {}).get("version_num") == "a1b2c3d4e5f6"
+        assert (cursor.fetchone() or {}).get("version_num") == "c3d4e5f6a7b8"
         cursor.execute(
             """
             SELECT INDEX_NAME AS index_name

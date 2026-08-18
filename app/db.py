@@ -396,7 +396,7 @@ def check_database_readiness():
                 WHERE table_schema = %s
                   AND table_name = 'analysis_jobs'
                   AND column_name IN (
-                    'idempotency_key', 'request_fingerprint', 'lease_epoch',
+                    'request_id', 'idempotency_key', 'request_fingerprint', 'lease_epoch',
                     'execution_state', 'execution_released_at', 'execution_release_reason',
                     'recovery_count', 'resume_count', 'input_user_file_id',
                     'input_object_id', 'input_file_hash', 'input_filename',
@@ -408,6 +408,7 @@ def check_database_readiness():
             )
             job_request_columns = {row[0] for row in cursor.fetchall()}
             missing_job_request_columns = {
+                "request_id",
                 "idempotency_key",
                 "request_fingerprint",
                 "lease_epoch",

@@ -173,8 +173,12 @@ class AgentJobIdempotencyMigrationTests(unittest.TestCase):
         audit_text = Path("Database/deep_audit.py").read_text(encoding="utf-8")
 
         self.assertIn("table_name = 'analysis_jobs'", db_text)
-        self.assertIn("'idempotency_key', 'request_fingerprint', 'lease_epoch'", db_text)
+        self.assertIn(
+            "'request_id', 'idempotency_key', 'request_fingerprint', 'lease_epoch'",
+            db_text,
+        )
         self.assertIn("uq_analysis_jobs_user_idempotency", db_text)
+        self.assertIn('"request_id"', audit_text)
         self.assertIn('"idempotency_key"', audit_text)
         self.assertIn('"request_fingerprint"', audit_text)
         self.assertIn('"uq_analysis_jobs_user_idempotency"', audit_text)
@@ -258,6 +262,31 @@ class JobExecutionReleaseMigrationTests(unittest.TestCase):
         downgrade = text.split("def downgrade()", 1)[1]
         self.assertIn("DROP INDEX idx_analysis_jobs_execution_state_heartbeat", downgrade)
         self.assertIn("DROP COLUMN execution_state", downgrade)
+        self.assertNotIn("DROP TABLE", downgrade)
+
+
+class AgentJobRequestIdMigrationTests(unittest.TestCase):
+    """验证创建 Job 的原始请求 ID migration 链路和回滚边界。"""
+
+    PATH = Path(
+        "Database/migrations/versions/c3d4e5f6a7b8_add_analysis_job_request_id.py"
+    )
+
+    def test_migration_extends_actual_current_head_without_backfill_or_index(self):
+        """新 migration 必须承接 b2 head，历史记录保持 NULL 且不创建索引。"""
+        text = self.PATH.read_text(encoding="utf-8")
+        self.assertIn('revision: str = "c3d4e5f6a7b8"', text)
+        self.assertIn('down_revision: Union[str, Sequence[str], None] = "b2c3d4e5f6a7"', text)
+        self.assertIn("ADD COLUMN request_id VARCHAR(64) NULL", text)
+        self.assertIn("AFTER session_id", text)
+        self.assertNotIn("UPDATE analysis_jobs", text)
+        self.assertNotIn("ADD INDEX", text)
+
+    def test_downgrade_only_removes_request_id_column(self):
+        """回滚只能删除本 revision 的 request_id 字段。"""
+        text = self.PATH.read_text(encoding="utf-8")
+        downgrade = text.split("def downgrade()", 1)[1]
+        self.assertIn("DROP COLUMN request_id", downgrade)
         self.assertNotIn("DROP TABLE", downgrade)
 
 

@@ -61,7 +61,7 @@ EXPECTED_COLUMNS = {
         "lease_epoch", "execution_state", "locked_at", "heartbeat_at",
         "execution_released_at", "execution_release_reason", "attempt_count",
         "recovery_count", "resume_count", "finished_at", "created_at",
-        "active_session_key", "idempotency_key", "request_fingerprint",
+        "active_session_key", "request_id", "idempotency_key", "request_fingerprint",
         "input_user_file_id", "input_object_id", "input_file_hash",
         "input_filename", "current_question_id", "current_waiting_prompt",
         "cancel_idempotency_key", "cancel_request_fingerprint",
