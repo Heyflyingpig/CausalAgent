@@ -1,8 +1,13 @@
 """进程级 JSON 日志运行时。
 
 这个模块只扩展标准库 ``logging``，不引入业务 logger API。业务代码继续使用
-``logging.getLogger(__name__)``，受管事件通过标准 ``extra`` 传入：
-``event_code``、``category`` 和 ``details``。
+``logging.getLogger(__name__)``，
+1. 统一多个进程的日志格式
+2. 统一时间和级别
+3. 稳定提取 event_code/category/details
+4. 关联 request_id/job_id 等字段
+5. 集中处理脱敏和大小限制
+6. 让 Alloy/Loki/Grafana 能可靠查询。
 """
 
 from __future__ import annotations

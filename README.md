@@ -61,6 +61,7 @@ CausalAgent
   - [windows部署](#windows部署)
 - [贡献](#贡献)
 - [Star 趋势](#star-趋势)
+- [Star History](#star-history)
 - [项目结构](#项目结构)
 
 
@@ -190,20 +191,6 @@ git clone https://github.com/Heyflyingpig/CausalAgent
 ```bash
 cp .env.example .env
 ```
-
-复制完成后，必须编辑项目根目录的 `.env`，至少填写以下启动必需项：
-
-```dotenv
-# Grafana 本地管理界面登录账号；用户名可保持默认值
-GRAFANA_ADMIN_USER=admin
-# 请自行设置一个非空的强密码，不要照抄示例值
-GRAFANA_ADMIN_PASSWORD=请替换为你自行设置的密码
-
-# PostgreSQL checkpoint 密码同样必须设置为非空值
-CHECKPOINT_POSTGRES_PASSWORD=请替换为你自行设置的数据库密码
-```
-
-其中 `GRAFANA_ADMIN_PASSWORD` 只用于登录本地 Grafana 管理界面，不是应用数据库或 Loki 的密码。服务启动后访问 `http://127.0.0.1:3000`，使用上面配置的 Grafana 用户名和密码登录。`.env` 包含密码，禁止提交到 Git。
 
 3. 在项目根目录运行docker-compose
 ```bash
