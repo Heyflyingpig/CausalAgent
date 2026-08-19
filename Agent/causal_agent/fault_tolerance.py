@@ -249,7 +249,9 @@ def degrade_web_search_planner(state: CausalAgentState, error: NodeError) -> dic
     return {
         "planner": {
             "success": False,
+            "research_question": "",
             "query": "",
+            "query_en": "",
             "reason": "",
             "error": sanitize_error(error.error),
         }

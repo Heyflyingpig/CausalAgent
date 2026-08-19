@@ -46,7 +46,7 @@ def build_web_search_subgraph(llm):
         ),
         input_schema=WebSearchState,
         retry_policy=short_retry(max_attempts=2),
-        timeout=timeout(run_timeout=60, idle_timeout=30),
+        timeout=timeout(run_timeout=120, idle_timeout=60),
         error_handler=guarded_error_handler(degrade_web_search_planner),
     )
     graph.add_node(

@@ -92,7 +92,7 @@ def build_graph(
         "preprocess",
         preprocess_node_with_llm,
         retry_policy=short_retry(),
-        timeout=timeout(run_timeout=180, idle_timeout=60),
+        timeout=timeout(run_timeout=180, idle_timeout=80),
         error_handler=guarded_error_handler(recover_preprocess_to_agent),
     )
 

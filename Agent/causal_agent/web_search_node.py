@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import re
 from operator import add
 from typing import Annotated, Any, List, Optional, TypedDict
 import xml.etree.ElementTree as ET
@@ -35,6 +37,7 @@ class WebSearchInput(TypedDict):
     messages: Annotated[List[BaseMessage], add]
     analysis_parameters: Optional[dict]
     causal_analysis_result: Optional[dict]
+    knowledge_base_result: Optional[dict]
 
 
 class WebSearchOutput(TypedDict):
@@ -55,6 +58,13 @@ class WebSearchQuery(BaseModel):
     reason: str = Field(default="", description="为什么要检索这个查询。")
 
 
+class ResearchQuestion(BaseModel):
+    """第一步生成的具体问题：后续因果分析中最需解决/论证的问题。"""
+
+    question: str = Field(..., description="后续因果分析中最需解决/论证的具体问题。")
+    reason: str = Field(default="", description="为什么这是当前最需要外部补充的问题。")
+
+
 def _format_messages(messages: List[BaseMessage], max_messages: int = 6) -> str:
     formatted = []
     for message in messages[-max_messages:]:
@@ -72,10 +82,18 @@ def _format_causal_summary(state: WebSearchState) -> str:
         return json.dumps(causal_result, indent=2, ensure_ascii=False)
     except TypeError:
         return str(causal_result)
+    
+def _format_knowledge_base_result(state: WebSearchState) -> str:
+    knowledge_base_result = state.get("knowledge_base_result") or {}
+    if not knowledge_base_result:
+        return "当前还没有可用的知识库分析结果。"
+    try:
+        return json.dumps(knowledge_base_result, indent=2, ensure_ascii=False)
+    except TypeError:
+        return str(knowledge_base_result)
 
-
-async def get_web_search_query(state: WebSearchState, llm: ChatOpenAI) -> dict:
-    """生成结构化联网搜索查询，失败时抛 StructuredOutputError 由 planner 降级。"""
+async def generate_research_question(state: WebSearchState, llm: ChatOpenAI) -> dict:
+    """第一步：提炼后续因果分析中最需解决/论证的具体问题。"""
     prompt = ChatPromptTemplate.from_messages(
         [
             (
@@ -83,7 +101,75 @@ async def get_web_search_query(state: WebSearchState, llm: ChatOpenAI) -> dict:
                 """
                 system role: {system_role}
 
-                你是一个因果推断领域的信息检索专家。根据当前分析任务生成一个能检索到最新公开信息的搜索查询串。
+                你是因果推断领域资深研究者。你的任务不是泛泛`生成教材式问题，而是围绕当前分析任务，找出后续因果分析中最需要外部信息支撑的关键论证问题。现已获得该数据集的历史信息如下：
+
+                # 最近对话
+                {messages}
+
+                # 数据摘要
+                {data_summary}
+
+                # 因果分析摘要
+                {causal_summary}
+                # rag分析摘要
+                {knowledge_base_result}
+
+                # 生成目标
+                1. 直击当前分析最薄弱、最影响报告可信度的环节：识别假设是否成立、方法适用条件、算法局限、偏误来源或领域最新进展。
+                2. 问题要能直接支撑后续报告的关键论证，而不是泛泛介绍概念。
+                3. 问题必须具体、可检索，用该领域的专业术语表达，避免"什么是因果推断"这类空泛表述。
+                4. 若因果分析尚未开始（无因果摘要），则聚焦目标变量与数据特征，找出最需论证的识别或估计问题。
+                5. 只生成一个最关键的问题，不要为了凑数而罗列多个。
+
+                # 输出格式
+                必须只返回一个 JSON 对象，包含 question 和 reason 两个字段。
+
+                示例：
+                {{
+                  "question": "PC算法在存在隐藏混杂变量时，边的定向会引入哪些系统性偏误？",
+                  "reason": "当前分析使用PC算法做因果发现，需说明其边定向在未观测混杂下的局限，以支撑报告的可靠性结论"
+                }}
+
+                不要输出 Markdown，不要输出额外解释。
+                """,
+            ),
+            (
+                "human",
+                "请判断当前因果分析中最需要解决或论证的具体问题。只返回 JSON 对象。",
+            ),
+        ]
+    )
+
+    result = await ainvoke_structured(
+        llm=llm,
+        schema=ResearchQuestion,
+        prompt=prompt,
+        inputs={
+            "messages": _format_messages(state.get("messages", [])),
+            "data_summary": json.dumps(
+                state.get("analysis_parameters", {}), indent=2, ensure_ascii=False
+            ),
+            "causal_summary": _format_causal_summary(state),
+            "knowledge_base_result": _format_knowledge_base_result(state),
+            "system_role": causal_web_search_prompt(),
+        },
+        node_name="web_search_planner",
+    )
+    return result.model_dump()
+
+
+async def get_web_search_query(
+    state: WebSearchState, llm: ChatOpenAI, research_question: str
+) -> dict:
+    """第二步：针对具体问题生成结构化联网搜索查询，失败时抛 StructuredOutputError。"""
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """
+                system role: {system_role}
+
+                你是一个因果推断领域的信息检索专家。你刚刚完成了对数据集的探索性分析。具体信息如下：
 
                 # 最近对话
                 {messages}
@@ -94,19 +180,24 @@ async def get_web_search_query(state: WebSearchState, llm: ChatOpenAI) -> dict:
                 # 因果分析摘要
                 {causal_summary}
 
-                # 生成目标
-                1. 查询串要直击当前分析最需要外部补充的信息（最新方法、工具文档、领域进展、公开数据源）。
-                2. 用搜索引擎友好的关键词，避免冗长或过于口语化的整句。
-                3. 同时生成中英双语查询串：query 用中文关键词；query_en 用对应的英文核心短语——恰好 2 个实义词，去掉 latest/new/recent 等修饰词，也不含 PC/DiBS 等具体算法名（用领域核心主题，如 "causal discovery"、"causal inference"、"overcontrol bias"）。
+                # 当前最需解决/论证的具体问题
+                {research_question}
 
+                请针对上述具体问题，先判断该数据集所属的领域（如社会劳动/生物医学/经济金融/神经科学/工业制造等），再思考该领域进行因果分析时最常见的特点或痛点（如未观测混杂、纵向数据的时变干预、高维小样本、选择偏误等），最后结合这些信息生成一个用于学术检索的查询串。
+
+                # 生成目标
+                1. 查询串的构造必须遵循「领域词打头 + 痛点词跟进」的结构：第一个术语是该数据集所属领域的核心词，后续术语是该领域因果分析中最典型的特点或痛点。
+                2. 不要堆砌具体方法名（如 PC 算法、DAG、do-calculus），而要用领域词与痛点术语把检索范围锚定到该领域的方法学文献。
+                3. 同时生成中英双语查询串：query 用中文关键词；query_en 用对应的英文核心术语。
+                4. query_en 只输出 3-4 个英文核心术语，用空格分隔，第一个必须是领域词，后续为痛点术语；不要逗号、不要整句、不要停用词。
                 # 输出格式
                 必须只返回一个 JSON 对象，包含 query、query_en 和 reason 三个字段。
 
                 示例：
                 {{
-                  "query": "因果发现 最新算法",
-                  "query_en": "causal discovery",
-                  "reason": "补充报告所需的最新方法论进展"
+                  "query": "生物医学 因果推断 未观测混杂",
+                  "query_en": "biomedical causal inference unmeasured confounding",
+                  "reason": "该数据集属生物医学领域，其因果分析核心痛点是未观测混杂，据此检索相关方法学文献"
                 }}
 
                 不要输出 Markdown，不要输出额外解释。
@@ -126,6 +217,7 @@ async def get_web_search_query(state: WebSearchState, llm: ChatOpenAI) -> dict:
                 state.get("analysis_parameters", {}), indent=2, ensure_ascii=False
             ),
             "causal_summary": _format_causal_summary(state),
+            "research_question": research_question,
             "system_role": causal_web_search_prompt(),
         },
         node_name="web_search_planner",
@@ -133,11 +225,11 @@ async def get_web_search_query(state: WebSearchState, llm: ChatOpenAI) -> dict:
     return result.model_dump()
 
 
-def web_search(query: str) -> dict:
+def web_search(query: str,top_k:int=5) -> dict:
     """同步调用 SearXNG JSON API，网络异常直接抛出让 tool_retry 生效。"""
     resp = requests.get(
         f"{settings.SEARXNG_URL}/search",
-        params={"q": query, "format": "json"},
+        params={"q": query, "format": "json", "num": top_k},
         timeout=30,
     )
     resp.raise_for_status()
@@ -161,16 +253,20 @@ def web_search(query: str) -> dict:
 
 
 def _arxiv_abs_to_html_url(url: str) -> str:
-    """把 arxiv abs 链接（/abs/XXXXvN）转成 html 全文链接（/html/XXXXvN）。
+    """把 arxiv abs 链接转成 html 全文链接，但仅对 2023-12 之后的论文生效。
 
-    arXiv 的 abs 页面是摘要页，html 页面才有可抽取的全文正文，
-    trafilatura 对 abs 页只能抽到摘要，对 html 页能抽到完整正文。
+    arXiv 的原生 HTML 全文页（/html/）只对 2023 年 12 月之后宣布的论文提供，
+    更早的论文 /html/ 会 404，因此保留 abs 页（摘要页始终存在）。
+    trafilatura 对 abs 页抽到摘要，对 html 页抽到完整正文。
     """
     if not url:
         return url
     if url.startswith("http://"):
         url = "https://" + url[len("http://"):]
-    return url.replace("/abs/", "/html/")
+    match = re.search(r"/abs/(\d{4})\.", url)
+    if match and int(match.group(1)) >= 2312:
+        return url.replace("/abs/", "/html/")
+    return url
 
 
 def _arxiv_fetch(search_query: str, max_results: int) -> dict:
@@ -181,7 +277,7 @@ def _arxiv_fetch(search_query: str, max_results: int) -> dict:
             "search_query": search_query,
             "start": 0,
             "max_results": max_results,
-            "sortBy": "submittedDate",
+            "sortBy": "relevance",
             "sortOrder": "descending",
         },
         timeout=30,
@@ -239,17 +335,122 @@ def _arxiv_fetch(search_query: str, max_results: int) -> dict:
     }
 
 
+CAUSAL_ARXIV_CATEGORIES = {
+    "stat.ML",
+    "stat.ME",
+    "cs.LG",
+    "cs.AI",
+    "cs.CL",
+    "econ.EM",
+    "q-bio.QM",
+    "math.ST",
+    "stat.AP",
+}
+
+
+def _tokenize(text: str) -> List[str]:
+    """小写 + 正则提取字母数字词（不做 stemming）。"""
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+class BM25Okapi:
+    """自实现 BM25Okapi（k1=1.5, b=0.75），避免引入 rank_bm25 依赖。"""
+
+    def __init__(self, corpus: List[List[str]], k1: float = 1.5, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+        self.corpus_size = len(corpus)
+        self.doc_len = [len(doc) for doc in corpus]
+        self.avgdl = sum(self.doc_len) / self.corpus_size if self.corpus_size else 0.0
+        self.doc_freqs: List[dict] = []
+        self.idf: dict = {}
+        self._initialize(corpus)
+
+    def _initialize(self, corpus: List[List[str]]) -> None:
+        for doc in corpus:
+            freqs: dict = {}
+            for token in doc:
+                freqs[token] = freqs.get(token, 0) + 1
+            self.doc_freqs.append(freqs)
+        for doc_freq in self.doc_freqs:
+            for token in doc_freq:
+                self.idf[token] = self.idf.get(token, 0) + 1
+        # n(q) = 包含该词条的文档数；+1 平滑避免全命中时 IDF 为负。
+        self.idf = {
+            token: math.log((self.corpus_size - freq + 0.5) / (freq + 0.5) + 1)
+            for token, freq in self.idf.items()
+        }
+
+    def _score(self, query: List[str], index: int) -> float:
+        score = 0.0
+        doc_len = self.doc_len[index]
+        doc_freq = self.doc_freqs[index]
+        norm_len = doc_len / self.avgdl if self.avgdl > 0 else 0.0
+        for token in query:
+            tf = doc_freq.get(token, 0)
+            if tf == 0:
+                continue
+            idf = self.idf.get(token, 0.0)
+            numerator = tf * (self.k1 + 1)
+            denominator = tf + self.k1 * (1 - self.b + self.b * norm_len)
+            score += idf * numerator / denominator
+        return score
+
+    def get_scores(self, query: List[str]) -> List[float]:
+        if self.corpus_size == 0:
+            return []
+        return [self._score(query, i) for i in range(self.corpus_size)]
+
+
+def _filter_by_category(results: List[dict]) -> List[dict]:
+    """硬白名单：只保留落入因果相关 arXiv 分类的候选。"""
+    return [r for r in results if r.get("category") in CAUSAL_ARXIV_CATEGORIES]
+
+
+def _rerank_by_bm25(query: str, candidates: List[dict], top_k: int = 5) -> List[dict]:
+    """title×2 + snippet×1 加权构造文档，BM25 打分后取 top_k，并把分数写回 score。"""
+    if not candidates:
+        return []
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return candidates[:top_k]
+    docs = [
+        _tokenize(r.get("title", "")) * 2 + _tokenize(r.get("snippet", ""))
+        for r in candidates
+    ]
+    scores = BM25Okapi(docs).get_scores(query_tokens)
+    ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
+    out = []
+    for r, score in ranked[:top_k]:
+        r = dict(r)
+        r["score"] = score
+        out.append(r)
+    return out
+
+
 def search_arxiv(query: str, max_results: int = 5) -> dict:
-    """精确短语检索；长 query 命中 0 条时回退 all 宽匹配兜底。
+    """宽检索(OR)→硬白名单过滤→BM25 重排序。
+
+    query_en 先截断到前 4 词避免过长导致检索分散；用 OR 语义宽检索 25 条候选，
+    再按因果相关分类白名单过滤，最后对 title×2+snippet×1 打分取 top_k。
 
     网络异常 / XML 解析异常直接抛出，交由上层 tool_retry 处理。
     """
-    q = query.replace('"', " ").strip()
-    result = _arxiv_fetch(f'ti:"{q}" OR abs:"{q}"', max_results)
-    if result["results"]:
-        return result
-    logging.info("arXiv 精确短语命中 0 条，回退 all 宽匹配 query=%s", q)
-    return _arxiv_fetch(f"all:{q}", max_results)
+    tokens = [t for t in query.replace('"', " ").replace(",", " ").split() if t]
+    if not tokens:
+        return {"number_of_results": 0, "results": []}
+    tokens = tokens[:4]
+    or_q = " OR ".join(tokens)
+    payload = _arxiv_fetch(f"ti:({or_q}) OR abs:({or_q})", max_results=25)
+    candidates = _filter_by_category(payload["results"])
+    logging.info(
+        "arXiv OR 检索 %s 条，白名单过滤后 %s 条 query=%s",
+        len(payload["results"]),
+        len(candidates),
+        " ".join(tokens),
+    )
+    reranked = _rerank_by_bm25(" ".join(tokens), candidates, top_k=max_results)
+    return {"number_of_results": len(reranked), "results": reranked}
 
 
 async def fetch_page_text(url: str) -> dict:
@@ -383,12 +584,14 @@ async def _summarize_for_query(
 
 
 async def web_search_planner_node(state: WebSearchState, llm: ChatOpenAI) -> dict:
-    """生成联网搜索 query；业务降级在函数内 catch StructuredOutputError。"""
+    """两步生成联网搜索 query：先提炼具体问题，再针对问题生成 query。"""
     try:
-        r = await get_web_search_query(state, llm)
+        question = await generate_research_question(state, llm)
+        r = await get_web_search_query(state, llm, question["question"])
         return {
             "planner": {
                 "success": True,
+                "research_question": question["question"],
                 "query": r["query"],
                 "query_en": r.get("query_en", ""),
                 "reason": r.get("reason", ""),
@@ -400,6 +603,7 @@ async def web_search_planner_node(state: WebSearchState, llm: ChatOpenAI) -> dic
         return {
             "planner": {
                 "success": False,
+                "research_question": "",
                 "query": "",
                 "query_en": "",
                 "reason": "",
