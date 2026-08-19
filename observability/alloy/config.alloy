@@ -51,20 +51,20 @@ loki.process "causalagent" {
 
   stage.json {
     expressions = {
-      service     = "service"
-      environment = "environment"
-      level       = "level"
-      category    = "category"
+      service     = "service",
+      environment = "environment",
+      level       = "level",
+      category    = "category",
     }
     drop_malformed = false
   }
 
   stage.labels {
     values = {
-      service_name = "service"
-      environment  = "environment"
-      level        = "level"
-      category     = "category"
+      service_name = "service",
+      environment  = "environment",
+      level        = "level",
+      category     = "category",
     }
   }
 
