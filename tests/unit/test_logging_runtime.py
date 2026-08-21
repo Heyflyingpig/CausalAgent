@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import io
 import json
 import logging
+from pathlib import Path
 import sys
 from datetime import datetime, timezone
 from typing import Iterator
@@ -20,8 +21,12 @@ from observability.logging_runtime import (
     MAX_MESSAGE_BYTES,
     MAX_STACK_BYTES,
     MAX_STACK_ITEMS,
+    bind_log_context,
     configure_logging,
+    current_log_context,
+    log_event,
     log_context,
+    reset_log_context,
 )
 
 
@@ -59,6 +64,8 @@ def test_legacy_record_is_single_line_json_with_utc_and_null_classification(monk
     assert record["event_code"] is None
     assert record["category"] is None
     assert record["message"] == "中文日志"
+    assert record["instance"]
+    assert record["function"] == "test_legacy_record_is_single_line_json_with_utc_and_null_classification"
     timestamp = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
     assert timestamp.tzinfo == timezone.utc
     assert len(stream.getvalue().splitlines()) == 1
@@ -168,14 +175,141 @@ def test_serialization_failure_uses_non_recursive_fallback_event(monkeypatch):
     assert "object at" not in stream.getvalue()
 
 
+def test_stderr_write_failure_uses_fixed_non_recursive_os_fallback(monkeypatch):
+    class BrokenStream:
+        def write(self, _value):
+            raise OSError("stderr-sensitive")
+
+        def flush(self):
+            return None
+
+    fallback_writes: list[bytes] = []
+    with captured_logging(monkeypatch):
+        handler = logging.getLogger().handlers[0]
+        handler.stream = BrokenStream()
+        monkeypatch.setattr(
+            "observability.logging_runtime.os.write",
+            lambda _fd, payload: fallback_writes.append(payload) or len(payload),
+        )
+        logging.getLogger("broken-stderr").error("password=record-secret")
+
+    assert len(fallback_writes) == 1
+    raw = fallback_writes[0].decode("utf-8")
+    record = json.loads(raw)
+    assert record["event_code"] == "logging.serialization_failed"
+    assert "record-secret" not in raw
+    assert "stderr-sensitive" not in raw
+
+
 def test_repeated_configuration_keeps_one_json_handler_and_rejects_unknown_context(monkeypatch):
     with captured_logging(monkeypatch) as stream:
         configure_logging("worker", "test", logging.INFO)
         configure_logging("worker", "test", logging.INFO)
         assert len(logging.getLogger().handlers) == 1
-        with pytest.raises(ValueError):
-            with log_context(arbitrary="not-allowed"):
-                pass
+        with log_context(arbitrary="not-allowed"):
+            assert current_log_context() == {}
         logging.getLogger("repeat").info("once")
 
-    assert len(_lines(stream)) == 1
+    records = _lines(stream)
+    assert [record["event_code"] for record in records] == [
+        "logging.contract_invalid",
+        None,
+    ]
+    assert records[0]["details"] == {"violation": "invalid_context_field"}
+
+
+def test_managed_event_uses_catalog_message_and_safe_exception_metadata(monkeypatch):
+    """受管事件不能回显异常值，只保留固定消息、类型和安全代码帧。"""
+    with captured_logging(monkeypatch) as stream:
+        try:
+            raise ValueError("password=exception-secret")
+        except ValueError as exc:
+            log_event(
+                logging.getLogger("managed"),
+                "mcp.tool.failed",
+                details={
+                    "duration_ms": 3,
+                    "input_bytes": 9,
+                    "reason_code": "tool_error",
+                },
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    raw = stream.getvalue()
+    record = _lines(stream)[0]
+    assert record["message"] == "MCP 工具调用失败"
+    assert record["category"] == "dependency"
+    assert record["level"] == "error"
+    assert record["function"] == "test_managed_event_uses_catalog_message_and_safe_exception_metadata"
+    assert record["exception_type"] == "ValueError"
+    assert record["stack"]
+    assert len(record["stack"]) <= 12
+    assert "exception-secret" not in raw
+    assert str(Path.cwd()) not in raw
+    assert all("password=" not in frame for frame in record["stack"])
+
+
+def test_invalid_event_and_details_degrade_without_echoing_values(monkeypatch):
+    """未知事件、越权详情键和上下文重复都只输出固定合同错误。"""
+    with captured_logging(monkeypatch) as stream:
+        logger = logging.getLogger("contract")
+        log_event(logger, "unknown.event", details={"secret": "do-not-echo"})
+        log_event(
+            logger,
+            "worker.job.finished",
+            details={"job_id": "forged", "attempt": 1},
+        )
+        log_event(
+            logger,
+            "worker.job.finished",
+            details={"attempt": "not-an-int"},
+        )
+
+    records = _lines(stream)
+    assert [record["details"]["violation"] for record in records] == [
+        "unknown_event",
+        "context_in_details",
+        "invalid_detail_type",
+    ]
+    assert all(record["event_code"] == "logging.contract_invalid" for record in records)
+    assert "do-not-echo" not in stream.getvalue()
+    assert "forged" not in stream.getvalue()
+
+
+def test_opaque_tokens_require_reverse_reset_and_context_values_are_strings(monkeypatch):
+    """乱序 reset 只报合同错误，合法逆序恢复后不残留任何关联字段。"""
+    with captured_logging(monkeypatch) as stream:
+        outer = bind_log_context(user_id=7)
+        inner = bind_log_context(job_id="job-1", worker_slot=2)
+        assert current_log_context() == {
+            "user_id": "7",
+            "job_id": "job-1",
+            "worker_slot": "2",
+        }
+        reset_log_context(outer)
+        assert current_log_context()["job_id"] == "job-1"
+        reset_log_context(inner)
+        assert current_log_context() == {"user_id": "7"}
+        reset_log_context(outer)
+        assert current_log_context() == {}
+
+    records = _lines(stream)
+    assert len(records) == 1
+    assert records[0]["event_code"] == "logging.contract_invalid"
+    assert records[0]["details"] == {"violation": "context_reset_failed"}
+
+
+def test_asyncio_to_thread_inherits_context_but_does_not_leak_after_completion(monkeypatch):
+    async def scenario(logger: logging.Logger) -> None:
+        with log_context(request_id="request-thread", job_id="job-thread"):
+            await asyncio.to_thread(logger.info, "inside-to-thread")
+        logger.info("outside-to-thread")
+
+    with captured_logging(monkeypatch) as stream:
+        asyncio.run(scenario(logging.getLogger("to-thread")))
+
+    inside, outside = _lines(stream)
+    assert inside["request_id"] == "request-thread"
+    assert inside["job_id"] == "job-thread"
+    assert outside.get("request_id") is None
+    assert outside.get("job_id") is None

@@ -1,7 +1,7 @@
 """进程级 JSON 日志运行时。
 
-这个模块只扩展标准库 ``logging``，不引入业务 logger API。业务代码继续使用
-``logging.getLogger(__name__)``，
+这个模块只扩展标准库 ``logging``。业务代码继续使用
+``logging.getLogger(__name__)``，受管事件通过 ``log_event`` 进入固定目录，
 1. 统一多个进程的日志格式
 2. 统一时间和级别
 3. 稳定提取 event_code/category/details
@@ -15,12 +15,14 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 import contextvars
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import json
 import logging
 import math
 import os
 import re
+import socket
 import sys
 import threading
 import traceback
@@ -45,20 +47,34 @@ ALLOWED_CONTEXT_FIELDS = frozenset(
 MAX_MESSAGE_BYTES = 2 * 1024
 MAX_DETAILS_BYTES = 4 * 1024
 MAX_STACK_BYTES = 8 * 1024
-MAX_STACK_ITEMS = 20
+MAX_STACK_ITEMS = 12
 MAX_LINE_BYTES = 16 * 1024
 MAX_CONTEXT_VALUE_BYTES = 256
 MAX_ENVIRONMENT_BYTES = 128
 MAX_SOURCE_BYTES = 256
 
-_EVENT_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9]*(\.[a-z0-9]+)+$")
+_EVENT_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
 _REDACTED = "[REDACTED]"
 _HANDLER_MARKER = "_causalagent_json_handler"
 _CONFIGURE_LOCK = threading.RLock()
-_LOG_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+_LOG_CONTEXT: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
     "causalagent_log_context",
     default={},
 )
+_LOG_CONTEXT_STACK: contextvars.ContextVar[tuple[object, ...]] = contextvars.ContextVar(
+    "causalagent_log_context_stack",
+    default=(),
+)
+
+
+@dataclass(frozen=True)
+class _LogContextToken:
+    """一次上下文绑定的不透明恢复句柄。"""
+
+    context_token: contextvars.Token
+    stack_token: contextvars.Token
+    marker: object
 
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
     r"(?P<label>"
@@ -234,14 +250,13 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _context_value(value: Any) -> Any:
-    if isinstance(value, str):
-        return _redact_text(value)
-    if isinstance(value, bool) or value is None or isinstance(value, int):
-        return value
-    if isinstance(value, float) and math.isfinite(value):
-        return value
-    raise TypeError("日志上下文字段只能使用 JSON 标量")
+def _context_value(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise TypeError("日志上下文字段只能使用字符串或整数")
+    safe = _redact_text(str(value)).strip()
+    if not safe or len(safe.encode("utf-8")) > MAX_CONTEXT_VALUE_BYTES:
+        raise ValueError("日志上下文字段为空或过长")
+    return safe
 
 
 def _record_context(record: logging.LogRecord) -> tuple[dict[str, Any], bool]:
@@ -255,19 +270,13 @@ def _record_context(record: logging.LogRecord) -> tuple[dict[str, Any], bool]:
     for field, value in values.items():
         if value is None:
             continue
-        if isinstance(value, str):
-            safe, was_truncated = _truncate_text(value, MAX_CONTEXT_VALUE_BYTES)
+        try:
+            safe = _context_value(value)
+        except (TypeError, ValueError):
+            result[field] = _REDACTED
+            truncated = True
+        else:
             result[field] = safe
-            truncated = truncated or was_truncated
-            continue
-        if isinstance(value, bool) or isinstance(value, int):
-            result[field] = value
-            continue
-        if isinstance(value, float) and math.isfinite(value):
-            result[field] = value
-            continue
-        result[field] = _REDACTED
-        truncated = True
     return result, truncated
 
 
@@ -279,25 +288,51 @@ def _record_message(record: logging.LogRecord) -> tuple[str, bool]:
     return _truncate_text(message, MAX_MESSAGE_BYTES)
 
 
+def _safe_frame_path(filename: str) -> str:
+    """项目帧使用仓库相对路径，依赖帧只保留文件名。"""
+
+    if filename.startswith("<") and filename.endswith(">"):
+        return filename
+    try:
+        absolute = os.path.abspath(filename)
+        if os.path.commonpath((_PROJECT_ROOT, absolute)) == _PROJECT_ROOT:
+            return os.path.relpath(absolute, _PROJECT_ROOT).replace("\\", "/")
+    except (OSError, ValueError):
+        pass
+    return os.path.basename(filename) or "unknown"
+
+
+def _record_exception_type(record: logging.LogRecord) -> tuple[str | None, bool]:
+    if not record.exc_info or not record.exc_info[0]:
+        return None, False
+    try:
+        name = getattr(record.exc_info[0], "__name__", None) or "Exception"
+        return _truncate_text(name, MAX_SOURCE_BYTES)
+    except Exception:
+        return "Exception", True
+
+
 def _record_stack(record: logging.LogRecord) -> tuple[list[str] | None, bool]:
     if not record.exc_info:
         return None, False
     try:
-        raw_lines = [
-            line.rstrip("\r\n")
-            for block in traceback.format_exception(*record.exc_info)
-            for line in block.splitlines()
-            if line.strip()
-        ]
+        summaries = traceback.extract_tb(record.exc_info[2]) if record.exc_info[2] else []
     except Exception:
         return ["异常栈清理失败"], True
 
-    truncated = len(raw_lines) > MAX_STACK_ITEMS
-    lines = [_truncate_text(_redact_text(line), 1024)[0] for line in raw_lines[:MAX_STACK_ITEMS]]
+    truncated = len(summaries) > MAX_STACK_ITEMS
+    selected = summaries[-MAX_STACK_ITEMS:]
+    lines = [
+        _truncate_text(
+            f"{_safe_frame_path(frame.filename)}:{frame.lineno}:{frame.name}",
+            1024,
+        )[0]
+        for frame in selected
+    ]
     while lines and len(_json_bytes(lines)) > MAX_STACK_BYTES:
         truncated = True
         if len(lines) > 1:
-            lines.pop()
+            lines.pop(0)
             continue
         current = lines[0]
         shorter = _truncate_text(current, max(1, len(current.encode("utf-8")) // 2))[0]
@@ -342,6 +377,8 @@ def _fit_payload(payload: dict[str, Any], truncated: bool) -> str:
 
     payload["logger"] = None
     payload["module"] = None
+    payload["function"] = None
+    payload["exception_type"] = None
     payload["message"] = ""
     raw = _json_bytes(payload)
     if len(raw) <= MAX_LINE_BYTES:
@@ -362,6 +399,8 @@ def _fit_payload(payload: dict[str, Any], truncated: bool) -> str:
         "truncated": True,
         "logger": None,
         "module": None,
+        "function": None,
+        "exception_type": None,
     }
     for field in ALLOWED_CONTEXT_FIELDS:
         if field in payload:
@@ -374,25 +413,24 @@ def _fallback_line(formatter: "JsonLogFormatter", record: logging.LogRecord) -> 
     """构造固定、无原始对象的降级事件；此函数绝不调用 logging。"""
 
     try:
-        logger_name, _ = _truncate_text(getattr(record, "name", None), MAX_SOURCE_BYTES)
-        module_name, _ = _truncate_text(getattr(record, "module", None), MAX_SOURCE_BYTES)
         payload = {
             "timestamp": _timestamp(),
-            "level": _level_name(record),
+            "level": "error",
             "service": formatter.service,
             "environment": formatter.environment,
             "event_code": "logging.serialization_failed",
             "category": "dependency",
             "message": "日志记录序列化失败",
-            "details": {"source": "logging_runtime"},
+            "details": None,
             "stack": None,
             "truncated": False,
-            "logger": logger_name or None,
-            "module": module_name or None,
+            "logger": None,
+            "module": None,
+            "function": None,
+            "exception_type": None,
+            "instance": formatter.instance,
         }
-        context, context_truncated = _record_context(record)
-        payload.update(context)
-        return _fit_payload(payload, context_truncated)
+        return _fit_payload(payload, False)
     except Exception:
         # 这里仍然不使用 record 中的任何可变内容。
         return json.dumps(
@@ -409,6 +447,9 @@ def _fallback_line(formatter: "JsonLogFormatter", record: logging.LogRecord) -> 
                 "truncated": True,
                 "logger": None,
                 "module": None,
+                "function": None,
+                "exception_type": None,
+                "instance": formatter.instance,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -422,15 +463,18 @@ class JsonLogFormatter(logging.Formatter):
         super().__init__()
         self.service = service
         self.environment = environment
+        self.instance = _truncate_text(socket.gethostname(), MAX_CONTEXT_VALUE_BYTES)[0]
 
     def format(self, record: logging.LogRecord) -> str:
         try:
             message, message_truncated = _record_message(record)
             details, details_truncated = _details_value(record)
             stack, stack_truncated = _record_stack(record)
+            exception_type, exception_type_truncated = _record_exception_type(record)
             context, context_truncated = _record_context(record)
             logger_name, logger_truncated = _truncate_text(record.name, MAX_SOURCE_BYTES)
             module_name, module_truncated = _truncate_text(record.module, MAX_SOURCE_BYTES)
+            function_name, function_truncated = _truncate_text(record.funcName, MAX_SOURCE_BYTES)
             payload: dict[str, Any] = {
                 "timestamp": _timestamp(),
                 "level": _level_name(record),
@@ -444,6 +488,9 @@ class JsonLogFormatter(logging.Formatter):
                 "truncated": False,
                 "logger": logger_name or None,
                 "module": module_name or None,
+                "function": function_name or None,
+                "exception_type": exception_type,
+                "instance": self.instance,
             }
             payload.update(context)
             return _fit_payload(
@@ -456,11 +503,47 @@ class JsonLogFormatter(logging.Formatter):
                         context_truncated,
                         logger_truncated,
                         module_truncated,
+                        function_truncated,
+                        exception_type_truncated,
                     )
                 ),
             )
         except Exception:
             return _fallback_line(self, record)
+
+
+class SafeStderrHandler(logging.StreamHandler):
+    """stderr 写入失败时只尝试输出固定降级事件，绝不回显 LogRecord。"""
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        try:
+            formatter = self.formatter
+            if isinstance(formatter, JsonLogFormatter):
+                line = _fallback_line(formatter, record)
+            else:
+                line = json.dumps(
+                    {
+                        "timestamp": _timestamp(),
+                        "level": "error",
+                        "service": "maintenance",
+                        "environment": "unknown",
+                        "event_code": "logging.serialization_failed",
+                        "category": "dependency",
+                        "message": "日志记录序列化失败",
+                        "details": None,
+                        "stack": None,
+                        "truncated": True,
+                        "logger": None,
+                        "module": None,
+                        "function": None,
+                        "exception_type": None,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            os.write(2, (line + "\n").encode("utf-8"))
+        except Exception:
+            return
 
 
 def _resolve_level(level: int | str) -> int:
@@ -495,7 +578,7 @@ def configure_logging(service: str, environment: str, level: int | str = logging
             handler.close()
 
         if owned_handler is None:
-            owned_handler = logging.StreamHandler(sys.stderr)
+            owned_handler = SafeStderrHandler(sys.stderr)
             setattr(owned_handler, _HANDLER_MARKER, True)
             root.addHandler(owned_handler)
         elif getattr(owned_handler, "stream", None) is not sys.stderr:
@@ -507,25 +590,151 @@ def configure_logging(service: str, environment: str, level: int | str = logging
         root.disabled = False
 
 
+def _contract_invalid_event(
+    logger: logging.Logger,
+    violation: str,
+    *,
+    stacklevel: int,
+) -> None:
+    """直接输出固定合同错误，避免 ``log_event`` 自递归。"""
+
+    from observability.event_catalog import EVENT_SPECS
+
+    spec = EVENT_SPECS["logging.contract_invalid"]
+    logger.log(
+        spec.level,
+        spec.message,
+        extra={
+            "event_code": "logging.contract_invalid",
+            "category": spec.category,
+            "details": {"violation": violation},
+        },
+        stacklevel=stacklevel,
+    )
+
+
+def log_event(
+    logger: logging.Logger,
+    event_code: str,
+    *,
+    details: Mapping[str, Any] | None = None,
+    exc_info: Any = None,
+) -> None:
+    """按事件目录输出固定、去敏且不会改变业务控制流的日志。"""
+
+    try:
+        from observability.event_catalog import validate_event_details
+
+        target = logger if isinstance(logger, logging.Logger) else logging.getLogger(__name__)
+        spec, safe_details, violation = validate_event_details(event_code, details)
+        if violation is not None or spec is None:
+            _contract_invalid_event(target, violation or "unknown_event", stacklevel=3)
+            return
+        target.log(
+            spec.level,
+            spec.message,
+            extra={
+                "event_code": event_code,
+                "category": spec.category,
+                "details": safe_details,
+            },
+            exc_info=exc_info,
+            stacklevel=2,
+        )
+    except Exception:
+        # logging 本身不能改变请求、Job、fencing 或降级语义。
+        return
+
+
+def bind_log_context(**fields: Any) -> _LogContextToken:
+    """增量绑定允许的关联字段；非法输入只产生合同事件。"""
+
+    values: dict[str, str] = {}
+    invalid_field = False
+    invalid_value = False
+    for field, value in fields.items():
+        if field not in ALLOWED_CONTEXT_FIELDS:
+            invalid_field = True
+            continue
+        if value is None:
+            continue
+        try:
+            values[field] = _context_value(value)
+        except (TypeError, ValueError):
+            invalid_value = True
+
+    merged = dict(_LOG_CONTEXT.get())
+    merged.update(values)
+    marker = object()
+    context_token = _LOG_CONTEXT.set(merged)
+    stack_token = _LOG_CONTEXT_STACK.set((*_LOG_CONTEXT_STACK.get(), marker))
+    token = _LogContextToken(context_token, stack_token, marker)
+    logger = logging.getLogger(__name__)
+    if invalid_field:
+        try:
+            _contract_invalid_event(logger, "invalid_context_field", stacklevel=3)
+        except Exception:
+            pass
+    if invalid_value:
+        try:
+            _contract_invalid_event(logger, "invalid_context_value", stacklevel=3)
+        except Exception:
+            pass
+    return token
+
+
+def reset_log_context(token: object) -> None:
+    """恢复一次上下文绑定；错误 token 不得打断业务。"""
+
+    stack = _LOG_CONTEXT_STACK.get()
+    if (
+        not isinstance(token, _LogContextToken)
+        or not stack
+        or stack[-1] is not token.marker
+    ):
+        try:
+            _contract_invalid_event(
+                logging.getLogger(__name__),
+                "context_reset_failed",
+                stacklevel=3,
+            )
+        except Exception:
+            pass
+        return
+    try:
+        _LOG_CONTEXT.reset(token.context_token)
+        _LOG_CONTEXT_STACK.reset(token.stack_token)
+    except Exception:
+        try:
+            _contract_invalid_event(
+                logging.getLogger(__name__),
+                "context_reset_failed",
+                stacklevel=3,
+            )
+        except Exception:
+            pass
+
+
+def current_log_context() -> dict[str, str]:
+    """返回当前已校验上下文的独立副本。"""
+
+    result: dict[str, str] = {}
+    for field, value in _LOG_CONTEXT.get().items():
+        if field not in ALLOWED_CONTEXT_FIELDS or value is None:
+            continue
+        result[field] = value
+    return result
+
+
 @contextmanager
 def log_context(**fields: Any) -> Iterator[None]:
     """在当前 async/task/thread 上下文内临时设置有限的日志关联字段。"""
 
-    unknown = set(fields) - ALLOWED_CONTEXT_FIELDS
-    if unknown:
-        raise ValueError(f"不允许的日志上下文字段: {sorted(unknown)}")
-    values: dict[str, Any] = {}
-    for field, value in fields.items():
-        if value is None:
-            continue
-        values[field] = _context_value(value)
-    merged = dict(_LOG_CONTEXT.get())
-    merged.update(values)
-    token = _LOG_CONTEXT.set(merged)
+    token = bind_log_context(**fields)
     try:
         yield
     finally:
-        _LOG_CONTEXT.reset(token)
+        reset_log_context(token)
 
 
 __all__ = [
@@ -533,7 +742,12 @@ __all__ = [
     "ALLOWED_CONTEXT_FIELDS",
     "ALLOWED_SERVICES",
     "JsonLogFormatter",
+    "SafeStderrHandler",
+    "bind_log_context",
     "configure_logging",
+    "current_log_context",
     "current_environment",
+    "log_event",
     "log_context",
+    "reset_log_context",
 ]

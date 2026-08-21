@@ -7,8 +7,10 @@ app.db - 数据库访问模块
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 import logging
 import random
+import re
 import threading
 import time
 from typing import Any, Iterable
@@ -18,12 +20,58 @@ from mysql.connector import errorcode, pooling
 from mysql.connector.errors import PoolError
 
 from config.settings import settings
+from observability.logging_runtime import log_event
+from observability.noise_control import FailureTransitionTracker, RepeatEventLimiter
 
 _write_pool: pooling.MySQLConnectionPool | None = None
 _read_pools: dict[str, pooling.MySQLConnectionPool] = {}
 _pool_lock = threading.Lock()
 _replica_status_lock = threading.Lock()
 _replica_status_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+LOGGER = logging.getLogger(__name__)
+_CONNECTION_FAILURES = FailureTransitionTracker()
+_REPLICA_FAILURES = FailureTransitionTracker()
+_SLOW_QUERY_LIMITER = RepeatEventLimiter(max_keys=1024)
+
+_SQL_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_SQL_LINE_COMMENT = re.compile(r"(?:--[^\r\n]*|#[^\r\n]*)")
+_SQL_STRING = re.compile(r"(?:'(?:''|\\.|[^'])*'|\"(?:\"\"|\\.|[^\"])*\")")
+_SQL_NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
+_SQL_WHITESPACE = re.compile(r"\s+")
+_SQL_OPERATION = re.compile(
+    r"^(select|insert|update|delete|replace|call|create|alter|drop|truncate|with)\b",
+    re.IGNORECASE,
+)
+_DATABASE_ERROR_LOGGED_ATTR = "_causalagent_database_failure_logged"
+
+
+def _connection_reason(err: mysql.connector.Error) -> str:
+    if isinstance(err, PoolError):
+        return "pool_exhausted"
+    if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
+        return "auth_failed"
+    if err.errno == errorcode.ER_BAD_DB_ERROR:
+        return "database_missing"
+    if err.errno in {1205, 3024}:
+        return "query_timeout"
+    return "connection_unavailable"
+
+
+def _normalise_sql(sql: str) -> str:
+    """仅为摘要生成不可逆 digest，不返回或记录规范化 SQL。"""
+    text = _SQL_BLOCK_COMMENT.sub(" ", str(sql))
+    text = _SQL_LINE_COMMENT.sub(" ", text)
+    text = _SQL_STRING.sub("?", text)
+    text = _SQL_NUMBER.sub("?", text)
+    return _SQL_WHITESPACE.sub(" ", text).strip().lower()
+
+
+def _sql_identity(sql: str) -> tuple[str, str]:
+    normalised = _normalise_sql(sql)
+    match = _SQL_OPERATION.match(normalised)
+    operation = match.group(1).lower() if match else "unknown"
+    digest = hashlib.sha256(normalised.encode("utf-8")).hexdigest()
+    return operation, digest
 
 
 def _base_connection_config(host: str) -> dict[str, Any]:
@@ -59,7 +107,6 @@ def read_connection_config(host: str) -> dict[str, Any]:
 def replica_status_connection_config(host: str) -> dict[str, Any] | None:
     """复制状态观测连接配置；缺失专用账号时禁用从库状态检查。"""
     if not settings.MYSQL_REPLICA_STATUS_USER or not settings.MYSQL_REPLICA_STATUS_PASSWORD:
-        logging.warning("未配置复制状态检查账号，eventual 读将回退主库。")
         return None
     return {
         **_base_connection_config(host),
@@ -107,11 +154,6 @@ def _acquire_pool_connection(pool, *, target: str):
             return pool.get_connection()
         except PoolError:
             if time.monotonic() >= deadline:
-                logging.error(
-                    "MySQL %s连接池在 %.2f 秒内无法取得连接。",
-                    target,
-                    settings.MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS,
-                )
                 raise
             time.sleep(min(retry_seconds, max(0, deadline - time.monotonic())))
 
@@ -123,22 +165,76 @@ def _get_replica_status_connection(host: str):
     return mysql.connector.connect(**config)
 
 
-def _log_connection_error(err: mysql.connector.Error, target: str) -> None:
-    if err.errno == errorcode.ER_ACCESS_DENIED_ERROR:
-        logging.error("MySQL %s连接错误: 用户或密码错误。", target)
-    elif err.errno == errorcode.ER_BAD_DB_ERROR:
-        logging.error("MySQL %s连接错误: 数据库 '%s' 不存在。", target, settings.MYSQL_DATABASE)
-    else:
-        logging.error("MySQL %s连接错误: %s", target, err)
+def _log_connection_error(
+    err: mysql.connector.Error,
+    *,
+    source_alias: str,
+    operation: str,
+) -> None:
+    if getattr(err, _DATABASE_ERROR_LOGGED_ATTR, False):
+        return
+    try:
+        setattr(err, _DATABASE_ERROR_LOGGED_ATTR, True)
+    except Exception:
+        pass
+    reason_code = _connection_reason(err)
+    decision = _CONNECTION_FAILURES.record_failure(
+        (source_alias, operation),
+        reason_code,
+    )
+    if not decision.emit:
+        return
+    log_event(
+        LOGGER,
+        "db.connection.failed",
+        details={
+            "source_alias": source_alias,
+            "operation": operation,
+            "reason_code": reason_code,
+            "suppressed_count": decision.suppressed_count,
+        },
+        exc_info=(type(err), err, err.__traceback__),
+    )
+
+
+def record_database_failure(
+    err: BaseException,
+    *,
+    operation: str,
+    source_alias: str = "primary",
+) -> None:
+    """在捕获 MySQL 异常的根因边界记录一次安全事件，不回显 SQL 或参数。"""
+    if not isinstance(err, mysql.connector.Error):
+        return
+    try:
+        _log_connection_error(
+            err,
+            source_alias=source_alias,
+            operation=operation,
+        )
+    except Exception:
+        # 数据库错误处理路径不能再被可观测性辅助逻辑覆盖。
+        return
+
+
+def _record_connection_success(*, source_alias: str, operation: str) -> None:
+    """成功后静默复位连接故障状态，下一次故障仍会立即记录。"""
+    _CONNECTION_FAILURES.record_success((source_alias, operation))
 
 
 def get_write_connection():
     """获取写库连接。"""
     try:
-        return _acquire_pool_connection(_get_write_pool(), target="写库")
+        connection = _acquire_pool_connection(_get_write_pool(), target="写库")
     except mysql.connector.Error as err:
-        _log_connection_error(err, "写库")
+        _log_connection_error(
+            err,
+            source_alias="primary",
+            operation="write_connect",
+        )
         raise
+    _record_connection_success(source_alias="primary", operation="write_connect")
+    return connection
 
 
 def get_replica_status(
@@ -177,8 +273,8 @@ def get_replica_status(
                 cursor = conn.cursor(dictionary=True)
                 cursor.execute("SHOW REPLICA STATUS")
                 row = cursor.fetchone() or None
-        except mysql.connector.Error as err:
-            logging.warning("读取从库复制状态失败，将回退主库: %s", err)
+        except mysql.connector.Error:
+            pass
         finally:
             if conn is not None:
                 conn.close()
@@ -201,12 +297,61 @@ def should_use_replica(host: str) -> bool:
     if not row:
         return False
     if row.get("Replica_IO_Running") != "Yes" or row.get("Replica_SQL_Running") != "Yes":
-        logging.warning("从库 %s 复制线程未全部运行，回退主库。", host)
         return False
     lag = row.get("Seconds_Behind_Source")
     if lag is not None:
         lag = int(lag)
     return lag is not None and lag <= settings.MYSQL_REPLICA_MAX_LAG_SECONDS
+
+
+def _replica_failure_reason(host: str) -> tuple[str, int | None]:
+    """从短缓存状态映射稳定原因，不返回 host 或原始错误。"""
+    row = get_replica_status(host)
+    if not row:
+        return "replica_status_unavailable", None
+    if row.get("Replica_IO_Running") != "Yes" or row.get("Replica_SQL_Running") != "Yes":
+        return "replica_unhealthy", None
+    lag = row.get("Seconds_Behind_Source")
+    try:
+        lag_seconds = int(lag) if lag is not None else None
+    except (TypeError, ValueError):
+        lag_seconds = None
+    if lag_seconds is None:
+        return "replica_status_unavailable", None
+    if lag_seconds > settings.MYSQL_REPLICA_MAX_LAG_SECONDS:
+        return "replica_lag", max(0, lag_seconds)
+    return "connection_unavailable", max(0, lag_seconds)
+
+
+def _record_replica_fallback(reason_code: str, lag_seconds: int | None) -> None:
+    decision = _REPLICA_FAILURES.record_failure("eventual_read", reason_code)
+    if not decision.emit:
+        return
+    log_event(
+        LOGGER,
+        "db.replica.fallback",
+        details={
+            "source_alias": "replica",
+            "reason_code": reason_code,
+            "lag_seconds": lag_seconds,
+            "suppressed_count": decision.suppressed_count,
+        },
+    )
+
+
+def _record_replica_recovery() -> None:
+    recovery = _REPLICA_FAILURES.record_success("eventual_read")
+    if recovery is None:
+        return
+    log_event(
+        LOGGER,
+        "db.replica.recovered",
+        details={
+            "source_alias": "replica",
+            "downtime_ms": recovery.downtime_ms,
+            "failure_count": recovery.failure_count,
+        },
+    )
 
 
 def get_read_connection(consistency: str = "strong"):
@@ -233,13 +378,20 @@ def get_read_connection_with_source(
 
     primary_source = {"source_role": "primary", "source_alias": "primary"}
     if consistency == "strong" or not settings.MYSQL_READ_HOSTS:
-        return (
-            _acquire_pool_connection(
+        try:
+            connection = _acquire_pool_connection(
                 _get_read_pool(settings.MYSQL_WRITE_HOST),
                 target="主库只读",
-            ),
-            primary_source,
-        )
+            )
+        except mysql.connector.Error as err:
+            _log_connection_error(
+                err,
+                source_alias="primary",
+                operation="read_connect",
+            )
+            raise
+        _record_connection_success(source_alias="primary", operation="read_connect")
+        return connection, primary_source
 
     aliases = {
         host: f"replica-{index}"
@@ -247,31 +399,45 @@ def get_read_connection_with_source(
     }
     hosts = list(settings.MYSQL_READ_HOSTS)
     random.shuffle(hosts)
+    fallback_reason = "replica_status_unavailable"
+    fallback_lag: int | None = None
     for host in hosts:
         if not should_use_replica(host):
-            logging.warning("从库 %s 状态不可用或延迟超过阈值，回退主库。", host)
+            fallback_reason, fallback_lag = _replica_failure_reason(host)
             continue
         try:
-            return (
-                _acquire_pool_connection(
-                    _get_read_pool(host),
-                    target=f"{aliases[host]} 只读",
-                ),
-                {
-                    "source_role": "replica",
-                    "source_alias": aliases[host],
-                },
+            connection = _acquire_pool_connection(
+                _get_read_pool(host),
+                target=f"{aliases[host]} 只读",
             )
-        except mysql.connector.Error as err:
-            logging.warning("从库 %s 不可用，回退主库: %s", host, err)
+        except mysql.connector.Error:
+            fallback_reason = "connection_unavailable"
+            fallback_lag = None
+            continue
+        _record_replica_recovery()
+        return connection, {
+            "source_role": "replica",
+            "source_alias": aliases[host],
+        }
 
-    return (
-        _acquire_pool_connection(
+    _record_replica_fallback(fallback_reason, fallback_lag)
+    try:
+        connection = _acquire_pool_connection(
             _get_read_pool(settings.MYSQL_WRITE_HOST),
             target="主库只读回退",
-        ),
-        primary_source,
+        )
+    except mysql.connector.Error as err:
+        _log_connection_error(
+            err,
+            source_alias="primary",
+            operation="read_fallback_connect",
+        )
+        raise
+    _record_connection_success(
+        source_alias="primary",
+        operation="read_fallback_connect",
     )
+    return connection, primary_source
 
 
 def get_db_connection():
@@ -280,7 +446,7 @@ def get_db_connection():
 
 
 def execute_with_timing(cursor, sql: str, params: Iterable[Any] | None = None):
-    """执行 SQL 并记录慢查询 warning。"""
+    """执行 SQL，并按不可逆 statement digest 限频记录慢查询。"""
     start = time.perf_counter()
     try:
         if params is None:
@@ -289,7 +455,23 @@ def execute_with_timing(cursor, sql: str, params: Iterable[Any] | None = None):
     finally:
         elapsed_ms = (time.perf_counter() - start) * 1000
         if elapsed_ms >= settings.MYSQL_QUERY_WARN_MS:
-            logging.warning("慢查询 %.1fms: %s", elapsed_ms, " ".join(sql.split()))
+            try:
+                operation, statement_digest = _sql_identity(sql)
+                emit, suppressed_count = _SLOW_QUERY_LIMITER.should_emit(statement_digest)
+                if emit:
+                    log_event(
+                        LOGGER,
+                        "db.query.slow",
+                        details={
+                            "operation": operation,
+                            "duration_ms": round(elapsed_ms, 3),
+                            "statement_digest": statement_digest,
+                            "suppressed_count": suppressed_count,
+                        },
+                    )
+            except Exception:
+                # 可观测性辅助逻辑绝不能覆盖 SQL 的真实返回值或异常。
+                pass
 
 
 @contextmanager
@@ -306,8 +488,6 @@ def db_cursor(write: bool = True, consistency: str = "strong", dictionary: bool 
 def check_database_readiness():
     """检查数据库是否已准备就绪。"""
     try:
-        logging.info("检查数据库连接和表结构就绪状态...")
-
         with get_write_connection() as conn:
             cursor = conn.cursor()
             required_tables = [
@@ -344,7 +524,6 @@ def check_database_readiness():
                     f"数据库表缺失: {sorted(missing_tables)}。"
                     "请先运行 'python -m Database.bootstrap'。"
                 )
-                logging.error(error_msg)
                 raise RuntimeError(error_msg)
 
             cursor.execute(
@@ -362,7 +541,6 @@ def check_database_readiness():
                     "数据库关键字段缺失: users.role。"
                     "请先运行 'python -m Database.bootstrap'。"
                 )
-                logging.error(error_msg)
                 raise RuntimeError(error_msg)
 
             cursor.execute(
@@ -386,7 +564,6 @@ def check_database_readiness():
                     f"{sorted(f'users.{name}' for name in missing_security_columns)}。"
                     "请先运行 'python -m Database.bootstrap'。"
                 )
-                logging.error(error_msg)
                 raise RuntimeError(error_msg)
 
             cursor.execute(
@@ -432,7 +609,6 @@ def check_database_readiness():
                     f"{sorted(f'analysis_jobs.{name}' for name in missing_job_request_columns)}。"
                     "请先运行 'python -m Database.bootstrap'。"
                 )
-                logging.error(error_msg)
                 raise RuntimeError(error_msg)
 
             cursor.execute(
@@ -527,7 +703,6 @@ def check_database_readiness():
                     f"{sorted(f'{table}.{index}' for table, index in missing_indexes)}。"
                     "请先运行 'python -m Database.bootstrap'。"
                 )
-                logging.error(error_msg)
                 raise RuntimeError(error_msg)
 
             cursor.execute("SELECT 1")
@@ -535,23 +710,19 @@ def check_database_readiness():
             if not test_result or test_result[0] != 1:
                 raise RuntimeError("数据库连接测试失败")
 
-            logging.info("数据库 '%s' 就绪检查通过。", settings.MYSQL_DATABASE)
             return True
 
     except mysql.connector.Error as e:
+        record_database_failure(e, operation="readiness_query")
         if e.errno == errorcode.ER_BAD_DB_ERROR:
             error_msg = (
                 f"数据库 '{settings.MYSQL_DATABASE}' 不存在。"
                 "请先运行 'python -m Database.bootstrap'。"
             )
-            logging.error(error_msg)
             raise RuntimeError(error_msg) from e
         if e.errno == errorcode.ER_ACCESS_DENIED_ERROR:
             error_msg = "无法访问数据库。请检查数据库账号权限配置。"
-            logging.error(error_msg)
             raise RuntimeError(error_msg) from e
-        logging.error("数据库就绪性检查失败: %s", e)
         raise
-    except Exception as e:
-        logging.error("数据库就绪性检查过程中发生未知错误: %s", e)
+    except Exception:
         raise
