@@ -258,24 +258,13 @@ def degrade_web_search_planner(state: CausalAgentState, error: NodeError) -> dic
     }
 
 
-def degrade_web_search_search(state: CausalAgentState, error: NodeError) -> dict:
-    """searxng_search 失败后的降级：写 searxng 组 success=False。"""
+def degrade_academic_search(state: CausalAgentState, error: NodeError) -> dict:
+    """academic_search 失败后的降级：写 search 组 success=False。"""
     return {
-        "searxng": {
+        "search": {
             "success": False,
             "results": [],
             "number_of_results": 0,
-            "error": sanitize_error(error.error),
-        }
-    }
-
-
-def degrade_web_search_content(state: CausalAgentState, error: NodeError) -> dict:
-    """content_fetch 失败后的降级：写 content 组 success=False。"""
-    return {
-        "content": {
-            "success": False,
-            "fetched": [],
             "error": sanitize_error(error.error),
         }
     }
