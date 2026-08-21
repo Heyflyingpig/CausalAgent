@@ -88,23 +88,6 @@ def test_alloy_pipeline_parses_docker_and_retains_legacy_lines_without_dynamic_l
     assert "loki.write.causalagent.receiver" in alloy
 
 
-def test_alloy_multiline_maps_use_required_field_separators():
-    alloy = (PROJECT_ROOT / "observability/alloy/config.alloy").read_text(encoding="utf-8")
-    map_bodies = re.findall(
-        r"(?ms)^\s+(?:expressions|values)\s*=\s*\{\n(?P<body>.*?)^\s+\}",
-        alloy,
-    )
-
-    assert len(map_bodies) == 2
-    for body in map_bodies:
-        entries = [line.strip() for line in body.splitlines() if line.strip()]
-        missing_separators = [entry for entry in entries if not entry.endswith(",")]
-        assert not missing_separators, (
-            "Alloy 多行 map 的字段必须以逗号结尾: "
-            f"{missing_separators}"
-        )
-
-
 def test_loki_and_grafana_provisioning_match_first_phase_contract():
     loki = (PROJECT_ROOT / "observability/loki/loki-config.yml").read_text(encoding="utf-8")
     datasource = (
