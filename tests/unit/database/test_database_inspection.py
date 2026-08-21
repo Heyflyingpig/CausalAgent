@@ -42,6 +42,7 @@ from Database.monitoring import (
 from app.agent.job_service import get_worker_snapshot_report
 from app.db import get_read_connection_with_source
 from config.settings import AppConfig, settings
+from observability.noise_control import FailureTransitionTracker
 
 
 def result(status="healthy", value=None, source_alias="primary", warning=None):
@@ -240,11 +241,20 @@ class BusySnapshotLockCursor(SnapshotWriteCursor):
         return {"acquired": 0}
 
 
+class FailedSnapshotLockCursor(SnapshotWriteCursor):
+    """模拟 GET_LOCK 操作没有返回可判定结果。"""
+
+    def fetchone(self):
+        return {"acquired": None}
+
+
 class AcquiredSnapshotLockCursor(SnapshotWriteCursor):
     """模拟已取得命名锁并支持释放锁结果。"""
 
     def fetchone(self):
         """首次读取表示成功取得锁，后续读取表示成功释放。"""
+        if self.calls and "release_lock" in self.calls[-1][0].lower():
+            return {"released": 1}
         return {"acquired": 1}
 
 
@@ -868,12 +878,35 @@ class DatabaseInspectionTests(unittest.TestCase):
             patch("Database.monitoring.get_write_connection", return_value=connection),
             patch("Database.monitoring._read_snapshot_records") as read_records,
             patch("Database.monitoring._collect_payload") as collect_payload,
+            patch(
+                "Database.monitoring._LOCK_FAILURES",
+                FailureTransitionTracker(),
+            ),
+            patch("Database.monitoring.log_event") as log_event,
         ):
             collected = collect_snapshot("realtime")
 
         self.assertFalse(collected)
         read_records.assert_not_called()
         collect_payload.assert_not_called()
+        log_event.assert_not_called()
+
+    def test_snapshot_lock_unknown_result_is_a_limited_operation_failure(self):
+        connection = SnapshotWriteConnection()
+        connection.fake_cursor = FailedSnapshotLockCursor()
+        with (
+            patch("Database.monitoring.get_write_connection", return_value=connection),
+            patch(
+                "Database.monitoring._LOCK_FAILURES",
+                FailureTransitionTracker(),
+            ),
+            patch("Database.monitoring.log_event") as log_event,
+        ):
+            collected = collect_snapshot("realtime")
+
+        self.assertFalse(collected)
+        log_event.assert_called_once()
+        self.assertEqual(log_event.call_args.args[1], "monitor.lock.failed")
 
     def test_snapshot_collection_rechecks_due_state_after_named_lock(self):
         """等待命名锁后再次核对快照，避免并发 monitor 重复执行同一采集。"""

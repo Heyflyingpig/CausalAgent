@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import logging
 from typing import Any, Callable
 
 from Database.checkpoint_inspection import (
@@ -19,7 +18,6 @@ from app.db import get_read_connection, get_replica_status
 from config.settings import settings
 
 
-LOGGER = logging.getLogger(__name__)
 ANOMALY_SAMPLE_LIMIT = 20
 
 EXPECTED_COLUMNS = {
@@ -197,9 +195,7 @@ def _safe_block(
     """隔离单项失败，避免一个检查阻断其他 deep 事实。"""
     try:
         return collector()
-    except Exception as exc:
-        LOGGER.warning("deep 审计检查失败 [%s]: %s", key, type(exc).__name__)
-        LOGGER.debug("deep 审计异常详情 [%s]", key, exc_info=True)
+    except Exception:
         return _check(key, label, "unknown", "检查失败或查询超时")
 
 
@@ -497,11 +493,7 @@ def _checkpoint_postgres_checks() -> list[dict[str, Any]]:
             timeout_ms=int(settings.DB_INSPECTION_QUERY_TIMEOUT_MS),
             sample_limit=ANOMALY_SAMPLE_LIMIT,
         )
-    except Exception as exc:
-        LOGGER.warning(
-            "deep PostgreSQL checkpoint 检查失败: %s",
-            type(exc).__name__,
-        )
+    except Exception:
         return [
             _check(
                 "checkpoint_postgres_schema",
@@ -589,12 +581,7 @@ def _checkpoint_postgres_checks() -> list[dict[str, Any]]:
                     tuple(thread_ids),
                 )
                 cleanup_jobs = {str(row["thread_id"]) for row in cursor.fetchall()}
-    except Exception as exc:
-        LOGGER.warning(
-            "checkpoint thread 跨库关系抽样失败: %s",
-            type(exc).__name__,
-        )
-        LOGGER.debug("checkpoint thread 跨库关系抽样异常详情", exc_info=True)
+    except Exception:
         return [
             schema_check,
             stats_check,

@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
-import logging
 from pathlib import Path
 from typing import Any
 
 from Database.checkpoint_inspection import inspect_checkpoint_quick
 
 
-LOGGER = logging.getLogger(__name__)
 MAX_SLOW_QUERY_LIMIT = 100
 
 
@@ -50,9 +48,7 @@ def _failed_result(
     source_alias: str,
     warning: str,
 ) -> dict[str, Any]:
-    """记录完整服务端异常，并向前端返回不含连接细节的失败结果。"""
-    LOGGER.warning("数据库只读检查失败 [%s]: %s", block_name, type(exc).__name__)
-    LOGGER.debug("数据库只读检查异常详情 [%s]", block_name, exc_info=True)
+    """向前端返回不含连接细节的失败结果，由快照边界统一记录事件。"""
     return _result(
         "unknown",
         None,
@@ -93,8 +89,7 @@ def inspect_revision() -> dict[str, Any]:
         config = Config(str(project_root / "alembic.ini"))
         script = ScriptDirectory.from_config(config)
         repository_heads = sorted(script.get_heads())
-    except Exception as exc:
-        LOGGER.warning("读取仓库 Alembic head 失败: %s", exc, exc_info=True)
+    except Exception:
         warnings.append("无法读取仓库 Alembic head")
 
     try:
@@ -109,8 +104,7 @@ def inspect_revision() -> dict[str, Any]:
                 "version_num FROM alembic_version ORDER BY version_num"
             )
             instance_revisions = sorted(row["version_num"] for row in cursor.fetchall())
-    except Exception as exc:
-        LOGGER.warning("读取实例 Alembic revision 失败: %s", exc, exc_info=True)
+    except Exception:
         warnings.append("无法读取实例 Alembic revision")
 
     matches = (
@@ -511,9 +505,7 @@ def inspect_slow_queries(
                     (normalized_limit,),
                 )
                 high_load_statements = cursor.fetchall()
-            except Exception as exc:
-                LOGGER.warning("读取 performance_schema digest 失败: %s", type(exc).__name__)
-                LOGGER.debug("performance_schema digest 异常详情", exc_info=True)
+            except Exception:
                 high_load_statements = []
                 digest_warning = "performance_schema 摘要不可用（权限不足、未启用或查询超时）"
 
@@ -895,9 +887,7 @@ def _execute_integrity_definitions(
                     observed_at=observed_at,
                 ),
             })
-        except Exception as exc:
-            LOGGER.warning("完整性检查失败 [%s]: %s", definition["key"], type(exc).__name__)
-            LOGGER.debug("完整性检查异常详情 [%s]", definition["key"], exc_info=True)
+        except Exception:
             checks.append({
                 "key": definition["key"],
                 "label": definition["label"],
@@ -972,7 +962,6 @@ def _revision_contains_migration(current_revision: str | None, target_revision: 
         from alembic.script import ScriptDirectory
         from alembic.script.revision import RangeNotAncestorError
     except Exception:
-        LOGGER.warning("无法加载 Alembic revision graph，按迁移待执行处理", exc_info=True)
         return False
 
     try:
@@ -984,12 +973,6 @@ def _revision_contains_migration(current_revision: str | None, target_revision: 
     except RangeNotAncestorError:
         return False
     except Exception:
-        LOGGER.warning(
-            "无法确认 Alembic revision %s 是否包含 %s，按迁移待执行处理",
-            current_revision,
-            target_revision,
-            exc_info=True,
-        )
         return False
 
 
@@ -1129,8 +1112,7 @@ def get_quick_integrity_report() -> dict[str, Any]:
                 timeout_ms=settings.DB_INSPECTION_QUERY_TIMEOUT_MS,
                 **source,
             )
-    except Exception as exc:
-        LOGGER.warning("快速完整性检查无法连接主库: %s", exc, exc_info=True)
+    except Exception:
         checks = [{
             "key": "integrity_connection",
             "label": "快速完整性检查连接",

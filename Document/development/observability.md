@@ -1,20 +1,22 @@
-# 可观测性日志契约与现状盘点
+# 可观测性日志契约与第二阶段事件目录
 
-文档职责：冻结第一阶段 v1 运行日志的字段、安全边界、兼容规则和后续布点依据，记录当前代码中的日志来源与风险。
+文档职责：作为运行日志的唯一权威页面，冻结 v1 JSON 字段、第二阶段事件目录、上下文关联、降噪、隐私边界和验收状态。
 
 适用范围：Web、Job worker、monitor、MCP、数据库 bootstrap、checkpoint cleanup 等进程的运行日志；管理员审计日志、MySQL/PostgreSQL 引擎日志和浏览器开发者控制台不归入本契约。
 
 ## 1. 当前结论与实施边界
 
-共享 JSON 日志运行时现已位于 [`observability/logging_runtime.py`](../../observability/logging_runtime.py)，并由 Web、worker、monitor、db-bootstrap 和 checkpoint-cleanup 入口配置。旧 `LogRecord` 继续通过标准 `logging` 输出为单行 JSON；MCP 已删除本地 `FileHandler`，其 stdio transport 的应用日志只写 stderr。默认开发 Compose 已在第 1.3 步接入 Alloy、Loki 和 Grafana；生产 Compose 仍不包含这套拓扑。
+共享 JSON stderr 运行时位于 [`observability/logging_runtime.py`](../../observability/logging_runtime.py)，机器可校验的事件目录位于 [`observability/event_catalog.py`](../../observability/event_catalog.py)，进程内转移/恢复和重复事件限频位于 [`observability/noise_control.py`](../../observability/noise_control.py)。Web、worker、monitor、MCP 和 maintenance 的自有运行日志统一通过 `log_event()` 写入标准 `logging`；调用方不能自由传入级别、分类或消息。
 
-当前代码中的旧日志不被伪造分类。无法可靠判断的 `event_code` 和 `category` 保持 `null`；只有新增的受管事件才提供完整 v1 分类。事件详情的业务字段白名单仍由后续业务布点负责，运行时只做递归脱敏、JSON object 形状校验和体积边界保护。
+第二阶段已经把请求、Job、worker slot、LangGraph node 和 MCP tool 的日志上下文贯通，并收敛 Web、Agent/RAG、数据库、monitor 和 checkpoint cleanup 的旧运行日志。该改造没有新增数据库迁移、HTTP API、管理员前端页面或 LangGraph State 字段，也不改变 HTTP 返回、Job fencing、checkpoint、SSE、取消和既有降级控制流。
+
+默认开发 Compose 已接入 Alloy、Loki 和 Grafana，生产 Compose 仍不包含这套拓扑。第二阶段代码与静态测试已落地，但真实 Docker、Alloy positions、Loki 检索和受控故障矩阵尚未取得通过证据时，本阶段不得标记完成，也不得把本地静态检查当作端到端验收。
 
 ## 2. v1 JSON 契约
 
 ### 2.1 通用字段
 
-目标输出是单行、UTF-8、合法 JSON。所有记录都应具备下表中的基础字段；`event_code` 和 `category` 对旧记录可以为空，对新增受管事件必填。
+目标输出是单行、UTF-8、合法 JSON。所有受管记录都具备下表中的基础字段；第三方 logger 或显式允许的旧离线脚本若进入共享 handler，`event_code` 和 `category` 可以为 `null`，自有应用运行路径不再依赖这种过渡形态。
 
 | 字段 | 类型/约束 | 规则 |
 | --- | --- | --- |
@@ -26,11 +28,12 @@
 | `category` | string/null | 受管事件仅允许 `request`、`lifecycle`、`dependency`、`security`；旧记录为 `null` |
 | `message` | string | 经过脱敏的短摘要，不记录原始用户输入、提示词或文件正文 |
 | `details` | object/null | 由 `event_code` 定义允许字段；禁止把任意请求 JSON 或异常对象原样放入 |
-| `stack` | array/null | 仅异常记录可有；元素为清理后的栈帧摘要，不保留凭据、SQL 正文或文件正文 |
+| `exception_type` | string/null | 只记录异常类名，不记录异常值或原始错误文本 |
+| `stack` | array/null | 最多 12 个清理后的代码帧；不含异常消息、源码行、局部变量或完整文件系统路径 |
 | `truncated` | boolean | 任一字段或整行发生截断时为 `true`，否则为 `false` |
-| `logger`、`module` | string/null | 兼容旧 `LogRecord` 的来源信息，不作为高基数索引 |
+| `logger`、`module`、`function` | string/null | 来自 `LogRecord` 的来源信息；`function` 对应 `funcName`，三者都不作为 Loki 标签 |
 
-`event_code` 必须匹配小写点分式约束：`^[a-z][a-z0-9]*(\.[a-z0-9]+)+$`。`category` 的四个值固定如下：
+`event_code` 必须匹配小写点分式约束：`^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$`。`category` 的四个值固定如下：
 
 - `request`：HTTP 请求入口、参数拒绝和请求级结果；不携带正文。
 - `lifecycle`：进程、Job、worker lease 和维护任务的启动、停止、状态转换。
@@ -41,7 +44,11 @@
 
 `request_id`、`user_id`、`session_id`、`job_id`、`worker_slot`、`node`、`tool`、`instance` 只能作为 JSON 字段。它们不进入 Loki 标签，不在日志采集层建立索引；后续 Alloy 仅把低基数的 `service` 映射为 `service_name`，并按 `environment`、`level`、`category` 选择标签。
 
-`details` 必须按事件码定义字段白名单。允许记录稳定 ID、状态、数量、耗时、大小、原因码和布尔结论；禁止记录提示词、完整工具结果、文件名以外的文件正文、Cookie、Token、密码、数据库连接串、原始 SQL 参数和任意用户输入。文件大小只能记录经过授权的字节数统计，不能以日志内容代替文件访问。
+`details` 必须按事件码定义字段白名单。上下文 ID 不能重复放进 `details`；未知事件码、未知键、错误类型、越界值和非法上下文都降级为固定的 `logging.contract_invalid`，只携带有限 `violation` 枚举，不回显原键和值，也不改变业务控制流。
+
+上下文通过 `bind_log_context()` 返回的不透明 token 绑定，必须按后进先出顺序交给 `reset_log_context()`；`log_context()` 委托这两个接口。`current_log_context()` 返回去敏后的 `dict[str, str]` 副本，供 MCP 父进程读取可信上下文。连续请求、并发请求、异步任务、`asyncio.to_thread()` 和多个 worker slot 必须保持隔离。
+
+Flask 在确认 `X-Request-ID` 后立即绑定 `request_id`，只有主库确认身份和资源归属后才绑定 `user_id/session_id/job_id`，teardown 无条件逆序清理。worker 从 Job 行绑定原始 `request_id/user_id/session_id/job_id` 和进程内 `worker_slot`；node/tool 包装器继续增加 `node/tool`。`instance + worker_slot` 用于定位运行实例，真实 `hostname:slot` lease 标识仍只用于业务数据库。
 
 ### 2.3 体积、异常和降级
 
@@ -51,41 +58,36 @@
 | --- | ---: |
 | `message` | 2 KiB |
 | 序列化后的 `details` | 4 KiB |
-| `stack` | 8 KiB，最多 20 帧 |
+| `stack` | 8 KiB，最多 12 帧 |
 | 完整 JSON 行 | 16 KiB |
 
-超限时必须先截断可截断字段，再保证输出仍是合法 JSON，并设置 `truncated=true`。不得为了保留大字段而丢掉 `timestamp`、`level`、`service`、`environment`、`event_code`、`category` 和稳定错误结论。序列化失败的统一事件码固定为 `logging.serialization_failed`，降级路径不得再次通过同一 logger 递归记录失败。
+项目代码栈路径转换为仓库相对路径，依赖代码只保留模块或文件基名、函数和行号。超限时必须先截断可截断字段，再保证输出仍是合法 JSON，并设置 `truncated=true`。序列化最终失败或 stderr handler 自身失败走非递归最小写入，事件码固定为 `logging.serialization_failed`，不得包含原对象或原始异常文本，也不得影响业务控制流。
 
-## 3. 当前日志来源盘点
+`FailureTransitionTracker` 用于数据库连接、主从回退、lease、monitor 和 cleanup 等高频后台路径：首次失败和原因签名变化立即记录，相同失败最多每 5 分钟提醒一次并携带 `suppressed_count`；存在恢复事件的目录项只记录一次恢复并携带 `downtime_ms/failure_count`，数据库连接成功则静默复位。慢 SQL 使用 `statement_digest` 的 5 分钟 LRU 限频，最多保留 1024 个键。请求或 Job 的最终失败不经过该抑制器。
 
-以下是基于当前源码的静态盘点；仓库没有运行期计数器或代表性负载数据，因此“产生速率”暂记为未测量，不能从源码行数推导每秒日志量。
+## 3. 运行入口、输出边界与隐私
 
-| 服务/来源 | 当前入口和输出 | 已观察到的内容 | 第 1.2 步风险/动作 |
-| --- | --- | --- | --- |
-| `web` | `CausalAgent.py`、`app/__init__.py`；入口配置共享 JSON stderr handler | Web 启动、数据库检查、聊天/文件/认证/管理员路由日志；旧业务消息仍可能带高基数文本，后续按布点清单收敛 | 已统一 JSON stderr；readiness 失败不再 `print`，新增启动成功/失败受管事件 |
-| `worker` | `app/agent/worker/__main__.py`、`bootstrap.py`、`runtime.py`、`execution.py` | slot、Job、worker、工具和执行异常；异常使用 `exc_info=True` 的路径较多 | 已增加稳定启动事件并清理异常栈；Job/工具业务字段留到后续布点 |
-| `monitor` | `Database/monitor_worker.py`、`Database/monitoring.py`、`app/db.py` | 快照更新、慢查询、从库回退、readiness 和采集异常 | 已统一 JSON stderr；慢查询 SQL 正文的业务布点收敛仍属后续工作 |
-| `maintenance` | `Database/bootstrap.py`、`Database/database_init.py`、`Database/checkpoint_setup.py`、`Database/checkpoint_cleanup_worker.py`、`Database/audit_before_db_upgrade.py` | bootstrap、checkpoint setup、cleanup Job ID/attempt 和数据库初始化结果 | 已统一维护入口日志；移除 `database_init.py` 的文件 handler，数据库凭据/连接元数据不进入新受管详情 |
-| `mcp` | `Agent/CausalAgentMCP/mcp_server.py` 作为 worker 内 stdio 子进程运行 | 工具读取文件的字节数、工具失败栈和启动/关闭消息 | 已删除本地文件日志；应用日志只进 stderr，stdout 留给 MCP 协议。当前 MCP stdio client 将子进程 stderr 绑定到 worker stderr，因此不增加重复转发线程 |
+| service | 入口与受管边界 | 当前记录内容 |
+| --- | --- | --- |
+| `web` | `CausalAgent.py`、`app/__init__.py`、Flask 请求上下文 | 启动结果、未处理或受控 5xx、Job 创建结果和真实安全拒绝 |
+| `worker` | `app/agent/worker/__main__.py`、slot/runtime/execution | slot、Job、lease、node 最终降级和 cleanup 聚合结果 |
+| `monitor` | `Database/monitor_worker.py`、`Database/monitoring.py`、`app/db.py` | 快照、配置、锁、主从、连接和慢 SQL 的转移/恢复事件 |
+| `maintenance` | bootstrap、database/checkpoint setup、checkpoint cleanup worker | 启动边界、outbox attempt 结果和循环级转移/恢复 |
+| `mcp` | `Agent/CausalAgentMCP/mcp_server.py` stdio 子进程 | 子进程启动和实际工具成功/失败；应用日志只写 stderr |
 
-### 3.1 `print`、文件日志和非服务输出
+### 3.1 隐私与去重边界
 
-- `app/__init__.py` 的 readiness 异常已改为受管错误事件，不再把异常原文写到标准输出。
-- `Database/database_init.py` 的 CLI 提示仍是人工命令行输出；其应用日志不再配置 stdout 或本地文件，直接运行时由维护日志运行时接管。
-- `Database/lifecycle_repair.py` 和 `Database/mysql_checkpointer.py` 的 `__main__`/修复演示输出属于人工 CLI 或测试工具，不纳入应用日志采集；后者当前还会打印 checkpoint ID 和 State 内容，不能在生产流程调用或迁移为受管日志。
-- `Run_causal.py` 和 `app/static/js` 的 `print`/`console.log` 属于桌面或浏览器客户端，不进入容器日志；其中的会话、用户名和 SSE 调试信息也不应被误认为服务端审计日志。
-- `Agent/CausalAgentMCP/mcp_server.py` 不再创建应用文件日志；MySQL `/var/lib/mysql/mysql-slow.log` 属于数据库引擎日志，第一阶段明确不采集。
+- 消息由事件目录固定，禁止记录用户名、文件名、会话标题、用户输入、提示词、LLM 完整输出、RAG 问题/证据正文、ToolMessage、最终报告、因果图、CSV/文件正文、SQL/参数、Cookie、Token、密码、数据库账号、host、端口、库名、连接 URL、`last_error` 或原始异常文本。
+- `details` 只允许事件目录中的稳定枚举、计数、耗时、大小、完整 SHA-256 statement digest 和逻辑别名；运行时递归脱敏是最后防线，不能代替调用边界的字段白名单。
+- 同一异常只保留根因边界和最终请求/Job 结果边界。MCP 业务工具结果由子进程记录，父进程只记录 transport 重试耗尽；RAG 内部 catch 不重复记录，Job finalize 每个受影响 Job 最多记录一次降级。
+- 正常密码错误、会话自然过期、普通用户误入管理员页面、表单校验、普通 4xx、monitor 命名锁竞争、正常轮询、等待用户输入、用户取消和算法正常环路都不产生 `WARNING/ERROR`。
+- 管理员审计表仍是业务审计事实，不与运行日志互相替代；运行日志不能包含管理员操作正文或敏感读取内容。
 
-### 3.2 敏感内容、重复和异常栈风险
+### 3.2 允许的离线输出
 
-静态扫描确认以下位置仍需要在后续业务日志布点阶段逐项改造或加测试：
+应用运行入口可达代码中的自有 `logging.info/warning/error/critical/exception` 必须由 AST 静态测试阻止。当前只允许 [`Database/audit_before_db_upgrade.py`](../../Database/audit_before_db_upgrade.py) 和未接入生产入口的 [`Database/mysql_checkpointer.py`](../../Database/mysql_checkpointer.py) 保留普通终端日志；其输出不得被容器生产流程调用或采集。`print` 同样由静态清单限制在数据库引导/修复、管理员 CLI、知识库构建/评估和独立算法演示文件中；桌面客户端和浏览器 `console` 不属于服务端运行日志合同，但仍不得用来旁路输出秘密或用户正文。
 
-1. `app/chat/routes.py` 和相关服务使用 f-string/格式化参数记录用户名、会话 ID、标题和异常；标题属于用户输入，不能进入消息或 `details`。
-2. `Agent/tool_node/rag_questions.py` 直接记录 LLM 生成的问题列表。问题可能由当前任务摘要派生，必须改成数量、稳定类型和耗时，不记录问题正文。
-3. `app/db.py` 的慢查询日志会把规范化 SQL 字符串放入消息；即使多数语句使用占位符，也不能把 SQL 文本作为 v1 受管消息，需改为耗时、操作类型和安全 digest/原因码。
-4. `app/agent/worker/execution.py`、MCP server、数据库 bootstrap 和多个路由使用 `exc_info=True` 或记录异常原文；栈帧必须清理，禁止出现连接串、文件正文、Token、提示词和数据库账号。
-5. Web、worker、monitor、bootstrap、checkpoint cleanup 和数据库脚本现在由共享运行时幂等收敛；后续新增维护入口也必须复用该配置，不能重新调用 `basicConfig()`。
-6. `Database/database_init.py` 和 `app/db.py` 当前会记录 host、database 名称或连接异常摘要；这些连接元数据不能进入新的受管日志字段，失败只能保留稳定原因码。
+MCP 不创建应用文件 handler，stdout 只允许协议消息；MySQL `/var/lib/mysql/mysql-slow.log` 是未被本拓扑采集的数据库引擎日志，不属于事件目录。
 
 ### 3.3 第 1.3 步开发采集拓扑
 
@@ -102,31 +104,105 @@ Loki 使用单节点 TSDB + filesystem，启用 compactor 和 72 小时保留，
 ```powershell
 docker compose config --quiet
 docker compose pull loki alloy grafana
+docker compose run --rm --no-deps alloy validate /etc/alloy/config.alloy
 docker compose up -d
 docker compose ps
 ```
+
+`alloy validate` 必须在首次启动和每次修改 `config.alloy` 后执行；它会检查 Alloy 语法、组件引用、必填属性和未知属性，返回非零退出码时不得继续启动或把静态字符串测试当作配置有效证据。
 
 上述固定版本镜像采用最小运行时，默认 Compose 不在容器内部调用 `wget` 或 `curl` 伪造健康检查，也不为 Loki 和 Alloy 暴露宿主机端口。实际验收应以 `docker compose ps`、启动日志、Grafana `/api/health`、Loki 数据源连通性和固定面板是否出现新日志为准；需要单独检查 Alloy 的 `/-/ready` 时，应在临时验证覆盖配置中执行，不改变默认开发拓扑。
 
 随后应在 Alloy 运行期间为 `web`、`worker`、`monitor`、`mcp`、`maintenance` 各写入一个唯一测试事件，查询字段/时间/标签，重启 Alloy 和 Loki 核对 positions，暂停 Loki 核对应用 stderr 不阻塞，并检查 Loki `/loki/api/v1/series` 不出现请求、Job、用户、节点、工具或实例字段标签。代表性负载需另外记录 30 分钟的行数、字节数、stream 数和 72 小时预计磁盘占用；这些数据不能由静态测试推导。
 
-## 4. 第二阶段日志布点清单
+## 4. 第二阶段事件目录
 
-下表只定义候选事件和允许的最小字段，本步不批量改写业务日志。事件码落地时必须继续遵守本文件的格式、分类和禁止项。
+下表与 `EVENT_SPECS` 一一对应。事件码、消息、级别和分类均由目录固定，最后一列只表示允许出现的 `details` 键；具体类型、枚举和大小上限由代码目录校验并由测试锁定。
 
-| 进程 | 候选事件码 | 分类 | 可记录字段/详情 | 明确禁止 |
-| --- | --- | --- | --- | --- |
-| Web | `web.startup.ready`、`request.rejected`、`job.create.accepted`、`job.create.replayed` | `lifecycle`/`request` | `request_id`、`user_id`、`session_id`、`job_id`、状态、原因码、耗时 | 消息正文、标题、Cookie、Token、完整请求体 |
-| Worker | `worker.startup.ready`、`worker.job.claimed`、`worker.job.finished`、`worker.job.failed` | `lifecycle` | `job_id`、`worker_slot`、attempt、lease 结论、耗时、稳定错误码 | prompt、ToolMessage、模型输出、完整异常文本 |
-| Monitor | `monitor.startup.ready`、`monitor.snapshot.updated`、`monitor.snapshot.failed` | `lifecycle`/`dependency` | 快照键、计数、耗时、source 逻辑别名、warning 结论 | host、账号、grants、SQL 正文 |
-| MCP | `mcp.startup.ready`、`mcp.tool.finished`、`mcp.tool.failed` | `lifecycle`/`dependency` | `job_id`、`tool`、字节数、耗时、稳定错误码 | CSV 正文、工具完整结果、stdout 应用日志 |
-| Maintenance | `maintenance.startup.ready`、`checkpoint.cleanup.succeeded`、`checkpoint.cleanup.failed` | `lifecycle`/`dependency` | `job_id`、attempt、outbox 状态、耗时、失败原因码 | PostgreSQL 状态正文、连接信息、原始 `last_error` |
+| 事件码 | 级别/分类 | 固定消息 | 允许详情 |
+| --- | --- | --- | --- |
+| `logging.serialization_failed` | `error/dependency` | 日志记录序列化失败 | 无 |
+| `logging.contract_invalid` | `error/dependency` | 日志事件合同无效 | `violation` |
+| `web.startup.ready` | `info/lifecycle` | web 进程启动检查完成 | 无 |
+| `web.startup.failed` | `critical/dependency` | web 进程启动失败 | `phase`, `dependency`, `reason_code` |
+| `worker.startup.ready` | `info/lifecycle` | worker 进程启动检查完成 | 无 |
+| `worker.startup.failed` | `critical/dependency` | worker 进程启动失败 | `phase`, `dependency`, `reason_code` |
+| `monitor.startup.ready` | `info/lifecycle` | monitor 进程启动检查完成 | 无 |
+| `monitor.startup.failed` | `critical/dependency` | monitor 进程启动失败 | `phase`, `dependency`, `reason_code` |
+| `mcp.startup.ready` | `info/lifecycle` | mcp 进程启动检查完成 | 无 |
+| `mcp.startup.failed` | `critical/dependency` | mcp 进程启动失败 | `phase`, `dependency`, `reason_code` |
+| `maintenance.startup.ready` | `info/lifecycle` | maintenance 进程启动检查完成 | 无 |
+| `maintenance.startup.failed` | `critical/dependency` | maintenance 进程启动失败 | `phase`, `dependency`, `reason_code` |
+| `worker.slot.ready` | `info/lifecycle` | Worker slot 已就绪 | `tool_count` |
+| `worker.slot.failed` | `critical/dependency` | Worker slot 初始化或运行失败 | `phase`, `reason_code` |
+| `web.request.unhandled` | `error/request` | 请求发生未处理异常 | `method`, `endpoint`, `route` |
+| `web.request.failed` | `error/request` | 请求在受控边界失败 | `method`, `endpoint`, `status_code`, `reason_code` |
+| `job.create.accepted` | `info/request` | 分析任务已创建 | `status` |
+| `job.create.replayed` | `info/request` | 分析任务幂等重放已接受 | `status` |
+| `job.create.failed` | `error/request` | 分析任务创建失败 | `reason_code` |
+| `admin.audit.write_failed` | `error/dependency` | 管理员审计事件写入失败 | `action`, `reason_code` |
+| `security.login.disabled_account` | `warning/security` | 禁用账号尝试登录 | 无 |
+| `security.authorization.denied` | `warning/security` | 已验证用户尝试跨归属访问资源 | `resource_type`, `action`, `reason_code` |
+| `security.csrf.rejected` | `warning/security` | CSRF 校验拒绝请求 | `method`, `endpoint`, `reason_code` |
+| `security.reauthentication.failed` | `warning/security` | 高风险管理员操作重新认证失败 | `action`, `reason_code` |
+| `security.session.revoked` | `warning/security` | 失效安全会话已撤销 | `reason_code` |
+| `db.connection.failed` | `error/dependency` | 数据库连接失败 | `source_alias`, `operation`, `reason_code`, `suppressed_count` |
+| `db.replica.fallback` | `warning/dependency` | 数据库读取已回退主库 | `source_alias`, `reason_code`, `lag_seconds`, `suppressed_count` |
+| `db.replica.recovered` | `info/dependency` | 数据库副本读取已恢复 | `source_alias`, `downtime_ms`, `failure_count` |
+| `db.query.slow` | `warning/dependency` | 数据库查询超过慢查询阈值 | `operation`, `duration_ms`, `statement_digest`, `suppressed_count` |
+| `worker.job.claimed` | `info/lifecycle` | Worker 已领取分析任务 | `claim_kind`, `attempt`, `lease_epoch` |
+| `worker.job.finished` | `info/lifecycle` | 分析任务执行完成 | `attempt`, `duration_ms`, `outcome` |
+| `worker.job.interrupted` | `info/lifecycle` | 分析任务已暂停并等待输入 | `attempt`, `duration_ms`, `reason_code` |
+| `worker.job.revoked` | `info/lifecycle` | 分析任务执行资格已撤销 | `reason_code`, `status`, `execution_state` |
+| `worker.job.failed` | `error/lifecycle` | 分析任务执行失败 | `failure_phase`, `reason_code`, `attempt`, `duration_ms` |
+| `worker.job.cleanup_failed` | `error/dependency` | 分析任务执行资源清理失败 | `failure_count`, `phases` |
+| `worker.lease.refresh_failed` | `warning/dependency` | Worker lease 刷新失败 | `consecutive_failures`, `suppressed_count` |
+| `worker.lease.recovered` | `info/dependency` | Worker lease 刷新已恢复 | `failure_count`, `downtime_ms` |
+| `job.node.timeout` | `warning/lifecycle` | Agent 节点最终超时并进入降级路径 | `final_attempt`, `timeout_ms`, `fallback` |
+| `job.node.degraded` | `warning/lifecycle` | Agent 节点最终失败并进入降级路径 | `failure_kind`, `final_attempt`, `fallback` |
+| `job.postprocess.degraded` | `warning/lifecycle` | 因果分析后处理已降级 | `reason_code`, `affected_count` |
+| `rag.startup.unavailable` | `warning/dependency` | RAG 知识库启动检查不可用 | `reason_code` |
+| `rag.enrichment.degraded` | `warning/dependency` | RAG 增强结果已降级 | `status`, `reason_code`, `question_count`, `evidence_count` |
+| `mcp.tool.finished` | `info/dependency` | MCP 工具调用完成 | `duration_ms`, `input_bytes`, `result_kind` |
+| `mcp.tool.failed` | `error/dependency` | MCP 工具调用失败 | `duration_ms`, `input_bytes`, `reason_code` |
+| `mcp.transport.failed` | `warning/dependency` | MCP transport 最终调用失败 | `reason_code`, `final_attempt`, `duration_ms` |
+| `monitor.snapshot.failed` | `error/dependency` | 数据库监控快照采集失败 | `snapshot_key`, `reason_code`, `duration_ms`, `suppressed_count` |
+| `monitor.snapshot.recovered` | `info/dependency` | 数据库监控快照采集已恢复 | `snapshot_key`, `downtime_ms`, `failure_count` |
+| `monitor.config.degraded` | `warning/dependency` | 数据库监控配置已降级 | `reason_code`, `suppressed_count` |
+| `monitor.config.recovered` | `info/dependency` | 数据库监控配置已恢复 | `downtime_ms`, `failure_count` |
+| `monitor.lock.failed` | `warning/dependency` | 数据库监控命名锁操作失败 | `snapshot_key`, `reason_code`, `suppressed_count` |
+| `monitor.lock.recovered` | `info/dependency` | 数据库监控命名锁操作已恢复 | `snapshot_key`, `downtime_ms`, `failure_count` |
+| `checkpoint.cleanup.succeeded` | `info/lifecycle` | Checkpoint cleanup 已完成 | `outbox_id`, `attempt`, `duration_ms` |
+| `checkpoint.cleanup.failed` | `error/dependency` | Checkpoint cleanup 执行失败 | `outbox_id`, `attempt`, `duration_ms`, `reason_code` |
+| `checkpoint.cleanup.runtime.degraded` | `warning/dependency` | Checkpoint cleanup 运行循环已降级 | `reason_code`, `suppressed_count` |
+| `checkpoint.cleanup.runtime.recovered` | `info/dependency` | Checkpoint cleanup 运行循环已恢复 | `downtime_ms`, `failure_count` |
 
-## 5. 验收记录和后续边界
+## 5. 关联链路与模块边界
 
-- 第 1.1 步验收：契约字段、五类 service、四类 category、事件码格式、脱敏禁录项、各级体积限制、旧记录 `null` 过渡规则和 Job 请求关联必须无歧义。
-- 第 1.2 步已补充 `tests/unit/test_logging_runtime.py` 和 `tests/unit/agent/test_mcp_logging_transport.py`，覆盖 UTC/Unicode、上下文隔离、线程与异步任务隔离、递归脱敏、各级截断、异常栈清理、重复初始化、序列化失败和 MCP stdout/stderr 边界。
-- 第 1.3 步验收：Compose、Alloy/Loki/Grafana、五类测试事件、标签低基数、positions 重启、Loki 不可用时的非阻塞和代表性负载数据必须在真实 Docker 环境验证。
-- 目前没有真实运行速率、行数、字节数或 stream 数证据；没有 Docker daemon 时不得把本地 unit 测试或静态扫描当作端到端日志验收。
+```text
+X-Request-ID
+  -> Flask request context + 已验证 user/session
+  -> analysis_jobs.request_id
+  -> worker claim
+  -> request/user/session/job/worker_slot context
+  -> LangGraph node/tool context
+  -> MCP 可信参数
+  -> MCP 子进程 JSON stderr
+```
 
-相关权威事实见 [`API 通用约定`](../api/conventions.md)、[`分析 Job API`](../api/agent-jobs.md)、[`Job 与文件生命周期`](../architecture/job-file-lifecycle.md) 和 [`迁移与 Checkpoint`](../database/migrations-checkpoints.md)。
+- Flask 使用最小 `CausalFlask.log_exception()` 替换默认未处理异常日志，仍由 Flask 返回默认 500；已捕获 5xx 在最外层路由记录。普通 4xx 不升级为异常日志，只有确认禁用账号、已登录用户跨归属、CSRF 拒绝、重认证失败和安全会话撤销进入 `security`。
+- Job 首次创建与幂等重放分别记录 accepted/replayed；重放使用当前请求 ID，worker 使用 Job 首次落库的原始请求 ID，并通过同一 `job_id` 下钻。
+- `OrderedEventWriter.terminal_type` 只读区分 `final_result/interrupt/error/None`。waiting input、fencing、取消和 shutdown 保留原控制流并记录 INFO；Job 最终失败每次执行最多一个事件，cleanup 多 phase 先聚合再记录。
+- node 包装器统一绑定 `node`，ToolNode 只从已校验的第一个 tool call 绑定 `tool`。单次重试失败不写运行异常，只有重试耗尽后的 timeout/degraded 才记录；运行日志不写入 `analysis_job_events`。
+- MCP 父进程先删除模型给出的可信参数和 `csv_data`，再从 State 注入 `user_id/session_id/job_id/input_user_file_id/input_object_id`，从当前日志上下文注入 `request_id/worker_slot`。必填可信参数缺少权威值时在 transport 前失败关闭；子进程固定绑定 `node=mcp_tool_node` 和真实工具名。
+- 数据库只记录 `primary/replica` 逻辑别名和稳定 reason code。慢 SQL 只记录操作类型、耗时、规范化 SQL 的完整 SHA-256 digest 和抑制数；monitor 正常锁竞争、轮询和成功快照静默。
+- checkpoint cleanup 每个 outbox attempt 最终边界只记录一个成功或失败事件，claim、heartbeat 和快照发布等循环级异常使用 runtime degraded/recovered；业务数据库中的 fencing、幂等和 outbox 状态机保持原样。
+
+## 6. 验收记录和完成边界
+
+- 第一阶段单元与静态验证覆盖 JSON 契约、上下文、截断、脱敏、序列化失败和 MCP stdout/stderr；第二阶段增加事件目录、合同降级、转移限频、请求/slot/task/thread 隔离、终态映射、MCP 可信参数、RAG/数据库/monitor/cleanup 事件及 AST 日志政策测试。
+- Docker unit 基线固定为 `docker compose -f docker-compose.test.yml build unit-test` 和 `docker compose -f docker-compose.test.yml run --rm unit-test`。本地 Python 缺少 pytest 时不得临时安装依赖冒充仓库基线。
+- 第一阶段真实验收仍包括 Compose/Alloy/Loki/Grafana、五类测试事件、positions 重启续读、Loki 不可用时不阻塞、高基数标签检查和 30 分钟代表性负载；第二阶段还必须执行受控故障矩阵、关联检索、隐私抽样和正常流噪声检查。
+- 当前没有真实 Docker、真实运行速率、行数、字节数、stream 数或真实模型/MCP smoke 证据。Docker daemon 不可用时，本阶段保持“实现已落地、验收未完成”，不追加完成态 CHANGELOG。
+
+相关权威事实见 [`API 通用约定`](../api/conventions.md)、[`Agent 运行时`](../architecture/agent-runtime.md)、[`数据库监控`](../database/monitoring.md)、[`测试与验证`](testing.md)、[`分析 Job API`](../api/agent-jobs.md) 和 [`迁移与 Checkpoint`](../database/migrations-checkpoints.md)。

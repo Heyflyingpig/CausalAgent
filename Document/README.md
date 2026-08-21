@@ -36,7 +36,7 @@
 - [`development/setup.md`](development/setup.md)：本地、Docker 和管理员前端开发入口。
 - [`development/testing.md`](development/testing.md)：后端、前端、集成和隔离 E2E 验证矩阵。
 - [`development/deployment.md`](development/deployment.md)：镜像构建、开发/生产 Compose 拓扑和发布边界。
-- [`development/observability.md`](development/observability.md)：日志契约、现状盘点、敏感信息边界和后续布点清单。
+- [`development/observability.md`](development/observability.md)：日志字段、事件目录、上下文关联、降噪、敏感信息边界和验收状态。
 - [`development/documentation.md`](development/documentation.md)：文档归属、维护、链接和日志规则。
 
 ### 管理员模块

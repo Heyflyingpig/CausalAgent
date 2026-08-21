@@ -10,10 +10,30 @@ import logging
 import os
 from pathlib import Path
 
-import mysql.connector
-from mysql.connector import errorcode
+from observability.logging_runtime import configure_logging, current_environment, log_event
 
-from observability.logging_runtime import configure_logging, current_environment
+
+LOGGER = logging.getLogger(__name__)
+
+if __name__ == "__main__":
+    configure_logging("maintenance", current_environment(), logging.INFO)
+
+try:
+    import mysql.connector
+except Exception as exc:
+    if __name__ == "__main__":
+        log_event(
+            LOGGER,
+            "maintenance.startup.failed",
+            details={
+                "phase": "module_initialization",
+                "dependency": "mysql_driver",
+                "reason_code": "initialization_failed",
+            },
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        raise SystemExit(1) from None
+    raise
 
 
 class DatabaseBootstrap:
@@ -29,9 +49,8 @@ class DatabaseBootstrap:
             env_path = self.project_root / ".env"
             if env_path.exists():
                 load_dotenv(dotenv_path=env_path)
-                logging.info("已加载环境变量")
         except ImportError:
-            logging.info("未安装 python-dotenv，使用系统环境变量")
+            pass
 
         host = os.environ.get("MYSQL_WRITE_HOST") or os.environ.get("MYSQL_HOST")
         write_user = os.environ.get("MYSQL_WRITE_USER") or os.environ.get("MYSQL_USER")
@@ -53,9 +72,6 @@ class DatabaseBootstrap:
             "password": write_password,
             "database": os.environ["MYSQL_DATABASE"],
         }
-        logging.info(
-            "数据库配置已加载",
-        )
 
     def create_database_if_not_exists(self) -> None:
         root_password = os.environ.get("MYSQL_ROOT_PASSWORD") or str(self.mysql_config["password"])
@@ -75,10 +91,7 @@ class DatabaseBootstrap:
             conn.commit()
             cursor.close()
             conn.close()
-            logging.info("数据库已确保存在")
-        except mysql.connector.Error as err:
-            if err.errno in (errorcode.ER_DBACCESS_DENIED_ERROR, errorcode.ER_ACCESS_DENIED_ERROR):
-                logging.error("当前账号没有创建数据库权限，请使用具备权限的账号初始化。")
+        except mysql.connector.Error:
             raise
 
     def check_database_connection(self) -> bool:
@@ -90,19 +103,8 @@ class DatabaseBootstrap:
             cursor.close()
             conn.close()
             ok = bool(row and row[0] == 1)
-            if ok:
-                logging.info("数据库连接检查通过")
             return ok
         except mysql.connector.Error:
-            logging.error(
-                "数据库连接检查失败",
-                extra={
-                    "event_code": "maintenance.database.connection_failed",
-                    "category": "dependency",
-                    "details": {"component": "mysql"},
-                },
-                exc_info=True,
-            )
             return False
 
     def bootstrap(self) -> bool:
@@ -113,11 +115,28 @@ class DatabaseBootstrap:
 def main() -> int:
     configure_logging("maintenance", current_environment(), logging.INFO)
     print("CausalAgent 数据库初始化引导")
-    bootstrap = DatabaseBootstrap()
-    if not bootstrap.bootstrap():
+    try:
+        bootstrap = DatabaseBootstrap()
+        if not bootstrap.bootstrap():
+            raise RuntimeError("database readiness failed")
+    except Exception as exc:
+        log_event(
+            LOGGER,
+            "maintenance.startup.failed",
+            details={
+                "phase": "mysql_bootstrap",
+                "dependency": "mysql",
+                "reason_code": "initialization_failed",
+            },
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
         print("\n数据库初始化引导失败，请查看 stderr 中的结构化日志。")
         return 1
 
+    log_event(
+        LOGGER,
+        "maintenance.startup.ready",
+    )
     print("\n数据库已存在且连接可用。")
     print("\n如需完成 MySQL 和 PostgreSQL 的完整初始化，请执行：")
     print("  python -m Database.bootstrap")

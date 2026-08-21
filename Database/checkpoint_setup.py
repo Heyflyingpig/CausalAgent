@@ -5,28 +5,41 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from observability.logging_runtime import configure_logging, current_environment
+from observability.logging_runtime import configure_logging, current_environment, log_event
 
 if __name__ == "__main__":
     configure_logging("maintenance", current_environment(), logging.INFO)
 
-from Agent.causal_agent.postgres_checkpointer import (
-    open_checkpoint_pool,
-    setup_checkpoint_schema,
-    verify_checkpoint_schema,
-)
+LOGGER = logging.getLogger(__name__)
+
+try:
+    from Agent.causal_agent.postgres_checkpointer import (
+        open_checkpoint_pool,
+        setup_checkpoint_schema,
+        verify_checkpoint_schema,
+    )
+except Exception as exc:
+    if __name__ == "__main__":
+        log_event(
+            LOGGER,
+            "maintenance.startup.failed",
+            details={
+                "phase": "module_initialization",
+                "dependency": "checkpoint_runtime",
+                "reason_code": "initialization_failed",
+            },
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        raise SystemExit(1) from None
+    raise
 
 
 async def _main_async() -> None:
     """等待 PostgreSQL 可用后执行官方幂等 setup。"""
     await setup_checkpoint_schema_once()
-    logging.info(
-        "PostgreSQL checkpoint schema 已就绪",
-        extra={
-            "event_code": "maintenance.startup.ready",
-            "category": "lifecycle",
-            "details": {"component": "checkpoint-setup"},
-        },
+    log_event(
+        LOGGER,
+        "maintenance.startup.ready",
     )
 
 
@@ -40,7 +53,20 @@ async def setup_checkpoint_schema_once() -> None:
 def main() -> None:
     """命令行入口：python -m Database.checkpoint_setup。"""
     configure_logging("maintenance", current_environment(), logging.INFO)
-    asyncio.run(_main_async())
+    try:
+        asyncio.run(_main_async())
+    except Exception as exc:
+        log_event(
+            LOGGER,
+            "maintenance.startup.failed",
+            details={
+                "phase": "checkpoint_schema",
+                "dependency": "postgresql",
+                "reason_code": "initialization_failed",
+            },
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
