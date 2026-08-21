@@ -1,5 +1,5 @@
 import asyncio
-from .state import CausalAgentState, RagSubgraphState
+from .state import CausalAgentState, RagSubgraphState, WebSearchState
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -36,7 +36,13 @@ from .back_prompt import causal_rag_prompt
 ## 报告人设
 from .back_prompt import causal_report_prompt
 
-from Agent.causal_agent.web_search_node import format_web_search_summary_for_prompt
+from Agent.causal_agent.web_search_node import (
+    format_web_search_summary_for_prompt,
+    generate_research_question,
+    get_web_search_query,
+    web_search,
+    _merge_by_engine_top3,
+)
 
 # 数据库
 from Database.agent_connect import require_frozen_file_for_job
@@ -861,6 +867,90 @@ async def rag_subgraph_adapter_node(
     if not isinstance(rag_output, dict):
         raise RuntimeError("RAG 子图未返回有效 rag_output。")
     return {"knowledge_base_result": rag_output}
+
+
+async def web_search_planner_node(state: WebSearchState, llm: ChatOpenAI) -> dict:
+    """两步生成联网搜索 query：先提炼具体问题，再针对问题生成 query。"""
+    try:
+        question = await generate_research_question(state, llm)
+        r = await get_web_search_query(state, llm, question["question"])
+        return {
+            "planner": {
+                "success": True,
+                "research_question": question["question"],
+                "query": r["query"],
+                "query_en": r.get("query_en", ""),
+                "reason": r.get("reason", ""),
+                "error": None,
+            }
+        }
+    except StructuredOutputError as exc:
+        logging.warning("联网搜索 query 生成失败: %s", exc)
+        return {
+            "planner": {
+                "success": False,
+                "research_question": "",
+                "query": "",
+                "query_en": "",
+                "reason": "",
+                "error": "无法生成搜索 query",
+            }
+        }
+
+
+async def academic_search_node(state: WebSearchState) -> dict:
+    """单节点：一次 SearXNG 查询统一走 arxiv/crossref/openalex，按引擎分组各取 top-3。"""
+    if not state.get("planner", {}).get("success"):
+        return {
+            "search": {
+                "success": False,
+                "results": [],
+                "number_of_results": 0,
+                "error": None,
+            }
+        }
+    search_query = state["planner"].get("query_en") or state["planner"].get("query", "")
+    logging.info(
+        "学术检索 query=%r (query_en=%r)",
+        search_query,
+        state["planner"].get("query_en"),
+    )
+    payload = await asyncio.to_thread(web_search, search_query)
+    logging.info("学术检索命中 %s 条", payload["number_of_results"])
+    results = _merge_by_engine_top3(payload["results"])
+    return {
+        "search": {
+            "success": True,
+            "results": results,
+            "number_of_results": len(results),
+            "error": None,
+        }
+    }
+
+
+async def web_search_result_parser_node(state: WebSearchState) -> dict:
+    """纯 snippet 出口：把 search 结果投影为 web_search_result，无 LLM 总结。"""
+    p = state.get("planner", {})
+    search = state.get("search", {})
+    results = search.get("results", [])
+    content = [
+        {
+            "url": r.get("url", ""),
+            "title": r.get("title", ""),
+            "text": r.get("snippet", ""),
+            "source": "snippet",
+            "origin": r.get("source", ""),
+        }
+        for r in results
+    ]
+    return {
+        "web_search_result": {
+            "success": bool(search.get("success")),
+            "query": p.get("query", ""),
+            "results": results,
+            "content": content,
+        }
+    }
 
 
 # 环路检测模块
