@@ -1,10 +1,9 @@
 use_default_settings:
   engines:
     keep_only:
-      - bing
-      - baidu
-      - sogou
-      - 360search
+      - arxiv
+      - crossref
+      - openalex
 
 server:
   # 复制本文件为 settings.yml，并用 `openssl rand -hex 32` 生成随机值替换下面的占位符
@@ -21,14 +20,11 @@ redis:
   url: redis://valkey:6379/0
 
 engines:
-  - name: bing
+  - name: arxiv
     disabled: false
-  - name: baidu
-    shortcut: bd
+  - name: crossref
     disabled: false
-  - name: sogou
-    shortcut: sg
+    timeout: 15
+  - name: openalex
     disabled: false
-  - name: 360search
-    shortcut: 360so
-    disabled: false
+

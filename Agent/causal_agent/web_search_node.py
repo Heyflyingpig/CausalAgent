@@ -202,7 +202,8 @@ def web_search(query: str) -> dict:
     """同步调用 SearXNG JSON API（arxiv/crossref/openalex 三学术引擎）。
 
     SearXNG 内部并行查三引擎，返回合并结果（每条带 engine 字段）。
-    arxiv 结果按 tags 白名单过滤；crossref content 含 HTML 需清理。
+    arxiv 结果按 tags 白名单过滤；crossref content 含 HTML 需清理；
+    content 为空（无摘要正文）的结果直接丢弃，保证下游注入的 snippet 条条有正文。
     网络异常直接抛出，交 tool_retry。
     """
     resp = requests.get(
@@ -219,6 +220,8 @@ def web_search(query: str) -> dict:
         if engine == "arxiv" and not (set(r.get("tags") or []) & CAUSAL_ARXIV_CATEGORIES):
             continue
         snippet = re.sub(r"<[^>]+>", "", r.get("content") or "").strip()
+        if not snippet:
+            continue
         results.append(
             {
                 "title": r.get("title", ""),
@@ -251,13 +254,23 @@ _ENGINE_ORDER = ("arxiv", "crossref", "openalex")
 
 
 def _merge_by_engine_top3(results: List[dict], top_per_engine: int = 3) -> List[dict]:
-    """按 engine 分组各取 top-3，按 arxiv→crossref→openalex 顺序拼接（3+3+3）。"""
+    """按引擎分组，各引擎内部按 score 降序取 top-N，再按 rank 轮转交错拼接。
+
+    score 跨引擎不可比（各引擎尺度不同），故不做跨引擎比较；每轮依次取
+    各引擎的第 i 名（arxiv→crossref→openalex），既保证引擎均衡，又让各引擎
+    最相关的结果靠前。
+    """
     buckets: dict[str, List[dict]] = {}
     for r in results:
         buckets.setdefault(r.get("source", ""), []).append(r)
+    for engine in buckets:
+        buckets[engine].sort(key=lambda r: r.get("score", 0.0), reverse=True)
     merged: List[dict] = []
-    for engine in _ENGINE_ORDER:
-        merged.extend(buckets.get(engine, [])[:top_per_engine])
+    for i in range(top_per_engine):
+        for engine in _ENGINE_ORDER:
+            engine_results = buckets.get(engine, [])
+            if i < len(engine_results):
+                merged.append(engine_results[i])
     return merged
 
 
