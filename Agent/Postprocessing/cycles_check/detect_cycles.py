@@ -2,6 +2,10 @@ from typing import Tuple, List
 import numpy as np
 import networkx as nx
 import logging
+from observability.logging_runtime import log_event
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _as_networkx_adjacency(
@@ -74,16 +78,17 @@ def detect_cycles(
         is_acyclic = nx.is_directed_acyclic_graph(G)
         
         if is_acyclic:
-            logging.info("因果图检查：无环路，符合DAG要求。")
             return False, []
         else:
             # 找出所有环路
             cycles = list(nx.simple_cycles(G))
-            logging.warning(f"因果图检查：检测到 {len(cycles)} 个环路！")
-            for i, cycle in enumerate(cycles):
-                logging.warning(f"  环路 {i+1}: {' -> '.join(cycle)} -> {cycle[0]}")
             return True, cycles
             
-    except Exception as e:
-        logging.error(f"环路检测时发生错误: {e}", exc_info=True)
+    except Exception:
+        log_event(
+            LOGGER,
+            "job.postprocess.degraded",
+            details={"reason_code": "postprocess_failed", "affected_count": 0},
+            exc_info=True,
+        )
         return False, []

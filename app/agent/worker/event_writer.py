@@ -61,6 +61,7 @@ class OrderedEventWriter:
         self.buffer: dict[str, Any] | None = None
         self.persisted_sequences: dict[str, int] = {}
         self.terminal_seen = False
+        self.terminal_type: str | None = None
         self.error: BaseException | None = None
         self.aborted = False
         self.abort_error: BaseException | None = None
@@ -133,6 +134,7 @@ class OrderedEventWriter:
             if not accepted:
                 raise JobExecutionRevoked("terminal event fenced")
             self.terminal_seen = True
+            self.terminal_type = event_type
             return
         if event_type == "error":
             outcome = await asyncio.to_thread(
@@ -153,6 +155,7 @@ class OrderedEventWriter:
             if not accepted:
                 raise JobExecutionRevoked(f"error event fenced: {reason}")
             self.terminal_seen = True
+            self.terminal_type = "error"
             return
         event_id = await asyncio.to_thread(
             job_service.write_event,

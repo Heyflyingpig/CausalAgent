@@ -180,7 +180,31 @@ class OrderedEventWriterTests(unittest.IsolatedAsyncioTestCase):
                 await writer.submit({"type": "error", "message": "迟到错误"})
 
         self.assertFalse(writer.terminal_seen)
+        self.assertIsNone(writer.terminal_type)
         await writer.abort(JobExecutionRevoked("cancelled"))
+
+    async def test_terminal_type_distinguishes_final_interrupt_and_error(self):
+        """worker 结果日志必须能区分成功、等待输入和错误终态。"""
+        for event_type in ("final_result", "interrupt"):
+            writer = OrderedEventWriter(build_job(), "worker-a")
+            with patch(
+                "app.agent.worker.event_writer._complete_terminal_event",
+                new=AsyncMock(return_value=True),
+            ):
+                await writer.submit({"type": event_type, "data": {}})
+                await writer.close()
+            self.assertTrue(writer.terminal_seen)
+            self.assertEqual(writer.terminal_type, event_type)
+
+        writer = OrderedEventWriter(build_job(), "worker-a")
+        with patch(
+            "app.agent.job_service.fail_job",
+            return_value=FailJobResult.APPLIED,
+        ):
+            await writer.submit({"type": "error", "message": "safe public error"})
+            await writer.close()
+        self.assertTrue(writer.terminal_seen)
+        self.assertEqual(writer.terminal_type, "error")
 
 
 if __name__ == "__main__":

@@ -6,9 +6,8 @@ app.auth.service - 用户认证服务
 - 注册用户
 
 '''
-from app.db import get_read_connection, get_write_connection
+from app.db import get_read_connection, get_write_connection, record_database_failure
 import mysql.connector
-import logging
 import bcrypt
 from mysql.connector import errorcode       
 
@@ -40,11 +39,10 @@ def find_user(username):
                 # 返回包含登录、角色和启用状态的用户字典
                 return user_row # user_row 已经是字典了
             return None
-    except mysql.connector.Error as e: 
-        logging.error(f"查找用户 '{username}' 时数据库出错: {e}")
+    except mysql.connector.Error as exc:
+        record_database_failure(exc, operation="auth_lookup_query")
         return None
-    except Exception as e:
-        logging.error(f"查找用户 '{username}' 时发生未知错误: {e}")
+    except Exception:
         return None
 
 
@@ -79,12 +77,7 @@ def record_successful_login(user_id: int) -> bool:
             conn.commit()
         return True
     except Exception as exc:
-        logging.error(
-            "记录用户 ID %s 的最后登录时间失败: %s",
-            user_id,
-            exc,
-            exc_info=True,
-        )
+        record_database_failure(exc, operation="last_login_write")
         return False
 
 
@@ -150,16 +143,13 @@ def register_user(username, plain_password):
             conn.commit()
             # user_id = cursor.lastrowid # 如果需要获取新用户的ID
             # cursor.close()
-        logging.info(f"新用户注册成功: {username}")
         return True, "注册成功！"
     except mysql.connector.Error as e: # <-- 修改异常类型
         # MySQL 的 IntegrityError 对于 UNIQUE 约束冲突通常是 ER_DUP_ENTRY (errno 1062)
         # 这里对应的是mysql报错文档
         if e.errno == errorcode.ER_DUP_ENTRY:
-            logging.warning(f"尝试注册已存在的用户名 (数据库约束): {username}")
             return False, "用户名已被注册。"
-        logging.error(f"注册用户 '{username}' 时数据库出错: {e}")
+        record_database_failure(e, operation="auth_register_write")
         return False, "注册过程中发生服务器错误。"
-    except Exception as e:
-        logging.error(f"注册用户 '{username}' 时发生未知错误: {e}")
+    except Exception:
         return False, "注册过程中发生服务器错误。"

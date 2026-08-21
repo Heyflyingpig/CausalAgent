@@ -7,7 +7,6 @@ from Agent.llm_structured_output import invoke_structured
 from Agent.causal_agent.state import CausalAgentState
 from Agent.knowledge_base.query_rag import get_rag_excerpt
 import json
-import logging
 
 class CycleFixDecision(BaseModel):
     """LLM决策删除哪条边来打破环路的结构化输出。"""
@@ -79,12 +78,10 @@ def fix_cycles_with_llm(
     knowledge_base_result = state.get("knowledge_base_result", {})
     knowledge_excerpt = get_rag_excerpt(knowledge_base_result, max_chars=500)
     
-    for idx, cycle in enumerate(cycles):
+    for cycle in cycles:
         try:
             # 构建环路描述
             cycle_description = " -> ".join(cycle) + f" -> {cycle[0]}"
-            
-            logging.info(f"正在请求LLM修正环路 {idx+1}/{len(cycles)}: {cycle_description}")
             
             # 构建prompt
             prompt = ChatPromptTemplate.from_messages([
@@ -126,10 +123,7 @@ def fix_cycles_with_llm(
             
             # 解析LLM的决策
             edge_to_remove = decision.remove_edge
-            reason = decision.reason
-            
             if len(edge_to_remove) != 2:
-                logging.error(f"LLM返回的边格式错误: {edge_to_remove}")
                 continue
             
             from_node, to_node = edge_to_remove
@@ -138,16 +132,10 @@ def fix_cycles_with_llm(
                 for position in range(len(cycle))
             }
             if (from_node, to_node) not in cycle_edges:
-                logging.error(
-                    "LLM返回的边不属于当前环路，拒绝删除: %s -> %s",
-                    from_node,
-                    to_node,
-                )
                 continue
             
             # 找到节点索引
             if from_node not in node_names or to_node not in node_names:
-                logging.error(f"LLM返回的节点名称不在节点列表中: {from_node} -> {to_node}")
                 continue
             
             from_idx = node_names.index(from_node)
@@ -164,17 +152,7 @@ def fix_cycles_with_llm(
             ):
                 revised_matrix[row_idx][column_idx] = 0
                 removed_edges.append((from_node, to_node))
-                logging.info(f"已删除边: {from_node} -> {to_node}")
-                logging.info(f"删除理由: {reason}")
-            else:
-                logging.warning(
-                    "边 %s -> %s 不是当前矩阵中的确定有向边，拒绝删除。",
-                    from_node,
-                    to_node,
-                )
-                
-        except Exception as e:
-            logging.error(f"修正环路 {idx+1} 时发生错误: {e}", exc_info=True)
+        except Exception:
             continue
     
     return revised_matrix, removed_edges

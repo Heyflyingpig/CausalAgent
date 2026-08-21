@@ -10,11 +10,13 @@ import mysql.connector
 from flask import Blueprint, jsonify, request
 
 from app.auth.session_guard import get_current_session_user
-from app.db import get_read_connection, get_write_connection
+from app.db import get_read_connection, get_write_connection, record_database_failure
+from app.request_context import log_authorization_denied, log_request_failure
 from config.settings import settings
 
 
 files_bp = Blueprint("files", __name__, url_prefix="/api")
+LOGGER = logging.getLogger(__name__)
 
 
 def _iso(value) -> str | None:
@@ -58,8 +60,9 @@ def get_file_list():
             )
             rows = cursor.fetchall()
         return jsonify([_file_payload(row) for row in rows])
-    except mysql.connector.Error:
-        logging.error("读取用户文件库失败: user_id=%s", current_user["id"], exc_info=True)
+    except mysql.connector.Error as exc:
+        record_database_failure(exc, operation="file_list_query")
+        log_request_failure(LOGGER, reason_code="database_unavailable")
         return jsonify({"error": "读取文件列表时出错"}), 500
 
 
@@ -92,7 +95,7 @@ def upload_file():
             }), 413
         content_hash = hashlib.sha256(content).hexdigest()
     except Exception:
-        logging.error("读取上传文件失败: user_id=%s filename=%s", current_user["id"], filename, exc_info=True)
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": "处理文件内容失败"}), 500
 
     try:
@@ -185,21 +188,12 @@ def upload_file():
             "user_file_id": payload["user_file_id"],
             "file_hash": content_hash,
         })
-    except mysql.connector.Error:
-        logging.error(
-            "保存文件库记录失败: user_id=%s filename=%s",
-            current_user["id"],
-            filename,
-            exc_info=True,
-        )
+    except mysql.connector.Error as exc:
+        record_database_failure(exc, operation="file_upload_write")
+        log_request_failure(LOGGER, reason_code="database_unavailable")
         return jsonify({"success": False, "error": "保存文件到数据库失败"}), 500
     except Exception:
-        logging.error(
-            "上传文件时发生未知错误: user_id=%s filename=%s",
-            current_user["id"],
-            filename,
-            exc_info=True,
-        )
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": "上传文件时发生服务器内部错误"}), 500
 
 
@@ -243,7 +237,18 @@ def delete_file():
             )
             file_row = cursor.fetchone()
             if not file_row:
+                cursor.execute(
+                    "SELECT user_id FROM user_files WHERE id = %s",
+                    (file_id,),
+                )
+                owner = cursor.fetchone()
                 connection.rollback()
+                if owner and int(owner["user_id"]) != int(current_user["id"]):
+                    log_authorization_denied(
+                        LOGGER,
+                        resource_type="file",
+                        action="delete_file",
+                    )
                 return jsonify({"success": False, "error": "文件不存在或无权访问"}), 404
 
             cursor.execute(
@@ -288,9 +293,10 @@ def delete_file():
                 "user_file_id": file_id,
                 "blob_deleted": blob_deleted,
             })
-    except mysql.connector.Error:
-        logging.error("删除文件失败: user_id=%s file_id=%s", current_user["id"], file_id, exc_info=True)
+    except mysql.connector.Error as exc:
+        record_database_failure(exc, operation="file_delete_write")
+        log_request_failure(LOGGER, reason_code="database_unavailable")
         return jsonify({"success": False, "error": "删除文件时数据库出错"}), 500
     except Exception:
-        logging.error("删除文件时发生未知错误: user_id=%s file_id=%s", current_user["id"], file_id, exc_info=True)
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": "删除文件时发生未知错误"}), 500

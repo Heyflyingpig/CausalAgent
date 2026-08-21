@@ -13,11 +13,18 @@ from flask import Blueprint, Response, jsonify, request, stream_with_context
 from app.agent import job_service
 from app.agent.public_events import public_event_payload
 from app.auth.session_guard import get_current_session_user
-from app.request_context import get_request_id
+from app.request_context import (
+    bind_request_log_context,
+    get_request_id,
+    log_authorization_denied,
+    log_request_failure,
+)
 from config.settings import settings
+from observability.logging_runtime import log_event
 
 
 agent_bp = Blueprint("agent", __name__, url_prefix="/api")
+LOGGER = logging.getLogger(__name__)
 
 
 def _sse(event_type: str, payload: dict, event_id: int | None = None) -> str:
@@ -81,12 +88,14 @@ def create_analysis_job():
             input_user_file_id,
             request_id=get_request_id(),
         )
-        logging.info(
-            "[job-api] user=%s session=%s job=%s existing=%s",
-            current_user["id"],
-            session_id,
-            job["job_id"],
-            existing,
+        bind_request_log_context(
+            session_id=session_id,
+            job_id=job["job_id"],
+        )
+        log_event(
+            LOGGER,
+            "job.create.replayed" if existing else "job.create.accepted",
+            details={"status": str(job["status"])},
         )
         return jsonify({
             "success": True,
@@ -94,6 +103,13 @@ def create_analysis_job():
             "status": job["status"],
             "existing": existing,
         }), 200 if existing else 202
+    except job_service.OwnershipDeniedError as exc:
+        log_authorization_denied(
+            LOGGER,
+            resource_type=exc.resource_type,
+            action="create_job",
+        )
+        return jsonify({"success": False, "error": str(exc)}), 403
     except PermissionError as exc:
         return jsonify({"success": False, "error": str(exc)}), 403
     except job_service.ActiveJobConflictError as exc:
@@ -110,8 +126,13 @@ def create_analysis_job():
         return jsonify({"success": False, "error": str(exc)}), 409
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
-    except Exception as exc:
-        logging.error("创建 analysis job 失败: %s", exc, exc_info=True)
+    except Exception:
+        log_event(
+            LOGGER,
+            "job.create.failed",
+            details={"reason_code": "unexpected_error"},
+            exc_info=True,
+        )
         return jsonify({"success": False, "error": "创建任务失败"}), 500
 
 
@@ -141,9 +162,25 @@ def stream_analysis_job_events(job_id: str):
         return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
 
     # 校验该会话属于当前用户，防止前端篡改
-    job = job_service.get_job_for_user(job_id, current_user["id"])
+    try:
+        job = job_service.get_job_for_user(
+            job_id,
+            current_user["id"],
+            detect_ownership_denial=True,
+        )
+    except job_service.OwnershipDeniedError as exc:
+        log_authorization_denied(
+            LOGGER,
+            resource_type=exc.resource_type,
+            action="stream_events",
+        )
+        return jsonify({"success": False, "error": "任务不存在"}), 404
     if not job:
         return jsonify({"success": False, "error": "任务不存在"}), 404
+    bind_request_log_context(
+        session_id=job.get("session_id"),
+        job_id=job["job_id"],
+    )
 
     last_event_id = request.headers.get("Last-Event-ID") or request.args.get("last_event_id") or "0"
     try:
@@ -156,31 +193,37 @@ def stream_analysis_job_events(job_id: str):
         # nonlocal是外部嵌套函数内的变量
         nonlocal after_id
         last_heartbeat = time.monotonic()
-        ## 循环监听
-        while True:
-            events = job_service.read_events_after(job_id, after_id)
-            for row in events:
-                # 这里获取数据库中的id，并传给前端
-                after_id = int(row["id"])
-                ## payload事件具体包
-                payload = row["payload_json"] or {}
-                if isinstance(payload, dict) and "type" not in payload:
-                    payload = {**payload, "type": row["event_type"]}
-                payload = public_event_payload(row["event_type"], payload)
-                yield _sse(row["event_type"], payload, after_id)
-                if row["event_type"] in job_service.TERMINAL_EVENTS or row["event_type"] == "interrupt":
-                    return
+        try:
+            ## 循环监听
+            while True:
+                events = job_service.read_events_after(job_id, after_id)
+                for row in events:
+                    # 这里获取数据库中的id，并传给前端
+                    after_id = int(row["id"])
+                    ## payload事件具体包
+                    payload = row["payload_json"] or {}
+                    if isinstance(payload, dict) and "type" not in payload:
+                        payload = {**payload, "type": row["event_type"]}
+                    payload = public_event_payload(row["event_type"], payload)
+                    yield _sse(row["event_type"], payload, after_id)
+                    if row["event_type"] in job_service.TERMINAL_EVENTS or row["event_type"] == "interrupt":
+                        return
 
-            current_job = job_service.get_job_for_user(job_id, current_user["id"])
-            if current_job and current_job["status"] in job_service.TERMINAL_STATUSES:
-                return
-            ## 返回单调递增的时间戳
-            now = time.monotonic()
-            # 如果超过了心跳设置间隔，返回空包，保持连接
-            if now - last_heartbeat >= settings.SSE_HEARTBEAT_INTERVAL_SECONDS:
-                yield _sse("heartbeat", {"type": "heartbeat", "job_id": job_id})
-                last_heartbeat = now
-            time.sleep(settings.SSE_POLL_INTERVAL_SECONDS)
+                current_job = job_service.get_job_for_user(job_id, current_user["id"])
+                if current_job and current_job["status"] in job_service.TERMINAL_STATUSES:
+                    return
+                ## 返回单调递增的时间戳
+                now = time.monotonic()
+                # 如果超过了心跳设置间隔，返回空包，保持连接
+                if now - last_heartbeat >= settings.SSE_HEARTBEAT_INTERVAL_SECONDS:
+                    yield _sse("heartbeat", {"type": "heartbeat", "job_id": job_id})
+                    last_heartbeat = now
+                time.sleep(settings.SSE_POLL_INTERVAL_SECONDS)
+        except Exception:
+            # 流式响应开始后 Flask 的默认 500 日志边界不再可靠；保持异常向上
+            # 传播，只补齐一次受管请求结果事件。
+            log_request_failure(LOGGER, exc_info=True)
+            raise
 
     return Response(
         stream_with_context(generate()),
@@ -211,6 +254,10 @@ def resume_analysis_job(job_id: str):
             data.get("answer", data.get("message")),
             idempotency_key,
         )
+        bind_request_log_context(
+            session_id=job.get("session_id"),
+            job_id=job["job_id"],
+        )
         return jsonify({
             "success": True,
             "job_id": job["job_id"],
@@ -228,12 +275,19 @@ def resume_analysis_job(job_id: str):
             "code": "job_state_conflict",
             "status": (exc.job or {}).get("status"),
         }), 409
+    except job_service.OwnershipDeniedError as exc:
+        log_authorization_denied(
+            LOGGER,
+            resource_type=exc.resource_type,
+            action="resume_job",
+        )
+        return jsonify({"success": False, "error": str(exc)}), 404
     except PermissionError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     except Exception:
-        logging.error("恢复 analysis job 失败: job_id=%s", job_id, exc_info=True)
+        log_request_failure(LOGGER, exc_info=True)
         return jsonify({"success": False, "error": "恢复任务失败"}), 500
 
 
@@ -252,6 +306,10 @@ def cancel_analysis_job(job_id: str):
             job_id,
             idempotency_key,
         )
+        bind_request_log_context(
+            session_id=job.get("session_id"),
+            job_id=job["job_id"],
+        )
         return jsonify({
             "success": True,
             "job_id": job["job_id"],
@@ -269,8 +327,15 @@ def cancel_analysis_job(job_id: str):
             "code": "job_state_conflict",
             "status": (exc.job or {}).get("status"),
         }), 409
+    except job_service.OwnershipDeniedError as exc:
+        log_authorization_denied(
+            LOGGER,
+            resource_type=exc.resource_type,
+            action="cancel_job",
+        )
+        return jsonify({"success": False, "error": str(exc)}), 404
     except PermissionError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
     except Exception:
-        logging.error("取消 analysis job 失败: job_id=%s", job_id, exc_info=True)
+        log_request_failure(LOGGER, exc_info=True)
         return jsonify({"success": False, "error": "取消任务失败"}), 500

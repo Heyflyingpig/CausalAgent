@@ -4,12 +4,11 @@ app.chat.services - 聊天服务
 
 - 获取聊天记录
 '''
-from app.db import get_read_connection, get_write_connection
+from app.db import get_read_connection, get_write_connection, record_database_failure
 from app.chat.response_storage import prepare_ai_response_for_storage
 from app.chat.session_title import build_session_title
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 import mysql.connector
-import logging
 from datetime import datetime
 def get_chat_history(session_id: str, user_id: int, limit: int) -> list:
     """从数据库获取指定会话的最近聊天记录。"""
@@ -35,14 +34,12 @@ def get_chat_history(session_id: str, user_id: int, limit: int) -> list:
                 role = "user" if row['message_type'] == 'user' else "assistant"
                 history.append({"role": role, "content": row['content']})
             
-            logging.info(f"为会话 {session_id} 获取了 {len(history)} 条历史消息。")
             return history
             
-    except mysql.connector.Error as e:
-        logging.error(f"为会话 {session_id} 获取历史记录时数据库出错: {e}")
+    except mysql.connector.Error as exc:
+        record_database_failure(exc, operation="chat_history_query")
         return []
-    except Exception as e:
-        logging.error(f"为会话 {session_id} 获取历史记录时发生未知错误: {e}")
+    except Exception:
         return []
 
 
@@ -121,11 +118,6 @@ def _save_chat_rows(cursor, user_id, session_id, user_msg, ai_response, timestam
 
     if has_attachment and attachment_to_save:
         for attachment in attachment_to_save:
-            logging.info(
-                "准备保存附件: type=%s, content_size=%s 字节",
-                attachment["type"],
-                len(attachment["content"]),
-            )
             cursor.execute(
                 """
                 INSERT INTO chat_attachments (message_id, attachment_type, content, created_at)
@@ -340,10 +332,9 @@ def save_chat(user_id, session_id, user_msg, ai_response):
             return True
     except SessionNotFoundError:
         raise
-    except mysql.connector.Error as e:
-        logging.error(f"保存聊天记录到数据库时出错 (用户 ID: {user_id}, 会话: {session_id}): {e}")
+    except mysql.connector.Error as exc:
+        record_database_failure(exc, operation="chat_save_write")
         return False
-    except Exception as e:
-        logging.error(f"保存聊天时发生未知错误: {e}")
+    except Exception:
         return False
 

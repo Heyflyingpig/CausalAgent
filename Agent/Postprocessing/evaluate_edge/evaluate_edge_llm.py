@@ -11,9 +11,11 @@ from Agent.causal_agent.state import CausalAgentState
 from Agent.knowledge_base.query_rag import get_rag_excerpt
 
 from Agent.causal_agent.back_prompt import evaluate_edge_prompt
+from observability.logging_runtime import log_event
 
 EdgeAction = Literal["keep", "reverse", "remove", "uncertain"]
 EdgeConfidence = Literal["high", "medium", "low"]
+LOGGER = logging.getLogger(__name__)
 
 
 class EdgeDecision(BaseModel):
@@ -188,14 +190,12 @@ def evaluate_edges_with_llm(
         同时保留 decision/reason 旧字段，兼容已有报告 prompt。
     """
     if not critical_edges:
-        logging.info("没有关键边需要评估")
         return _build_fallback_evaluation([], reason="没有关键边需要评估。")
     
     analysis_parameters = state.get("analysis_parameters", "无可用数据摘要")
     knowledge_base_result = state.get("knowledge_base_result", {})
     knowledge_excerpt = get_rag_excerpt(knowledge_base_result, max_chars=500)
 
-    logging.info(f"开始LLM评估 {len(critical_edges)} 条关键边...")
     try:
         edge_evaluation_prompt = ChatPromptTemplate.from_messages([
             ("system", """{causal_reviewer_role}
@@ -267,15 +267,18 @@ def evaluate_edges_with_llm(
         )
         
         result = _apply_edge_decisions(critical_edges, evaluation)
-        logging.info(
-            "边评估完成: revised_edges=%s, summary=%s",
-            result["decision"],
-            result["revision_summary"][:80],
-        )
         return result
         
     except Exception as e:
-        logging.error(f"评估边 {critical_edges} 时发生错误: {e}", exc_info=True)
+        log_event(
+            LOGGER,
+            "job.postprocess.degraded",
+            details={
+                "reason_code": "postprocess_failed",
+                "affected_count": len(critical_edges),
+            },
+            exc_info=True,
+        )
         return _build_fallback_evaluation(
             critical_edges,
             reason=f"LLM 边评估失败，已保守保留原边：{e}",

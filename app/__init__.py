@@ -1,7 +1,19 @@
 from flask import Flask
-import logging
 
-LOGGER = logging.getLogger(__name__)
+from app.request_context import current_request_log_details
+from observability.logging_runtime import log_event
+
+
+class CausalFlask(Flask):
+    """只替换 Flask 默认未处理异常日志，不改变 500 响应语义。"""
+
+    def log_exception(self, exc_info) -> None:
+        log_event(
+            self.logger,
+            "web.request.unhandled",
+            details={**current_request_log_details(include_route=True)},
+            exc_info=exc_info,
+        )
 
 
 def create_app():
@@ -15,26 +27,11 @@ def create_app():
     from app.admin.routes import admin_bp, admin_page_bp
     from app.request_context import register_request_context
 
-    app = Flask(__name__, static_folder="static")
+    app = CausalFlask(__name__, static_folder="static")
     app.secret_key = settings.SECRET_KEY
     register_request_context(app)
 
-    try:
-        check_database_readiness()
-    except Exception:
-        LOGGER.critical(
-            "数据库检查失败，应用无法启动",
-            extra={
-                "event_code": "web.startup.failed",
-                "category": "dependency",
-                "details": {
-                    "dependency": "mysql",
-                    "reason_code": "readiness_failed",
-                },
-            },
-            exc_info=True,
-        )
-        raise
+    check_database_readiness()
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
@@ -44,3 +41,6 @@ def create_app():
     app.register_blueprint(admin_bp)
     app.register_blueprint(admin_page_bp)
     return app
+
+
+__all__ = ["CausalFlask", "create_app"]

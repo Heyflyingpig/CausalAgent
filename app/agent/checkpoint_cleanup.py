@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
-import logging
 from typing import Any, Iterable
 
 from app.db import get_write_connection
@@ -139,7 +138,6 @@ def _update_operation_aggregate(cursor, operation_id: str | None) -> None:
     )
     operation = cursor.fetchone()
     if not operation:
-        logging.warning("checkpoint cleanup 找不到管理员操作: %s", operation_id)
         return
 
     cursor.execute(

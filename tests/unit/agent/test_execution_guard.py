@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import TypedDict
+from unittest.mock import patch
 
 import pytest
 
@@ -106,7 +107,11 @@ def test_error_handler_cannot_build_fallback_after_revocation():
             return {"value": 9}
 
         graph = StateGraph(GuardState)
-        graph.add_node("boom", boom, error_handler=guarded_error_handler(handler))
+        graph.add_node(
+            "boom",
+            boom,
+            error_handler=guarded_error_handler(handler, event_node_name="boom"),
+        )
         graph.set_entry_point("boom")
 
         with pytest.raises(JobExecutionRevoked):
@@ -170,6 +175,86 @@ def test_retry_backoff_does_not_enter_next_attempt_after_revocation():
             await revoke_task
 
         assert calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_retry_attempts_are_silent_and_final_degradation_logs_once():
+    """单次 attempt 失败只走 custom 事件，重试耗尽后才写一次运行事件。"""
+    async def scenario():
+        guard = FakeGuard()
+        calls = 0
+
+        async def flaky(state: GuardState) -> dict[str, int]:
+            nonlocal calls
+            calls += 1
+            raise ConnectionError("sensitive dependency text")
+
+        def fallback(state: GuardState, error: NodeError) -> dict[str, int]:
+            return {"value": 9}
+
+        graph = StateGraph(GuardState)
+        graph.add_node(
+            "flaky",
+            bind_node(flaky, event_node_name="flaky"),
+            retry_policy=RetryPolicy(
+                max_attempts=2,
+                initial_interval=0.001,
+                backoff_factor=1.0,
+                max_interval=0.001,
+                jitter=False,
+                retry_on=lambda _exc: True,
+            ),
+            error_handler=guarded_error_handler(
+                fallback,
+                event_node_name="flaky",
+            ),
+        )
+        graph.set_entry_point("flaky")
+        with patch("Agent.causal_agent.graph_utils.log_event") as log_event:
+            result = await graph.compile().ainvoke({"value": 0}, context=guard)
+
+        assert result["value"] == 9
+        assert calls == 2
+        log_event.assert_called_once()
+        assert log_event.call_args.args[1] == "job.node.degraded"
+        assert log_event.call_args.kwargs["details"]["final_attempt"] >= 1
+        assert "sensitive dependency text" not in repr(
+            log_event.call_args.kwargs["details"]
+        )
+
+    asyncio.run(scenario())
+
+
+def test_mcp_transport_final_failure_uses_only_specialized_parent_event():
+    async def scenario():
+        guard = FakeGuard()
+
+        async def transport_node(state: GuardState):
+            raise ConnectionError("transport content must stay private")
+
+        def fallback(state: GuardState, error: NodeError):
+            return {"value": 3}
+
+        graph = StateGraph(GuardState)
+        graph.add_node(
+            "mcp_tool_node",
+            bind_node(transport_node, event_node_name="mcp_tool_node"),
+            error_handler=guarded_error_handler(
+                fallback,
+                event_node_name="mcp_tool_node",
+                timeout_ms=360_000,
+                mcp_transport=True,
+            ),
+        )
+        graph.set_entry_point("mcp_tool_node")
+        with patch("Agent.causal_agent.graph_utils.log_event") as log_event:
+            result = await graph.compile().ainvoke({"value": 0}, context=guard)
+
+        assert result["value"] == 3
+        log_event.assert_called_once()
+        assert log_event.call_args.args[1] == "mcp.transport.failed"
+        assert "transport content" not in repr(log_event.call_args.kwargs["details"])
 
     asyncio.run(scenario())
 

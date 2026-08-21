@@ -70,55 +70,86 @@ def build_graph(
         agent_node_with_llm,#这个节点真正执行的函数
         retry_policy=short_retry(),#出错怎么重试
         timeout=timeout(run_timeout=45, idle_timeout=20),#执行多久算超时
-        error_handler=guarded_error_handler(route_to_normal_chat),#最后失败怎么兜底
+        error_handler=guarded_error_handler(
+            route_to_normal_chat,
+            event_node_name="agent",
+            timeout_ms=45_000,
+        ),#最后失败怎么兜底
     )
     workflow.add_node(
         "fold",
         fold_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=120, idle_timeout=45),
-        error_handler=guarded_error_handler(recover_fold_to_agent),
+        error_handler=guarded_error_handler(
+            recover_fold_to_agent,
+            event_node_name="fold",
+            timeout_ms=120_000,
+        ),
     )
     workflow.add_node(
         "preprocess",
         preprocess_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=guarded_error_handler(recover_preprocess_to_agent),
+        error_handler=guarded_error_handler(
+            recover_preprocess_to_agent,
+            event_node_name="preprocess",
+            timeout_ms=180_000,
+        ),
     )
 
     workflow.add_node("mcp", mcp_subgraph)#mcp子图注册成节点
     workflow.add_node(
         "rag",
         rag_adapter_node,
-        error_handler=guarded_error_handler(degrade_rag_adapter_result),
+        error_handler=guarded_error_handler(
+            degrade_rag_adapter_result,
+            event_node_name="rag",
+        ),
     )
     workflow.add_node(
         "postprocess",
         postprocess_node_with_llm,
         timeout=timeout(run_timeout=240, idle_timeout=90),
-        error_handler=guarded_error_handler(recover_postprocess_to_report),
+        error_handler=guarded_error_handler(
+            recover_postprocess_to_report,
+            event_node_name="postprocess",
+            timeout_ms=240_000,
+        ),
     )
     workflow.add_node(
         "report",
         report_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=guarded_error_handler(recover_report),
+        error_handler=guarded_error_handler(
+            recover_report,
+            event_node_name="report",
+            timeout_ms=180_000,
+        ),
     )
     workflow.add_node(
         "normal_chat",
         normal_chat_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=60, idle_timeout=30),
-        error_handler=guarded_error_handler(recover_terminal_message),
+        error_handler=guarded_error_handler(
+            recover_terminal_message,
+            event_node_name="normal_chat",
+            timeout_ms=60_000,
+        ),
     )
     workflow.add_node(
         "inquiry_answer",
         inquiry_answer_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=90, idle_timeout=30),
-        error_handler=guarded_error_handler(recover_terminal_message),
+        error_handler=guarded_error_handler(
+            recover_terminal_message,
+            event_node_name="inquiry_answer",
+            timeout_ms=90_000,
+        ),
     )
 
     workflow.set_entry_point("agent")#节点入口

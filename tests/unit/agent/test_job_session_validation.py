@@ -70,11 +70,18 @@ class JobSessionValidationTests(unittest.TestCase):
 
         self.assertTrue(connection.rolled_back)
         self.assertTrue(connection.closed)
-        self.assertEqual(len(connection.fake_cursor.statements), 3)
+        self.assertEqual(len(connection.fake_cursor.statements), 4)
         self.assertTrue(
             all("INSERT INTO sessions" not in sql for sql, _ in connection.fake_cursor.statements)
         )
         self.assertIn("FOR UPDATE", connection.fake_cursor.statements[2][0])
+        self.assertEqual(
+            connection.fake_cursor.statements[3],
+            (
+                "SELECT user_id FROM sessions WHERE id = %s",
+                ("missing-session",),
+            ),
+        )
 
 
 if __name__ == "__main__":
