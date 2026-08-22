@@ -6,7 +6,7 @@
 
 ## 修改前必须核对
 
-- 必须阅读 [`Document/database/overview.md`](../Document/database/overview.md)、[`consistency.md`](../Document/database/consistency.md)、[`migrations-checkpoints.md`](../Document/database/migrations-checkpoints.md) 和 [`monitoring.md`](../Document/database/monitoring.md)。
+- 必须阅读 [`Document/database`](../Document/database)及以下子目录
 - 必须检查当前 `alembic heads`、相关 migration 的 `revision/down_revision`、`Database/bootstrap.py`、`app/db.py`、当前 Compose 拓扑和对应测试。
 - 修改表结构时必须检查所有 SQL 读写、`check_database_readiness()`、管理员/Job/File 服务和测试种子；不能只检查 migration 文件。
 
@@ -16,7 +16,8 @@
 - 禁止修改已形成事实的历史 migration 来掩盖旧库问题；需要兼容旧库时必须新增 migration，并明确升级、降级和数据风险。
 - 破坏性迁移必须明确说明是否删除数据、是否回填、downgrade 是否只恢复空结构；禁止静默删除、隐式 fallback 或在 migration 中调用自动修复 CLI，由修改任务定义
 - 全新空库必须直接走 bootstrap；`audit_before_db_upgrade.py` 只用于满足其前置条件的旧库外键升级 preflight。
-- 修改迁移 head、Compose 启动顺序或数据库初始化方式时，必须同步检查 `Document/` 和根 `AGENTS.md`；本轮文档重构不得修改根 `README.md`。
+- 修改迁移 head、Compose 启动顺序或数据库初始化方式时，必须同步检查 `Document/` 和根 `AGENTS.md`；除非用户明确要求入口或部署说明变化，文档重构不得修改根 `README.md`。
+- 修改 bootstrap、monitor、checkpoint cleanup、数据库连接或慢查询日志时，必须使用事件目录和共享 JSON stderr 运行时，不能记录账号、host、端口、库名、连接串、SQL 参数或原始 `last_error`。
 
 ## 一致性与危险操作
 
@@ -32,3 +33,4 @@
 - checkpoint、主从或 monitor 变更必须在 Docker 拓扑中验证；unit 结果不能替代真实数据库证据。
 - 必须检查快照的 `source_role/source_alias`、`observed_at`、estimate/warning 语义和脱敏边界。
 - 不能验证真实数据库时，必须在最终说明中明确未验证的迁移、主从、checkpoint 或容量风险。
+- 日志或可观测拓扑变更还必须分别说明静态/unit、真实数据库和 Docker/Alloy/Loki/Grafana 验证边界；不能用日志策略测试替代真实采集链路证据。

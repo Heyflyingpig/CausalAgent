@@ -57,6 +57,7 @@ CausalAgent
   - [Docker部署](#docker部署)
     - [数据库生产化配置](#数据库生产化配置)
     - [管理员后台](#管理员后台)
+    - [日志系统](#日志系统)
   - [后端单元测试](#后端单元测试)
   - [windows部署](#windows部署)
 - [贡献](#贡献)
@@ -255,13 +256,31 @@ docker compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli p
 - [开发与部署](Document/admin/development.md)
 - [测试说明](Document/admin/testing.md)
 
-任务详情默认显示 MySQL 节点/任务事件，并可通过单视图选择器切换到 PostgreSQL checkpoint 状态。新
-checkpoint 通过 `metadata.job_id` 精确关联任务；迁移前记录缺少该字段时只提示
-无法可靠归属，不按时间猜测。checkpoint API 只返回安全摘要，不读取状态正文、
-blob 或 pending writes。数据库 quick/deep 审计同时覆盖 PostgreSQL checkpoint
-连接、官方 schema/setup 版本、估算统计和有界跨库关系样本。
+### 日志系统
 
-更深入的数据库治理、读写一致性和恢复规则见 [`setting/database_governance.md`](setting/database_governance.md)。
+#### 开发环境启动
+
+先在 `.env` 中设置非空的 `GRAFANA_ADMIN_PASSWORD`，然后从仓库根目录执行配置校验、Alloy语法校验和完整开发启动：
+
+```bash
+docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml pull loki alloy grafana
+docker compose -f docker-compose.yml run --rm --no-deps alloy validate /etc/alloy/config.alloy
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps
+```
+
+打开 [http://127.0.0.1:3000](http://127.0.0.1:3000) 进入 Grafana，使用 `GRAFANA_ADMIN_USER`（默认值为 `admin`）和 `.env` 中设置的密码登录。Loki 数据源和 CausalAgent 日志仪表盘会由 Compose 自动 provision。需要直接查看容器输出时执行：
+
+```bash
+docker compose -f docker-compose.yml logs -f app worker monitor alloy loki grafana
+```
+
+停止服务建议使用 `docker compose -f docker-compose.yml stop`，这样会保留 Loki、Grafana 和Alloy positions 命名卷。不要使用 `down -v` 代替停止操作，否则会删除日志查看拓扑的持久化数据。
+修改 `observability/alloy/config.alloy` 后，必须重新执行 `alloy validate`，确认通过后再重启Alloy。
+
+[`Document/development/observability.md`](Document/development/observability.md)，Compose
+部署边界见 [`Document/development/deployment.md`](Document/development/deployment.md)。
 
 ### 后端单元测试
 

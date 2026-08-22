@@ -641,3 +641,9 @@
   - 通过 Compose 静态标签限定 Alloy 只采集 Web、worker、monitor、MCP 转发和维护容器，排除数据库与可观测组件自身；MCP 继续复用 worker stderr。
   - 新增 Loki 单节点 TSDB/filesystem、72 小时保留、compactor、写入/查询限制、Logs Drilldown 能力配置，以及 Alloy Docker 解包、应用 JSON 提取、低基数标签和持久 positions 配置。
   - 新增 Grafana Loki datasource、最小错误仪表盘和可观测拓扑静态契约测试；本次未执行真实 Docker 镜像拉取、全栈启动、positions 重启、Loki 暂停恢复和 30 分钟负载验收。
+
+---
+2026.8.22
+- 【日志管理修复：补齐登录时间写入失败事件】
+  - 保留 `mysql.connector.Error` 的数据库失败事件路径，为超时、连接异常和未知异常增加 `auth.login.last_login_update_failed` 事件及稳定原因码。
+  - 更新认证服务测试和事件目录测试，验证登录时间写入失败不会阻断登录且不回显异常原文。

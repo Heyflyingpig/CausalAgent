@@ -74,15 +74,15 @@ powershell -ExecutionPolicy Bypass -File tests/run_admin_32_e2e.ps1
 第一阶段真实环境补验必须在隔离 Compose project、独立卷和合成凭据中执行：
 
 ```powershell
-docker compose config --quiet
-docker compose pull loki alloy grafana
-docker compose run --rm --no-deps alloy validate /etc/alloy/config.alloy
-docker compose up -d
-docker compose ps
+docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml pull loki alloy grafana
+docker compose -f docker-compose.yml run --rm --no-deps alloy validate /etc/alloy/config.alloy
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps
 ```
 
 随后验证五类 service 唯一事件、Alloy/Loki 重启和 positions 续读、暂停 Loki 时业务日志不阻塞、高基数字段不成为标签，以及 30 分钟代表性负载的行数、字节数、stream 数和事件排行。第二阶段还要逐项执行 Web 500、Job/node/RAG/MCP/monitor/副本/cleanup 故障矩阵，通过 request ID 和 job ID 检索完整关联链，检查并发无串值、正常流零 `WARNING/ERROR`，并用合成秘密、连接 URL、提示词、LLM 输出、CSV、SQL 参数和异常敏感文本做 stderr、Docker log 与 Loki 零命中抽样。
 
 真实模型或知识库凭据不可用时，必须明确写为“未取得真实模型证据”，不能用 fake unit 测试替代。Docker daemon、Alloy validate、positions、上下文隔离、MCP stdout/可信参数或隐私检查任一失败时，不得标记第二阶段完成。
 
-所有文档变更还必须检查相对链接、顶部职责声明、失效路径、`git diff --check` 和 `git diff -- README.md` 为空；本阶段不修改根 README。完整验收通过前不追加完成态 CHANGELOG。
+所有文档变更还必须检查相对链接、顶部职责声明、失效路径和 `git diff --check`；如果任务涉及根 README 的入口或部署说明，还必须核对 README 中的命令、链接和目录导航。只有用户明确要求时才修改根 README；完整验收通过前不追加完成态 CHANGELOG。

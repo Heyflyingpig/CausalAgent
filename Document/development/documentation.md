@@ -20,7 +20,7 @@
 - Session、Job、文件冻结和 checkpoint 生命周期归 `architecture/job-file-lifecycle.md`。
 - 普通用户 HTTP/SSE 契约归 `api/`；管理员完整接口归 `admin/api.md`。
 - MySQL/PostgreSQL、主从、迁移、checkpoint、cleanup 和 monitor 内部机制归 `database/`。
-- 启动、测试、构建部署和文档维护归 `development/`。
+- 启动、测试、日志系统、构建部署和文档维护归 `development/`。
 - 管理员页面、后端授权和管理员 API 如何消费共享能力归 `admin/`，不复制数据库 worker 内部实现。
 
 `Document/operations/` 不创建。原计划中的部署、监控和运行维护内容分别归 `development/deployment.md`、`database/monitoring.md` 和 `admin/`。
@@ -29,7 +29,7 @@
 
 修改路由、表结构、Compose 服务、配置默认值或测试入口后，必须搜索其文档引用并更新唯一权威页面；跨主题页面只链接和说明消费关系，不复制完整实现。新文档中的相对链接必须指向现存文件；命令必须能从当前仓库结构推导，不能照搬历史日志。
 
-根 `README.md` 是项目入口，不在本轮文档重构中修改。`CHANGELOG.md` 是由原 `README/开发日志.md` 纯重命名得到的历史日志，正文只允许在末尾追加新记录，不修改历史段落。
+根 `README.md` 是项目入口；只有要求入口、部署或运行命令变化时才同步修改，其他文档重构不改根 README。`CHANGELOG.md` 是由原 `README/开发日志.md` 纯重命名得到的历史日志，正文只允许在末尾追加新记录，不修改历史段落。
 
 `setting/Userprivacy.md` 是隐私政策，属于独立政策材料而非架构事实库；其安全边界与 `Document/api/`、`Document/admin/` 的事实必须保持一致。
 

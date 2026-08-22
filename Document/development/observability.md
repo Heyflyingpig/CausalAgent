@@ -1,4 +1,4 @@
-# 可观测性日志契约与第二阶段事件目录
+# 日志契约
 
 文档职责：作为运行日志的唯一权威页面，冻结 v1 JSON 字段、第二阶段事件目录、上下文关联、降噪、隐私边界和验收状态。
 
@@ -142,6 +142,7 @@ docker compose ps
 | `job.create.failed` | `error/request` | 分析任务创建失败 | `reason_code` |
 | `admin.audit.write_failed` | `error/dependency` | 管理员审计事件写入失败 | `action`, `reason_code` |
 | `security.login.disabled_account` | `warning/security` | 禁用账号尝试登录 | 无 |
+| `auth.login.last_login_update_failed` | `warning/dependency` | 登录后的最后登录时间记录失败 | `reason_code` |
 | `security.authorization.denied` | `warning/security` | 已验证用户尝试跨归属访问资源 | `resource_type`, `action`, `reason_code` |
 | `security.csrf.rejected` | `warning/security` | CSRF 校验拒绝请求 | `method`, `endpoint`, `reason_code` |
 | `security.reauthentication.failed` | `warning/security` | 高风险管理员操作重新认证失败 | `action`, `reason_code` |
