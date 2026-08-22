@@ -2,6 +2,8 @@ import os
 import unittest
 from unittest.mock import patch
 
+import mysql.connector
+
 
 TEST_ENV = {
     "SECRET_KEY": "test-secret",
@@ -114,19 +116,56 @@ class AuthServiceReadTests(unittest.TestCase):
         self.assertIn("SET last_login_at = UTC_TIMESTAMP()", connection.fake_cursor.sql)
         self.assertEqual(connection.fake_cursor.params, (7,))
 
-    def test_record_successful_login_failure_is_non_blocking(self):
-        """最后登录时间写入异常应返回失败标记，由路由继续完成登录。"""
+    def test_mysql_failure_uses_database_failure_boundary(self):
+        """MySQL 异常继续交给数据库日志边界，且不阻断登录。"""
+        error = mysql.connector.Error("database-secret")
         with (
             patch(
                 "app.auth.service.get_write_connection",
-                side_effect=RuntimeError("write failed"),
+                side_effect=error,
             ),
-            patch("app.auth.service.logging.error") as log_error,
+            patch("app.auth.service.record_database_failure") as record_failure,
+            patch("app.auth.service.log_event") as log_event,
         ):
             result = record_successful_login(8)
 
         self.assertFalse(result)
-        log_error.assert_called_once()
+        record_failure.assert_called_once_with(
+            error,
+            operation="last_login_write",
+        )
+        log_event.assert_not_called()
+
+    def test_known_non_mysql_failures_use_stable_reason_codes_and_are_non_blocking(self):
+        """非 MySQL 异常按稳定原因码记录，且不把异常原文传给日志事件。"""
+        failures = (
+            (TimeoutError("timeout-secret"), "query_timeout"),
+            (ConnectionError("connection-secret"), "connection_unavailable"),
+            (RuntimeError("unexpected-secret"), "unexpected_error"),
+        )
+
+        for error, reason_code in failures:
+            with self.subTest(reason_code=reason_code):
+                with (
+                    patch(
+                        "app.auth.service.get_write_connection",
+                        side_effect=error,
+                    ),
+                    patch("app.auth.service.log_event") as log_event,
+                ):
+                    result = record_successful_login(8)
+
+                self.assertFalse(result)
+                log_event.assert_called_once()
+                self.assertEqual(
+                    log_event.call_args.args[1],
+                    "auth.login.last_login_update_failed",
+                )
+                self.assertEqual(
+                    log_event.call_args.kwargs["details"],
+                    {"reason_code": reason_code},
+                )
+                self.assertNotIn(str(error), repr(log_event.call_args_list))
 
 
 if __name__ == "__main__":

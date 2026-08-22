@@ -19,6 +19,7 @@ EXPECTED_CODES = {
     "job.create.failed",
     "admin.audit.write_failed",
     "security.login.disabled_account",
+    "auth.login.last_login_update_failed",
     "security.authorization.denied",
     "security.csrf.rejected",
     "security.reauthentication.failed",
@@ -148,3 +149,20 @@ def test_catalog_rejects_context_ids_inside_details_and_unknown_events():
     assert spec is None
     assert safe is None
     assert violation == "unknown_event"
+
+
+def test_last_login_update_failure_has_stable_message_and_reason_contract():
+    """登录时间写入失败事件只允许稳定原因码，不回显异常原文。"""
+    event_code = "auth.login.last_login_update_failed"
+    spec = EVENT_SPECS[event_code]
+
+    assert spec.message == "登录后的最后登录时间记录失败"
+    assert set(spec.details) == {"reason_code"}
+
+    resolved, safe, violation = validate_event_details(
+        event_code,
+        {"reason_code": "unexpected_error"},
+    )
+    assert resolved is spec
+    assert safe == {"reason_code": "unexpected_error"}
+    assert violation is None

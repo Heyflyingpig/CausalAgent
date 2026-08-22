@@ -8,13 +8,27 @@ app.auth.service - 用户认证服务
 '''
 from app.db import get_read_connection, get_write_connection, record_database_failure
 import mysql.connector
+import logging
 import bcrypt
 from mysql.connector import errorcode       
+from observability.logging_runtime import log_event
 
 
 MANAGED_PASSWORD_MIN_CHARS = 15
 MANAGED_PASSWORD_MAX_CHARS = 64
 BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _last_login_failure_reason(exc: Exception) -> str:
+    """把登录时间写入失败映射为稳定、可查询的原因码。"""
+    if isinstance(exc, TimeoutError):
+        return "query_timeout"
+    if isinstance(exc, (ConnectionError, OSError)):
+        return "connection_unavailable"
+    return "unexpected_error"
 
 
 # 查找用户
@@ -76,8 +90,16 @@ def record_successful_login(user_id: int) -> bool:
             )
             conn.commit()
         return True
-    except Exception as exc:
+    except mysql.connector.Error as exc:
         record_database_failure(exc, operation="last_login_write")
+        return False
+    except Exception as exc:
+        log_event(
+            LOGGER,
+            "auth.login.last_login_update_failed",
+            details={"reason_code": _last_login_failure_reason(exc)},
+            exc_info=True,
+        )
         return False
 
 

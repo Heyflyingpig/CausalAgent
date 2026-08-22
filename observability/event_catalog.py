@@ -264,6 +264,12 @@ _events: dict[str, EventSpec] = {
         "security",
         "禁用账号尝试登录",
     ),
+    "auth.login.last_login_update_failed": _spec(
+        logging.WARNING,
+        "dependency",
+        "登录后的最后登录时间记录失败",
+        reason_code=REASON,
+    ),
     "security.authorization.denied": _spec(
         logging.WARNING,
         "security",
