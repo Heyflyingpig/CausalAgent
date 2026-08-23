@@ -1,12 +1,13 @@
-# Byte-compiled / optimized / DLL files
+# ============================================================================
+# Python 运行产物:字节码/优化文件/DLL
 __pycache__/
 *.py[cod]
 *$py.class
 
-# C extensions
+# C 扩展编译产物
 *.so
 
-# Distribution / packaging
+# 打包发布产物
 .Python
 build/
 develop-eggs/
@@ -27,17 +28,17 @@ share/python-wheels/
 MANIFEST
 node_modules/
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+# PyInstaller 打包
+#  这些文件通常由脚本按模板生成,
+#  用于在构建 exe 时注入日期等信息。
 *.manifest
 *.spec
 
-# Installer logs
+# 安装日志
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
+# 单元测试/覆盖率报告
 htmlcov/
 .tox/
 .nox/
@@ -52,83 +53,79 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Translations
+# 本地化翻译产物
 *.mo
 *.pot
 
-# Django stuff:
+# Django 相关:
 *.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
-# Flask stuff:
+# Flask 相关:
 instance/
 .webassets-cache
 
-# Scrapy stuff:
+# Scrapy 相关:
 .scrapy
 
-# Sphinx documentation
+# Sphinx 文档
 docs/_build/
 
-# PyBuilder
+# PyBuilder 构建产物
 .pybuilder/
 target/
 
-# Jupyter Notebook
+# Jupyter Notebook 检查点
 .ipynb_checkpoints
 
-# IPython
+# IPython 临时文件
 profile_default/
 ipython_config.py
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
+# pyenv 版本管理
+#  库/包项目通常应忽略这些文件(代码要在多环境运行);
+#  应用项目则视情况提交。
 # .python-version
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
+# pipenv 依赖锁
+#  官方建议提交 Pipfile.lock;
+#  但多人协作且存在平台相关依赖时,
+#  pipenv 可能装不上或行为不一致,此时可忽略:
 #Pipfile.lock
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
+# uv 依赖锁
+#  与 Pipfile.lock 同理,一般建议提交 uv.lock 保证可复现,
+#  二进制包尤其如此;
+#  库项目则更常忽略。
 #uv.lock
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
+# poetry 依赖锁
+#  与 Pipfile.lock 同理,一般建议提交 poetry.lock。详见官方文档。
+#  二进制包尤其如此;
+#  库项目则更常忽略。
 #poetry.lock
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
+# pdm 依赖锁
+#  与 Pipfile.lock 同理,一般建议提交 pdm.lock。
 #pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
+#  项目级配置存于 .pdm.toml,官方建议不提交。
 .pdm.toml
 .pdm-python
 .pdm-build/
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
+# PEP 582 局部包目录(pyflow/pdm 等使用)
 __pypackages__/
 
-# Celery stuff
+# Celery 任务相关:
 celerybeat-schedule
 celerybeat.pid
 
-# SageMath parsed files
+# SageMath 解析文件
 *.sage.py
 
-# Environments
+# 虚拟环境目录
 .env
 .venv
 env/
@@ -137,44 +134,43 @@ ENV/
 env.bak/
 venv.bak/
 
-# Spyder project settings
+# Spyder 项目配置
 .spyderproject
 .spyproject
 
-# Rope project settings
+# Rope 项目配置
 .ropeproject
 
-# mkdocs documentation
+# mkdocs 文档
 /site
 
-# mypy
+# mypy 类型检查缓存
 .mypy_cache/
 .dmypy.json
 dmypy.json
 
-# Pyre type checker
+# Pyre 类型检查缓存
 .pyre/
 
-# pytype static type analyzer
+# pytype 静态分析缓存
 .pytype/
 
-# Cython debug symbols
+# Cython 调试符号
 cython_debug/
 
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
+# PyCharm/JetBrains IDE 配置
+#  JetBrains 的完整模板单独维护在官方仓库的 JetBrains.gitignore 里,
+#  可并入全局忽略;若想整个忽略 .idea 目录,
+#  自行放开下一条注释即可(不太推荐)。
 #.idea/
 
-# Ruff stuff:
+# Ruff 缓存:
 .ruff_cache/
 
-# PyPI configuration file
+# PyPI 配置文件
 .pypirc
 
-# Sensitive configuration files
+# 敏感配置文件
 secrets.json
 config.json
 
@@ -205,15 +201,28 @@ skills/
 tests/*
 !tests/test_multimodal_*.py
 !tests/test_isolated_rag_runs.py
+!tests/test_isolated_evaluation.py
+!tests/test_isolated_rag_eval_routes.py
+!tests/test_rag_eval_worker_queue.py
+!tests/test_rag_candidate_runs.py
+!tests/test_rag_candidate_generation_and_sweep.py
+!tests/test_rag_candidate_routes.py
+!tests/test_rag_dataset_governance.py
+!tests/test_ragas_generate_with_chunks_engine.py
+!tests/test_rag_eval_queue_release_lock.py
+!tests/test_rag_eval_mysql_queue_drill.py
+!tests/test_rag_eval_remote_vision_policy.py
+!tests/test_staging_environment_guard.py
+!tests/test_staging_release.py
 
 # study
 study/
 
-# local-only documents
+# 仅本机的文档目录
 /docs/
 !/docs/
 !docs/难题.md
-# R5 local runtime state and generated ingestion artifacts
+# 评测功能的本地运行状态与摄取生成产物
 tmp/r5_isolated_runs/
 tmp/r5_sources/
 
@@ -225,10 +234,23 @@ Agent/knowledge_base/multimodal_runtime/
 Agent/knowledge_base/multimodal_benchmarks/
 app/DESIGN.md
 
-# Admin Vue
+# 管理后台 Vue
 admin-frontend/node_modules/
 admin-frontend/test-results/
 admin-frontend/playwright-report/
 
-# 构建产物
+# 前端构建产物(Vite 打包结果,由源码本地构建生成,不入库)
+app/static/rag_eval_app/
 admin-frontend/dist/
+
+# 预发隔离环境密钥(仅本地,严禁提交)
+.env.staging
+
+# RAG 治理运行时产物(白名单豁免 isolated_runs.py 硬编码依赖的 _v3 对)
+*.governance.lock
+Document/rag_gold_v2_governance_*_20*.json
+Agent/knowledge_base/rag/data/eval/history/
+Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*
+!Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_rebound_requires_reapproval_v3.json
+!Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_reapproval_manifest_v3.json
+!tests/test_staging_gateway_deprecation_log.py
