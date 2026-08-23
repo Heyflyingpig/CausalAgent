@@ -1,3 +1,5 @@
+"""RAG 评测报告的术语翻译、Markdown 组装和文件写入工具。"""
+
 import math
 from pathlib import Path
 from typing import Any, Dict, List
@@ -402,6 +404,8 @@ def build_rag_retrieval_sweep_markdown_report(result: Dict[str, Any]) -> str:
         "",
         f"- {report_label('sample_count')}: {result.get('sample_count', 0)}",
         f"- {report_label('run_count')}: {result.get('run_count', 0)}",
+        f"- {report_label('status')}: {result.get('status', 'unknown')}",
+        f"- max_workers: {result.get('max_workers', 1)}",
         f"- {report_label('limit')}: {result.get('limit')}",
         "",
         f"## {report_label('Runs')}",
@@ -422,18 +426,33 @@ def build_rag_retrieval_sweep_markdown_report(result: Dict[str, Any]) -> str:
         top5_metrics = prefix_metrics.get("top5", {})
         lines.append(
             f"| {rank} | {escape_markdown_cell(run.get('name', run.get('run_id', '')))} | "
-            f"{format_metric(metrics.get('recall_at_k', 0.0))} | "
-            f"{format_metric(metrics.get('mrr', 0.0))} | "
-            f"{format_metric(metrics.get('hit_rate', 0.0))} | "
-            f"{format_metric(top4_metrics.get('recall', 0.0))} | "
-            f"{format_metric(top4_metrics.get('mrr', 0.0))} | "
-            f"{format_metric(top5_metrics.get('recall', 0.0))} | "
-            f"{format_metric(top5_metrics.get('mrr', 0.0))} | "
-            f"{format_metric(avg_timings.get('total', 0.0))} | "
+            f"{format_metric(metrics.get('recall_at_k'))} | "
+            f"{format_metric(metrics.get('mrr'))} | "
+            f"{format_metric(metrics.get('hit_rate'))} | "
+            f"{format_metric(top4_metrics.get('recall'))} | "
+            f"{format_metric(top4_metrics.get('mrr'))} | "
+            f"{format_metric(top5_metrics.get('recall'))} | "
+            f"{format_metric(top5_metrics.get('mrr'))} | "
+            f"{format_metric(avg_timings.get('total'))} | "
             f"{config.get('final_top_k', '')} | {config.get('dense_fetch_k', '')} | "
             f"{config.get('dense_mmr_k', '')} | {config.get('sparse_fetch_k', '')} | "
             f"{config.get('mmr_lambda', '')} |"
         )
+
+    if result.get("recommended_candidates"):
+        lines.extend(["", "## Recommended Candidates", ""])
+        for candidate in result["recommended_candidates"]:
+            lines.append(
+                f"- {escape_markdown_cell(candidate.get('name', candidate.get('run_id', '')))}: "
+                f"{escape_markdown_cell(candidate.get('reason', ''))}"
+            )
+    if result.get("errors"):
+        lines.extend(["", "## Run Errors", ""])
+        for error in result["errors"]:
+            lines.append(
+                f"- {escape_markdown_cell(error.get('name', error.get('run_id', '')))}: "
+                f"{escape_markdown_cell(error.get('error', 'unknown error'))}"
+            )
 
     lines.extend(["", f"## {report_label('Loss Reason Counts')}", ""])
     for run in result.get("runs", []):
@@ -511,11 +530,21 @@ def build_ragas_markdown_report(result: Dict[str, Any]) -> str:
         f"{result.get('answer_relevancy_strictness', '')} |",
         f"| {report_label('low_score_threshold')} | {result.get('low_score_threshold', '')} |",
         "",
-        f"## {report_label('Score Summary')}",
-        "",
     ]
 
     score_summary = result.get("score_summary", {})
+    if result.get("error"):
+        lines.extend(
+            [
+                f"## {report_label('Failure')}（失败原因）",
+                "",
+                f"- status_reason: `{escape_markdown_cell(result.get('status_reason', ''))}`",
+                f"- invalid_answer_count: {result.get('invalid_answer_count', 0)}",
+                f"- error: {escape_markdown_cell(result.get('error', ''))}",
+                "",
+            ]
+        )
+    lines.extend([f"## {report_label('Score Summary')}", ""])
     if score_summary:
         score_stddev = result.get("score_stddev", {})
         metric_validity = result.get("metric_validity", {})

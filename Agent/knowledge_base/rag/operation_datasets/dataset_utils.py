@@ -425,7 +425,7 @@ DEFAULT_LOCATOR_FIELDS = (
 def _context_text(value: Any) -> str:
     """提取 Ragas context 或 source record 中的可比正文。"""
     if isinstance(value, str):
-        return value.strip()
+        return re.sub(r"^<\d+-hop>\s*", "", value.strip())
     if not isinstance(value, dict):
         return ""
     for key in ("page_content", "content", "text", "context"):
@@ -524,7 +524,16 @@ def convert_ragas_generated_row_to_eval_sample(
         }
     )
     if source_snapshot:
-        source["source_snapshot"] = dict(source_snapshot)
+        index_binding = dict(source_snapshot)
+        source["source_snapshot"] = index_binding
+        source["index_binding"] = index_binding
+        index_version = str(index_binding.get("index_version") or "").strip()
+        if index_version:
+            gold_evidence = [
+                {**locator, "bound_index_version": index_version}
+                if isinstance(locator, dict) else locator
+                for locator in gold_evidence
+            ]
     if row_index is not None:
         source["row_index"] = row_index
 

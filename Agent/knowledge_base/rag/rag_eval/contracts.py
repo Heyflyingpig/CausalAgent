@@ -16,6 +16,10 @@ DATASET_KINDS = {
     "reference_free",
 }
 
+# 该字段把评测题的 gold locator 绑定到不可变索引版本。它由评测启动前的
+# 绑定校验消费，不会也不应写入 Chroma 的每条 Runtime metadata。
+_BINDING_ONLY_LOCATOR_FIELDS = frozenset({"bound_index_version"})
+
 
 def _non_empty_text(value: Any) -> str:
     """将文本字段规范化为非空字符串。"""
@@ -183,7 +187,11 @@ def candidate_evidence(metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 def locator_matches(candidate: dict[str, Any], expected: dict[str, Any]) -> bool:
-    """按 gold 提供的字段做全字段精确匹配，字段集合不绑定任何格式。"""
+    """按可运行时检索的 gold 字段做全字段精确匹配。"""
     normalized_candidate = candidate_evidence(candidate)
-    fields = {key: value for key, value in expected.items() if value is not None and value != ""}
+    fields = {
+        key: value
+        for key, value in expected.items()
+        if key not in _BINDING_ONLY_LOCATOR_FIELDS and value is not None and value != ""
+    }
     return bool(fields) and all(normalized_candidate.get(key) == value for key, value in fields.items())

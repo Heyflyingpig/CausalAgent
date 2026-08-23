@@ -51,6 +51,7 @@ RAG_EVAL_PARAMETER_META: Dict[str, Dict[str, Any]] = {
     "dense_score_threshold": {"label": "稠密分数阈值", "meaning": "稠密检索候选的最低分数阈值。", "allowed": [0, 1], "recommended": [0.3, 0.7]},
     "final_rerank_threshold": {"label": "最终重排阈值", "meaning": "融合重排后进入最终证据的最低分数阈值。", "allowed": [0, 1], "recommended": [0, 0.4]},
     "mmr_lambda": {"label": "MMR 相关性权重", "meaning": "MMR 中相关性相对多样性的权重。", "allowed": [0, 1], "recommended": [0.5, 0.85]},
+    "answer_max_contexts": {"label": "正式回答最大上下文数", "meaning": "真正传给正式回答模型的 evidence 数量；Ragas 评测会复用同一份 evidence。null 表示不额外限制。", "allowed": [1, 12], "recommended": [4, 6], "integer": True, "allow_null": True},
     "limit": {"label": "样本数上限", "meaning": "本次评测最多处理的样本数；null 表示不截断。", "allowed": [1, 1000], "recommended": [30, 100], "integer": True, "allow_null": True},
     "max_contexts": {"label": "最大上下文数", "meaning": "构造 Ragas 样本时最多送入的上下文段数。", "allowed": [1, 12], "recommended": [4, 8], "integer": True},
     "max_context_chars": {"label": "单段上下文最大字符数", "meaning": "单段上下文送入 Ragas 的最大字符数。", "allowed": [300, 4000], "recommended": [1200, 2000], "integer": True},
@@ -73,6 +74,10 @@ class ConfigValidationError(ValueError):
 def _validate_config_value(path: str, value: Any, key: str) -> None:
     """校验一个公开数值参数，拒绝类型错误和超出硬边界的值。"""
     meta = RAG_EVAL_PARAMETER_META.get(key)
+    if key == "answer_context_compression":
+        if value not in {"none", "page_dedupe"}:
+            raise ConfigValidationError(f"{path} 必须是 none 或 page_dedupe")
+        return
     if not meta:
         return
     if value is None and meta.get("allow_null"):

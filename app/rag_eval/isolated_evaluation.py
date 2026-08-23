@@ -1,7 +1,8 @@
-"""R5 staged index 评测执行器。
+"""对指定暂存索引（staged index）执行完整评测的执行器。
 
 这个模块只接收显式的 Runtime、题集、评测配置和输出目录；它不读取 active pointer，
-也不依赖旧的 latest machine/report 输出。
+也不依赖旧的 latest machine/report 输出。检索指标和 Ragas 结果会写入当前运行
+目录，并通过统一的运行生命周期接口供 Web 和 worker 读取。
 """
 
 from __future__ import annotations
@@ -13,13 +14,19 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from Agent.knowledge_base.query_rag import _normalize_question_payload, build_retrieval_config
+from Agent.knowledge_base.query_rag import (
+    _normalize_question_payload,
+    RagRetrievalConfig,
+    build_retrieval_config,
+    compress_evidence_payloads,
+)
 from Agent.knowledge_base.rag.rag_config import RAGAS_BASE_CONFIG, RAGAS_RUN_PROFILES, RETRIEVAL_PROFILES
 from Agent.knowledge_base.rag.rag_eval.contracts import evaluation_identity, load_eval_dataset, validate_eval_dataset
 from Agent.knowledge_base.rag.rag_eval.rag_eval import evaluate_retrieval, sweep_retrieval_configs
 from Agent.knowledge_base.rag.rag_eval.ragas_eval import (
     _build_generic_eval_answer_prompt,
     _build_low_score_cases,
+    _find_invalid_ragas_answers,
     build_cross_metric_bad_cases,
     run_repeated_ragas_baseline,
 )
@@ -90,6 +97,9 @@ def _normalize_dataset_from_payload(payload: Dict[str, Any]) -> List[Dict[str, A
     with tempfile.TemporaryDirectory(prefix="r5_dataset_") as temporary_dir:
         temporary = Path(temporary_dir) / "dataset.json"
         temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        validation = validate_eval_dataset(temporary)
+        if validation.get("errors"):
+            raise ValueError("; ".join(validation["errors"]))
         return load_eval_dataset(temporary)
 
 
@@ -109,7 +119,11 @@ def _build_retrieval_options(options: Optional[Dict[str, Any]]) -> tuple[Any, Di
     if not isinstance(overrides, dict):
         raise ValueError("retrieval.overrides must be an object")
     base = dict(RETRIEVAL_PROFILES[profile])
-    unknown = sorted(set(overrides) - set(base))
+    # 保留 profile 自己声明的 source-adapter 字段（例如
+    # official_only_when_available），同时允许正式 retrieval dataclass 新增的
+    # answer context 字段；build_retrieval_config 会忽略 adapter-only 字段。
+    allowed_override_keys = set(base) | set(RagRetrievalConfig.__dataclass_fields__)
+    unknown = sorted(set(overrides) - allowed_override_keys)
     if unknown:
         raise ValueError(f"unsupported retrieval override: {unknown[0]}")
     raw = {**base, **overrides}
@@ -152,9 +166,10 @@ def _build_ragas_options(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if key in RAGAS_BASE_CONFIG
     }
     # Profile 还包含缓存、输出和检索构建元数据；这些字段不属于 judge 执行器参数。
+    profile_config = RAGAS_RUN_PROFILES[profile]
     config.update({
         key: value
-        for key, value in RAGAS_RUN_PROFILES[profile].items()
+        for key, value in profile_config.items()
         if key in allowed
     })
     overrides = {key: value for key, value in options.items() if key not in {"profile"}}
@@ -163,7 +178,13 @@ def _build_ragas_options(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         raise ValueError(f"unsupported ragas option: {unknown[0]}")
     config.update(overrides)
     config["profile"] = profile
-    config["run"] = bool(config.get("run", False)) and not bool(config.get("prepare_only", False))
+    # 配置源使用 run_ragas，路由 API 为了兼容使用 run。前者必须在未显式
+    # 覆盖时成为默认值，否则所有内置 profile 都会静默退化为只准备数据。
+    run_requested = options.get(
+        "run",
+        profile_config.get("run_ragas", RAGAS_BASE_CONFIG.get("run_ragas", False)),
+    )
+    config["run"] = bool(run_requested) and not bool(config.get("prepare_only", False))
     return config
 
 
@@ -206,6 +227,7 @@ def _build_ragas_prepared_dataset(
     dataset: List[Dict[str, Any]],
     retrieval_result: Dict[str, Any],
     service: Any,
+    retrieval_config: Any,
     ragas_config: Dict[str, Any],
     dataset_path: Path,
     cancel_checker: Optional[EvaluationCancel],
@@ -224,6 +246,9 @@ def _build_ragas_prepared_dataset(
     by_sample_id = {str(detail.get("sample_id") or ""): detail for detail in details}
     by_question = {str(detail.get("question") or "").strip(): detail for detail in details}
     max_contexts = ragas_config.get("max_contexts")
+    answer_max_contexts = retrieval_config.answer_max_contexts
+    effective_contexts = answer_max_contexts if answer_max_contexts is not None else max_contexts
+    compression_strategy = retrieval_config.answer_context_compression
     max_context_chars = ragas_config.get("max_context_chars")
     max_response_chars = ragas_config.get("max_response_chars")
     answer_prompt = _build_generic_eval_answer_prompt()
@@ -236,12 +261,16 @@ def _build_ragas_prepared_dataset(
         if detail is None:
             continue
         evidence = list(detail.get("final_evidence_payload") or [])
+        selected = compress_evidence_payloads(
+            evidence,
+            max_contexts=effective_contexts,
+            strategy=compression_strategy,
+        )
         answer = service.answer_question(
             _normalize_question_payload(sample),
-            evidence,
+            selected,
             answer_prompt=answer_prompt,
         )
-        selected = evidence[:max_contexts] if max_contexts else evidence
         contexts = [
             _truncate_text(item.get("content", ""), max_context_chars)
             for item in selected
@@ -272,18 +301,24 @@ def _build_ragas_prepared_dataset(
                 "ragas_context_count": len(selected),
                 "ragas_max_context_chars": max_context_chars,
                 "ragas_max_response_chars": max_response_chars,
+                "answer_context_compression": compression_strategy,
+                "answer_evidence_count": len(selected),
                 "trace_timings_ms": detail.get("trace_timings_ms", {}),
                 "final_evidence_payload": evidence,
+                "answer_evidence_payload": selected,
                 "retrieved_evidence": detail.get("retrieved_evidence", []),
             }
         )
+        invalid_answers = _find_invalid_ragas_answers([row])
         _emit(event_callback, "step_progress", f"ragas_eval prepare: {index}/{len(dataset)}", {
             "step": "ragas_eval",
-            "phase": "prepare_dataset",
+            "phase": "answer_generation_failed" if invalid_answers else "prepare_dataset",
             "current": index,
             "total": len(dataset),
             "sample_id": sample.get("sample_id", ""),
         })
+        if invalid_answers:
+            break
 
     return {
         "status": "pass",
@@ -295,6 +330,8 @@ def _build_ragas_prepared_dataset(
             "limit": limit,
             "retrieval_config": retrieval_result.get("config", {}),
             "max_contexts": max_contexts,
+            "answer_max_contexts": answer_max_contexts,
+            "answer_context_compression": compression_strategy,
             "max_context_chars": max_context_chars,
             "max_response_chars": max_response_chars,
             "vector_db_summary": service.get_vector_db_metadata_summary(),
@@ -320,12 +357,39 @@ def _run_ragas(
     ragas_config: Dict[str, Any],
     retrieval_path: Path,
     paths: Dict[str, str],
+    embedding_function: Any = None,
     event_callback: Optional[EvaluationEvent] = None,
     cancel_checker: Optional[EvaluationCancel] = None,
 ) -> Dict[str, Any]:
     """运行已有 Ragas baseline，并把坏例文件和 Markdown 报告落到本次目录。"""
     metric_names = list(ragas_config.get("selected_metrics") or [])
-    if not ragas_config.get("run"):
+    invalid_answers = _find_invalid_ragas_answers(prepared.get("ragas_rows", []))
+    if invalid_answers:
+        first = invalid_answers[0]
+        preview = str(first.get("response_preview") or first.get("reason") or "answer generation failed")
+        result = {
+            "status": "failed",
+            "status_reason": "answer_generation_failed",
+            "error": f"Ragas 回答生成失败，未调用 judge：{preview}",
+            "invalid_answer_count": len(invalid_answers),
+            "invalid_answer_examples": invalid_answers[:5],
+            "active_profile": ragas_config["profile"],
+            "judge_profile": ragas_config.get("judge_profile", ""),
+            "repeat_count": ragas_config.get("repeat_count", 0),
+            "dataset_path": prepared["dataset_path"],
+            "sample_count": prepared["sample_count"],
+            "source_sample_count": prepared["source_sample_count"],
+            "config": prepared["config"],
+            "evaluation_identity": prepared["evaluation_identity"],
+            "ragas_rows": prepared["ragas_rows"],
+            "metadata": prepared["metadata"],
+            "metrics": metric_names,
+            "score_summary": {},
+            "score_records": [],
+            "low_score_cases": [],
+            "cross_metric_bad_cases": {},
+        }
+    elif not ragas_config.get("run"):
         result = {
             "status": "dataset_prepared",
             "active_profile": ragas_config["profile"],
@@ -358,6 +422,7 @@ def _run_ragas(
             repeat_count=int(ragas_config.get("repeat_count", 1)),
             judge_profile=str(ragas_config.get("judge_profile") or "standard_single"),
             low_score_threshold=float(ragas_config.get("low_score_threshold", 0.5)),
+            embedding_function=embedding_function,
             event_callback=event_callback,
             cancel_checker=cancel_checker,
         )
@@ -376,6 +441,17 @@ def _run_ragas(
                 "metrics": metric_names,
             }
         )
+        if result.get("status") == "ragas_no_valid_scores":
+            result.update(
+                {
+                    "status": "failed",
+                    "status_reason": "ragas_judge_no_valid_scores",
+                    "error": str(
+                        result.get("warning")
+                        or "Ragas judge 未产生任何有效数值分数，请检查模型 API、余额和运行结果。"
+                    ),
+                }
+            )
 
     low_score_cases = _build_low_score_cases(
         result.get("score_records", []),
@@ -417,7 +493,7 @@ def execute_isolated_evaluation(
     """执行一次与知识源解耦、绑定 staged index 的完整评测流程。"""
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset = load_eval_dataset(dataset_path)
-    selected_steps = list(steps or DEFAULT_STEPS)
+    selected_steps = list(DEFAULT_STEPS if steps is None else steps)
     unknown_steps = sorted(set(selected_steps) - ALLOWED_STEPS)
     if unknown_steps:
         raise ValueError(f"unsupported evaluation step: {unknown_steps[0]}")
@@ -425,11 +501,20 @@ def execute_isolated_evaluation(
     ragas_config = _build_ragas_options(ragas_options)
     paths = _artifact_paths(output_dir)
     sweep_specs = (retrieval_options or {}).get("sweep") if retrieval_options else None
+    sweep_max_workers = min(max(int((retrieval_options or {}).get("sweep_max_workers", 1)), 1), 8)
     if sweep_specs is not None:
         if not isinstance(sweep_specs, list) or not sweep_specs or len(sweep_specs) > MAX_SWEEP_CONFIGS:
             raise ValueError(f"retrieval.sweep must contain 1 to {MAX_SWEEP_CONFIGS} configs")
         if "retrieval_sweep" not in selected_steps:
-            selected_steps.insert(selected_steps.index("retrieval_eval") + 1, "retrieval_sweep")
+            if "retrieval_eval" in selected_steps:
+                selected_steps.insert(selected_steps.index("retrieval_eval") + 1, "retrieval_sweep")
+            elif "summary" in selected_steps:
+                selected_steps.insert(selected_steps.index("summary"), "retrieval_sweep")
+            else:
+                selected_steps.append("retrieval_sweep")
+        sweep_max_workers = min(sweep_max_workers, len(sweep_specs))
+        retrieval_snapshot["sweep"] = sweep_specs
+        retrieval_snapshot["sweep_max_workers"] = sweep_max_workers
 
     config_snapshot = {
         "strategy_profile": dict(strategy_profile or {}),
@@ -467,7 +552,7 @@ def execute_isolated_evaluation(
                 status = "cancelled"
             elif result_status in {"failed", "error", "fail"}:
                 status = "fail"
-            elif result_status in {"ragas_no_valid_scores", "needs_review"}:
+            elif result_status in {"partial", "ragas_no_valid_scores", "needs_review"}:
                 status = "needs_review"
             else:
                 status = "pass"
@@ -479,7 +564,20 @@ def execute_isolated_evaluation(
                 "message": result.get("status", "completed"),
                 "result": result,
             })
-            _emit(event_callback, "step_done", f"完成 {name}", {"step": name, "status": status})
+            if status == "fail":
+                _emit(
+                    event_callback,
+                    "step_error",
+                    f"{name} 失败: {result.get('error') or result.get('status_reason') or result_status}",
+                    {
+                        "step": name,
+                        "status": status,
+                        "status_reason": result.get("status_reason", ""),
+                        "error": result.get("error", ""),
+                    },
+                )
+            else:
+                _emit(event_callback, "step_done", f"完成 {name}", {"step": name, "status": status})
         except InterruptedError:
             step_status[name] = "cancelled"
             step_results.append({"name": name, "status": "cancelled", "seconds": round(time.perf_counter() - start, 3), "message": "cancelled", "result": {}})
@@ -522,6 +620,9 @@ def execute_isolated_evaluation(
                 sweep_specs or [],
                 retrieval_trace_builder=service.build_retrieval_trace,
                 vector_summary_provider=service.get_vector_db_metadata_summary,
+                max_workers=sweep_max_workers,
+                event_callback=lambda kind, message, data: _emit(event_callback, kind, message, data),
+                cancel_checker=cancel_checker,
             )
             result.update({"run_id": run_id, "ingestion_run_id": ingestion_run_id, "index_version": index_version})
             _write_json(Path(paths["retrieval_sweep"]), result)
@@ -536,16 +637,23 @@ def execute_isolated_evaluation(
                 dataset,
                 retrieval_result,
                 service,
+                retrieval_config,
                 ragas_config,
                 dataset_path,
                 cancel_checker,
                 event_callback,
             )
+            invalid_answers = _find_invalid_ragas_answers(prepared.get("ragas_rows", []))
             return _run_ragas(
                 prepared,
                 ragas_config,
                 Path(paths["retrieval"]),
                 paths,
+                embedding_function=(
+                    service.runtime.embedding
+                    if ragas_config.get("run") and not invalid_answers
+                    else None
+                ),
                 event_callback=event_callback,
                 cancel_checker=cancel_checker,
             )
@@ -579,9 +687,17 @@ def execute_isolated_evaluation(
         "retrieval_hit_rate": retrieval_result.get("hit_rate"),
     }
     key_metrics.update({f"ragas_{key}": value for key, value in ragas_result.get("score_summary", {}).items()})
+    failed_step = next((item for item in step_results if item["status"] == "fail"), None)
+    all_passed = all(item["status"] == "pass" for item in step_results)
+    failed_result = failed_step.get("result", {}) if failed_step else {}
     summary = {
-        "status": "pass" if all(item["status"] == "pass" for item in step_results) else "needs_review",
-        "status_reason": "ok" if all(item["status"] == "pass" for item in step_results) else "step_failed_or_skipped",
+        "status": "failed" if failed_step else "pass" if all_passed else "needs_review",
+        "status_reason": (
+            str(failed_result.get("status_reason") or failed_step.get("message") or "step_failed")
+            if failed_step
+            else "ok" if all_passed else "step_failed_or_skipped"
+        ),
+        "error": str(failed_result.get("error") or failed_step.get("message") or "") if failed_step else "",
         "run_id": run_id,
         "run_dir": str(output_dir.resolve()),
         "started_at": "",

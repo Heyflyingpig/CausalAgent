@@ -1,3 +1,9 @@
+"""Ragas 回答质量评测、缓存和跨指标分析执行器。
+
+模块复用检索评测产物构造 judge 输入，支持 prepare-only、重复运行和坏例
+分析；它不改变知识库索引，也不把评测结果自动提升为正式发布结论。
+"""
+
 import json
 import math
 import os
@@ -72,7 +78,7 @@ RagasCancelChecker = Callable[[], bool]
 
 
 class RagasEvalCancelled(RuntimeError):
-    """Raised when a caller requests cooperative cancellation inside Ragas eval."""
+    """调用方在 Ragas 评测过程中请求协作式取消时抛出的异常。"""
 
 
 @contextmanager
@@ -97,12 +103,12 @@ def _langsmith_tracing_disabled():
 
 
 def _cancel_requested(cancel_checker: Optional[RagasCancelChecker]) -> bool:
-    """Return whether the caller has requested cooperative cancellation."""
+    """返回调用方是否请求协作式取消当前 Ragas 阶段。"""
     return bool(cancel_checker and cancel_checker())
 
 
 def _raise_if_cancelled(cancel_checker: Optional[RagasCancelChecker], message: str) -> None:
-    """Stop the current Ragas phase if cooperative cancellation was requested."""
+    """如果收到协作式取消请求，则停止当前 Ragas 阶段。"""
     if _cancel_requested(cancel_checker):
         raise RagasEvalCancelled(message)
 
@@ -115,7 +121,7 @@ def _emit_step_progress(
     total: int,
     sample: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Emit sample-level progress for Ragas preparation and refresh loops."""
+    """向进度回调发送 Ragas 准备和刷新循环的样本级进度。"""
     if event_callback is None:
         return
     sample = sample or {}
@@ -393,6 +399,7 @@ def run_repeated_ragas_baseline(
     low_score_threshold: float = 0.5,
     event_callback: Optional[RagasEventCallback] = None,
     cancel_checker: Optional[RagasCancelChecker] = None,
+    embedding_function: Any = None,
 ) -> Dict[str, Any]:
     """运行一次或多次 Ragas，并聚合 judge 稳定性统计。"""
     effective_repeat_count = max(int(repeat_count), 1)
@@ -422,6 +429,7 @@ def run_repeated_ragas_baseline(
             max_wait=max_wait,
             show_progress=show_progress,
             answer_relevancy_strictness=answer_relevancy_strictness,
+            embedding_function=embedding_function,
         )
         run_result["run_index"] = run_index + 1
         run_results.append(run_result)
@@ -480,6 +488,7 @@ def run_ragas_baseline(
     max_wait: int = 20,
     show_progress: bool = True,
     answer_relevancy_strictness: int = 1,
+    embedding_function: Any = None,
 ) -> Dict[str, Any]:
     """运行 Ragas baseline，并返回结构化结果。"""
     components = _load_legacy_ragas_components(
@@ -494,7 +503,8 @@ def run_ragas_baseline(
     judge_llm = components["LangchainLLMWrapper"](_build_legacy_ragas_judge_llm())
     embeddings = None
     if "answer_relevancy" in effective_metric_names:
-        embeddings = components["LangchainEmbeddingsWrapper"](_get_embedding_function())
+        source_embedding = embedding_function if embedding_function is not None else _get_embedding_function()
+        embeddings = components["LangchainEmbeddingsWrapper"](source_embedding)
     run_config = components["RunConfig"](
         timeout=timeout,
         max_workers=max_workers,
@@ -742,7 +752,7 @@ def build_ragas_dataset(
 
 
 def _find_invalid_ragas_answers(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Find generated-answer failures that would make Ragas scores misleading."""
+    """找出会使 Ragas 分数失真的回答生成失败记录。"""
     failure_markers = (
         "回答生成失败",
         "Insufficient Balance",
@@ -989,19 +999,19 @@ def _build_generic_eval_answer_prompt() -> ChatPromptTemplate:
         You are a careful answer writer for a general RAG evaluation.
         Use only the retrieved evidence, regardless of how the source was parsed or stored.
 
-        # Question
+        # 问题
         {question}
 
-        # Question intent
+        # 问题意图
         {intent}
 
-        # Why this question matters
+        # 为什么需要这个问题
         {why_needed}
 
-        # Retrieved evidence
+        # 检索到的证据
         {evidence_blocks}
 
-        # Answer rules
+        # 回答规则
         1. Do not add facts that are absent from the retrieved evidence.
         2. If the evidence is insufficient, use `status="insufficient_evidence"`.
         3. Every substantive claim must cite one or more evidence IDs actually used.

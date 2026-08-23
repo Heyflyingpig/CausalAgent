@@ -1,6 +1,14 @@
+"""RAG 检索评测与参数扫描执行器。
+
+模块负责加载通用题集、记录各检索阶段的 trace、计算命中指标并生成报告；
+它不直接构建向量库，也不负责发布索引或切换运行时 active pointer。
+"""
+
 import json
 import re
 import sys
+import time
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from statistics import mean
 from typing import Any, Callable, Dict, List, Optional
@@ -54,7 +62,7 @@ VectorSummaryProvider = Callable[[], Dict[str, Any]]
 
 
 def _cancel_requested(cancel_checker: Optional[EvalCancelChecker]) -> bool:
-    """Return whether the caller has requested cooperative cancellation."""
+    """返回调用方是否请求协作式取消当前评测。"""
     return bool(cancel_checker and cancel_checker())
 
 
@@ -66,7 +74,7 @@ def _emit_sample_progress(
     total: int,
     sample: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Emit sample-level progress for long RAG evaluation loops."""
+    """向进度回调发送长时间 RAG 评测的样本级进度。"""
     if event_callback is None:
         return
     sample = sample or {}
@@ -557,6 +565,9 @@ def sweep_retrieval_configs(
     config_specs: List[Dict[str, Any]],
     retrieval_trace_builder: Optional[RetrievalTraceBuilder] = None,
     vector_summary_provider: Optional[VectorSummaryProvider] = None,
+    max_workers: int = 1,
+    event_callback: Optional[EvalEventCallback] = None,
+    cancel_checker: Optional[EvalCancelChecker] = None,
 ) -> Dict[str, Any]:
     """
     对多组检索参数配置执行批量评测。
@@ -565,46 +576,193 @@ def sweep_retrieval_configs(
     1. 直接传 RagRetrievalConfig 字段字典；
     2. 传 {"name": "实验名", "config": {...}}，便于长期记录实验标签。
     """
-    runs: List[Dict[str, Any]] = []
+    if not config_specs:
+        return {"status": "pass", "sample_count": len(dataset), "run_count": 0, "runs": [], "errors": []}
+
+    prepared_specs = []
     for index, config_spec in enumerate(config_specs, start=1):
+        if not isinstance(config_spec, dict):
+            raise ValueError(f"sweep config {index} must be an object")
         run_name = config_spec.get("name", f"run_{index}")
         raw_config = config_spec.get("config", config_spec)
-        config = build_retrieval_config(raw_config)
-        result = evaluate_retrieval(
-            dataset,
-            retrieval_config=config,
-            retrieval_trace_builder=retrieval_trace_builder,
-            vector_summary_provider=vector_summary_provider,
-        )
-        runs.append(
-            {
+        if not isinstance(raw_config, dict):
+            raise ValueError(f"sweep config {index} config must be an object")
+        prepared_specs.append((index, str(run_name), build_retrieval_config(raw_config)))
+
+    worker_count = min(max(int(max_workers), 1), len(prepared_specs), 8)
+
+    def cancelled_result(index: int, run_name: str, config: RagRetrievalConfig) -> Dict[str, Any]:
+        return {
+            "run_id": index,
+            "name": run_name,
+            "config": config.to_dict(),
+            "status": "cancelled",
+            "seconds": 0.0,
+            "error": "cancelled before start",
+            "metrics": {},
+            "_details": [],
+        }
+
+    def emit_progress(item: Dict[str, Any], completed_count: int) -> None:
+        if not event_callback:
+            return
+        event_callback("step_progress", f"retrieval_sweep {completed_count}/{len(prepared_specs)}", {
+            "step": "retrieval_sweep",
+            "phase": "config_done",
+            "current": completed_count,
+            "total": len(prepared_specs),
+            "run_id": item["run_id"],
+            "name": item["name"],
+            "status": item["status"],
+        })
+
+    def run_one(index: int, run_name: str, config: RagRetrievalConfig) -> Dict[str, Any]:
+        if _cancel_requested(cancel_checker):
+            return cancelled_result(index, run_name, config)
+        started = time.perf_counter()
+        try:
+            result = evaluate_retrieval(
+                dataset,
+                retrieval_config=config,
+                retrieval_trace_builder=retrieval_trace_builder,
+                vector_summary_provider=vector_summary_provider,
+                cancel_checker=cancel_checker,
+            )
+            status = "cancelled" if result.get("status") == "cancelled" else "pass"
+            details = result.get("details", [])
+            return {
                 "run_id": index,
                 "name": run_name,
                 "config": config.to_dict(),
+                "status": status,
+                "seconds": round(time.perf_counter() - started, 3),
                 "metrics": {
-                    "recall_at_k": result["recall_at_k"],
-                    "mrr": result["mrr"],
-                    "hit_rate": result["hit_rate"],
+                    "recall_at_k": result.get("recall_at_k"),
+                    "mrr": result.get("mrr"),
+                    "hit_rate": result.get("hit_rate"),
                     "avg_timings_ms": result.get("avg_timings_ms", {}),
-                    "stage_metrics": result["stage_metrics"],
+                    "stage_metrics": result.get("stage_metrics", {}),
                     "final_prefix_metrics": result.get("final_prefix_metrics", {}),
-                    "loss_reason_counts": result["loss_reason_counts"],
+                    "loss_reason_counts": result.get("loss_reason_counts", {}),
+                    "empty_result_count": sum(not detail.get("retrieved_evidence") for detail in details),
                 },
+                "_details": details,
             }
-        )
+        except Exception as exc:
+            return {
+                "run_id": index,
+                "name": run_name,
+                "config": config.to_dict(),
+                "status": "failed",
+                "seconds": round(time.perf_counter() - started, 3),
+                "error": f"{type(exc).__name__}: {exc}",
+                "metrics": {},
+                "_details": [],
+            }
 
-    runs.sort(
+    completed: List[Dict[str, Any]] = []
+    cancellation_observed = False
+    if worker_count == 1:
+        for position, spec in enumerate(prepared_specs):
+            item = run_one(*spec)
+            completed.append(item)
+            emit_progress(item, len(completed))
+            if item["status"] == "cancelled":
+                cancellation_observed = True
+                for remaining_spec in prepared_specs[position + 1:]:
+                    remaining = cancelled_result(*remaining_spec)
+                    completed.append(remaining)
+                    emit_progress(remaining, len(completed))
+                break
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="rag_sweep") as pool:
+            futures = {pool.submit(run_one, *spec): spec for spec in prepared_specs}
+            for future in as_completed(futures):
+                spec = futures[future]
+                try:
+                    item = future.result()
+                except CancelledError:
+                    item = cancelled_result(*spec)
+                completed.append(item)
+                emit_progress(item, len(completed))
+                if not cancellation_observed and _cancel_requested(cancel_checker):
+                    cancellation_observed = True
+                    for pending in futures:
+                        if not pending.done():
+                            pending.cancel()
+
+    # 第一个声明的配置是基线；并行执行结束后按 run_id 定位，
+    # 避免任务完成顺序意外替换基线。
+    baseline_run_id = prepared_specs[0][0] if prepared_specs else None
+    completed.sort(key=lambda item: item["run_id"])
+    baseline = next(
+        (item for item in completed if item.get("run_id") == baseline_run_id),
+        None,
+    )
+    baseline_failed = baseline is None or baseline["status"] != "pass"
+    baseline_details = {str(item.get("sample_id")): item for item in (baseline or {}).get("_details", [])}
+    if not baseline_failed:
+        for item in completed:
+            if item["status"] != "pass" or item is baseline:
+                continue
+            regressed = 0
+            for detail in item.get("_details", []):
+                sample_id = str(detail.get("sample_id"))
+                base_recall = baseline_details.get(sample_id, {}).get("recall")
+                candidate_recall = detail.get("recall")
+                if isinstance(base_recall, (int, float)) and isinstance(candidate_recall, (int, float)) and candidate_recall < base_recall:
+                    regressed += 1
+            item.setdefault("metrics", {})["regressed_sample_count"] = regressed
+
+    successful = [item for item in completed if item["status"] == "pass"]
+    successful.sort(
         key=lambda item: (
-            item["metrics"]["recall_at_k"] if item["metrics"]["recall_at_k"] is not None else -1.0,
-            item["metrics"]["mrr"] if item["metrics"]["mrr"] is not None else -1.0,
+            item.get("metrics", {}).get("recall_at_k") if item.get("metrics", {}).get("recall_at_k") is not None else -1.0,
+            item.get("metrics", {}).get("mrr") if item.get("metrics", {}).get("mrr") is not None else -1.0,
         ),
         reverse=True,
     )
-    return {
+    failed = [item for item in completed if item["status"] != "pass"]
+    runs = successful + failed
+    recommended = []
+    if not baseline_failed:
+        baseline_recall = baseline.get("metrics", {}).get("recall_at_k")
+        for item in successful:
+            if item is baseline:
+                continue
+            metrics = item.get("metrics", {})
+            if (
+                isinstance(baseline_recall, (int, float))
+                and isinstance(metrics.get("recall_at_k"), (int, float))
+                and metrics["recall_at_k"] >= baseline_recall
+                and metrics.get("regressed_sample_count", 0) == 0
+                and metrics.get("empty_result_count", 0) <= baseline.get("metrics", {}).get("empty_result_count", 0)
+            ):
+                recommended.append({"run_id": item["run_id"], "name": item["name"], "reason": "recall 不低于基线且无样本级退化"})
+            if len(recommended) >= 2:
+                break
+
+    errors = [
+        {"run_id": item["run_id"], "name": item["name"], "error": item.get("error", "")}
+        for item in failed
+    ]
+    cancelled = cancellation_observed or any(item["status"] == "cancelled" for item in completed)
+    result = {
+        "status": "cancelled" if cancelled else ("partial" if errors else "pass"),
         "sample_count": len(dataset),
         "run_count": len(runs),
+        "max_workers": worker_count,
+        "baseline_failed": baseline_failed,
+        "baseline_run_id": baseline.get("run_id") if baseline else None,
+        "baseline_name": baseline.get("name") if baseline else None,
+        "baseline_status": baseline.get("status") if baseline else "missing",
         "runs": runs,
+        "recommended_candidates": recommended,
+        "errors": errors,
     }
+    for item in runs:
+        item.pop("_details", None)
+    return result
 
 def _ensure_parent_dir(path: Path) -> None:
     """确保输出文件所在目录存在。"""

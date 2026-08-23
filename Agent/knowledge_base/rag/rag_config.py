@@ -1,3 +1,9 @@
+"""RAG 数据目录、检索策略和评测 profile 的集中配置。
+
+本文件只保存代码内置默认值及环境变量解析结果；正式发布的 retrieval
+快照由运行时配置文件提供，不能把本文件当作运行产物存储入口。
+"""
+
 import os
 from pathlib import Path
 from typing import Any, Dict, List
@@ -18,7 +24,7 @@ PUBMEDQA_PROCESSED_DIR = PUBMEDQA_DIR / "processed"  # PubMedQA 转换后数据�
 PUBMEDQA_CORPUS_PATH = PUBMEDQA_PROCESSED_DIR / "pubmedqa_corpus_docs.jsonl"  # PubMedQA evidence corpus。
 PUBMEDQA_EVAL_DATASET_PATH = PUBMEDQA_PROCESSED_DIR / "pubmedqa_eval_dataset.json"  # PubMedQA benchmark_v2 主测试集。
 MULTIMODAL_EVAL_DATASET_PATH = KNOWLEDGE_BASE_DIR / "multimodal" / "production_eval_v1.json"  # Pearl 多模态定位题集。
-ACTIVE_CORPUS_PATH = PUBMEDQA_CORPUS_PATH  # 仅供 medical 构建工具使用，不属于 R5 评测输入。
+ACTIVE_CORPUS_PATH = PUBMEDQA_CORPUS_PATH  # 仅供 medical 构建工具使用，不属于隔离评测输入。
 RAG_EVAL_DATASET_PATH_VALUE = os.getenv("RAG_EVAL_DATASET_PATH", "").strip()
 RAG_EVAL_DATASET_PATH = Path(RAG_EVAL_DATASET_PATH_VALUE) if RAG_EVAL_DATASET_PATH_VALUE else None
 RAG_EVAL_DATASET_NAME = os.getenv("RAG_EVAL_DATASET_NAME", "user_supplied").strip() or "user_supplied"
@@ -72,15 +78,17 @@ RETRIEVAL_PROFILES: Dict[str, Dict[str, Any]] = {
         "mmr_lambda": 0.4,  # 降低相关性权重，提高多样性。
         "official_only_when_available": True,  # 旧因果库有官方语料时只保留官方语料。
     },
-    "active_current": {  # 通用 R5 检索基线。
+    "active_current": {  # 通用隔离评测检索基线。
         "dense_fetch_k": 10,  # dense 第一阶段取回候选数。
         "dense_mmr_k": 10,  # 当前等于 dense_fetch_k，通常不会触发二次 MMR embedding。
-        "sparse_fetch_k": 8,  # sparse / BM25 取回候选数。
-        "final_top_k": 4,
+        "sparse_fetch_k": 16,  # P0：只扩 sparse 窗口后的正式基线。
+        "final_top_k": 6,
         "dense_score_threshold": 0.45,  # dense 原始候选最低分数。
         "final_rerank_threshold": 0.0,
-        "mmr_lambda": 0.7,  # MMR 偏相关性。
+        "mmr_lambda": 0.6,  # P0：当前完整 Ragas 综合平衡最佳。
         "official_only_when_available": False,
+        "answer_max_contexts": 6,
+        "answer_context_compression": "none",
     },
     "pubmedqa_eval100": {  # PubMedQA 100 条正式评测检索预设。
         "dense_fetch_k": 10,  # 保持当前 active 基线，优先稳定性而不是扩大候选池。
