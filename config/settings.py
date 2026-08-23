@@ -1,3 +1,8 @@
+"""全局配置加载:从环境变量(及根目录 .env)读取运行参数。
+
+按功能分组初始化数据库、LLM、评测队列并发等配置;
+本文件只做读取与合法性校验,不包含业务逻辑。
+"""
 import os
 import logging
 import sys
@@ -267,7 +272,27 @@ class AppConfig:
         )
         self.JOB_STALE_AFTER_SECONDS = self._get_int_config("JOB_STALE_AFTER_SECONDS", default=120)
         self.JOB_MAX_ATTEMPTS = self._get_int_config("JOB_MAX_ATTEMPTS", default=3)
-        self.R5_EVALUATION_WORKERS = self._get_int_config("R5_EVALUATION_WORKERS", default=1)
+        self.R5_EVALUATION_WORKERS = self._get_int_config("R5_EVALUATION_WORKERS", default=5)
+        if not 1 <= self.R5_EVALUATION_WORKERS <= 16:
+            raise ValueError("配置错误: R5_EVALUATION_WORKERS 必须在 1 到 16 之间。")
+        r5_kind_limits = (
+            ("R5_INGESTION_CONCURRENCY_LIMIT", 1),
+            ("R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT", 1),
+            ("R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT", 1),
+            ("R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT", 1),
+            ("R5_EVALUATION_CONCURRENCY_LIMIT", 3),
+            ("R5_RAG_QUERY_CONCURRENCY_LIMIT", 2),
+        )
+        for name, default in r5_kind_limits:
+            value = self._get_int_config(name, default=default)
+            if not 1 <= value <= 5:
+                raise ValueError(f"配置错误: {name} 必须在 1 到 5 之间。")
+            setattr(self, name, value)
+        self.R5_DATASET_ROOT = self._get_config(
+            "R5_DATASET_ROOT",
+            required=False,
+            default="tmp/r5_datasets",
+        )
         self.R5_EVALUATION_POLL_INTERVAL_SECONDS = self._get_float_config(
             "R5_EVALUATION_POLL_INTERVAL_SECONDS",
             default=1.0,

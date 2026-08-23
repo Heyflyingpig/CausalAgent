@@ -1,9 +1,9 @@
-"""R5 隔离评测 resident worker。
+"""隔离评测常驻 worker。
 
 启动方式：
     python -m app.rag_eval.worker
 
-该进程不依赖 Flask 请求线程。每个 slot 从 MySQL 队列领取一个评测，
+该进程不依赖 Flask 请求线程。每个 slot 从 MySQL 队列领取一个任务，
 执行期间刷新数据库 heartbeat；进程异常退出后，下一次 worker 启动会把
 超时的 running job 和对应 run.json 收敛为 failed，而不会静默重跑。
 """
@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import socket
 import sys
 import threading
@@ -23,27 +24,75 @@ from app.rag_eval.isolated_runs import IsolatedRunManager
 from config.settings import settings
 
 
+def _run_candidate_child(run_id: str) -> None:
+    """在独立进程中执行不可抢占的 Ragas 候选生成调用。"""
+    IsolatedRunManager().run_queued_sync(run_id)
+
+
+def _terminate_process(process: multiprocessing.process.BaseProcess) -> None:
+    """有界终止子进程，避免取消后的外部模型调用继续占用 worker slot。"""
+    process.terminate()
+    process.join(timeout=5)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=2)
+
+
+def _run_cancellable_candidate(manager: IsolatedRunManager, run_id: str) -> None:
+    """隔离 Ragas 生成，使已取消任务能立即释放常驻 worker 的 slot。"""
+    if sys.platform == "win32":
+        # 生产 worker 运行在 Linux Docker；本地 Windows 保留兼容同步路径。
+        manager.run_queued_sync(run_id)
+        return
+
+    process = multiprocessing.get_context("fork").Process(
+        target=_run_candidate_child,
+        args=(run_id,),
+        daemon=False,
+        name=f"r5_candidate_{run_id}",
+    )
+    process.start()
+    while process.is_alive():
+        process.join(timeout=0.25)
+        state = manager._load(run_id)
+        job = job_service.get_job(run_id)
+        if state.get("cancel_requested") or (job and job.get("status") == "cancelled"):
+            logging.info("[rag-eval-worker] terminating cancelled candidate run=%s", run_id)
+            _terminate_process(process)
+            manager.mark_worker_cancelled(run_id, "cancelled by user")
+            return
+    process.join()
+    if process.exitcode not in (0, None):
+        state = manager._load(run_id)
+        if state.get("status") not in {"cancelled", "failed"}:
+            raise RuntimeError(f"candidate child exited with code {process.exitcode}")
+
+
 def _heartbeat_loop(
     manager: IsolatedRunManager,
     run_id: str,
     worker_id: str,
     stop: threading.Event,
+    lease_lost: threading.Event,
 ) -> None:
-    """周期性刷新 SQL 租约和独立心跳文件。"""
+    """周期性刷新 SQL 租约和独立心跳文件；失联时触发 fencing。"""
     interval = max(int(settings.R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS), 1)
     while not stop.wait(interval):
         try:
-            if not job_service.heartbeat_evaluation(run_id, worker_id):
+            if not job_service.heartbeat_job(run_id, worker_id):
                 logging.warning("[rag-eval-worker] lease lost run=%s worker=%s", run_id, worker_id)
+                lease_lost.set()
+                manager.request_lease_abort(run_id, worker_id)
                 return
             manager.touch_worker_heartbeat(run_id, worker_id)
         except Exception:
+            # 心跳瞬时失败不代表租约失效，不能据此终止长任务；只记录并继续。
             logging.exception("[rag-eval-worker] heartbeat failed run=%s worker=%s", run_id, worker_id)
 
 
 def _reconcile_stale_runs(manager: IsolatedRunManager) -> None:
     """把上一进程遗留的 heartbeat 超时任务收敛成失败。"""
-    for job in job_service.reconcile_stale_evaluations():
+    for job in job_service.reconcile_stale_jobs():
         run_id = str(job.get("run_id") or "")
         message = str(job.get("error_message") or "评测 worker heartbeat 超时，任务未完成")
         try:
@@ -54,41 +103,84 @@ def _reconcile_stale_runs(manager: IsolatedRunManager) -> None:
             logging.exception("[rag-eval-worker] failed to reconcile run=%s", run_id)
 
 
+def _reconcile_terminal_state(manager: IsolatedRunManager, run_id: str) -> None:
+    """根据 SQL 实际终态收敛 run.json，避免成功/失败/取消状态分裂。
+
+    complete_job 返回 false 或租约失效时，SQL 可能已被取消、被 reconcile 标记
+    为 failed，或已经 succeeded。这里读取 SQL 真实终态并让 run.json 与之对齐，
+    而不是一律把 run.json 标记为 failed（否则会得到 SQL=cancelled 而
+    run.json=failed 的分裂）。
+    """
+    sql_status = ""
+    try:
+        job = job_service.get_job(run_id)
+        sql_status = str(job.get("status") or "") if job else ""
+    except Exception:
+        logging.exception("[rag-eval-worker] failed to read SQL status while reconciling run=%s", run_id)
+    if sql_status == "cancelled":
+        manager.mark_worker_cancelled(run_id, "cancelled by user")
+    elif sql_status == "failed":
+        manager.mark_worker_fenced(run_id, "RAG 任务已在 SQL 侧失败，结果被丢弃")
+    elif sql_status == "succeeded":
+        # SQL 已成功，run.json 保持成功终态即可（幂等）。
+        return
+    else:
+        # SQL 终态未知或读取失败，按失败收敛（fail-closed）。
+        manager.mark_worker_fenced(run_id, "RAG 任务租约失效，结果被丢弃")
+
+
 def _run_one(manager: IsolatedRunManager, job: dict[str, Any], worker_id: str) -> None:
     """执行单个已领取任务，并把 run.json 与 SQL 状态同步到终态。"""
     run_id = str(job["run_id"])
+    state = manager._load(run_id)
+    if state.get("status") == "cancelled" or state.get("cancel_requested"):
+        job_service.cancel_job(run_id)
+        return
     manager.mark_worker_started(run_id, worker_id)
     stop = threading.Event()
+    lease_lost = threading.Event()
     heartbeat = threading.Thread(
         target=_heartbeat_loop,
-        args=(manager, run_id, worker_id, stop),
+        args=(manager, run_id, worker_id, stop, lease_lost),
         daemon=True,
         name=f"r5_eval_heartbeat_{run_id}",
     )
     heartbeat.start()
     try:
-        manager.run_evaluation_sync(run_id)
+        if state.get("kind") == "candidate_generation":
+            _run_cancellable_candidate(manager, run_id)
+        else:
+            manager.run_queued_sync(run_id)
         state = manager._load(run_id)
         status = state.get("status")
-        if status == "cancelled":
-            job_service.cancel_evaluation(run_id)
-        if status == "succeeded":
-            job_service.complete_evaluation(run_id)
+        kind = state.get("kind")
+        if lease_lost.is_set():
+            _reconcile_terminal_state(manager, run_id)
         elif status == "cancelled":
             # 取消请求已经由 Web 或执行器写入 run.json；SQL 只需保留终态。
-            job_service.cancel_evaluation(run_id)
+            job_service.cancel_job(run_id)
+        elif kind == "ingestion" and status == "staged":
+            # 摄取成功终态是 staged，SQL 仍同步为 succeeded。
+            if not job_service.complete_job(run_id):
+                _reconcile_terminal_state(manager, run_id)
+        elif status == "succeeded":
+            if not job_service.complete_job(run_id):
+                _reconcile_terminal_state(manager, run_id)
         elif status == "failed":
-            job_service.fail_evaluation(run_id, str(state.get("error") or "评测执行失败"))
+            job_service.fail_job(run_id, str(state.get("error") or "RAG 任务执行失败"))
         else:
             message = f"评测执行结束但未产生终态: {status}"
             manager.mark_worker_timeout(run_id, message)
-            job_service.fail_evaluation(run_id, message)
+            job_service.fail_job(run_id, message)
     except Exception as exc:
         logging.exception("[rag-eval-worker] evaluation failed run=%s", run_id)
-        try:
-            manager.mark_worker_timeout(run_id, str(exc))
-        finally:
-            job_service.fail_evaluation(run_id, str(exc))
+        if lease_lost.is_set():
+            _reconcile_terminal_state(manager, run_id)
+        else:
+            try:
+                manager.mark_worker_timeout(run_id, str(exc))
+            finally:
+                job_service.fail_job(run_id, str(exc))
     finally:
         stop.set()
         heartbeat.join(timeout=max(int(settings.R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS), 1) + 1)
@@ -101,7 +193,7 @@ def _run_slot(slot_index: int) -> None:
     poll_interval = max(float(settings.R5_EVALUATION_POLL_INTERVAL_SECONDS), 0.1)
     while True:
         _reconcile_stale_runs(manager)
-        job = job_service.claim_next_evaluation(worker_id)
+        job = job_service.claim_next_job(worker_id)
         if job:
             _run_one(manager, job, worker_id)
         else:

@@ -327,6 +327,7 @@ def check_database_readiness():
                 "admin_operation_items",
                 "rag_eval_profiles",
                 "rag_eval_jobs",
+                "rag_eval_datasets",
             ]
             cursor.execute(
                 """
@@ -391,6 +392,27 @@ def check_database_readiness():
 
             cursor.execute(
                 """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = 'rag_eval_jobs'
+                  AND column_name IN ('job_kind', 'priority')
+                """,
+                (settings.MYSQL_DATABASE,),
+            )
+            rag_eval_job_columns = {row[0] for row in cursor.fetchall()}
+            missing_rag_eval_job_columns = {'job_kind', 'priority'} - rag_eval_job_columns
+            if missing_rag_eval_job_columns:
+                error_msg = (
+                    "数据库关键字段缺失: "
+                    f"{sorted(f'rag_eval_jobs.{name}' for name in missing_rag_eval_job_columns)}。"
+                    "请先运行 'python -m Database.bootstrap'。"
+                )
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            cursor.execute(
+                """
                 SELECT table_name, index_name
                 FROM information_schema.statistics
                 WHERE table_schema = %s
@@ -404,6 +426,23 @@ def check_database_readiness():
                       AND index_name = 'uq_admin_operations_actor_idempotency'
                       AND non_unique = 0
                     )
+                    OR (
+                      table_name = 'rag_eval_jobs'
+                      AND index_name = 'idx_rag_eval_jobs_kind_queue'
+                    )
+                    OR (
+                      table_name = 'rag_eval_jobs'
+                      AND index_name = 'idx_rag_eval_jobs_priority_queue'
+                    )
+                    OR (
+                      table_name = 'rag_eval_datasets'
+                      AND index_name = 'uq_rag_eval_datasets_identity'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'rag_eval_datasets'
+                      AND index_name = 'idx_rag_eval_datasets_list'
+                    )
                   )
                 """,
                 (settings.MYSQL_DATABASE,),
@@ -415,12 +454,37 @@ def check_database_readiness():
                     "admin_operations",
                     "uq_admin_operations_actor_idempotency",
                 ),
+                ("rag_eval_jobs", "idx_rag_eval_jobs_kind_queue"),
+                ("rag_eval_jobs", "idx_rag_eval_jobs_priority_queue"),
+                ("rag_eval_datasets", "uq_rag_eval_datasets_identity"),
+                ("rag_eval_datasets", "idx_rag_eval_datasets_list"),
             }
             missing_indexes = required_indexes - critical_indexes
             if missing_indexes:
                 error_msg = (
                     "数据库关键索引缺失: "
                     f"{sorted(f'{table}.{index}' for table, index in missing_indexes)}。"
+                    "请先运行 'python -m Database.bootstrap'。"
+                )
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            cursor.execute(
+                """
+                SELECT column_name, seq_in_index
+                FROM information_schema.statistics
+                WHERE table_schema = %s
+                  AND table_name = 'rag_eval_jobs'
+                  AND index_name = 'idx_rag_eval_jobs_priority_queue'
+                ORDER BY seq_in_index ASC
+                """,
+                (settings.MYSQL_DATABASE,),
+            )
+            priority_index_columns = [row[0] for row in cursor.fetchall()]
+            if priority_index_columns != ['status', 'priority', 'created_at', 'id']:
+                error_msg = (
+                    "数据库关键索引列顺序错误: "
+                    "rag_eval_jobs.idx_rag_eval_jobs_priority_queue。"
                     "请先运行 'python -m Database.bootstrap'。"
                 )
                 logging.error(error_msg)
