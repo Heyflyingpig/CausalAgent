@@ -56,18 +56,24 @@ def _inject_mcp_runtime_arguments(
     state: CausalAgentState,
     mcp_tools: list,
 ) -> AIMessage:
-    """在模型选定 MCP 工具后，只向声明 csv_data 的工具补充运行时数据。"""
-    file_content = state.get("file_content")
-    if not file_content:
-        return ai_message
-
+    """向 MCP 工具注入可信 Job 身份，不把 CSV 正文放入 ToolMessage。"""
+    file_summary = state.get("file_summary") or {}
+    runtime_values = {
+        "user_id": state.get("user_id"),
+        "job_id": state.get("job_id"),
+        "input_user_file_id": file_summary.get("user_file_id"),
+        "input_object_id": file_summary.get("object_id"),
+    }
     tool_index = _tools_by_name(mcp_tools)
     for tool_call in getattr(ai_message, "tool_calls", []) or []:
         tool = tool_index.get(tool_call.get("name"))
-        if tool is None or not _tool_accepts_argument(tool, "csv_data"):
+        if tool is None:
             continue
         args = tool_call.setdefault("args", {})
-        args["csv_data"] = file_content
+        args.pop("csv_data", None)
+        for name, value in runtime_values.items():
+            if value is not None and _tool_accepts_argument(tool, name):
+                args[name] = value
 
     return ai_message
 

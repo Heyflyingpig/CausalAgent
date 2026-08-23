@@ -3,7 +3,7 @@ from .state import CausalAgentState
 
 
 ROUTE_DECISIONS = {"fold", "postprocess", "normal_chat", "inquiry_answer"}
-FOLD_DECISIONS = {"preprocess", "agent"}
+FOLD_DECISIONS = {"preprocess", "agent", "normal_chat"}
 
 def decision_router(state: CausalAgentState) -> str:
     """

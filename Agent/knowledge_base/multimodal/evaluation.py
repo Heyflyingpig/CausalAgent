@@ -155,7 +155,7 @@ def read_active_release_identity(*, strict: bool = True) -> dict[str, Any]:
 
 
 def evaluation_identity(dataset_path: str | Path) -> dict[str, Any]:
-    """返回一次 R5 运行需要绑定的题集、索引和解析策略指纹。"""
+    """返回一次 RAG_EVAL 运行需要绑定的题集、索引和解析策略指纹。"""
     path = Path(dataset_path)
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not is_multimodal_eval_payload(payload):

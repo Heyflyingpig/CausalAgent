@@ -19,7 +19,7 @@ for key, value in {
 
 from langchain_core.messages import AIMessage
 
-from app.agent.core import process_final_result
+from app.agent.worker.result_presenter import process_final_result
 from app.chat.response_storage import prepare_ai_response_for_storage
 
 

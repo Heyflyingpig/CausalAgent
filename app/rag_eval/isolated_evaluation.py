@@ -94,7 +94,7 @@ def normalize_dataset_payload(payload: Dict[str, Any]) -> tuple[Dict[str, Any], 
 
 def _normalize_dataset_from_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     """通过现有通用契约校验内联题集字段。"""
-    with tempfile.TemporaryDirectory(prefix="r5_dataset_") as temporary_dir:
+    with tempfile.TemporaryDirectory(prefix="rag_eval_dataset_") as temporary_dir:
         temporary = Path(temporary_dir) / "dataset.json"
         temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         validation = validate_eval_dataset(temporary)
@@ -523,7 +523,7 @@ def execute_isolated_evaluation(
         "steps": selected_steps,
     }
     manifest = {
-        "schema_version": "r5_evaluation_run_v1",
+        "schema_version": "rag_eval_evaluation_run_v1",
         "run_id": run_id,
         "ingestion_run_id": ingestion_run_id,
         "index_version": index_version,
@@ -715,7 +715,7 @@ def execute_isolated_evaluation(
     _write_json(Path(paths["summary"]), summary)
     write_markdown_file(Path(paths["summary_report"]), build_pipeline_summary_markdown_report(summary))
     result = {
-        "schema_version": "r5_evaluation_result_v1",
+        "schema_version": "rag_eval_evaluation_result_v1",
         "run_id": run_id,
         "ingestion_run_id": ingestion_run_id,
         "index_version": index_version,

@@ -1,13 +1,18 @@
-"""显式 RagQueryService 的异步兼容适配器。"""
-
+"""
+@task封装的RAG查询任务
+"""
+import logging
 import asyncio
-from typing import Any, Dict, List, Union
+from typing import Dict, List, Union
+
+from langgraph.func import task
+
+from Agent.knowledge_base.query_rag import get_rag_response
+from app.agent.worker.execution_guard import JobExecutionRevoked
 
 
-async def rag_query_task(
-    questions: List[Union[str, Dict]],
-    rag_service: Any,
-) -> Dict:
+@task
+async def rag_query_task(questions: List[Union[str, Dict]]) -> Dict:
     """
     Task: 查询知识库（RAG）
 
@@ -17,4 +22,22 @@ async def rag_query_task(
     Returns:
         dict: 结构化的知识库查询结果。
     """
-    return await asyncio.to_thread(rag_service.get_response, questions)
+    logging.info("正在启动RAG查询任务...")
+    try:
+        rag_response = await asyncio.to_thread(get_rag_response, questions)
+        logging.info("Task: 知识库查询完成")
+        return rag_response
+
+    except (JobExecutionRevoked, asyncio.CancelledError):
+        raise
+    except Exception as exc:
+        logging.error(f"Task: 知识库查询失败: {exc}", exc_info=True)
+        return {
+            "success": False,
+            "status": "unavailable",
+            "error_type": "RAGQueryError",
+            "summary": f"知识库查询失败：{exc}",
+            "questions": [],
+            "evidence_count": 0,
+            "error": str(exc),
+        }

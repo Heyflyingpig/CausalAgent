@@ -11,6 +11,14 @@ services:
     ports: !override
       - "127.0.0.2:13317:3306"
 
+  postgres-checkpoint:
+    container_name: causalagent31e2e_postgres_checkpoint
+    ports: !override
+      - "127.0.0.1:15433:5432"
+
+  db-bootstrap:
+    container_name: causalagent31e2e_db_bootstrap
+
   app:
     container_name: causalagent31e2e_app
     environment:
@@ -24,3 +32,6 @@ services:
 
   monitor:
     container_name: causalagent31e2e_monitor
+
+  checkpoint-cleanup:
+    container_name: causalagent31e2e_checkpoint_cleanup

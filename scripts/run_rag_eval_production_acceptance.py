@@ -133,8 +133,8 @@ def resolve_output_path(output: Path | None, matrix_path: Path) -> Path:
         return directory / "report.json"
     candidate = Path(output).resolve()
     matrix = Path(matrix_path).resolve()
-    r5_runs = (REPOSITORY_ROOT / "tmp" / "r5_isolated_runs").resolve()
-    if candidate == matrix or candidate.exists() or _is_within(candidate, r5_runs):
+    rag_eval_runs = (REPOSITORY_ROOT / "tmp" / "rag_eval_isolated_runs").resolve()
+    if candidate == matrix or candidate.exists() or _is_within(candidate, rag_eval_runs):
         raise ValueError("unsafe output path")
     return candidate
 

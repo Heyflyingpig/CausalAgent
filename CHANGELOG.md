@@ -741,7 +741,7 @@
 ---
 ---
 2026.8.1
-- 【来源与远程边界】：工作台支持多格式知识源登记和删除；上传只刷新 `tmp/r5_sources/`，不自动摄取。内测默认允许本次运行通过精确 outbound manifest 使用远程 VLM，`VISION_ALLOW_REMOTE_DATA=false` 可关闭。
+- 【来源与远程边界】：工作台支持多格式知识源登记和删除；上传只刷新 `tmp/rag_eval_sources/`，不自动摄取。内测默认允许本次运行通过精确 outbound manifest 使用远程 VLM，`VISION_ALLOW_REMOTE_DATA=false` 可关闭。
 - 【评测配置】：统一 retrieval/Ragas profile 由 MySQL `rag_eval_profiles` 保存，内置 profile 只读，自定义 profile 支持保存、删除和发布；修复可编辑字段边界、profile 参数串改和题集 placeholder 校验。
 - 【前端可用性】：补充大模型等待提示、Ragas 完成弹窗、阶段进度合并、sticky 导航和基线/候选完整指标对比，完成类型检查、构建和浏览器验证。
 
@@ -868,7 +868,7 @@
 ---
 ---
 2026.8.9（知识源显示名与候选审核布局）
-- 新增来源显示名元数据，用户可在来源目录为知识源命名；名称保存到 `tmp/r5_sources/source_metadata.json`，摄取和候选 run 会快照该名称，source_id、内容 hash 和历史产物不变。
+- 新增来源显示名元数据，用户可在来源目录为知识源命名；名称保存到 `tmp/rag_eval_sources/source_metadata.json`，摄取和候选 run 会快照该名称，source_id、内容 hash 和历史产物不变。
 - 候选审核页统一显示知识源名称和短索引别名，并将审核/冻结门禁移动到生成区下方；审核员仍只保存到本地隔离候选 revision 与 review manifest，不写入 MySQL。
 - 【验证】：新增来源显示名 API/本地元数据回归覆盖；相关后端回归 32 项通过，前端 typecheck/build、静态页 HTTP 200 和 `git diff --check` 通过。
 
@@ -885,7 +885,7 @@
 - 【启动门禁】：`check_database_readiness()` 新增对 `rag_eval_jobs.job_kind` 列与 `idx_rag_eval_jobs_kind_queue` 索引的检查，避免缺列时 worker 误启动、直到提交任务才报错。
 - 【租约 fencing】：worker 心跳失联后触发 fencing，阻止原 worker 继续把成功结果写回 run.json/SQL；`complete_job` 返回是否真正发生 running→succeeded 迁移，失败时把 run.json 收敛为 failed，消除 SQL=failed、run.json=succeeded 的不一致。
 - 【SSE 游标】：事件改用单调递增 `event_id` 作为游标，事件数超过 500 上限后不再永久漏读后续事件（含最终完成事件）。
-- 【生产 Compose】：`docker-compose.prod.yml` 补齐 `rag-eval-worker` 服务，并为 app 与 worker 共享 `r5_isolated_runs` / `r5_sources` 运行目录。
+- 【生产 Compose】：`docker-compose.prod.yml` 补齐 `rag-eval-worker` 服务，并为 app 与 worker 共享 `rag_eval_isolated_runs` / `rag_eval_sources` 运行目录。
 - 【摄取页范围】：修复无 `page_ranges` 时 worker 二次归一化把空列表误判为非法的问题（`_normalize_page_ranges` 对空列表与 None 一视同仁），否则「HTTP 创建摄取 → 领取」会在 worker 侧直接失败。
 - 【测试对齐】：更新因持久队列重构而过时的测试（evaluation 入队断言、候选生成同步执行、候选 run 进程重启恢复），新增「摄取 staged 视为成功」worker 测试。
 - 【验证】：迁移后 readiness 通过；相关回归 50 项 unittest 通过；两份 Compose 配置解析通过；真实链路「创建摄取 → SQL 领取 → staged → SQL succeeded」实测通过（run.json=staged，SQL=succeeded，job_kind=ingestion）。
@@ -995,7 +995,7 @@
 ---
 2026.8.17（隔离评测完整策略并行实验）
 - 【后端】：新增 `POST /api/rag_eval/isolated/evaluation-batches`，一次校验并创建 2–4 个不同策略 profile 的独立 evaluation run；run 状态保存 `batch_id/batch_position/batch_size`，仍复用现有持久队列、租约、取消和报告链路。
-- 【执行】：`R5_EVALUATION_WORKERS` 默认改为 2，并限制在 1–4；开发、兼容副本和生产 Compose 同步该默认值。每个 slot 仍独立领取一个 SQL 任务，不在 Web 进程执行长任务。
+- 【执行】：`RAG_EVAL_EVALUATION_WORKERS` 默认改为 2，并限制在 1–4；开发、兼容副本和生产 Compose 同步该默认值。每个 slot 仍独立领取一个 SQL 任务，不在 Web 进程执行长任务。
 - 【前端】：评测中心支持多选 2–4 个 profile 并行启动，统一轮询批次状态、切换查看逐 run 事件、批量取消，并在全部结束后进入严格 A/B 对比。
 - 【并发修复】：真实双 slot 冒烟首次暴露本地 HuggingFace embedding 同时构造的 PyTorch `meta tensor` 竞态；Runtime 现在只串行化进程内本地模型初始化，初始化完成后的两个评测仍并行执行。
 - 【实验方案】：新增 `Document/rag_experiment_2_plan.md`，依据实验一的阶段召回损失和固定题/候选题分组指标，提出“混合召回增强”主实验及三个并行对照组；相同 Gold revision 下只改变检索参数。
@@ -1056,7 +1056,7 @@
 ---
 ---
 2026.8.20（RAG 测评后端队列与题集绑定审计）
-- 【统一执行】：staged index RAG 试跑从 Web daemon thread 迁入 `rag_eval_jobs`，与摄取、候选生成、完整评测和题集治理共享持久 worker；开发、兼容副本和生产 Compose 的 `R5_EVALUATION_WORKERS` 默认统一为 5。
+- 【统一执行】：staged index RAG 试跑从 Web daemon thread 迁入 `rag_eval_jobs`，与摄取、候选生成、完整评测和题集治理共享持久 worker；开发、兼容副本和生产 Compose 的 `RAG_EVAL_EVALUATION_WORKERS` 默认统一为 5。
 - 【题集门禁】：所有内联 `rag_eval_v1` 题集在入队前执行 `dataset_kind` 语义校验；`generated_candidate` 还必须通过当前 staged index 的 source snapshot、unit locator 和 index version 校验，跨索引题集直接拒绝。
 - 【接口一致性】：Gold 状态接口缺少成对的 `ingestion_run_id + index_version` 时返回 JSON 400，不再抛出 HTML 500；未删除任何接口，仓库无前端调用的接口单独列入人工审核清单。
 - 【验证】：宿主与现有 `rag-eval-worker` 容器内相关回归均为 83 项通过；三份 Compose 配置展开、10 个相关 Python 文件不落盘语法编译和本次范围 `git diff --check` 通过。未重启正在运行的 worker，5 slot 默认在下次重建或重建容器后生效。
@@ -1080,3 +1080,8 @@
 2026.8.21（索引绑定调参集候选补题连接失败恢复）
 - 【修复】：候选补题保留每批三次连接重试，但不再因连续两批短暂连接失败提前放弃其余已选知识单元；只有已选候选预算全部耗尽且数量仍不足时，才保持 fail-closed 失败。
 - 【回归】：新增“连续两批连接失败后继续第三批并补齐候选”用例；原提前停止策略下用例稳定失败，移除提前停止后通过。
+
+---
+2026.8.23（RAG 子图编排与评测配置命名对齐）
+- 【合并决策】：父图中的 RAG 阶段恢复为 Planner、ToolNode、Parser、Finalize 子图，并通过适配节点向父图投影最终检索结果；worker 同步采用模块化运行时入口。
+- 【配置】：RAG 评测的配置键与临时目录统一使用 `RAG_EVAL`/`rag_eval` 命名，保留既有评测队列、题集与测试能力。

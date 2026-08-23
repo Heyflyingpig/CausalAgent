@@ -13,9 +13,10 @@ def _make_edge_record(
     raw_edge: Any,
     index: int,
     label: Optional[str] = None,
+    weight: Optional[float] = None,
 ) -> EdgeRecord:
     """构造后处理链路内部统一使用的边对象，避免在 prompt 和返回值中混用字符串/dict。"""
-    return {
+    record = {
         "id": f"edge_{index}",
         "source": source,
         "target": target,
@@ -24,6 +25,9 @@ def _make_edge_record(
         "raw_edge": raw_edge,
         "original_index": index,
     }
+    if weight is not None:
+        record["weight"] = weight
+    return record
 
 
 def _parse_edge_string(raw_edge: Any, index: int) -> Optional[EdgeRecord]:
@@ -93,6 +97,13 @@ def _parse_vis_edge(raw_edge: Dict[str, Any], index: int) -> Optional[EdgeRecord
     if raw_edge.get("dashes") and edge_type == "directed":
         edge_type = "partially_oriented"
 
+    raw_weight = raw_edge.get("weight")
+    weight = (
+        float(raw_weight)
+        if isinstance(raw_weight, (int, float)) and not isinstance(raw_weight, bool)
+        else None
+    )
+
     return _make_edge_record(
         source=source,
         target=target,
@@ -100,6 +111,7 @@ def _parse_vis_edge(raw_edge: Dict[str, Any], index: int) -> Optional[EdgeRecord
         raw_edge=raw_edge,
         index=index,
         label=str(raw_edge.get("label", "") or ""),
+        weight=weight,
     )
 
 

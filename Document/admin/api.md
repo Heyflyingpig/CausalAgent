@@ -1,5 +1,9 @@
 # 管理员 API 契约
 
+文档职责：记录 `/api/admin` 管理员 API、`/admin` 页面入口、响应边界和受控业务操作契约。
+
+适用范围：修改 `app/admin/routes.py`、管理员 service、鉴权/CSRF 或 Vue API 调用时使用；数据库 monitor、主从和 checkpoint 内部实现见 [`../database/overview.md`](../database/overview.md) 与 [`../database/monitoring.md`](../database/monitoring.md)。
+
 管理员 API 统一使用 `/api/admin` 前缀。除特别说明外，接口只允许数据库中 `role = 'admin'` 且 `is_active = TRUE` 的用户访问；后端每次请求都会通过主库强一致读重新确认用户状态，不把浏览器 Session 中的角色缓存作为授权依据。
 
 ## 通用约定
@@ -28,6 +32,8 @@
 
 ## 数据库看板
 
+`/admin/database` 使用 `view=database`、`view=cleanup-worker`、`view=outbox` 三段 URL 视图；用户删除结果可附加 `operation_id` 进入 Outbox 并高亮对应记录。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/admin/db/dashboard` | 聚合读取最近共享快照 |
@@ -41,7 +47,9 @@
 | `GET` | `/api/admin/db/audit` | 读取最近 deep audit 快照 |
 | `POST` | `/api/admin/db/audit/run` | 登记 deep audit 请求 |
 
-所有 GET 只读取 MySQL 中最近的共享快照，不在 Web 请求中执行完整采集。刷新接口只登记请求，实际采集由独立 monitor 完成。
+所有数据库看板 GET 只读取 MySQL 中最近的共享快照，不在 Web 请求中执行完整采集。共享快照还包括 `checkpoint_cleanup_runtime`（cleanup worker 心跳）和 `checkpoint_cleanup_outbox`（脱敏队列摘要）；刷新接口只登记请求，实际采集由独立 monitor 完成。Outbox 不返回 `last_error` 原文，只返回安全错误结论；quick/deep 采集会通过只读连接检查 PostgreSQL checkpoint，并把脱敏结论写回共享快照。
+
+Quick 快照的 `checks[]` 每项包含 `description` 和 `warning`：`description` 说明该项实际核对的结构或运行条件，`warning` 仅在本次检查异常或不可用时返回具体原因；历史快照缺少 `description` 时，前端回退展示 `warning`。
 
 SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序选取和展示，平均耗时相同时按累计 `SUM_TIMER_WAIT` 降序次排序，不等同于单次查询超过 `long_query_time`。慢查询告警优先使用采集窗口内 `Slow_queries` 增量。
 
@@ -72,6 +80,7 @@ SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序�
 | `GET` | `/api/admin/business/jobs` | 分析任务列表 |
 | `GET` | `/api/admin/business/jobs/<id>` | 分析任务详情 |
 | `GET` | `/api/admin/business/jobs/<id>/events` | 任务事件列表 |
+| `GET` | `/api/admin/business/jobs/<id>/checkpoints` | PostgreSQL checkpoint 安全摘要 |
 | `GET` | `/api/admin/business/jobs/<id>/content` | 分块读取任务内容 |
 | `GET` | `/api/admin/business/files` | 文件列表 |
 | `GET` | `/api/admin/business/files/<id>` | 文件详情 |
@@ -79,7 +88,9 @@ SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序�
 | `GET` | `/api/admin/business/files/<id>/download` | 下载文件 |
 | `GET` | `/api/admin/operations/<operation_id>` | 查询受控用户删除及 checkpoint cleanup 状态 |
 
-密码哈希、Cookie、Token、文件哈希、数据库账号、host 和 grants 不进入列表 DTO。消息、附件及任务内容最多按 64 KiB 源字节分块读取；成功的敏感读取要求审计可写。CSV 预览最多读取 256 KiB、100 行、50 列，单元格最多 1000 字符，并且只按文本渲染。
+密码哈希、Cookie、Token、文件哈希、数据库账号、host 和 grants 不进入列表 DTO。Job DTO 额外返回 `execution_state`、`execution_released_at` 和 `execution_release_reason`；worker 汇总返回 draining 数量、最长 draining 时长以及 `worker_confirmed`/`lease_expired` 计数。任务事件接口只从 MySQL payload 提取节点名、说明和耗时；checkpoint 接口按 `thread_id=analysis_jobs.job_id` 与 `metadata.job_id` 精确归属任务，根 namespace 为空，默认 20、最多 50 条并按不透明 `checkpoint_id` 游标分页，只返回 ID、父 ID、namespace、时间、step、source 和更新通道。它不读取或返回 checkpoint 状态正文、blob 和 pending writes；旧 session-thread checkpoint 不迁移、不读取、不清理。历史记录缺少 `job_id` 时不会按时间猜测归属。PostgreSQL 不可用时返回 `503 checkpoint_unavailable`，任务详情和 MySQL 事件接口仍可用。
+
+消息、附件及任务内容最多按 64 KiB 源字节分块读取；成功的敏感读取要求审计可写。CSV 预览最多读取 256 KiB、100 行、50 列，单元格最多 1000 字符，并且只按文本渲染。
 
 ## 受控业务写入
 
@@ -92,4 +103,4 @@ SQL 性能摘要按 Performance Schema 的单次平均 `AVG_TIMER_WAIT` 降序�
 | `GET` | `/api/admin/business/files/<id>/delete-impact` | 预览文件删除影响 |
 | `DELETE` | `/api/admin/business/files/<id>` | 物理删除文件和 BLOB |
 
-操作者不能禁用、降级或删除自己，也不能移除最后一个启用管理员。角色、状态或密码实际变化会通过 `users.auth_version` 使目标用户旧 Session 失效。用户删除先提交 MySQL 业务数据，PostgreSQL checkpoint 清理由 outbox worker 异步完成；接口可能返回 `202`，可通过操作查询接口读取 `running/succeeded/failed`。物理删除没有回收站，详细删除/保留矩阵见 [数据库治理文档](../../setting/database_governance.md)。
+操作者不能禁用、降级或删除自己，也不能移除最后一个启用管理员。角色、状态或密码实际变化会通过 `users.auth_version` 使目标用户旧 Session 失效。用户删除先提交 MySQL 业务数据，PostgreSQL checkpoint 清理由 outbox worker 异步完成；接口可能返回 `202`，可通过操作查询接口读取 `running/succeeded/failed`。物理删除没有回收站，Job/file 生命周期和跨库清理边界见 [`../architecture/job-file-lifecycle.md`](../architecture/job-file-lifecycle.md) 与 [`../database/migrations-checkpoints.md`](../database/migrations-checkpoints.md)。

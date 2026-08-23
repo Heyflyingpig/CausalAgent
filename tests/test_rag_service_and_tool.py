@@ -174,38 +174,12 @@ class RagServiceTests(unittest.TestCase):
 
 
 class RagToolTests(unittest.TestCase):
-    def test_original_tool_name_invokes_multimodal_service(self):
-        """原 rag_enrichment_search 工具必须调用注入的多模态 Service。"""
+    def test_rag_tool_registry_exposes_the_subgraph_tool(self):
+        """RAG 子图使用固定工具名，不再注入普通节点的 Service。"""
         from Agent.tool_node.rag_tool_registry import build_rag_tools
 
-        service = MagicMock()
-        service.get_response.return_value = {
-            "success": True,
-            "questions": [],
-            "evidence_count": 0,
-            "summary": "ok",
-        }
-        tool = build_rag_tools(service)[0]
-        result = asyncio.run(tool.coroutine(questions=["q1", "q2"], max_results=1))
-        self.assertEqual(tool.name, "rag_enrichment_search")
-        service.get_response.assert_called_once_with(["q1"])
-        self.assertTrue(result["success"])
-
-    def test_tool_degrades_only_the_failed_call(self):
-        """多模态 Service 单次异常不得泄漏内部错误或污染后续调用。"""
-        from Agent.tool_node.rag_tool_registry import build_rag_tools
-
-        service = MagicMock()
-        service.get_response.side_effect = [
-            RuntimeError("internal secret detail"),
-            {"success": True, "questions": [], "evidence_count": 0, "summary": "ok"},
-        ]
-        tool = build_rag_tools(service)[0]
-        first = asyncio.run(tool.coroutine(questions=["q"], max_results=5))
-        second = asyncio.run(tool.coroutine(questions=["q"], max_results=5))
-        self.assertEqual(first, UNAVAILABLE_RAG_RESULT)
-        self.assertTrue(second["success"])
-        self.assertNotIn("internal secret detail", str(first))
+        tools = build_rag_tools()
+        self.assertEqual([tool.name for tool in tools], ["rag_enrichment_search"])
 
 
 class RagNodeTests(unittest.TestCase):
@@ -262,77 +236,11 @@ class RagNodeTests(unittest.TestCase):
         self.assertEqual(mcp_router({"causal_analysis_result": {"success": False}}), "normal_chat")
 
     def test_successful_mcp_result_routes_to_rag(self):
-        """成功 MCP 返回必须进入普通 rag 节点，而非回到 agent。"""
+        """成功 MCP 返回必须进入 RAG 子图阶段。"""
         from Agent.causal_agent.edges import mcp_router
 
         self.assertEqual(mcp_router({"causal_analysis_result": {"success": True}}), "rag")
 
-    def test_mcp_subgraph_success_is_exported_to_parent_router(self):
-        """子图完成后的 success 字段必须原样到达父图的 MCP 路由。"""
-        from Agent.causal_agent.edges import mcp_router
-        from Agent.causal_agent.graph import _mcp_parent_update
-
-        parent_update = _mcp_parent_update(
-            {"causal_analysis_result": {"success": True, "data": {}}, "tool_call_request": True}
-        )
-        self.assertEqual(parent_update["causal_analysis_result"]["success"], True)
-        self.assertEqual(mcp_router(parent_update), "rag")
-
-    def test_direct_rag_node_generates_questions_and_calls_service(self):
-        """单一 RAG 节点必须直接生成问题、调用 Service 并写回结果。"""
-        from Agent.causal_agent import nodes
-
-        questions = [{"question": "解释图表", "corpus": "multimodal"}]
-        expected = {"success": True, "questions": [], "evidence_count": 0, "summary": "ok"}
-        service = MagicMock()
-        service.get_response.return_value = expected
-        with patch.object(nodes, "get_rag_questions", AsyncMock(return_value=questions)):
-            result = asyncio.run(nodes.rag_node({"messages": []}, object(), service))
-        service.get_response.assert_called_once_with(questions)
-        self.assertEqual(result, {"knowledge_base_result": expected})
-
-    def test_parent_graph_has_no_rag_subgraph(self):
-        """父图只保留 MCP 子图，rag 必须是普通节点。"""
-        from Agent.causal_agent.graph import build_graph
-
-        graph = build_graph(MagicMock(), [], MagicMock(), checkpointer=False)
-        self.assertEqual([name for name, _graph in graph.get_subgraphs()], ["mcp"])
-
-    def test_successful_rag_flow_proceeds_to_postprocess(self):
-        """RAG 成功后不得重新进入 agent 并再次调用 MCP。"""
-        from Agent.causal_agent.graph import build_graph
-
-        graph = build_graph(MagicMock(), [], MagicMock(), checkpointer=False)
-        edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
-        self.assertIn(("rag", "postprocess"), edges)
-        self.assertNotIn(("rag", "agent"), edges)
-
-
-class WorkerRagAssemblyTests(unittest.TestCase):
-    def test_worker_shares_multimodal_rag_service_across_slots(self):
-        """默认多模态 Runtime/Service 必须沿用原 worker 注入链路。"""
-        from app.agent import worker
-
-        rag_service = object()
-        llm = object()
-        run_slot = AsyncMock(return_value=None)
-        with patch.object(worker, "check_database_readiness"), patch.object(
-            worker.agent_core, "initialize_llm", return_value=True
-        ), patch.object(
-            worker.agent_core, "initialize_rag_service", return_value=rag_service
-        ) as initialize_rag, patch.object(
-            worker.agent_core, "llm", llm
-        ), patch.object(
-            worker.settings, "JOB_WORKERS", 3
-        ), patch.object(
-            worker, "_run_slot", run_slot
-        ):
-            asyncio.run(worker._main_async())
-
-        initialize_rag.assert_called_once_with(llm)
-        self.assertEqual(run_slot.await_count, 3)
-        for call in run_slot.await_args_list:
-            self.assertIs(call.args[1], rag_service)
 
 
 if __name__ == "__main__":

@@ -315,19 +315,18 @@ def check_database_readiness():
                 "sessions",
                 "chat_messages",
                 "chat_attachments",
-                "uploaded_files",
+                "file_objects",
+                "user_files",
                 "archived_sessions",
                 "checkpoint_cleanup_outbox",
                 "analysis_jobs",
                 "analysis_job_events",
+                "analysis_job_inputs",
                 "database_monitor_snapshots",
                 "database_monitor_settings",
                 "admin_audit_events",
                 "admin_operations",
                 "admin_operation_items",
-                "rag_eval_profiles",
-                "rag_eval_jobs",
-                "rag_eval_datasets",
             ]
             cursor.execute(
                 """
@@ -413,6 +412,51 @@ def check_database_readiness():
 
             cursor.execute(
                 """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = 'analysis_jobs'
+                  AND column_name IN (
+                    'idempotency_key', 'request_fingerprint', 'lease_epoch',
+                    'execution_state', 'execution_released_at', 'execution_release_reason',
+                    'recovery_count', 'resume_count', 'input_user_file_id',
+                    'input_object_id', 'input_file_hash', 'input_filename',
+                    'current_question_id', 'current_waiting_prompt',
+                    'cancel_idempotency_key', 'cancel_request_fingerprint'
+                  )
+                """,
+                (settings.MYSQL_DATABASE,),
+            )
+            job_request_columns = {row[0] for row in cursor.fetchall()}
+            missing_job_request_columns = {
+                "idempotency_key",
+                "request_fingerprint",
+                "lease_epoch",
+                "execution_state",
+                "execution_released_at",
+                "execution_release_reason",
+                "recovery_count",
+                "resume_count",
+                "input_user_file_id",
+                "input_object_id",
+                "input_file_hash",
+                "input_filename",
+                "current_question_id",
+                "current_waiting_prompt",
+                "cancel_idempotency_key",
+                "cancel_request_fingerprint",
+            } - job_request_columns
+            if missing_job_request_columns:
+                error_msg = (
+                    "数据库关键字段缺失: "
+                    f"{sorted(f'analysis_jobs.{name}' for name in missing_job_request_columns)}。"
+                    "请先运行 'python -m Database.bootstrap'。"
+                )
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            cursor.execute(
+                """
                 SELECT table_name, index_name
                 FROM information_schema.statistics
                 WHERE table_schema = %s
@@ -424,6 +468,44 @@ def check_database_readiness():
                     OR (
                       table_name = 'admin_operations'
                       AND index_name = 'uq_admin_operations_actor_idempotency'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'analysis_jobs'
+                      AND index_name = 'uq_analysis_jobs_user_idempotency'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'analysis_jobs'
+                      AND index_name = 'idx_analysis_jobs_input_user_file_status'
+                    )
+                    OR (
+                      table_name = 'analysis_jobs'
+                      AND index_name = 'uq_analysis_jobs_cancel_idempotency'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'analysis_jobs'
+                      AND index_name = 'idx_analysis_jobs_execution_state_heartbeat'
+                    )
+                    OR (
+                      table_name = 'analysis_job_inputs'
+                      AND index_name = 'uq_analysis_job_inputs_sequence'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'analysis_job_inputs'
+                      AND index_name = 'uq_analysis_job_inputs_idempotency'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'analysis_job_events'
+                      AND index_name = 'uq_analysis_job_events_event_key'
+                      AND non_unique = 0
+                    )
+                    OR (
+                      table_name = 'chat_messages'
+                      AND index_name = 'uq_chat_messages_source_event'
                       AND non_unique = 0
                     )
                     OR (
@@ -454,6 +536,26 @@ def check_database_readiness():
                     "admin_operations",
                     "uq_admin_operations_actor_idempotency",
                 ),
+                (
+                    "analysis_jobs",
+                    "uq_analysis_jobs_user_idempotency",
+                ),
+                (
+                    "analysis_jobs",
+                    "idx_analysis_jobs_input_user_file_status",
+                ),
+                (
+                    "analysis_jobs",
+                    "uq_analysis_jobs_cancel_idempotency",
+                ),
+                (
+                    "analysis_jobs",
+                    "idx_analysis_jobs_execution_state_heartbeat",
+                ),
+                ("analysis_job_inputs", "uq_analysis_job_inputs_sequence"),
+                ("analysis_job_inputs", "uq_analysis_job_inputs_idempotency"),
+                ("analysis_job_events", "uq_analysis_job_events_event_key"),
+                ("chat_messages", "uq_chat_messages_source_event"),
                 ("rag_eval_jobs", "idx_rag_eval_jobs_kind_queue"),
                 ("rag_eval_jobs", "idx_rag_eval_jobs_priority_queue"),
                 ("rag_eval_datasets", "uq_rag_eval_datasets_identity"),

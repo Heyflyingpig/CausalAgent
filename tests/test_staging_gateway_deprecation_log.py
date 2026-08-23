@@ -36,7 +36,7 @@ FAMILY_LABELS = {
 }
 
 _PLACEHOLDER_SAMPLES = {
-    "run_id": "r5run0123abcdef",
+    "run_id": "rag_evalrun0123abcdef",
     "path:artifact_name": "reports/summary.json",
 }
 
@@ -182,7 +182,7 @@ class StagingGatewayDeprecationLogTests(unittest.TestCase):
 
     def test_canonical_lifecycle_is_not_logged_as_deprecated(self) -> None:
         """canonical /isolated/runs 路径不属于任何弃用面。"""
-        canonical = f"{BLUEPRINT_PREFIX}/isolated/runs/r5run0123abcdef/result"
+        canonical = f"{BLUEPRINT_PREFIX}/isolated/runs/rag_evalrun0123abcdef/result"
         self.assertEqual(simulate_map(self.observed_default, self.observed_entries,
                                       canonical), "")
         self.assertFalse(simulate_map(self.deprecated_default,

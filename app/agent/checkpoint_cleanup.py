@@ -12,15 +12,63 @@ from app.db import get_write_connection
 
 MAX_CLEANUP_ATTEMPTS = 3
 RETRY_DELAYS_SECONDS = (10, 30)
+CLEANUP_RUNTIME_SNAPSHOT_KEY = "checkpoint_cleanup_runtime"
+
+
+def write_cleanup_runtime_snapshot(payload: dict[str, Any]) -> None:
+    """写入 cleanup worker 的安全运行快照，不暴露主机、账号或连接信息。"""
+    allowed = {
+        "worker_alias",
+        "worker_status",
+        "started_at",
+        "heartbeat_at",
+        "current_outbox_id",
+        "run_success_count",
+        "run_failure_count",
+        "startup_success_count",
+        "startup_failure_count",
+        "heartbeat_interval_seconds",
+        "processing_started_at",
+        "processing_duration_seconds",
+        "current_processing_started_at",
+        "current_processing_duration_seconds",
+        "last_failure_at",
+        "last_error_present",
+    }
+    safe_payload = {key: value for key, value in payload.items() if key in allowed}
+    with get_write_connection() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            INSERT INTO database_monitor_snapshots (
+                snapshot_key, payload_json, observed_at
+            ) VALUES (%s, %s, UTC_TIMESTAMP(6))
+            ON DUPLICATE KEY UPDATE
+                payload_json = VALUES(payload_json),
+                observed_at = VALUES(observed_at)
+            """,
+            (
+                CLEANUP_RUNTIME_SNAPSHOT_KEY,
+                _json_dumps({
+                    **safe_payload,
+                    "status": "healthy",
+                    "source_role": "cleanup-worker",
+                    "source_alias": "checkpoint-cleanup",
+                    "is_estimate": False,
+                    "warning": None,
+                }),
+            ),
+        )
+        connection.commit()
 
 
 def enqueue_checkpoint_cleanup(
     cursor,
-    thread_id: str,
+    job_id: str,
     *,
     operation_id: str | None = None,
 ) -> bool:
-    """登记一个幂等 cleanup 任务，并返回是否仍需后台清理。"""
+    """登记一个 Job checkpoint cleanup 任务，并返回是否仍需后台清理。"""
     cursor.execute(
         """
         INSERT INTO checkpoint_cleanup_outbox (
@@ -35,11 +83,11 @@ def enqueue_checkpoint_cleanup(
             lease_expires_at = NULL,
             last_error = NULL
         """,
-        (thread_id, operation_id),
+        (job_id, operation_id),
     )
     cursor.execute(
         "SELECT status FROM checkpoint_cleanup_outbox WHERE thread_id = %s",
-        (thread_id,),
+        (job_id,),
     )
     row = cursor.fetchone()
     status = row.get("status") if isinstance(row, dict) else (row[0] if row else None)
@@ -48,14 +96,14 @@ def enqueue_checkpoint_cleanup(
 
 def enqueue_checkpoint_cleanup_many(
     cursor,
-    thread_ids: Iterable[str],
+    job_ids: Iterable[str],
     *,
     operation_id: str | None = None,
 ) -> int:
-    """批量登记用户删除涉及的 checkpoint thread，并返回输入数量。"""
+    """批量登记删除涉及的 Job checkpoint，并返回仍需处理的数量。"""
     count = 0
-    for thread_id in thread_ids:
-        if enqueue_checkpoint_cleanup(cursor, str(thread_id), operation_id=operation_id):
+    for job_id in job_ids:
+        if enqueue_checkpoint_cleanup(cursor, str(job_id), operation_id=operation_id):
             count += 1
     return count
 
@@ -205,7 +253,7 @@ def claim_cleanup_item(
             _update_operation_aggregate(cursor, operation_id)
         cursor.execute(
             """
-            SELECT id, thread_id, operation_id, attempts
+            SELECT id, thread_id AS job_id, operation_id, attempts
             FROM checkpoint_cleanup_outbox
             WHERE status = 'pending'
               AND attempts < %s

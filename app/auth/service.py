@@ -63,6 +63,31 @@ def find_user_by_id(user_id):
         return cursor.fetchone()
 
 
+def record_successful_login(user_id: int) -> bool:
+    """在主库记录一次密码验证成功的登录时间，失败时返回 False 而不中断登录。"""
+    try:
+        with get_write_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE users
+                SET last_login_at = UTC_TIMESTAMP()
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+            conn.commit()
+        return True
+    except Exception as exc:
+        logging.error(
+            "记录用户 ID %s 的最后登录时间失败: %s",
+            user_id,
+            exc,
+            exc_info=True,
+        )
+        return False
+
+
 # 哈希密码
 def hash_password(password):
     """使用 bcrypt 为明文密码生成不可逆哈希。"""

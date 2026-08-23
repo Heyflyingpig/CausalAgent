@@ -18,7 +18,59 @@ export interface DashboardData {
   sql_performance: SnapshotMeta
   capacity: SnapshotMeta
   integrity: SnapshotMeta
+  checkpoint_cleanup_runtime?: CleanupWorkerSnapshot
+  checkpoint_cleanup_outbox?: CleanupOutboxSnapshot
   refresh_policy: Record<string, unknown>
+}
+
+export interface CleanupWorkerSnapshot extends SnapshotMeta {
+  worker_alias?: string
+  worker_status?: 'idle' | 'processing' | 'stale' | 'stopped' | 'unknown' | string
+  started_at?: string | null
+  heartbeat_at?: string | null
+  current_outbox_id?: number | null
+  run_success_count?: number
+  run_failure_count?: number
+  startup_success_count?: number
+  startup_failure_count?: number
+  heartbeat_interval_seconds?: number
+  processing_started_at?: string | null
+  processing_duration_seconds?: number | null
+  current_processing_started_at?: string | null
+  current_processing_duration_seconds?: number | null
+  last_failure_at?: string | null
+  last_error_present?: boolean
+}
+
+export interface CleanupOutboxItem {
+  outbox_id: number
+  thread_id: string
+  operation_id: string | null
+  status: 'pending' | 'processing' | 'succeeded' | 'failed' | string
+  attempts: number
+  max_attempts: number
+  available_at: string | null
+  lease_expires_at: string | null
+  created_at: string | null
+  completed_at: string | null
+  has_error: boolean
+  error_state: 'failed' | 'lease_expired' | null
+  is_due: boolean
+  lease_expired: boolean
+  priority?: number
+}
+
+export interface CleanupOutboxSnapshot extends SnapshotMeta {
+  summary?: {
+    pending: number | null
+    due_pending: number | null
+    processing: number | null
+    expired_processing: number | null
+    failed: number | null
+    latest_completed_at: string | null
+    earliest_pending_at: string | null
+  }
+  items?: CleanupOutboxItem[]
 }
 
 export type MonitorField =
@@ -219,9 +271,13 @@ export interface AdminJob {
   user_id: number
   username: string
   session_id: string
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled'
+  status: 'queued' | 'running' | 'waiting_input' | 'succeeded' | 'failed' | 'canceled'
+  execution_state: 'leased' | 'draining' | null
   worker_id: string | null
+  lease_epoch: number
   attempt_count: number
+  recovery_count: number
+  resume_count: number
   max_attempts: number
   error_preview?: string | null
   has_input?: boolean
@@ -232,7 +288,26 @@ export interface AdminJob {
   created_at: string
   started_at: string | null
   finished_at: string | null
+  execution_released_at?: string | null
+  execution_release_reason?: 'worker_confirmed' | 'lease_expired' | null
   chat_saved_at: string | null
+  input_user_file_id?: number | null
+  input_file_hash?: string | null
+  input_filename?: string | null
+  current_question_id?: string | null
+  current_waiting_prompt?: string | null
+  input_count?: number
+  inputs?: AdminJobInput[]
+  inputs_truncated?: boolean
+}
+
+export interface AdminJobInput {
+  input_id: number
+  sequence: number
+  input_type: 'initial' | 'resume'
+  question_id: string | null
+  created_at: string
+  input_bytes: number
 }
 
 export interface AdminJobEvent {
@@ -241,6 +316,41 @@ export interface AdminJobEvent {
   event_type: string
   created_at: string
   has_payload: boolean
+  node_name: string | null
+  node_desc: string | null
+  duration_seconds: number | null
+}
+
+export interface AgentWorkerSummary {
+  jobs: Record<string, unknown>[]
+  summary: {
+    queued?: number | null
+    running?: number | null
+    waiting_input?: number | null
+    stale?: number | null
+    max_attempts_running?: number | null
+    draining?: number | null
+    oldest_draining_age_seconds?: number | null
+    worker_confirmed?: number | null
+    lease_expired?: number | null
+  }
+  meta: SnapshotMeta
+}
+
+export interface AdminCheckpointSummary {
+  checkpoint_id: string
+  parent_checkpoint_id: string | null
+  checkpoint_ns: string
+  created_at: string | null
+  step: number | null
+  source: string | null
+  updated_channels: string[]
+}
+
+export interface AdminCheckpointPage extends CursorPage<AdminCheckpointSummary> {
+  source_alias: 'checkpoint-postgres'
+  attribution: 'thread_id+metadata.job_id'
+  legacy_unattributed: boolean
 }
 
 export interface AdminFile {
@@ -249,11 +359,13 @@ export interface AdminFile {
   username: string
   filename: string
   original_filename: string
+  file_hash: string
   mime_type: string
   file_size: number
   upload_timestamp: string
   last_accessed_at: string
   access_count: number
+  object_reference_count: number
 }
 
 export interface FileDeleteImpact {
@@ -262,6 +374,7 @@ export interface FileDeleteImpact {
     database_rows: number
     blob_bytes: number
     owner_active_jobs: number
+    object_reference_count: number
   }
   can_delete: boolean
   blockers: string[]
@@ -310,4 +423,23 @@ export interface DeepAuditSnapshot extends SnapshotMeta {
   sample_limit?: number
   query_timeout_ms?: number
   checks: DeepAuditCheck[]
+}
+
+export interface QuickAuditCheck {
+  key: string
+  label: string
+  status: HealthStatus
+  severity?: 'blocking' | 'warning' | string
+  applicable?: boolean
+  value?: number | null
+  description?: string
+  warning?: string | null
+  [key: string]: unknown
+}
+
+export interface QuickAuditSnapshot extends SnapshotMeta {
+  mode?: string
+  blocking_count?: number
+  blocking_record_count?: number
+  checks: QuickAuditCheck[]
 }

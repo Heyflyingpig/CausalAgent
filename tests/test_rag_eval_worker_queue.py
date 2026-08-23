@@ -73,7 +73,7 @@ class RagEvalWorkerQueueTests(unittest.TestCase):
                 self.joined = True
 
         with patch.object(worker, "check_database_readiness"), \
-                patch.object(worker.settings, "R5_EVALUATION_WORKERS", 3), \
+                patch.object(worker.settings, "RAG_EVAL_EVALUATION_WORKERS", 3), \
                 patch.object(worker.threading, "Thread", FakeThread):
             worker.main()
 
@@ -89,7 +89,7 @@ class RagEvalWorkerQueueTests(unittest.TestCase):
             source.write_text("source", encoding="utf-8")
             fake_jobs = _FakeJobService()
             with patch("app.rag_eval.isolated_runs.ISOLATED_RUN_ROOT", root / "runs"), \
-                    patch("app.rag_eval.isolated_runs.R5_SOURCE_ROOT", source_root), \
+                    patch("app.rag_eval.isolated_runs.RAG_EVAL_SOURCE_ROOT", source_root), \
                     patch(
                         "app.rag_eval.isolated_runs._resolve_source_inputs",
                         return_value=([source], ["upload_a"], ["测试来源"]),
@@ -323,7 +323,7 @@ class RagEvalWorkerQueueTests(unittest.TestCase):
             source.write_text("source", encoding="utf-8")
             fake_jobs = _FakeJobService()
             with patch("app.rag_eval.isolated_runs.ISOLATED_RUN_ROOT", root / "runs"), \
-                    patch("app.rag_eval.isolated_runs.R5_SOURCE_ROOT", source_root), \
+                    patch("app.rag_eval.isolated_runs.RAG_EVAL_SOURCE_ROOT", source_root), \
                     patch(
                         "app.rag_eval.isolated_runs._resolve_source_inputs",
                         return_value=([source], ["upload_a"], ["测试来源"]),

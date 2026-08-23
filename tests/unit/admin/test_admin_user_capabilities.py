@@ -20,8 +20,9 @@ for key, value in TEST_ENV.items():
 
 
 from app.agent.routes import agent_bp
+from app.agent.job_service import IdempotencyConflictError
 from app.chat.routes import chat_bp
-from app.files.routes import files_bp
+from app.files.routes import _file_payload, files_bp
 
 
 ADMIN = {
@@ -30,6 +31,7 @@ ADMIN = {
     "role": "admin",
     "is_active": True,
 }
+JOB_IDEMPOTENCY_KEY = "00000000-0000-4000-8000-000000000001"
 
 
 class RecordingCursor:
@@ -79,6 +81,22 @@ def build_app():
 class AdminUserCapabilityTests(unittest.TestCase):
     """验证管理员调用普通接口时只能使用自身用户 ID。"""
 
+    def test_user_file_payload_does_not_expose_blob_object_id(self):
+        """普通用户文件 DTO 只暴露逻辑 user_file_id，不返回 BLOB 对象 ID。"""
+        payload = _file_payload({
+            "id": 11,
+            "object_id": 22,
+            "filename": "data.csv",
+            "mime_type": "text/csv",
+            "file_size": 12,
+            "uploaded_at": None,
+            "last_accessed_at": None,
+            "access_count": 0,
+        })
+
+        self.assertEqual(payload["user_file_id"], 11)
+        self.assertNotIn("object_id", payload)
+
     def test_admin_session_list_is_scoped_to_own_user_id(self):
         """管理员读取会话列表时沿用普通用户的 user_id 条件。"""
         app = build_app()
@@ -126,6 +144,7 @@ class AdminUserCapabilityTests(unittest.TestCase):
             response = client.post(
                 "/api/agent/jobs",
                 json={"session_id": "session-admin-1", "message": "分析数据"},
+                headers={"Idempotency-Key": JOB_IDEMPOTENCY_KEY},
             )
 
         self.assertEqual(response.status_code, 202)
@@ -133,7 +152,48 @@ class AdminUserCapabilityTests(unittest.TestCase):
             ADMIN["id"],
             "session-admin-1",
             "分析数据",
+            JOB_IDEMPOTENCY_KEY,
+            None,
         )
+
+    def test_agent_job_creation_requires_idempotency_key(self):
+        """分析任务创建缺少幂等键时应在入队前拒绝。"""
+        app = build_app()
+        with (
+            patch("app.agent.routes.get_current_session_user", return_value=ADMIN),
+            patch("app.agent.routes.job_service.create_job") as create_job,
+            app.test_client() as client,
+        ):
+            response = client.post(
+                "/api/agent/jobs",
+                json={"session_id": "session-admin-1", "message": "分析数据"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Idempotency-Key", response.get_json()["error"])
+        create_job.assert_not_called()
+
+    def test_agent_job_creation_rejects_idempotency_key_reuse_with_new_request(self):
+        """路由应把同键异参转换为客户端可处理的 409 冲突。"""
+        app = build_app()
+        with (
+            patch("app.agent.routes.get_current_session_user", return_value=ADMIN),
+            patch(
+                "app.agent.routes.job_service.create_job",
+                side_effect=IdempotencyConflictError(
+                    "Idempotency-Key 已用于不同的分析请求"
+                ),
+            ),
+            app.test_client() as client,
+        ):
+            response = client.post(
+                "/api/agent/jobs",
+                json={"session_id": "session-admin-1", "message": "分析数据"},
+                headers={"Idempotency-Key": JOB_IDEMPOTENCY_KEY},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("不同的分析请求", response.get_json()["error"])
 
 
 if __name__ == "__main__":

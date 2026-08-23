@@ -1612,7 +1612,7 @@ async function restoreIngestionRun(preferredId: string | null): Promise<boolean>
       return true;
     } catch {
       localStorage.removeItem("ingestion_run_id");
-      localStorage.removeItem("r5_ingestion_run_id");
+      localStorage.removeItem("rag_eval_ingestion_run_id");
     }
   }
 
@@ -1628,15 +1628,15 @@ async function refreshWorkspace() {
   actionError.value = "";
   await loadCatalog();
   await loadIngestionHistory();
-  const ingestionId = localStorage.getItem("ingestion_run_id") || localStorage.getItem("r5_ingestion_run_id");
+  const ingestionId = localStorage.getItem("ingestion_run_id") || localStorage.getItem("rag_eval_ingestion_run_id");
   await restoreIngestionRun(ingestionId);
   await loadGoldDatasetStatus();
 }
 
 async function restoreRuns() {
-  const ingestionId = localStorage.getItem("ingestion_run_id") || localStorage.getItem("r5_ingestion_run_id");
+  const ingestionId = localStorage.getItem("ingestion_run_id") || localStorage.getItem("rag_eval_ingestion_run_id");
   const candidateId = localStorage.getItem("candidate_run_id");
-  const evaluationId = localStorage.getItem("evaluation_run_id") || localStorage.getItem("r5_evaluation_run_id");
+  const evaluationId = localStorage.getItem("evaluation_run_id") || localStorage.getItem("rag_eval_evaluation_run_id");
   const storedBatchIds = (() => {
     try {
       const value = JSON.parse(localStorage.getItem("evaluation_batch_run_ids") || "[]");
@@ -1689,7 +1689,7 @@ async function restoreRuns() {
       if (!terminalStatuses.includes(state.status)) watchRun("evaluation", evaluationId);
     } catch {
       localStorage.removeItem("evaluation_run_id");
-      localStorage.removeItem("r5_evaluation_run_id");
+      localStorage.removeItem("rag_eval_evaluation_run_id");
     }
   }
 }
@@ -1705,7 +1705,7 @@ watch(strategyProfileId, (profileId, previousProfileId) => {
 
 onMounted(async () => {
   document.addEventListener("visibilitychange", refreshVisibleRun);
-  sidebarCollapsed.value = localStorage.getItem("sidebar_collapsed") === "true" || localStorage.getItem("r5_sidebar_collapsed") === "true";
+  sidebarCollapsed.value = localStorage.getItem("sidebar_collapsed") === "true" || localStorage.getItem("rag_eval_sidebar_collapsed") === "true";
   await loadCatalog();
   await loadConfig();
   await loadGoldDatasetStatus();

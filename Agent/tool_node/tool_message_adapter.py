@@ -132,6 +132,7 @@ def parse_tool_message_json(tool_message: ToolMessage) -> dict[str, Any]:
             return parsed
         return {
             "success": False,
+            "error_type": "ToolMessageProtocolError",
             "error": f"ToolMessage content is not valid JSON: {exc}",
             "raw_content": content,
         }

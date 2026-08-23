@@ -165,7 +165,7 @@ class IsolatedEvaluationTests(unittest.TestCase):
                 steps=None,
             )
 
-        self.assertEqual(result["schema_version"], "r5_evaluation_result_v1")
+        self.assertEqual(result["schema_version"], "rag_eval_evaluation_result_v1")
         self.assertEqual(result["summary"]["status"], "pass")
         self.assertTrue((output_dir / "machine" / "rag_eval_result.json").is_file())
         self.assertTrue((output_dir / "machine" / "ragas_eval_dataset.json").is_file())

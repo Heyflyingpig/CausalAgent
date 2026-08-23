@@ -394,7 +394,7 @@ class IsolatedRagEvalRouteTests(unittest.TestCase):
             content = b"source metadata test"
             source_id = "upload_" + hashlib.sha256(content).hexdigest()[:24]
             (root / f"{source_id}__fixture.txt").write_bytes(content)
-            with patch.object(isolated_runs, "R5_SOURCE_ROOT", root), patch.object(
+            with patch.object(isolated_runs, "RAG_EVAL_SOURCE_ROOT", root), patch.object(
                 isolated_runs, "production_source_paths", return_value=[]
             ):
                 before = isolated_runs.list_source_catalog()[0]
@@ -404,7 +404,7 @@ class IsolatedRagEvalRouteTests(unittest.TestCase):
 
             self.assertEqual(after["display_name"], "Pearl 因果资料")
             metadata = json.loads((root / "source_metadata.json").read_text(encoding="utf-8"))
-            self.assertEqual(metadata["schema_version"], "r5_source_metadata_v1")
+            self.assertEqual(metadata["schema_version"], "rag_eval_source_metadata_v1")
 
     def test_ingestion_state_stream_and_cancel_contract(self):
         state = self.client.get("/api/rag_eval/isolated/ingestion-runs/ingest-test")

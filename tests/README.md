@@ -13,7 +13,7 @@ tests/
 ├── integration/        # 跨模块静态契约、部署边界和 migration 链路
 │   ├── admin/
 │   └── migrations/
-├── e2e/admin/          # 隔离主从 E2E 的种子与数据库验收模块
+├── e2e/admin/          # 隔离主从 + PostgreSQL checkpoint E2E 模块
 ├── run_admin_31_e2e.ps1
 └── run_admin_32_e2e.ps1
 ```
@@ -60,7 +60,7 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 
 ## 本地 Python 回退方式
 
-未使用 Docker 时，需要自行在当前 Python 环境安装项目依赖和 `pytest`，然后运行：
+未使用 Docker 时，需要先跟用户说明目前本地docker环境未启动/出错，需要在当前 Python 环境安装项目依赖和 `pytest`，用户同一之后然后运行：
 
 ```bash
 python -m pytest tests/unit
@@ -70,7 +70,7 @@ python -m pytest tests/unit
 
 
 
-只有准备好隔离 Docker 主从、管理员前端生产构建和 Playwright 凭据后，才运行：
+只有准备好隔离 Docker 主从、PostgreSQL checkpoint、管理员前端生产构建和 Playwright 凭据后，才运行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tests/run_admin_32_e2e.ps1

@@ -46,6 +46,17 @@ const deleteConfirmation = ref('')
 const deleteReauthPassword = ref('')
 const deleteIdempotencyKey = ref('')
 const deleteError = ref('')
+const checkpointCleanupResult = ref<AdminOperationResult | null>(null)
+const CHECKPOINT_CLEANUP_STORAGE_KEY = 'causalagent.admin.last-checkpoint-cleanup'
+
+/** 尝试保留最近一次删除进度；浏览器禁用存储时不影响已提交的删除。 */
+function persistCheckpointCleanupResult(result: AdminOperationResult): void {
+  try {
+    window.sessionStorage.setItem(CHECKPOINT_CLEANUP_STORAGE_KEY, JSON.stringify(result))
+  } catch {
+    // 页面内状态仍然可见，存储不可用不应覆盖成功结果。
+  }
+}
 
 const currentCursor = computed(() => cursors.value[cursors.value.length - 1])
 
@@ -121,6 +132,8 @@ async function waitForCheckpointCleanup(operationId: string): Promise<void> {
     await new Promise(resolve => window.setTimeout(resolve, 1000))
     try {
       const operation = await adminApi.operation(operationId)
+      checkpointCleanupResult.value = operation
+      persistCheckpointCleanupResult(operation)
       if (operation.status === 'succeeded') {
         ElMessage.success('用户删除及 checkpoint 清理已完成')
         return
@@ -134,6 +147,15 @@ async function waitForCheckpointCleanup(operationId: string): Promise<void> {
     }
   }
   ElMessage.warning('用户业务数据已删除，checkpoint 仍在后台清理')
+}
+
+/** 把 cleanup 聚合状态转换成不含内部异常的管理员文案。 */
+function checkpointCleanupStatusLabel(result: AdminOperationResult | null): string {
+  const status = result?.checkpoint_cleanup?.status || result?.status
+  if (status === 'succeeded') return '成功'
+  if (status === 'failed') return '失败'
+  if (status === 'running' || status === 'pending') return '清理中'
+  return '等待清理'
 }
 
 /** 把统一用户操作转换为管理员可读标签。 */
@@ -254,6 +276,8 @@ async function submitDelete(): Promise<void> {
       },
       deleteIdempotencyKey.value,
     )
+    checkpointCleanupResult.value = result
+    persistCheckpointCleanupResult(result)
     if (result.status === 'running') {
       ElMessage.info('用户业务数据已删除，checkpoint 正在后台清理')
       void waitForCheckpointCleanup(result.operation_id)
@@ -275,7 +299,26 @@ async function submitDelete(): Promise<void> {
   }
 }
 
-onMounted(() => loadUsers())
+onMounted(() => {
+  let stored: string | null = null
+  try {
+    stored = window.sessionStorage.getItem(CHECKPOINT_CLEANUP_STORAGE_KEY)
+  } catch {
+    stored = null
+  }
+  if (stored) {
+    try {
+      checkpointCleanupResult.value = JSON.parse(stored) as AdminOperationResult
+    } catch {
+      try {
+        window.sessionStorage.removeItem(CHECKPOINT_CLEANUP_STORAGE_KEY)
+      } catch {
+        // 忽略不可用的浏览器存储。
+      }
+    }
+  }
+  void loadUsers()
+})
 </script>
 
 <template>
@@ -300,6 +343,36 @@ onMounted(() => loadUsers())
     </section>
 
     <el-alert v-if="error" class="page-notice" type="error" :closable="false" :title="error" />
+
+    <section v-if="checkpointCleanupResult" class="panel checkpoint-cleanup-result">
+      <div class="panel-header">
+        <div>
+          <h2>Checkpoint 清理进度</h2>
+          <p>用户业务数据已删除；PostgreSQL checkpoint 由后台 worker 异步清理。</p>
+        </div>
+        <el-tag
+          :type="checkpointCleanupStatusLabel(checkpointCleanupResult) === '成功' ? 'success' : checkpointCleanupStatusLabel(checkpointCleanupResult) === '失败' ? 'danger' : 'warning'"
+          round
+        >
+          {{ checkpointCleanupStatusLabel(checkpointCleanupResult) }}
+        </el-tag>
+      </div>
+      <div class="inline-metrics four-columns">
+        <div><span>MySQL 用户数据</span><strong>已删除</strong></div>
+        <div><span>PostgreSQL checkpoint</span><strong>{{ checkpointCleanupStatusLabel(checkpointCleanupResult) }}</strong></div>
+        <div><span>总任务数</span><strong>{{ checkpointCleanupResult.checkpoint_cleanup?.total ?? 0 }}</strong></div>
+        <div><span>成功数</span><strong>{{ checkpointCleanupResult.checkpoint_cleanup?.succeeded ?? 0 }}</strong></div>
+        <div><span>失败数</span><strong>{{ checkpointCleanupResult.checkpoint_cleanup?.failed ?? 0 }}</strong></div>
+        <div><span>待处理数</span><strong>{{ checkpointCleanupResult.checkpoint_cleanup?.pending ?? 0 }}</strong></div>
+        <div><span>Operation ID</span><strong class="break-anywhere">{{ checkpointCleanupResult.operation_id }}</strong></div>
+      </div>
+      <router-link
+        class="checkpoint-cleanup-link"
+        :to="{ path: '/database', query: { view: 'outbox', operation_id: checkpointCleanupResult.operation_id } }"
+      >
+        查看全局清理状态
+      </router-link>
+    </section>
 
     <section class="panel table-panel">
       <div class="controlled-action-bar">
@@ -519,7 +592,7 @@ onMounted(() => loadUsers())
           type="error"
           :closable="false"
           show-icon
-          title="删除不可恢复；会话、消息、附件、文件、任务、事件、归档和 checkpoint 将会同步删除。"
+          title="删除不可恢复；MySQL 业务数据先提交，PostgreSQL checkpoint 随后由后台任务清理。"
         />
         <el-alert
           v-if="deleteError"

@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from flask import Flask
 
@@ -82,7 +82,10 @@ class SessionGuardTests(unittest.TestCase):
             "role": "admin",
             "is_active": True,
         }
-        with patch("app.auth.session_guard.find_user_by_id", return_value=active_admin):
+        with (
+            patch("app.auth.session_guard.find_user_by_id", return_value=active_admin),
+            patch("app.auth.service.record_successful_login") as record_login,
+        ):
             with app.test_client() as client:
                 with client.session_transaction() as flask_session:
                     flask_session["user_id"] = 3
@@ -100,6 +103,7 @@ class SessionGuardTests(unittest.TestCase):
                     self.assertNotIn("role", flask_session)
                     self.assertEqual(flask_session["auth_version"], 1)
                     self.assertEqual(flask_session["csrf_token"], payload["csrf_token"])
+        record_login.assert_not_called()
 
     def test_changed_auth_version_invalidates_old_session(self):
         """角色、状态或密码变更递增认证版本后，旧 Cookie 必须立即失效。"""
@@ -136,6 +140,7 @@ class SessionGuardTests(unittest.TestCase):
             "role": "user",
             "is_active": False,
         }
+        service_module.record_successful_login = Mock(return_value=True)
         with patch.dict(sys.modules, {"app.auth.service": service_module}):
             with app.test_client() as client:
                 response = client.post(
@@ -145,6 +150,7 @@ class SessionGuardTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.get_json(), {"success": False, "error": "账号已被禁用"})
+        service_module.record_successful_login.assert_not_called()
 
     def test_admin_login_returns_role_for_frontend_routing(self):
         """管理员登录成功响应应携带实时角色，供前端进入受保护后台。"""
@@ -157,6 +163,7 @@ class SessionGuardTests(unittest.TestCase):
             "role": "admin",
             "is_active": True,
         }
+        service_module.record_successful_login = Mock(return_value=True)
         with (
             patch.dict(sys.modules, {"app.auth.service": service_module}),
             patch("app.auth.routes.bcrypt.checkpw", return_value=True),
@@ -175,6 +182,62 @@ class SessionGuardTests(unittest.TestCase):
         self.assertEqual(payload["redirect_to"], "/admin/database")
         self.assertIsInstance(payload["csrf_token"], str)
         self.assertGreaterEqual(len(payload["csrf_token"]), 32)
+        service_module.record_successful_login.assert_called_once_with(5)
+
+    def test_last_login_write_failure_warns_but_keeps_login_successful(self):
+        """最后登录时间写入失败时应返回稳定警告码并保留有效 Session。"""
+        app = build_app()
+        service_module = types.ModuleType("app.auth.service")
+        service_module.find_user = lambda _username: {
+            "id": 7,
+            "username": "warning-login",
+            "password_hash": "stored-hash",
+            "role": "user",
+            "is_active": True,
+        }
+        service_module.record_successful_login = Mock(return_value=False)
+        with (
+            patch.dict(sys.modules, {"app.auth.service": service_module}),
+            patch("app.auth.routes.bcrypt.checkpw", return_value=True),
+        ):
+            with app.test_client() as client:
+                response = client.post(
+                    "/api/login",
+                    json={"username": "warning-login", "password": "secret"},
+                )
+                with client.session_transaction() as flask_session:
+                    session_user_id = flask_session["user_id"]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["warning_code"], "last_login_record_failed")
+        self.assertEqual(session_user_id, 7)
+        service_module.record_successful_login.assert_called_once_with(7)
+
+    def test_wrong_password_does_not_record_last_login(self):
+        """密码校验失败时不得更新最后登录时间或创建成功登录响应。"""
+        app = build_app()
+        service_module = types.ModuleType("app.auth.service")
+        service_module.find_user = lambda _username: {
+            "id": 10,
+            "username": "wrong-password",
+            "password_hash": "stored-hash",
+            "role": "user",
+            "is_active": True,
+        }
+        service_module.record_successful_login = Mock(return_value=True)
+        with (
+            patch.dict(sys.modules, {"app.auth.service": service_module}),
+            patch("app.auth.routes.bcrypt.checkpw", return_value=False),
+            app.test_client() as client,
+        ):
+            response = client.post(
+                "/api/login",
+                json={"username": "wrong-password", "password": "incorrect"},
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("warning_code", response.get_json())
+        service_module.record_successful_login.assert_not_called()
 
     def test_login_only_returns_server_validated_admin_redirect(self):
         """登录接口只回显白名单管理页面，并对管理员保留安全默认落点。"""
@@ -187,6 +250,7 @@ class SessionGuardTests(unittest.TestCase):
             "role": "admin",
             "is_active": True,
         }
+        service_module.record_successful_login = Mock(return_value=True)
         with (
             patch.dict(sys.modules, {"app.auth.service": service_module}),
             patch("app.auth.routes.bcrypt.checkpw", return_value=True),
@@ -229,6 +293,7 @@ class SessionGuardTests(unittest.TestCase):
             "role": "user",
             "is_active": True,
         }
+        service_module.record_successful_login = Mock(return_value=True)
         with (
             patch.dict(sys.modules, {"app.auth.service": service_module}),
             patch("app.auth.routes.bcrypt.checkpw", return_value=True),

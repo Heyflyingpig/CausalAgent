@@ -91,16 +91,16 @@ services:
       MODEL: ${MODEL:?MODEL is required}
       FLASK_ENV: staging
       VISION_ALLOW_REMOTE_DATA: "true"
-      R5_EVALUATION_WORKERS: "5"
-      R5_INGESTION_CONCURRENCY_LIMIT: "1"
-      R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT: "1"
-      R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
-      R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
-      R5_EVALUATION_CONCURRENCY_LIMIT: "3"
-      R5_RAG_QUERY_CONCURRENCY_LIMIT: "2"
-      R5_ISOLATED_RUN_ROOT: /app/tmp/r5_isolated_runs
-      R5_SOURCE_ROOT: /app/tmp/r5_sources
-      R5_DATASET_ROOT: /app/tmp/r5_datasets
+      RAG_EVAL_EVALUATION_WORKERS: "5"
+      RAG_EVAL_INGESTION_CONCURRENCY_LIMIT: "1"
+      RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT: "1"
+      RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
+      RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
+      RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT: "3"
+      RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT: "2"
+      RAG_EVAL_ISOLATED_RUN_ROOT: /app/tmp/rag_eval_isolated_runs
+      RAG_EVAL_SOURCE_ROOT: /app/tmp/rag_eval_sources
+      RAG_EVAL_DATASET_ROOT: /app/tmp/rag_eval_datasets
     networks: [rag_eval_staging]
     depends_on:
       mysql-primary: {condition: service_healthy}
@@ -111,9 +111,9 @@ services:
     command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec gunicorn --bind 0.0.0.0:5001 --workers 1 --threads 12 --timeout 120 CausalAgent:app"]
     environment: *app_environment
     volumes:
-      - rag_eval_staging_runs:/app/tmp/r5_isolated_runs
-      - rag_eval_staging_sources:/app/tmp/r5_sources
-      - rag_eval_staging_datasets:/app/tmp/r5_datasets
+      - rag_eval_staging_runs:/app/tmp/rag_eval_isolated_runs
+      - rag_eval_staging_sources:/app/tmp/rag_eval_sources
+      - rag_eval_staging_datasets:/app/tmp/rag_eval_datasets
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
     networks: [rag_eval_staging]
@@ -159,9 +159,9 @@ services:
     command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec python -m app.rag_eval.worker"]
     environment: *app_environment
     volumes:
-      - rag_eval_staging_runs:/app/tmp/r5_isolated_runs
-      - rag_eval_staging_sources:/app/tmp/r5_sources
-      - rag_eval_staging_datasets:/app/tmp/r5_datasets
+      - rag_eval_staging_runs:/app/tmp/rag_eval_isolated_runs
+      - rag_eval_staging_sources:/app/tmp/rag_eval_sources
+      - rag_eval_staging_datasets:/app/tmp/rag_eval_datasets
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
     networks: [rag_eval_staging]

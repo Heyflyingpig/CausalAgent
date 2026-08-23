@@ -1,239 +1,296 @@
-'''
-app.files.routes - 文件路由
-'''
-from flask import Blueprint, request, jsonify, session
-import logging
-from app.db import get_read_connection, get_write_connection
-from app.auth.session_guard import get_current_session_user
-from config.settings import settings
-import mysql.connector
-import os
+"""用户文件库路由。"""
+
+from __future__ import annotations
+
 import hashlib
-from app.chat.services import save_chat
+import logging
+import os
 
-files_bp = Blueprint('files', __name__, url_prefix='/api')
+import mysql.connector
+from flask import Blueprint, jsonify, request
 
-# 获取文件列表
-@files_bp.route('/files')
+from app.auth.session_guard import get_current_session_user
+from app.db import get_read_connection, get_write_connection
+from config.settings import settings
+
+
+files_bp = Blueprint("files", __name__, url_prefix="/api")
+
+
+def _iso(value) -> str | None:
+    """把 MySQL 时间值转换为前端稳定可读的 ISO 字符串。"""
+    return value.isoformat() if value is not None else None
+
+
+def _file_payload(row: dict) -> dict:
+    """把 user_files 行转换为不暴露 BLOB 的文件库对象。"""
+    return {
+        "id": int(row["id"]),
+        "user_file_id": int(row["id"]),
+        "filename": row["filename"],
+        "mime_type": row["mime_type"],
+        "file_size": int(row["file_size"]),
+        "uploaded_at": _iso(row.get("uploaded_at")),
+        "last_accessed_at": _iso(row.get("last_accessed_at")),
+        "access_count": int(row.get("access_count") or 0),
+    }
+
+
+@files_bp.route("/files")
 def get_file_list():
+    """读取当前用户的逻辑文件库，不读取或返回文件正文。"""
     current_user = get_current_session_user()
     if not current_user:
         return jsonify({"error": "用户未登录或会话已过期"}), 401
-    
-    user_id = current_user['id']
-    logging.info(f"用户 {user_id} 请求文件列表")
+
     try:
-        with get_read_connection(consistency="eventual") as conn:
-            cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT id, filename, last_accessed_at FROM uploaded_files WHERE user_id = %s ORDER BY last_accessed_at DESC", (user_id,))
-            file_rows = cursor.fetchall()
-        if not file_rows:
-            logging.info(f"用户 {user_id} 没有文件记录")
-            return jsonify([])
-        file_list_for_frontend = [
-            (
-                row["id"], 
-                {
-                    "preview": row["filename"], 
-                    "last_time": row["last_accessed_at"].strftime("%m-%d %H:%M")
-                }
-            )
-            for row in file_rows
-        ]
-
-    except mysql.connector.Error as e:
-        logging.error(f"为用户 {user_id} 读取文件列表时数据库出错: {e}")
-        return jsonify({"error": f"读取文件列表时出错: {e}"}), 500
-    
-    logging.info(f"为用户 {user_id} 返回 {len(file_list_for_frontend)} 个文件")
-    return jsonify(file_list_for_frontend)
-
-## 上传文件
-@files_bp.route('/upload_file', methods=['POST'])
-def upload_file():
-    #  重构：从 Session 获取用户身份 
-    current_user = get_current_session_user()
-    if not current_user:
-        return jsonify({'success': False, 'error': '用户未登录或会话已过期'}), 401
-    
-    user_id = current_user['id']
-    username = current_user['username'] # 用于日志
-    
-    session_id = request.form.get('session_id')
-    if not session_id:
-        logging.warning(f"用户 {username} 上传文件请求缺少 session_id")
-        return jsonify({'success': False, 'error': '请求无效，缺少会话ID'}), 400
-    # 
-
-    if 'file' not in request.files:
-        logging.warning(f"用户 {username} 上传CSV请求中没有文件部分")
-        return jsonify({'success': False, 'error': '没有文件被上传'}), 400
-    
-    file = request.files['file'] # 获取上传的文件对象
-
-    # 3. 检查文件名是否为空
-    if file.filename == '':
-        logging.warning(f"用户 {username} 上传了但未选择文件")
-        return jsonify({'success': False, 'error': '没有选择文件'}), 400
-    
-    allowed_extensions = {'.csv'}
-    allowed_mimetypes = {'text/csv', 'application/vnd.ms-excel'} # 有些浏览器对csv的mimetype可能是后者
-
-    # 4. 检查文件扩展名和MIME类型
-    original_filename = file.filename
-    file_ext = os.path.splitext(original_filename)[1].lower() # 获取文件扩展名并转为小写
-
-    if not (file_ext in allowed_extensions and file.mimetype in allowed_mimetypes):
-        logging.warning(f"用户 {username} 尝试上传非法文件类型: {original_filename} (MIME: {file.mimetype})")
-        return jsonify({'success': False, 'error': '只允许上传 CSV 文件。请检查文件格式和扩展名。'}), 400
-
-    # 5. 读取文件内容并计算哈希
-    try:
-        file.seek(0) # 确保从文件开头读取
-        file_content = file.read() # 将整个文件内容读取为 bytes
-        file_hash = hashlib.sha256(file_content).hexdigest()
-        file_size = len(file_content)
-        if file_size > settings.MAX_UPLOAD_SIZE_BYTES:
-            logging.warning(
-                "用户 %s 上传文件超过大小限制: %s bytes > %s bytes",
-                username,
-                file_size,
-                settings.MAX_UPLOAD_SIZE_BYTES,
-            )
-            return jsonify({
-                'success': False,
-                'error': f'文件大小不能超过 {settings.MAX_UPLOAD_SIZE_MB}MB'
-            }), 413
-    except Exception as e:
-        logging.error(f"用户 {username} 上传文件 {original_filename} 时读取内容或计算哈希失败: {e}")
-        return jsonify({'success': False, 'error': '处理文件内容失败'}), 500
-    
-    # 6. 检查重复文件并保存到数据库 (使用哈希)
-    try:
-        with get_write_connection() as conn:
-            cursor = conn.cursor(dictionary=True) # 使用字典游标
-
+        with get_read_connection(consistency="strong") as connection:
+            cursor = connection.cursor(dictionary=True)
             cursor.execute(
-                "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
-                (session_id, user_id),
+                """
+                SELECT id, object_id, filename, mime_type, file_size,
+                       uploaded_at, last_accessed_at, access_count
+                FROM user_files
+                WHERE user_id = %s
+                ORDER BY last_accessed_at DESC, id DESC
+                """,
+                (current_user["id"],),
             )
-            if not cursor.fetchone():
-                conn.rollback()
-                logging.warning(
-                    "用户 %s 上传文件时引用了不存在或无权访问的会话 %s",
-                    user_id,
-                    session_id,
-                )
-                return jsonify({'success': False, 'error': '会话不存在或无权访问'}), 404
-            
-            # 检查是否已存在相同哈希的文件
-            cursor.execute("""
-                SELECT id, filename FROM uploaded_files 
-                WHERE user_id = %s AND file_hash = %s
-            """, (user_id, file_hash))
-            existing_file = cursor.fetchone()
-            
-            if existing_file:
-                # 去重命中不等价于正文被使用，不更新访问时间或使用次数。
-                # 使用原始文件名进行提示
-                action_message = f'您之前已上传过内容相同的文件 (名为 "{existing_file["filename"]}")。无需重复上传。'
-                logging.info(f"用户 {username} (ID: {user_id}) 上传了重复内容的文件: {original_filename} (Hash: {file_hash[:10]}...)")
-            else:
-                # 文件不存在，插入新记录
-                cursor.execute("""
-                    INSERT INTO uploaded_files (user_id, filename, original_filename, mime_type, file_size, file_hash, file_content)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (user_id, original_filename, original_filename, file.mimetype, file_size, file_hash, file_content))
-                conn.commit()
-                action_message = f'文件 "{original_filename}" 上传成功！'
-                logging.info(f"用户 {username} (ID: {user_id}) 成功上传新文件: {original_filename}")
-        
-        # 保存文件上传的聊天记录
-        user_message = f"上传文件: {original_filename}"
-        # 修改AI响应，使其更清晰
-        ai_message_text = f"已接收您的文件：`{original_filename}`。\n\n{action_message}\n\n您现在可以对我提问，例如：请对`{original_filename}`进行因果分析"
-        ai_response = {"type": "text", "summary": ai_message_text}
-        
-        save_chat(user_id, session_id, user_message, ai_response)
-        
-        return jsonify({'success': True, 'message': action_message, 'ai_response': ai_response})
-    except mysql.connector.Error as e:
-        logging.error(f"用户 {username} 保存文件 {original_filename} 到数据库时出错: {e}")
-        return jsonify({'success': False, 'error': '保存文件到数据库失败'}), 500
-    except Exception as e: # 捕获其他可能的未知错误
-        logging.error(f"用户 {username} 上传文件 {original_filename} 时发生未知服务器错误: {e}")
-        return jsonify({'success': False, 'error': '上传文件时发生服务器内部错误'}), 500
+            rows = cursor.fetchall()
+        return jsonify([_file_payload(row) for row in rows])
+    except mysql.connector.Error:
+        logging.error("读取用户文件库失败: user_id=%s", current_user["id"], exc_info=True)
+        return jsonify({"error": "读取文件列表时出错"}), 500
 
 
-# delete file
-@files_bp.route('/delete_file', methods=['POST'])
-def delete_file():
+@files_bp.route("/upload_file", methods=["POST"])
+def upload_file():
+    """上传 CSV 到不可变对象库并创建或复用一条逻辑文件记录。"""
     current_user = get_current_session_user()
     if not current_user:
         return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
-    
-    user_id = current_user['id']
-    data = request.json
-    file_id = data.get('file_id')
 
+    if "file" not in request.files:
+        return jsonify({"success": False, "error": "没有文件被上传"}), 400
+    upload = request.files["file"]
+    filename = (upload.filename or "").strip()
+    if not filename:
+        return jsonify({"success": False, "error": "没有选择文件"}), 400
+
+    file_ext = os.path.splitext(filename)[1].lower()
+    allowed_mimetypes = {"text/csv", "application/vnd.ms-excel"}
+    if file_ext != ".csv" or upload.mimetype not in allowed_mimetypes:
+        return jsonify({"success": False, "error": "只允许上传 CSV 文件。请检查文件格式和扩展名。"}), 400
+
+    try:
+        content = upload.read()
+        file_size = len(content)
+        if file_size > settings.MAX_UPLOAD_SIZE_BYTES:
+            return jsonify({
+                "success": False,
+                "error": f"文件大小不能超过 {settings.MAX_UPLOAD_SIZE_MB}MB",
+            }), 413
+        content_hash = hashlib.sha256(content).hexdigest()
+    except Exception:
+        logging.error("读取上传文件失败: user_id=%s filename=%s", current_user["id"], filename, exc_info=True)
+        return jsonify({"success": False, "error": "处理文件内容失败"}), 500
+
+    try:
+        with get_write_connection() as connection:
+            cursor = connection.cursor(dictionary=True)
+            connection.start_transaction()
+            cursor.execute(
+                "SELECT id FROM users WHERE id = %s FOR UPDATE",
+                (current_user["id"],),
+            )
+            if not cursor.fetchone():
+                connection.rollback()
+                return jsonify({"success": False, "error": "用户不存在"}), 404
+
+            cursor.execute(
+                """
+                SELECT id, file_size, mime_type
+                FROM file_objects
+                WHERE owner_user_id = %s AND content_hash = %s
+                FOR UPDATE
+                """,
+                (current_user["id"], content_hash),
+            )
+            object_row = cursor.fetchone()
+            if object_row:
+                object_id = int(object_row["id"])
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO file_objects (
+                        owner_user_id, content_hash, file_size, mime_type, file_content
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        current_user["id"],
+                        content_hash,
+                        file_size,
+                        upload.mimetype,
+                        content,
+                    ),
+                )
+                object_id = int(cursor.lastrowid)
+
+            cursor.execute(
+                """
+                SELECT id, object_id, filename, mime_type, file_size,
+                       uploaded_at, last_accessed_at, access_count
+                FROM user_files
+                WHERE user_id = %s AND object_id = %s AND filename = %s
+                FOR UPDATE
+                """,
+                (current_user["id"], object_id, filename),
+            )
+            user_file = cursor.fetchone()
+            created = False
+            if not user_file:
+                cursor.execute(
+                    """
+                    INSERT INTO user_files (
+                        user_id, object_id, filename, mime_type, file_size
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (current_user["id"], object_id, filename, upload.mimetype, file_size),
+                )
+                user_file_id = int(cursor.lastrowid)
+                cursor.execute(
+                    """
+                    SELECT id, object_id, filename, mime_type, file_size,
+                           uploaded_at, last_accessed_at, access_count
+                    FROM user_files
+                    WHERE id = %s
+                    FOR UPDATE
+                    """,
+                    (user_file_id,),
+                )
+                user_file = cursor.fetchone()
+                created = True
+            connection.commit()
+
+        payload = _file_payload(user_file)
+        message = (
+            f'文件 "{filename}" 上传成功！'
+            if created
+            else f'文件 "{filename}" 已在文件库中，无需重复上传。'
+        )
+        return jsonify({
+            "success": True,
+            "message": message,
+            "file": payload,
+            "user_file_id": payload["user_file_id"],
+            "file_hash": content_hash,
+        })
+    except mysql.connector.Error:
+        logging.error(
+            "保存文件库记录失败: user_id=%s filename=%s",
+            current_user["id"],
+            filename,
+            exc_info=True,
+        )
+        return jsonify({"success": False, "error": "保存文件到数据库失败"}), 500
+    except Exception:
+        logging.error(
+            "上传文件时发生未知错误: user_id=%s filename=%s",
+            current_user["id"],
+            filename,
+            exc_info=True,
+        )
+        return jsonify({"success": False, "error": "上传文件时发生服务器内部错误"}), 500
+
+
+@files_bp.route("/delete_file", methods=["POST"])
+def delete_file():
+    """删除逻辑文件；无引用且无活动 Job 时再删除不可变 BLOB。"""
+    current_user = get_current_session_user()
+    if not current_user:
+        return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
+
+    data = request.get_json(silent=True) or {}
+    file_id = data.get("file_id")
     if not file_id:
         return jsonify({"success": False, "error": "缺少文件ID"}), 400
 
     try:
-        with get_write_connection() as conn:
-            cursor = conn.cursor(dictionary=True)
-            conn.start_transaction()
-            # 锁住归属用户，阻止删除窗口内创建带该用户外键的新任务或文件。
+        file_id = int(file_id)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "文件ID无效"}), 400
+
+    try:
+        with get_write_connection() as connection:
+            cursor = connection.cursor(dictionary=True)
+            connection.start_transaction()
             cursor.execute(
                 "SELECT id FROM users WHERE id = %s FOR UPDATE",
-                (user_id,),
+                (current_user["id"],),
             )
             if not cursor.fetchone():
-                conn.rollback()
+                connection.rollback()
                 return jsonify({"success": False, "error": "用户不存在"}), 404
+
             cursor.execute(
                 """
-                SELECT id
-                FROM uploaded_files
+                SELECT id, object_id, filename
+                FROM user_files
                 WHERE id = %s AND user_id = %s
                 FOR UPDATE
                 """,
-                (file_id, user_id),
+                (file_id, current_user["id"]),
             )
-            if not cursor.fetchone():
-                conn.rollback()
-                logging.warning(f"用户 {user_id} 尝试删除无权或不存在的文件 {file_id}")
-                return jsonify({"success": False, "error": "无法删除该文件，权限不足或文件不存在"}), 404
+            file_row = cursor.fetchone()
+            if not file_row:
+                connection.rollback()
+                return jsonify({"success": False, "error": "文件不存在或无权访问"}), 404
+
             cursor.execute(
                 """
-                SELECT job_id
+                SELECT job_id, execution_state
                 FROM analysis_jobs
-                WHERE user_id = %s AND status IN ('queued', 'running')
+                WHERE input_user_file_id = %s
+                  AND (
+                      status IN ('queued', 'running', 'waiting_input')
+                      OR execution_state IN ('leased', 'draining')
+                  )
                 ORDER BY id
                 FOR UPDATE
                 """,
-                (user_id,),
+                (file_id,),
             )
             if cursor.fetchall():
-                conn.rollback()
+                connection.rollback()
                 return jsonify({
                     "success": False,
-                    "error": "当前仍有任务正在使用该用户的数据，请等待任务结束后再删除文件",
+                    "error": "当前文件仍被活动或 draining 任务使用，请等待执行占用释放后再删除",
                 }), 409
-            cursor.execute(
-                "DELETE FROM uploaded_files WHERE id = %s AND user_id = %s",
-                (file_id, user_id),
-            )
-            if cursor.rowcount != 1:
-                conn.rollback()
-                raise RuntimeError("文件删除影响行数异常")
-            conn.commit()
-            logging.info(f"用户 {user_id} 成功删除了文件 {file_id}")
-            return jsonify({"success": True, "message": "文件已成功删除"})
 
-    except mysql.connector.Error as e:
-        logging.error(f"删除文件 {file_id} (用户 {user_id}) 时数据库出错: {e}")
+            cursor.execute("DELETE FROM user_files WHERE id = %s", (file_id,))
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise RuntimeError("逻辑文件删除影响行数异常")
+
+            cursor.execute(
+                "SELECT COUNT(*) AS reference_count FROM user_files WHERE object_id = %s",
+                (file_row["object_id"],),
+            )
+            reference_count = int((cursor.fetchone() or {}).get("reference_count") or 0)
+            blob_deleted = False
+            if reference_count == 0:
+                cursor.execute("DELETE FROM file_objects WHERE id = %s", (file_row["object_id"],))
+                blob_deleted = cursor.rowcount == 1
+            connection.commit()
+            return jsonify({
+                "success": True,
+                "message": "文件已成功删除",
+                "user_file_id": file_id,
+                "blob_deleted": blob_deleted,
+            })
+    except mysql.connector.Error:
+        logging.error("删除文件失败: user_id=%s file_id=%s", current_user["id"], file_id, exc_info=True)
         return jsonify({"success": False, "error": "删除文件时数据库出错"}), 500
-    except Exception as e:
-        logging.error(f"删除文件 {file_id} (用户 {user_id}) 时发生未知错误: {e}")
+    except Exception:
+        logging.error("删除文件时发生未知错误: user_id=%s file_id=%s", current_user["id"], file_id, exc_info=True)
         return jsonify({"success": False, "error": "删除文件时发生未知错误"}), 500

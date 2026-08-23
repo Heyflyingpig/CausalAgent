@@ -6,7 +6,8 @@ from app.auth.session_guard import get_current_session_user
 import logging
 import json
 from app.chat.response_storage import render_summary_for_display
-from app.agent.checkpoint_cleanup import enqueue_checkpoint_cleanup
+from app.chat.execution_phases import assemble_execution_phases
+from app.agent.checkpoint_cleanup import enqueue_checkpoint_cleanup_many
 
 chat_bp = Blueprint('chat', __name__, url_prefix='/api')
 import uuid
@@ -122,43 +123,107 @@ def load_session_content():
     messages = []
     try:
         with get_read_connection(consistency="strong") as conn:
+            conn.start_transaction(readonly=True)
             cursor = conn.cursor(dictionary=True)
 
-            cursor.execute("SELECT id FROM sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
+            cursor.execute(
+                "SELECT id, UTC_TIMESTAMP(6) AS snapshot_at FROM sessions WHERE id = %s AND user_id = %s",
+                (session_id, user_id),
+            )
             session_exists = cursor.fetchone()
 
             if not session_exists:
+                conn.rollback()
                 logging.info(f"用户 {user_id} 请求了不存在或无权访问的会话 {session_id}")
                 return jsonify({"success": False, "error": "会话不存在或无权访问"}), 404
 
-            # 按照id获取所有消息和其附件，并且顺序排序，时间由早到晚
             cursor.execute("""
                 SELECT
-                    id,message_type,content,has_attachment
+                    id, message_type, content, has_attachment,
+                    analysis_job_id, analysis_job_input_id, source_event_id,
+                    created_at
                 FROM chat_messages
-                WHERE session_id = %s
-                ORDER BY created_at ASC
-            """, (session_id,))
+                WHERE session_id = %s AND user_id = %s
+                ORDER BY created_at ASC, id ASC
+            """, (session_id, user_id))
             chat_rows = cursor.fetchall()
 
-            # 处理每条消息（在 with 语句内部）
+            attachments_by_message = {}
+            message_ids = [int(row["id"]) for row in chat_rows if row["has_attachment"]]
+            if message_ids:
+                placeholders = ", ".join(["%s"] * len(message_ids))
+                cursor.execute(
+                    f"""
+                    SELECT message_id, attachment_type, content
+                    FROM chat_attachments
+                    WHERE message_id IN ({placeholders})
+                    ORDER BY message_id, id
+                    """,
+                    tuple(message_ids),
+                )
+                for attachment in cursor.fetchall():
+                    attachments_by_message.setdefault(int(attachment["message_id"]), []).append(attachment)
+
+            cursor.execute(
+                """
+                SELECT job_id, status, created_at, finished_at
+                FROM analysis_jobs
+                WHERE session_id = %s AND user_id = %s
+                ORDER BY created_at, id
+                """,
+                (session_id, user_id),
+            )
+            job_rows = cursor.fetchall()
+            input_rows = []
+            event_rows = []
+            job_ids = [str(row["job_id"]) for row in job_rows]
+            if job_ids:
+                placeholders = ", ".join(["%s"] * len(job_ids))
+                cursor.execute(
+                    f"""
+                    SELECT input_id, job_id, sequence, input_type, chat_message_id, created_at
+                    FROM analysis_job_inputs
+                    WHERE job_id IN ({placeholders})
+                    ORDER BY job_id, sequence, input_id
+                    """,
+                    tuple(job_ids),
+                )
+                input_rows = cursor.fetchall()
+                cursor.execute(
+                    f"""
+                    SELECT id, job_id, event_type, payload_json, created_at
+                    FROM analysis_job_events
+                    WHERE job_id IN ({placeholders})
+                    ORDER BY job_id, id
+                    """,
+                    tuple(job_ids),
+                )
+                event_rows = cursor.fetchall()
+
+            phases_by_message_id = assemble_execution_phases(
+                messages=chat_rows,
+                jobs=job_rows,
+                inputs=input_rows,
+                events=event_rows,
+                snapshot_at=session_exists["snapshot_at"],
+            )
+
             for row in chat_rows:
                 sender = "user" if row["message_type"] == 'user' else "ai"
+                message = {
+                    "sender": sender,
+                    "text": row["content"],
+                    "analysis_job_id": row.get("analysis_job_id"),
+                    "analysis_job_input_id": row.get("analysis_job_input_id"),
+                }
 
                 # 如果是AI消息，且有附件，则优先使用附件内容
                 if sender == "ai" and row["has_attachment"]:
-                    cursor.execute("""
-                        SELECT attachment_type, content
-                         FROM chat_attachments
-                        WHERE message_id = %s
-                    """, (row["id"],))
-                    attachments = cursor.fetchall()
-
                     causal_graph_data = None
                     visualization_mapping = None
 
                     ## attachment格式：{"type": "causal_graph", "content": {...}}
-                    for attachment in attachments:
+                    for attachment in attachments_by_message.get(int(row["id"]), []):
                         if attachment["attachment_type"] == "causal_graph":
                             try:
                                 causal_graph_data = json.loads(attachment["content"])
@@ -179,19 +244,20 @@ def load_session_content():
                                 message_content["summary"],
                                 visualization_mapping,
                             )
-
-                        messages.append({"sender": "ai", "text": message_content})
+                        message["text"] = message_content
                     else:
                         message_text = row["content"]
 
                         if visualization_mapping:
                             message_text = render_summary_for_display(message_text, visualization_mapping)
+                        message["text"] = message_text
 
-                        messages.append({"sender": "ai", "text": message_text})
+                phase = phases_by_message_id.get(int(row["id"]))
+                if sender == "user" and phase:
+                    message["thinking_after"] = phase
+                messages.append(message)
 
-                else:
-                    # 对于用户消息或没有附件的AI消息，直接使用content
-                    messages.append({"sender": sender, "text": row["content"]})
+            conn.commit()
 
         logging.info(f"用户 {username} 成功加载会话 {session_id} ({len(messages)} 条消息)")
         return jsonify({"success": True, "messages": messages})
@@ -268,39 +334,50 @@ def delete_session():
 
     try:
         with get_write_connection() as conn:
-            cursor = conn.cursor()
+            cursor = conn.cursor(dictionary=True)
             
             # 开启事务
             conn.start_transaction()
             
+            # 与创建、恢复、取消 Job 保持一致：先锁 Job，再锁 session，避免并发
+            # 删除和任务生命周期操作形成 InnoDB 锁环。
+            cursor.execute("""
+                SELECT job_id, status, execution_state
+                FROM analysis_jobs
+                WHERE session_id = %s
+                  AND user_id = %s
+                ORDER BY id
+                FOR UPDATE
+            """, (session_id, user_id))
+            session_jobs = cursor.fetchall()
+
             # 锁定目标会话，阻止删除过程中并发创建引用该会话的新任务。
             cursor.execute(
                 "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
                 (session_id, user_id),
             )
             session_exists = cursor.fetchone()
-            
+
             if not session_exists:
                 conn.rollback()
                 logging.info(f"用户 {user_id} 请求删除不存在或无权访问的会话 {session_id}")
                 return jsonify({"success": False, "error": "会话不存在或无权访问"}), 404
 
-            cursor.execute("""
-                SELECT 1
-                FROM analysis_jobs
-                WHERE session_id = %s
-                  AND user_id = %s
-                  AND status IN ('queued', 'running')
-                LIMIT 1
-            """, (session_id, user_id))
-            if cursor.fetchone():
+            if any(
+                row["status"] in {"queued", "running", "waiting_input"}
+                or row.get("execution_state") in {"leased", "draining"}
+                for row in session_jobs
+            ):
                 conn.rollback()
                 logging.info(f"用户 {user_id} 尝试删除仍有 active job 的会话 {session_id}")
-                return jsonify({"success": False, "error": "当前会话仍有任务正在运行，请等待完成后再删除"}), 409
+                return jsonify({"success": False, "error": "当前会话仍有活动或 draining 任务，请等待执行占用释放后再删除"}), 409
 
             try:
                 # 跨库删除不能加入 MySQL 事务；outbox 与会话删除同事务提交。
-                enqueue_checkpoint_cleanup(cursor, session_id)
+                cleanup_count = enqueue_checkpoint_cleanup_many(
+                    cursor,
+                    [str(row["job_id"]) for row in session_jobs],
+                )
 
                 # 2. 删除与该会话相关的附件 (通过连接 chat_messages)
                 # 这是为了处理 chat_attachments 和 chat_messages 之间没有直接外键的情况
@@ -328,7 +405,7 @@ def delete_session():
                 return jsonify({
                     "success": True,
                     "message": "会话已删除，checkpoint 正在后台清理",
-                    "checkpoint_cleanup": "pending",
+                    "checkpoint_cleanup": "pending" if cleanup_count else "succeeded",
                 }), 202
             except Exception:
                 conn.rollback()

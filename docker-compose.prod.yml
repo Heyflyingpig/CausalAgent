@@ -132,9 +132,9 @@ services:
       
       # === 关键区别5：生产环境变量 ===
       - FLASK_ENV=production
-      - R5_ISOLATED_RUN_ROOT=/app/tmp/r5_isolated_runs
-      - R5_SOURCE_ROOT=/app/tmp/r5_sources
-      - R5_DATASET_ROOT=/app/tmp/r5_datasets
+      - RAG_EVAL_ISOLATED_RUN_ROOT=/app/tmp/rag_eval_isolated_runs
+      - RAG_EVAL_SOURCE_ROOT=/app/tmp/rag_eval_sources
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval_datasets
       
       # 原因：
       # - production模式关闭调试信息
@@ -164,9 +164,9 @@ services:
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
       - ./static/generated_graphs:/app/static/generated_graphs
       - app_logs_prod:/app/logs  # 新增：应用日志持久化
-      - r5_isolated_runs:/app/tmp/r5_isolated_runs  # 隔离运行目录（与 rag-eval-worker 共享）
-      - r5_sources:/app/tmp/r5_sources              # 知识源目录（与 rag-eval-worker 共享）
-      - r5_datasets:/app/tmp/r5_datasets            # 数据集目录（与 rag-eval-worker 共享）
+      - rag_eval_isolated_runs:/app/tmp/rag_eval_isolated_runs  # 隔离运行目录（与 rag-eval-worker 共享）
+      - rag_eval_sources:/app/tmp/rag_eval_sources              # 知识源目录（与 rag-eval-worker 共享）
+      - rag_eval_datasets:/app/tmp/rag_eval_datasets            # 数据集目录（与 rag-eval-worker 共享）
     
     # 原因：
     # - 代码在镜像内，不依赖宿主机文件系统
@@ -273,20 +273,20 @@ services:
       - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
       - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
       - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
-      - R5_ISOLATED_RUN_ROOT=/app/tmp/r5_isolated_runs
-      - R5_SOURCE_ROOT=/app/tmp/r5_sources
-      - R5_DATASET_ROOT=/app/tmp/r5_datasets
-      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-5}
-      - R5_INGESTION_CONCURRENCY_LIMIT=${R5_INGESTION_CONCURRENCY_LIMIT:-1}
-      - R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
-      - R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
-      - R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
-      - R5_EVALUATION_CONCURRENCY_LIMIT=${R5_EVALUATION_CONCURRENCY_LIMIT:-3}
-      - R5_RAG_QUERY_CONCURRENCY_LIMIT=${R5_RAG_QUERY_CONCURRENCY_LIMIT:-2}
-      - R5_EVALUATION_POLL_INTERVAL_SECONDS=${R5_EVALUATION_POLL_INTERVAL_SECONDS:-1}
-      - R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
-      - R5_EVALUATION_JOB_STALE_AFTER_SECONDS=${R5_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
-      - R5_EVALUATION_STALE_AFTER_SECONDS=${R5_EVALUATION_STALE_AFTER_SECONDS:-1800}
+      - RAG_EVAL_ISOLATED_RUN_ROOT=/app/tmp/rag_eval_isolated_runs
+      - RAG_EVAL_SOURCE_ROOT=/app/tmp/rag_eval_sources
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval_datasets
+      - RAG_EVAL_EVALUATION_WORKERS=${RAG_EVAL_EVALUATION_WORKERS:-5}
+      - RAG_EVAL_INGESTION_CONCURRENCY_LIMIT=${RAG_EVAL_INGESTION_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT=${RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT:-3}
+      - RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT=${RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT:-2}
+      - RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS:-1}
+      - RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS=${RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
+      - RAG_EVAL_EVALUATION_STALE_AFTER_SECONDS=${RAG_EVAL_EVALUATION_STALE_AFTER_SECONDS:-1800}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
@@ -300,9 +300,9 @@ services:
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/source:/app/Agent/knowledge_base/source:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
-      - r5_isolated_runs:/app/tmp/r5_isolated_runs
-      - r5_sources:/app/tmp/r5_sources
-      - r5_datasets:/app/tmp/r5_datasets
+      - rag_eval_isolated_runs:/app/tmp/rag_eval_isolated_runs
+      - rag_eval_sources:/app/tmp/rag_eval_sources
+      - rag_eval_datasets:/app/tmp/rag_eval_datasets
 
     depends_on:
       mysql:
@@ -361,13 +361,13 @@ volumes:
   app_logs_prod:
     driver: local
 
-  r5_isolated_runs:
+  rag_eval_isolated_runs:
     driver: local
 
-  r5_sources:
+  rag_eval_sources:
     driver: local
 
-  r5_datasets:
+  rag_eval_datasets:
     driver: local
 
 # ==========================================

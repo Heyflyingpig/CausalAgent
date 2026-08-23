@@ -1,16 +1,16 @@
 from langgraph.graph import StateGraph, END
 from .state import CausalAgentState
 from . import nodes, edges
-from .graph_utils import bind_node
-from .tool_subgraphs import build_mcp_subgraph
+from .graph_utils import bind_node, bind_subgraph_node, guarded_error_handler, guarded_router
+from .tool_subgraphs import build_mcp_subgraph, build_rag_subgraph
 from .fault_tolerance import (
-    degrade_rag_tool_result,
     recover_postprocess_to_report,
     recover_report,
     recover_terminal_message,
     recover_tools_to_agent,
     recover_fold_to_agent,
     recover_preprocess_to_agent,
+    degrade_rag_adapter_result,
     route_to_normal_chat,
     short_retry,
     timeout,
@@ -21,100 +21,112 @@ import logging
 
 
 
-def _mcp_parent_update(result: dict) -> dict:
-    """将 MCP 子图终态投影为父图所需的两个业务字段。"""
-    return {
-        "causal_analysis_result": result.get("causal_analysis_result"),
-        "tool_call_request": result.get("tool_call_request"),
-    }
-
-
-def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_service, checkpointer):
+def build_graph(
+    llm: "ChatOpenAI",
+    mcp_tools: list,
+    rag_tools: list,
+    checkpointer,
+    rag_available: bool = True,
+):
     """
     构建父图。
 
-    父图保留 MCP 工具子图；默认多模态 RAG 作为单一普通节点执行。
+    父图只表达业务阶段顺序，MCP/RAG 的 tool-calling 细节封装在各自子图内。
     """
     workflow = StateGraph(CausalAgentState)
 
-    agent_node_with_llm = bind_node(nodes.agent_node, llm=llm)
-    fold_node_with_llm = bind_node(nodes.fold_node, llm=llm)
-    preprocess_node_with_llm = bind_node(nodes.preprocess_node, llm=llm)
-    mcp_subgraph = build_mcp_subgraph(llm=llm, mcp_tools=mcp_tools)
+    streaming_llm = llm.model_copy(update={"streaming": True})
+    agent_node_with_llm = bind_node(nodes.agent_node, event_node_name="agent", llm=llm)#将普通节点函数绑定llm，这些普通节点函数内部要调用大模型，但 LangGraph 执行节点时主要只传一个参数：state
+    fold_node_with_llm = bind_node(nodes.fold_node, event_node_name="fold", llm=llm)
+    preprocess_node_with_llm = bind_node(nodes.preprocess_node, event_node_name="preprocess", llm=llm)
+    mcp_subgraph = build_mcp_subgraph(llm=llm, mcp_tools=mcp_tools)#创建mcp子图
+    rag_subgraph = build_rag_subgraph(
+        llm=llm,
+        rag_tools=rag_tools,
+        rag_available=rag_available,
+    )
+    # 映射rag子state，隔离父子状态
+    rag_adapter_node = bind_subgraph_node(
+        nodes.rag_subgraph_adapter_node,
+        event_node_name="rag",
+        rag_subgraph=rag_subgraph,
+    )
+    postprocess_node_with_llm = bind_node(nodes.postprocess_node, event_node_name="postprocess", llm=llm)
+    inquiry_answer_node_with_llm = bind_node(
+        nodes.inquiry_answer_node,
+        event_node_name="inquiry_answer",
+        llm=streaming_llm,
+    )
+    report_node_with_llm = bind_node(nodes.report_node, event_node_name="report", llm=llm)
+    normal_chat_node_with_llm = bind_node(
+        nodes.normal_chat_node,
+        event_node_name="normal_chat",
+        llm=streaming_llm,
+    )
 
-    async def run_mcp_subgraph(state: CausalAgentState) -> dict:
-        """执行 MCP 子图，并仅回写父图需要的稳定业务输出。"""
-        result = await mcp_subgraph.ainvoke(state)
-        return _mcp_parent_update(result)
-    rag_node_with_resources = bind_node(nodes.rag_node, llm=llm, rag_service=rag_service)
-    postprocess_node_with_llm = bind_node(nodes.postprocess_node, llm=llm)
-    inquiry_answer_node_with_llm = bind_node(nodes.inquiry_answer_node, llm=llm)
-    report_node_with_llm = bind_node(nodes.report_node, llm=llm)
-    normal_chat_node_with_llm = bind_node(nodes.normal_chat_node, llm=llm)
-
+#节点注册部分
     workflow.add_node(
         "agent",
-        agent_node_with_llm,
-        retry_policy=short_retry(),
-        timeout=timeout(run_timeout=45, idle_timeout=20),
-        error_handler=route_to_normal_chat,
+        agent_node_with_llm,#这个节点真正执行的函数
+        retry_policy=short_retry(),#出错怎么重试
+        timeout=timeout(run_timeout=45, idle_timeout=20),#执行多久算超时
+        error_handler=guarded_error_handler(route_to_normal_chat),#最后失败怎么兜底
     )
     workflow.add_node(
         "fold",
         fold_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=120, idle_timeout=45),
-        error_handler=recover_fold_to_agent,
+        error_handler=guarded_error_handler(recover_fold_to_agent),
     )
     workflow.add_node(
         "preprocess",
         preprocess_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=recover_preprocess_to_agent,
+        error_handler=guarded_error_handler(recover_preprocess_to_agent),
     )
-    workflow.add_node("mcp", run_mcp_subgraph)
+
+    workflow.add_node("mcp", mcp_subgraph)#mcp子图注册成节点
     workflow.add_node(
         "rag",
-        rag_node_with_resources,
-        retry_policy=tool_retry(max_attempts=2),
-        timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=degrade_rag_tool_result,
+        rag_adapter_node,
+        error_handler=guarded_error_handler(degrade_rag_adapter_result),
     )
     workflow.add_node(
         "postprocess",
         postprocess_node_with_llm,
         timeout=timeout(run_timeout=240, idle_timeout=90),
-        error_handler=recover_postprocess_to_report,
+        error_handler=guarded_error_handler(recover_postprocess_to_report),
     )
     workflow.add_node(
         "report",
         report_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=recover_report,
+        error_handler=guarded_error_handler(recover_report),
     )
     workflow.add_node(
         "normal_chat",
         normal_chat_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=60, idle_timeout=30),
-        error_handler=recover_terminal_message,
+        error_handler=guarded_error_handler(recover_terminal_message),
     )
     workflow.add_node(
         "inquiry_answer",
         inquiry_answer_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=90, idle_timeout=30),
-        error_handler=recover_terminal_message,
+        error_handler=guarded_error_handler(recover_terminal_message),
     )
 
-    workflow.set_entry_point("agent")
-    workflow.add_conditional_edges(
-        "agent",
-        edges.decision_router,
+    workflow.set_entry_point("agent")#节点入口
+    workflow.add_conditional_edges(#节点的边
+        "agent",#从agent节点出发
+        guarded_router(edges.decision_router),#由decision_router函数决定路由？
         {
-            "fold": "fold",
+            "fold": "fold",#"路由函数返回值": "要跳转到的节点名"
             "normal_chat": "normal_chat",
             "postprocess": "postprocess",
             "inquiry_answer": "inquiry_answer"
@@ -122,29 +134,32 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_service, checkpointer):
     )
     workflow.add_conditional_edges(
         "fold",
-        edges.fold_router,
+        guarded_router(edges.fold_router),#由fold_router函数决定路由
         {
             "preprocess": "preprocess",
+            "agent": "agent",
+            "normal_chat": "normal_chat",
+        }
+    )
+
+    workflow.add_edge("preprocess", "mcp")#从preprocess节点到mcp子图节点的边
+
+    workflow.add_conditional_edges(
+        "mcp",
+        guarded_router(edges.mcp_router),
+        {
+            "rag": "rag",
             "agent": "agent"
         }
     )
-    workflow.add_edge("preprocess", "mcp")
-    workflow.add_conditional_edges(
-        "mcp", 
-        edges.mcp_router, 
-        {
-            "rag": "rag", 
-            "agent": "agent",
-            "normal_chat": "normal_chat"
-        }
-    )
+
     workflow.add_edge(
-        "rag", 
-        "postprocess"
+        "rag",
+        "agent"
     )
     workflow.add_conditional_edges(
-        "postprocess", 
-        edges.postprocess_router, 
+        "postprocess",
+        guarded_router(edges.postprocess_router),
         {
             "report": "report"
         }
@@ -164,15 +179,19 @@ def build_graph(llm: "ChatOpenAI", mcp_tools: list, rag_service, checkpointer):
 def create_graph_from_tools(
     llm: "ChatOpenAI",
     mcp_tools: list,
-    rag_service,
     checkpointer,
+    rag_available: bool = True,
 ):
-    """使用已加载的 MCP tools、显式 RAG Service 和 checkpoint 构建父图。"""
+    """使用已加载的 MCP tools 构建父图，返回可直接执行的 compiled graph。"""
+    from Agent.tool_node.rag_tool_registry import build_rag_tools
+    # graph 层不再关心 MCP session。
+    rag_tools = build_rag_tools()
     return build_graph(
         llm=llm,
         mcp_tools=mcp_tools,
-        rag_service=rag_service,
+        rag_tools=rag_tools,
         checkpointer=checkpointer,
+        rag_available=rag_available,
     )
 
 

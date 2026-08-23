@@ -53,13 +53,13 @@ from app.rag_eval.index_binding import IndexBindingGate, IndexIdentity
 
 
 ISOLATED_RUN_ROOT = Path(
-    os.getenv("R5_ISOLATED_RUN_ROOT", str(_PROJECT_ROOT / "tmp" / "r5_isolated_runs"))
+    os.getenv("RAG_EVAL_ISOLATED_RUN_ROOT", str(_PROJECT_ROOT / "tmp" / "rag_eval_isolated_runs"))
 ).resolve()
-R5_SOURCE_ROOT = Path(
-    os.getenv("R5_SOURCE_ROOT", str(_PROJECT_ROOT / "tmp" / "r5_sources"))
+RAG_EVAL_SOURCE_ROOT = Path(
+    os.getenv("RAG_EVAL_SOURCE_ROOT", str(_PROJECT_ROOT / "tmp" / "rag_eval_sources"))
 ).resolve()
 TUNING_DATASET_ROOT = Path(
-    os.getenv("R5_TUNING_DATASET_ROOT", str(_PROJECT_ROOT / "tmp" / "r5_tuning_datasets"))
+    os.getenv("RAG_EVAL_TUNING_DATASET_ROOT", str(_PROJECT_ROOT / "tmp" / "rag_eval_tuning_datasets"))
 ).resolve()
 _SOURCE_METADATA_LOCK = threading.RLock()
 _RUN_ID_PATTERN = re.compile(r"^[0-9A-Za-z_-]{8,80}$")
@@ -68,7 +68,7 @@ _MAX_SOURCES = 20
 _MAX_QUESTIONS = 100
 try:
     _EVALUATION_STALE_AFTER_SECONDS = max(
-        int(os.getenv("R5_EVALUATION_STALE_AFTER_SECONDS", "1800")),
+        int(os.getenv("RAG_EVAL_EVALUATION_STALE_AFTER_SECONDS", "1800")),
         60,
     )
 except ValueError:
@@ -283,7 +283,7 @@ def _default_governance_reviewer(sample: Dict[str, Any], *, purpose: str) -> Dic
 
 def _read_source_display_names() -> Dict[str, str]:
     """读取本地来源显示名；来源身份仍由 source_id/content hash 决定。"""
-    payload = _read_json(R5_SOURCE_ROOT / "source_metadata.json")
+    payload = _read_json(RAG_EVAL_SOURCE_ROOT / "source_metadata.json")
     sources = payload.get("sources")
     if not isinstance(sources, dict):
         return {}
@@ -298,9 +298,9 @@ def _write_source_display_names(display_names: Dict[str, str]) -> None:
     """原子保存来源显示名元数据，不触碰来源文件和隔离运行产物。"""
     with _SOURCE_METADATA_LOCK:
         _write_json(
-            R5_SOURCE_ROOT / "source_metadata.json",
+            RAG_EVAL_SOURCE_ROOT / "source_metadata.json",
             {
-                "schema_version": "r5_source_metadata_v1",
+                "schema_version": "rag_eval_source_metadata_v1",
                 "sources": {
                     source_id: {"display_name": display_name}
                     for source_id, display_name in sorted(display_names.items())
@@ -780,12 +780,12 @@ def _pdf_page_count(content: bytes) -> int | None:
 
 def _uploaded_source_catalog_records() -> List[tuple[Path, Dict[str, Any]]]:
     """读取独立上传目录中的用户来源，不扫描其它运行产物目录。"""
-    if not R5_SOURCE_ROOT.is_dir():
+    if not RAG_EVAL_SOURCE_ROOT.is_dir():
         return []
 
     display_names = _read_source_display_names()
     catalog: List[tuple[Path, Dict[str, Any]]] = []
-    for path in sorted(R5_SOURCE_ROOT.glob("upload_*__*")):
+    for path in sorted(RAG_EVAL_SOURCE_ROOT.glob("upload_*__*")):
         if not path.is_file() or path.is_symlink():
             continue
         try:
@@ -873,14 +873,14 @@ def register_uploaded_source(filename: str | None, content: bytes) -> Dict[str, 
     content_hash = hashlib.sha256(content).hexdigest()
     source_id = f"upload_{content_hash[:24]}"
     safe_name = secure_filename(Path(original_name).name) or f"document{suffix}"
-    R5_SOURCE_ROOT.mkdir(parents=True, exist_ok=True)
+    RAG_EVAL_SOURCE_ROOT.mkdir(parents=True, exist_ok=True)
 
     for existing_path, existing in _uploaded_source_catalog_records():
         if existing["source_id"] == source_id:
             return existing
 
-    target = R5_SOURCE_ROOT / f"{source_id}__{safe_name}"
-    temporary = R5_SOURCE_ROOT / f".{uuid.uuid4().hex}.{safe_name}"
+    target = RAG_EVAL_SOURCE_ROOT / f"{source_id}__{safe_name}"
+    temporary = RAG_EVAL_SOURCE_ROOT / f".{uuid.uuid4().hex}.{safe_name}"
     temporary.write_bytes(content)
     try:
         issue = inspect_source(temporary)
@@ -939,7 +939,7 @@ def delete_uploaded_source(source_id: str) -> Dict[str, Any]:
         raise RuntimeError(f"知识源正在摄取，暂不能删除：{active_runs[0]}")
 
     path, entry = match
-    path.resolve().relative_to(R5_SOURCE_ROOT.resolve())
+    path.resolve().relative_to(RAG_EVAL_SOURCE_ROOT.resolve())
     path.unlink()
     return {"source_id": normalized_id, "name": entry["name"], "status": "deleted", "deleted": True}
 

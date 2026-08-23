@@ -223,8 +223,8 @@ study/
 !/docs/
 !docs/难题.md
 # 评测功能的本地运行状态与摄取生成产物
-tmp/r5_isolated_runs/
-tmp/r5_sources/
+tmp/rag_eval_isolated_runs/
+tmp/rag_eval_sources/
 
 Agent/knowledge_base/rag/docs/
 Agent/knowledge_base/rag/output/reports/
@@ -254,3 +254,7 @@ Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*
 !Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_rebound_requires_reapproval_v3.json
 !Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_reapproval_manifest_v3.json
 !tests/test_staging_gateway_deprecation_log.py
+
+# 管理员生产构建只提交入口文件，哈希 assets 由构建阶段重新生成。
+admin-frontend/dist/*
+!admin-frontend/dist/index.html

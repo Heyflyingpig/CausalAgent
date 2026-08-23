@@ -92,17 +92,17 @@ class AdminFrontendDeploymentTests(unittest.TestCase):
         self.assertNotIn("GRANT SELECT ON performance_schema.*", script)
         self.assertNotIn("GRANT SELECT ON *.* TO '${APP_READ_USER}'", script)
 
-    def test_r5_dataset_and_concurrency_compose_contract(self):
+    def test_rag_eval_dataset_and_concurrency_compose_contract(self):
         """三份运行 Compose 必须共享数据集目录并使用实际并发配置键。"""
         concurrency_defaults = {
-            "R5_INGESTION_CONCURRENCY_LIMIT": "${R5_INGESTION_CONCURRENCY_LIMIT:-1}",
-            "R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT": "${R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}",
-            "R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT": (
-                "${R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}"
+            "RAG_EVAL_INGESTION_CONCURRENCY_LIMIT": "${RAG_EVAL_INGESTION_CONCURRENCY_LIMIT:-1}",
+            "RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT": "${RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}",
+            "RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT": (
+                "${RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}"
             ),
-            "R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT": "${R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}",
-            "R5_EVALUATION_CONCURRENCY_LIMIT": "${R5_EVALUATION_CONCURRENCY_LIMIT:-3}",
-            "R5_RAG_QUERY_CONCURRENCY_LIMIT": "${R5_RAG_QUERY_CONCURRENCY_LIMIT:-2}",
+            "RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT": "${RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}",
+            "RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT": "${RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT:-3}",
+            "RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT": "${RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT:-2}",
         }
 
         for filename in (
@@ -118,24 +118,24 @@ class AdminFrontendDeploymentTests(unittest.TestCase):
                 worker_env = dict(item.split("=", 1) for item in worker["environment"])
 
                 self.assertEqual(
-                    worker_env["R5_EVALUATION_WORKERS"],
-                    "${R5_EVALUATION_WORKERS:-5}",
+                    worker_env["RAG_EVAL_EVALUATION_WORKERS"],
+                    "${RAG_EVAL_EVALUATION_WORKERS:-5}",
                 )
-                self.assertEqual(app_env["R5_DATASET_ROOT"], "/app/tmp/r5_datasets")
-                self.assertEqual(worker_env["R5_DATASET_ROOT"], "/app/tmp/r5_datasets")
+                self.assertEqual(app_env["RAG_EVAL_DATASET_ROOT"], "/app/tmp/rag_eval_datasets")
+                self.assertEqual(worker_env["RAG_EVAL_DATASET_ROOT"], "/app/tmp/rag_eval_datasets")
                 self.assertEqual(
                     {key: worker_env[key] for key in concurrency_defaults},
                     concurrency_defaults,
                 )
                 self.assertFalse(
-                    any(key.startswith("R5_EVALUATION_LIMIT_") for key in worker_env),
+                    any(key.startswith("RAG_EVAL_EVALUATION_LIMIT_") for key in worker_env),
                 )
 
                 if filename == "docker-compose.prod.yml":
-                    expected_mount = "r5_datasets:/app/tmp/r5_datasets"
-                    self.assertIn("r5_datasets", compose["volumes"])
+                    expected_mount = "rag_eval_datasets:/app/tmp/rag_eval_datasets"
+                    self.assertIn("rag_eval_datasets", compose["volumes"])
                 else:
-                    expected_mount = "./tmp/r5_datasets:/app/tmp/r5_datasets"
+                    expected_mount = "./tmp/rag_eval_datasets:/app/tmp/rag_eval_datasets"
                 self.assertIn(expected_mount, app["volumes"])
                 self.assertIn(expected_mount, worker["volumes"])
 

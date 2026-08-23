@@ -3,10 +3,13 @@ import { ref, watch } from 'vue'
 import { ApiError } from '../api'
 import type { SensitiveContentChunk } from '../types'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   title: string
   loadChunk: (offset: number) => Promise<SensitiveContentChunk>
-}>()
+  showAuditNotice?: boolean
+}>(), {
+  showAuditNotice: true,
+})
 
 const visible = defineModel<boolean>({ required: true })
 const content = ref('')
@@ -42,6 +45,7 @@ watch(visible, (opened) => {
 <template>
   <el-dialog v-model="visible" :title="title" width="min(820px, 92vw)" destroy-on-close>
     <el-alert
+      v-if="showAuditNotice"
       class="sensitive-notice"
       type="warning"
       :closable="false"

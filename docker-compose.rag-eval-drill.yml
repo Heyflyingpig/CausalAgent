@@ -62,14 +62,14 @@ services:
       CHECKPOINT_POSTGRES_DATABASE: rag_eval_drill_checkpoint
       CHECKPOINT_POSTGRES_USER: drill_checkpoint
       CHECKPOINT_POSTGRES_PASSWORD: drill_checkpoint_password
-      R5_EVALUATION_WORKERS: "5"
-      R5_INGESTION_CONCURRENCY_LIMIT: "1"
-      R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT: "1"
-      R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
-      R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
-      R5_EVALUATION_CONCURRENCY_LIMIT: "3"
-      R5_RAG_QUERY_CONCURRENCY_LIMIT: "2"
-      R5_EVALUATION_JOB_STALE_AFTER_SECONDS: "30"
+      RAG_EVAL_EVALUATION_WORKERS: "5"
+      RAG_EVAL_INGESTION_CONCURRENCY_LIMIT: "1"
+      RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT: "1"
+      RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
+      RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
+      RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT: "3"
+      RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT: "2"
+      RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS: "30"
       VISION_ALLOW_REMOTE_DATA: "true"
       LANGCHAIN_API_KEY: ""
       LANGCHAIN_TRACING_V2: "false"
@@ -88,9 +88,9 @@ services:
     environment: *drill_environment
     volumes:
       - .:/app
-      - rag_eval_drill_runs:/app/tmp/r5_isolated_runs
-      - rag_eval_drill_sources:/app/tmp/r5_sources
-      - rag_eval_drill_datasets:/app/tmp/r5_datasets
+      - rag_eval_drill_runs:/app/tmp/rag_eval_isolated_runs
+      - rag_eval_drill_sources:/app/tmp/rag_eval_sources
+      - rag_eval_drill_datasets:/app/tmp/rag_eval_datasets
     depends_on:
       db-bootstrap:
         condition: service_completed_successfully
@@ -101,9 +101,9 @@ services:
     environment: *drill_environment
     volumes:
       - .:/app
-      - rag_eval_drill_runs:/app/tmp/r5_isolated_runs
-      - rag_eval_drill_sources:/app/tmp/r5_sources
-      - rag_eval_drill_datasets:/app/tmp/r5_datasets
+      - rag_eval_drill_runs:/app/tmp/rag_eval_isolated_runs
+      - rag_eval_drill_sources:/app/tmp/rag_eval_sources
+      - rag_eval_drill_datasets:/app/tmp/rag_eval_datasets
     depends_on:
       db-bootstrap:
         condition: service_completed_successfully

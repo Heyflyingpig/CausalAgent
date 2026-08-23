@@ -7,13 +7,19 @@ worker 仍负责把 graph 产出的终态或异常转换为 analysis_job_events�
 
 from __future__ import annotations
 
-from typing import Callable
+import asyncio
+from typing import Any, Callable, Literal
 
 from langchain_core.messages import AIMessage
 from langgraph.errors import NodeError
 from langgraph.types import Command, RetryPolicy, TimeoutPolicy, default_retry_on
 
-from .state import CausalAgentState
+from .state import CausalAgentState, RagSubgraphState
+from app.agent.worker.execution_guard import (
+    JobExecutionRevoked,
+    current_execution_guard,
+    raise_if_execution_revoked,
+)
 
 
 def retry_transient_errors(exc: BaseException) -> bool:
@@ -23,6 +29,11 @@ def retry_transient_errors(exc: BaseException) -> bool:
     默认策略已排除常见编程错误，并会重试 NodeTimeoutError 以及常见 5xx/网络类异常；
     这里单独排除 LangGraph interrupt 相关异常，避免“需要用户输入”的业务中断被当作故障重试。
     """
+    if isinstance(exc, (JobExecutionRevoked, asyncio.CancelledError)):
+        return False
+    guard = current_execution_guard()
+    if guard is not None and guard.revoked:
+        return False
     exc_name = exc.__class__.__name__.lower()
     if "interrupt" in exc_name:
         return False
@@ -57,12 +68,54 @@ def timeout(run_timeout: float, idle_timeout: float | None = None) -> TimeoutPol
 
 
 def _error_message(error: NodeError) -> str:
-    return f"{error.node} 节点执行失败: {error.error}"
+    """生成不包含异常原文的节点失败摘要。"""
+    raise_if_execution_revoked(getattr(error, "error", error))
+    return f"{error.node} 节点执行失败"
 
 
 def sanitize_error(exc: BaseException) -> str:
-    """Return a display-safe error string without exposing implementation detail."""
-    return str(exc) or exc.__class__.__name__
+    """把异常归类为有限的公开错误，避免泄露路径、连接串或文件正文。"""
+    if isinstance(exc, asyncio.CancelledError):
+        raise exc
+    raise_if_execution_revoked(exc)
+    normalized = str(exc).lower()
+    if "timeout" in normalized:
+        return "调用超时"
+    if any(token in normalized for token in ("connection", "connect", "network")):
+        return "服务连接失败"
+    if any(token in normalized for token in ("permission", "auth")):
+        return "服务授权失败"
+    if any(token in normalized for token in ("rate", "limit")):
+        return "服务当前繁忙"
+    return "节点执行失败"
+
+
+RagStatus = Literal["available", "unavailable", "protocol_error"]
+RAG_DEGRADATION_SUMMARY = "知识库增强暂不可用，报告将仅基于因果分析结果生成。"
+
+
+def build_rag_degradation_result(
+    error: Any = None,
+    *,
+    status: RagStatus = "unavailable",
+) -> dict[str, Any]:
+    """构造统一的 RAG 降级结果，并保留取消异常的控制流语义。"""
+    if isinstance(error, asyncio.CancelledError):
+        raise error
+    if isinstance(error, BaseException):
+        error_message = sanitize_error(error)
+    elif error is None:
+        error_message = "RAG 子图未生成有效结果。"
+    else:
+        error_message = str(error)
+    return {
+        "success": False,
+        "status": status,
+        "summary": RAG_DEGRADATION_SUMMARY,
+        "questions": [],
+        "evidence_count": 0,
+        "error": error_message,
+    }
 
 
 def route_to_normal_chat(state: CausalAgentState, error: NodeError) -> Command:
@@ -123,13 +176,7 @@ def recover_tools_to_agent(state: CausalAgentState, error: NodeError) -> Command
                 AIMessage(content=f"决策：工具执行失败：{message}", name=error.node)
             ],
             "causal_analysis_result": {"success": False, "message": message},
-            "knowledge_base_result": {
-                "success": False,
-                "summary": message,
-                "questions": [],
-                "evidence_count": 0,
-                "error": message,
-            },
+            "knowledge_base_result": build_rag_degradation_result(message),
             "tool_call_request": False,
         },
         goto="agent",
@@ -150,17 +197,51 @@ def recover_mcp_tool_failure(state: CausalAgentState, error: NodeError) -> dict:
     }
 
 
-def degrade_rag_tool_result(state: CausalAgentState, error: NodeError) -> dict:
-    """RAG ToolNode 失败后的降级：保留稳定结构，让报告继续生成。"""
+def _degrade_rag_subgraph_result(
+    error: NodeError,
+    *,
+    status: RagStatus,
+) -> Command:
+    """把 RAG 子图节点异常转换成 Finalize 可消费的内部状态。"""
+    result = build_rag_degradation_result(error.error, status=status)
+    return Command(
+        update={
+            "rag_route": "finish",
+            "rag_status": status,
+            "rag_parse_result": result,
+        },
+        goto="rag_finalize",
+    )
+
+
+def degrade_rag_tool_result(state: RagSubgraphState, error: NodeError) -> Command:
+    """RAG planner/ToolNode 失败后的降级：统一结束到 Finalize。"""
+    return _degrade_rag_subgraph_result(error, status="unavailable")
+
+
+def degrade_rag_parser_failure(state: RagSubgraphState, error: NodeError) -> Command:
+    """RAG Parser 异常后的协议降级：仍然进入 Finalize。"""
+    return _degrade_rag_subgraph_result(error, status="protocol_error")
+
+
+def degrade_rag_finalize_failure(state: RagSubgraphState, error: NodeError) -> dict:
+    """RAG Finalize 异常的最后一道内部兜底。"""
     return {
-        "knowledge_base_result": {
-            "success": False,
-            "summary": "知识库增强暂不可用，报告将仅基于因果分析结果生成。",
-            "questions": [],
-            "evidence_count": 0,
-            "error": sanitize_error(error.error),
-        }
+        "rag_output": build_rag_degradation_result(
+            error.error,
+            status="protocol_error",
+        )
     }
+
+
+def degrade_rag_adapter_result(state: CausalAgentState, error: NodeError) -> Command:
+    """父图适配节点异常的最后一道兜底，只投影统一 RAG 字段。"""
+    return Command(
+        update={
+            "knowledge_base_result": build_rag_degradation_result(error.error),
+        },
+        goto="agent",
+    )
 
 
 def recover_postprocess_to_report(state: CausalAgentState, error: NodeError) -> Command:

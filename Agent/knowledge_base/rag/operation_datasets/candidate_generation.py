@@ -31,7 +31,7 @@ from config.settings import settings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "tmp" / "r5_candidate_datasets"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "tmp" / "rag_eval_candidate_datasets"
 MAX_GENERATION_WORKERS = 4
 MAX_QUESTIONS_PER_UNIT = 3
 DEFAULT_MAX_UNITS = 32

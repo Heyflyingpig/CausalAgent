@@ -829,7 +829,7 @@ def _user_impact(cursor, user: dict[str, Any]) -> dict[str, Any]:
                 JOIN chat_messages AS m ON m.id = a.message_id
                 WHERE m.user_id = %s
             ) AS attachments,
-            (SELECT COUNT(*) FROM uploaded_files WHERE user_id = %s) AS files,
+            (SELECT COUNT(*) FROM user_files WHERE user_id = %s) AS files,
             (SELECT COUNT(*) FROM analysis_jobs WHERE user_id = %s) AS jobs,
             (
                 SELECT COUNT(*)
@@ -841,13 +841,17 @@ def _user_impact(cursor, user: dict[str, Any]) -> dict[str, Any]:
             (
                 SELECT COUNT(*)
                 FROM checkpoint_cleanup_outbox AS o
-                JOIN sessions AS s ON s.id = o.thread_id
-                WHERE s.user_id = %s AND o.status <> 'succeeded'
+                JOIN analysis_jobs AS j ON j.job_id = o.thread_id
+                WHERE j.user_id = %s AND o.status <> 'succeeded'
             ) AS checkpoint_cleanup_pending,
             (
                 SELECT COUNT(*)
                 FROM analysis_jobs
-                WHERE user_id = %s AND status IN ('queued', 'running')
+                WHERE user_id = %s
+                  AND (
+                      status IN ('queued', 'running', 'waiting_input')
+                      OR execution_state IN ('leased', 'draining')
+                  )
             ) AS active_jobs
         """,
         (user_id,) * 9,
@@ -900,7 +904,7 @@ def get_user_delete_impact(
     if user["role"] == "admin" and user["is_active"] and enabled_admin_count <= 1:
         blockers.append("不能删除最后一个启用管理员")
     if impact["active_jobs"]:
-        blockers.append("目标用户仍有 queued/running 分析任务")
+        blockers.append("目标用户仍有活动或 draining 执行中的分析任务")
     if impact["total_related_rows"] > settings.ADMIN_DELETE_MAX_RELATED_ROWS:
         blockers.append(
             "关联记录超过同步删除安全上限，需在维护窗口使用专用流程处理"
@@ -1011,18 +1015,23 @@ def delete_user(
             )
         cursor.execute(
             """
-            SELECT job_id
+            SELECT job_id, status, execution_state
             FROM analysis_jobs
-            WHERE user_id = %s AND status IN ('queued', 'running')
+            WHERE user_id = %s
             ORDER BY id
             FOR UPDATE
             """,
             (user_id,),
         )
-        if cursor.fetchall():
+        job_rows = cursor.fetchall()
+        if any(
+            row["status"] in {"queued", "running", "waiting_input"}
+            or row.get("execution_state") in {"leased", "draining"}
+            for row in job_rows
+        ):
             raise AdminApiError(
                 "active_jobs_block_delete",
-                "目标用户仍有 queued/running 分析任务",
+                "目标用户仍有活动或 draining 执行中的分析任务",
                 status=409,
             )
         impact = _user_impact(cursor, user)
@@ -1032,11 +1041,6 @@ def delete_user(
                 "关联记录超过同步删除安全上限",
                 status=409,
             )
-        cursor.execute(
-            "SELECT id FROM sessions WHERE user_id = %s ORDER BY id FOR UPDATE",
-            (user_id,),
-        )
-        session_ids = [str(row["id"]) for row in cursor.fetchall()]
         _insert_operation(
             cursor,
             operation_id=operation_id,
@@ -1048,9 +1052,25 @@ def delete_user(
         )
         cleanup_count = enqueue_checkpoint_cleanup_many(
             cursor,
-            session_ids,
+            [str(row["job_id"]) for row in job_rows],
             operation_id=operation_id,
         )
+        cursor.execute(
+            "SELECT id FROM file_objects WHERE owner_user_id = %s FOR UPDATE",
+            (user_id,),
+        )
+        object_ids = [int(row["id"]) for row in cursor.fetchall()]
+        cursor.execute("DELETE FROM user_files WHERE user_id = %s", (user_id,))
+        deleted_user_files = cursor.rowcount
+        deleted_file_objects = 0
+        for object_id in object_ids:
+            cursor.execute(
+                "SELECT COUNT(*) AS reference_count FROM user_files WHERE object_id = %s",
+                (object_id,),
+            )
+            if int((cursor.fetchone() or {}).get("reference_count") or 0) == 0:
+                cursor.execute("DELETE FROM file_objects WHERE id = %s", (object_id,))
+                deleted_file_objects += cursor.rowcount
         cursor.execute(
             "DELETE FROM archived_sessions WHERE user_id = %s",
             (user_id,),
@@ -1068,6 +1088,8 @@ def delete_user(
         new_values = {
             "deleted": True,
             "deleted_archived_sessions": deleted_archives,
+            "deleted_user_files": deleted_user_files,
+            "deleted_file_objects": deleted_file_objects,
             "checkpoint_cleanup": {
                 "status": "pending" if cleanup_count else "succeeded",
                 "total": cleanup_count,
@@ -1206,15 +1228,20 @@ def get_operation(operation_id: str, *, actor: dict[str, Any]) -> dict[str, Any]
 
 
 def get_file_delete_impact(file_id: int) -> dict[str, Any]:
-    """预览文件 BLOB 删除元数据，并保守检查归属用户活动任务。"""
+    """预览逻辑文件删除影响，并检查冻结输入和共享 BLOB 引用。"""
     with get_read_connection(consistency="strong") as conn:
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
             """
-            SELECT f.id, f.user_id, u.username, f.original_filename,
-                   f.mime_type, f.file_size, f.upload_timestamp,
-                   f.last_accessed_at, f.access_count
-            FROM uploaded_files AS f
+            SELECT f.id, f.user_id, u.username, f.object_id,
+                   f.filename, f.filename AS original_filename,
+                   o.content_hash AS file_hash, f.mime_type, f.file_size,
+                   f.uploaded_at AS upload_timestamp,
+                   f.last_accessed_at, f.access_count,
+                   (SELECT COUNT(*) FROM user_files AS refs
+                    WHERE refs.object_id = f.object_id) AS object_reference_count
+            FROM user_files AS f
+            JOIN file_objects AS o ON o.id = f.object_id
             JOIN users AS u ON u.id = f.user_id
             WHERE f.id = %s
             """,
@@ -1227,22 +1254,34 @@ def get_file_delete_impact(file_id: int) -> dict[str, Any]:
             """
             SELECT COUNT(*) AS count_value
             FROM analysis_jobs
-            WHERE user_id = %s AND status IN ('queued', 'running')
+            WHERE input_user_file_id = %s
+              AND (
+                  status IN ('queued', 'running', 'waiting_input')
+                  OR execution_state IN ('leased', 'draining')
+              )
             """,
-            (file_row["user_id"],),
+            (file_id,),
         )
         active_jobs = int((cursor.fetchone() or {}).get("count_value") or 0)
     blockers = (
-        ["文件缺少稳定 job 关联，归属用户存在 queued/running 任务"]
+        ["文件仍被活动或 draining 任务冻结使用"]
         if active_jobs
         else []
     )
+    reference_count = int(file_row.get("object_reference_count") or 0)
+    # object_id 只用于本次查询和引用计数，不能进入管理员公开 DTO。
+    file_row.pop("object_id", None)
     return {
         "file": file_row,
         "impact": {
             "database_rows": 1,
-            "blob_bytes": int(file_row.get("file_size") or 0),
+            "blob_bytes": (
+                int(file_row.get("file_size") or 0)
+                if reference_count == 1
+                else 0
+            ),
             "owner_active_jobs": active_jobs,
+            "object_reference_count": reference_count,
         },
         "can_delete": not blockers,
         "blockers": blockers,
@@ -1259,7 +1298,7 @@ def delete_file(
     actor: dict[str, Any],
     idempotency_key: str | None,
 ) -> dict[str, Any]:
-    """原子删除 uploaded_files 行和 BLOB，并保留去敏操作审计。"""
+    """原子删除逻辑文件，并仅在无其他引用时删除不可变 BLOB。"""
     request_body = _require_body(body)
     if request_body.get("confirmed") is not True:
         raise AdminApiError(
@@ -1304,7 +1343,7 @@ def delete_file(
             connection.rollback()
             return replay
         cursor.execute(
-            "SELECT user_id FROM uploaded_files WHERE id = %s",
+            "SELECT user_id FROM user_files WHERE id = %s",
             (file_id,),
         )
         owner = cursor.fetchone()
@@ -1319,10 +1358,13 @@ def delete_file(
             raise AdminApiError("owner_not_found", "文件归属用户不存在", 409)
         cursor.execute(
             """
-            SELECT f.id, f.user_id, u.username, f.original_filename,
-                   f.mime_type, f.file_size, f.upload_timestamp,
+            SELECT f.id, f.user_id, f.object_id, u.username,
+                   f.filename, f.filename AS original_filename,
+                   o.content_hash AS file_hash, f.mime_type, f.file_size,
+                   f.uploaded_at AS upload_timestamp,
                    f.last_accessed_at, f.access_count
-            FROM uploaded_files AS f
+            FROM user_files AS f
+            JOIN file_objects AS o ON o.id = f.object_id
             JOIN users AS u ON u.id = f.user_id
             WHERE f.id = %s
             FOR UPDATE
@@ -1340,20 +1382,30 @@ def delete_file(
             )
         cursor.execute(
             """
-            SELECT job_id
+            SELECT job_id, execution_state
             FROM analysis_jobs
-            WHERE user_id = %s AND status IN ('queued', 'running')
+            WHERE input_user_file_id = %s
+              AND (
+                  status IN ('queued', 'running', 'waiting_input')
+                  OR execution_state IN ('leased', 'draining')
+              )
             ORDER BY id
             FOR UPDATE
             """,
-            (file_row["user_id"],),
+            (file_id,),
         )
         if cursor.fetchall():
             raise AdminApiError(
                 "active_jobs_block_delete",
-                "文件归属用户仍有 queued/running 分析任务",
+                "文件仍被活动或 draining 任务冻结使用",
                 status=409,
             )
+        cursor.execute(
+            "SELECT id FROM file_objects WHERE id = %s FOR UPDATE",
+            (file_row["object_id"],),
+        )
+        if not cursor.fetchone():
+            raise AdminApiError("object_not_found", "文件对象不存在", 409)
         _insert_operation(
             cursor,
             operation_id=operation_id,
@@ -1363,9 +1415,21 @@ def delete_file(
             fingerprint=fingerprint,
             target_count=1,
         )
-        cursor.execute("DELETE FROM uploaded_files WHERE id = %s", (file_id,))
+        cursor.execute("DELETE FROM user_files WHERE id = %s", (file_id,))
         if cursor.rowcount != 1:
             raise RuntimeError("文件删除影响行数异常")
+        cursor.execute(
+            "SELECT COUNT(*) AS reference_count FROM user_files WHERE object_id = %s",
+            (file_row["object_id"],),
+        )
+        reference_count = int((cursor.fetchone() or {}).get("reference_count") or 0)
+        blob_deleted = False
+        if reference_count == 0:
+            cursor.execute(
+                "DELETE FROM file_objects WHERE id = %s",
+                (file_row["object_id"],),
+            )
+            blob_deleted = cursor.rowcount == 1
         old_values = {
             "user_id": file_row["user_id"],
             "username": file_row["username"],
@@ -1375,11 +1439,16 @@ def delete_file(
             "upload_timestamp": file_row["upload_timestamp"],
             "access_count": int(file_row["access_count"] or 0),
         }
-        new_values = {"deleted": True, "blob_deleted": True, "recycle_bin": False}
+        new_values = {
+            "deleted": True,
+            "blob_deleted": blob_deleted,
+            "object_reference_count": reference_count,
+            "recycle_bin": False,
+        }
         _insert_operation_item(
             cursor,
             operation_id=operation_id,
-            target_type="uploaded_file",
+            target_type="user_file",
             target_id=str(file_id),
             target_label=file_row["original_filename"],
             old_values=old_values,
@@ -1389,7 +1458,7 @@ def delete_file(
             cursor,
             actor=actor,
             action=operation_type,
-            target_type="uploaded_file",
+            target_type="user_file",
             target_id=str(file_id),
             old_values=old_values,
             new_values=new_values,
@@ -1404,7 +1473,7 @@ def delete_file(
             "file_id": file_id,
             "filename": file_row["original_filename"],
             "deleted": True,
-            "blob_deleted": True,
+            "blob_deleted": blob_deleted,
             "replayed": False,
         }
         _complete_operation(

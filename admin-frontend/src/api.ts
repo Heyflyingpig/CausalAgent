@@ -1,5 +1,7 @@
 import type {
   AdminAttachment,
+  AgentWorkerSummary,
+  AdminCheckpointPage,
   AdminFile,
   AdminJob,
   AdminJobEvent,
@@ -17,6 +19,7 @@ import type {
   Identity,
   MonitorOverrideMap,
   MonitorSettings,
+  QuickAuditSnapshot,
   SensitiveContentChunk,
   UserDeleteImpact,
   UserOperationAction,
@@ -409,6 +412,51 @@ export const adminApi = {
     withQuery('/api/admin/business/jobs', filters),
     { cache: 'no-store' },
   ),
+  /** 读取分析任务页上方的 Agent Worker/Job 汇总。 */
+  jobWorkersSummary: async (): Promise<AgentWorkerSummary> => {
+    // 复用兼容的 /jobs/workers 响应；该接口的 summary/meta 保留在 envelope 顶层。
+    const response = await fetch('/api/admin/jobs/workers', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
+    let payload: {
+      success?: boolean
+      data?: Record<string, unknown>[]
+      summary?: AgentWorkerSummary['summary']
+      meta?: AgentWorkerSummary['meta']
+      error?: string
+      code?: string
+      request_id?: string
+    }
+    try {
+      payload = await response.json() as typeof payload
+    } catch {
+      throw new ApiError(
+        `服务端返回了无效响应 (${response.status})`,
+        response.status,
+        {},
+        response.headers.get('X-Request-ID'),
+      )
+    }
+    if (!response.ok || payload.success === false) {
+      const error = new ApiError(
+        payload.error || `请求失败 (${response.status})`,
+        response.status,
+        payload,
+        response.headers.get('X-Request-ID'),
+      )
+      if (shouldRedirectForApiError(response.status, payload.code)) {
+        redirectForAdminAuthError(response.status, payload.code)
+      }
+      throw error
+    }
+    return {
+      jobs: payload.data || [],
+      summary: payload.summary || {},
+      meta: payload.meta || {},
+    }
+  },
   /** 读取任务元数据。 */
   job: (jobId: string) => apiRequest<AdminJob>(
     `/api/admin/business/jobs/${encodeURIComponent(jobId)}`,
@@ -422,15 +470,28 @@ export const adminApi = {
     withQuery(`/api/admin/business/jobs/${encodeURIComponent(jobId)}/events`, filters),
     { cache: 'no-store' },
   ),
+  /** 分页读取精确归属当前任务的 PostgreSQL checkpoint 安全摘要。 */
+  jobCheckpoints: (
+    jobId: string,
+    filters: { limit?: number; cursor?: string } = {},
+  ) => apiRequest<AdminCheckpointPage>(
+    withQuery(
+      `/api/admin/business/jobs/${encodeURIComponent(jobId)}/checkpoints`,
+      filters,
+    ),
+    { cache: 'no-store' },
+  ),
   /** 点击后分块读取任务输入、结果或错误正文。 */
   jobContent: (
     jobId: string,
     kind: 'input' | 'result' | 'error',
     offset = 0,
+    sequence?: number,
   ) => apiRequest<SensitiveContentChunk>(
     withQuery(`/api/admin/business/jobs/${encodeURIComponent(jobId)}/content`, {
       kind,
       offset,
+      sequence,
     }),
     { cache: 'no-store' },
   ),
@@ -481,7 +542,7 @@ export const adminApi = {
     },
   ),
   /** 读取现有 quick 完整性共享快照。 */
-  quickAudit: () => apiRequest<Record<string, unknown>>(
+  quickAudit: () => apiRequest<QuickAuditSnapshot>(
     '/api/admin/db/audit?mode=quick',
     { cache: 'no-store' },
   ),

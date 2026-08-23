@@ -6,9 +6,10 @@ import json
 import os
 
 import bcrypt
+import psycopg
 
 from app.db import get_write_connection
-from Database.mysql_checkpointer import _pending_write_identity_hash
+from config.checkpoint_settings import CheckpointPostgresConfig
 
 
 ADMIN_ID = 3101
@@ -18,6 +19,7 @@ USER_SESSION_ID = "31-user-session"
 ARCHIVED_SESSION_ID = "31-archived-session"
 JOB_ID = "31-job-succeeded"
 FILE_ID = 3101
+FILE_OBJECT_ID = 4101
 USER_MESSAGE_ID = 3101
 AI_MESSAGE_ID = 3102
 ATTACHMENT_ID = 3101
@@ -25,7 +27,9 @@ CONTROL_USER_A_ID = 3103
 CONTROL_USER_B_ID = 3104
 DELETE_USER_ID = 3105
 CONTROL_FILE_ID = 3201
+CONTROL_FILE_OBJECT_ID = 4201
 DELETE_FILE_ID = 3205
+DELETE_FILE_OBJECT_ID = 4205
 DELETE_SESSION_ID = "32-delete-session"
 DELETE_ARCHIVED_SESSION_ID = "32-delete-archived-session"
 DELETE_JOB_ID = "32-delete-job"
@@ -48,8 +52,79 @@ def _password_hash(value: str) -> str:
     )
 
 
+def _seed_postgres_checkpoints() -> None:
+    """向隔离 PostgreSQL 写入可归属任务且可验证清理的 checkpoint。"""
+    config = CheckpointPostgresConfig.from_env()
+    config.validate(require_credentials=True)
+    fixtures = (
+        (
+            USER_SESSION_ID,
+            "00000000-0000-6000-8000-000000000031",
+            JOB_ID,
+            "3.1-e2e",
+        ),
+        (
+            DELETE_SESSION_ID,
+            "00000000-0000-6000-8000-000000000032",
+            DELETE_JOB_ID,
+            "3.2-e2e",
+        ),
+    )
+    with psycopg.connect(
+        host=config.host,
+        port=config.port,
+        dbname=config.database,
+        user=config.user,
+        password=config.password,
+        connect_timeout=max(1, int(config.connect_timeout_seconds)),
+        autocommit=True,
+    ) as connection:
+        with connection.cursor() as cursor:
+            for thread_id, checkpoint_id, job_id, source in fixtures:
+                checkpoint = {
+                    "v": 4,
+                    "id": checkpoint_id,
+                    "ts": "2026-01-01T00:00:00+00:00",
+                    "channel_versions": {},
+                    "versions_seen": {},
+                    "updated_channels": [],
+                }
+                metadata = {"source": source, "step": 1, "job_id": job_id}
+                cursor.execute(
+                    """
+                    INSERT INTO checkpoints (
+                        thread_id, checkpoint_ns, checkpoint_id,
+                        parent_checkpoint_id, type, checkpoint, metadata
+                    ) VALUES (%s, '', %s, NULL, 'json', %s::jsonb, %s::jsonb)
+                    """,
+                    (
+                        thread_id,
+                        checkpoint_id,
+                        json.dumps(checkpoint),
+                        json.dumps(metadata),
+                    ),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO checkpoint_writes (
+                        thread_id, checkpoint_ns, checkpoint_id, task_id,
+                        idx, channel, type, blob, task_path
+                    ) VALUES (%s, '', %s, 'e2e-task', 0, 'result', 'bytes', %s, '')
+                    """,
+                    (thread_id, checkpoint_id, b"E2E_PENDING_WRITE"),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO checkpoint_blobs (
+                        thread_id, checkpoint_ns, channel, version, type, blob
+                    ) VALUES (%s, '', 'result', '1', 'bytes', %s)
+                    """,
+                    (thread_id, b"E2E_CHECKPOINT_BLOB"),
+                )
+
+
 def seed() -> None:
-    """在空的隔离数据库中原子写入用户、业务记录、checkpoint 与快照。"""
+    """向隔离 MySQL 写业务数据，再向 PostgreSQL 写 checkpoint fixture。"""
     admin_password = _required_secret("E2E_ADMIN_PASSWORD")
     user_password = _required_secret("E2E_USER_PASSWORD")
     with get_write_connection() as conn:
@@ -228,63 +303,83 @@ def seed() -> None:
         ).encode("utf-8")
         cursor.execute(
             """
-            INSERT INTO uploaded_files (
-                id, user_id, filename, original_filename, mime_type,
-                file_size, file_hash, file_content, upload_timestamp,
-                last_accessed_at, access_count
+            INSERT INTO file_objects (
+                id, owner_user_id, content_hash, file_size, mime_type, file_content
             ) VALUES (
-                %s, %s, %s, %s, 'text/csv',
-                %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0
+                %s, %s, %s, %s, 'text/csv', %s
             )
             """,
             (
-                FILE_ID,
+                FILE_OBJECT_ID,
                 USER_ID,
-                "31-stored.csv",
-                "31-report.csv",
-                len(file_content),
                 "31" * 32,
+                len(file_content),
                 file_content,
             ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO user_files (id, user_id, object_id, filename, mime_type, file_size)
+            VALUES (%s, %s, %s, %s, 'text/csv', %s)
+            """,
+            (FILE_ID, USER_ID, FILE_OBJECT_ID, "31-report.csv", len(file_content)),
         )
         controlled_file_content = b"name,value\ncontrolled,32\n"
         cursor.execute(
             """
-            INSERT INTO uploaded_files (
-                id, user_id, filename, original_filename, mime_type,
-                file_size, file_hash, file_content, upload_timestamp,
-                last_accessed_at, access_count
+            INSERT INTO file_objects (
+                id, owner_user_id, content_hash, file_size, mime_type, file_content
             ) VALUES (
-                %s, %s, '32-controlled-stored.csv', '32-delete-file.csv',
-                'text/csv', %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0
+                %s, %s, %s, 'text/csv', %s
             )
+            """,
+            (
+                CONTROL_FILE_OBJECT_ID,
+                CONTROL_USER_A_ID,
+                "32" * 32,
+                len(controlled_file_content),
+                controlled_file_content,
+            ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO user_files (id, user_id, object_id, filename, mime_type, file_size)
+            VALUES (%s, %s, %s, '32-delete-file.csv', 'text/csv', %s)
             """,
             (
                 CONTROL_FILE_ID,
                 CONTROL_USER_A_ID,
+                CONTROL_FILE_OBJECT_ID,
                 len(controlled_file_content),
-                "32" * 32,
-                controlled_file_content,
             ),
         )
         deleted_user_file_content = b"name,value\ndelete-user,32\n"
         cursor.execute(
             """
-            INSERT INTO uploaded_files (
-                id, user_id, filename, original_filename, mime_type,
-                file_size, file_hash, file_content, upload_timestamp,
-                last_accessed_at, access_count
+            INSERT INTO file_objects (
+                id, owner_user_id, content_hash, file_size, mime_type, file_content
             ) VALUES (
-                %s, %s, '32-user-delete-stored.csv', '32-user-delete.csv',
-                'text/csv', %s, %s, %s, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 0
+                %s, %s, %s, 'text/csv', %s
             )
+            """,
+            (
+                DELETE_FILE_OBJECT_ID,
+                DELETE_USER_ID,
+                "33" * 32,
+                len(deleted_user_file_content),
+                deleted_user_file_content,
+            ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO user_files (id, user_id, object_id, filename, mime_type, file_size)
+            VALUES (%s, %s, %s, '32-user-delete.csv', 'text/csv', %s)
             """,
             (
                 DELETE_FILE_ID,
                 DELETE_USER_ID,
+                DELETE_FILE_OBJECT_ID,
                 len(deleted_user_file_content),
-                "33" * 32,
-                deleted_user_file_content,
             ),
         )
         cursor.execute(
@@ -370,76 +465,6 @@ def seed() -> None:
                 json.dumps({"type": "final_result", "marker": "delete-32"}),
             ),
         )
-        cursor.execute(
-            """
-            INSERT INTO checkpoints (
-                thread_id, checkpoint_ns, checkpoint_id,
-                checkpoint, metadata_data, created_at
-            ) VALUES (%s, '', '31-checkpoint', %s, %s, UTC_TIMESTAMP())
-            """,
-            (
-                USER_SESSION_ID,
-                b"E2E_CHECKPOINT_MARKER_31",
-                json.dumps({"source": "3.1-e2e"}, ensure_ascii=False),
-            ),
-        )
-        cursor.execute(
-            """
-            INSERT INTO checkpoint_writes (
-                thread_id, checkpoint_ns, checkpoint_id, task_id,
-                idx, channel, value, created_at, write_identity_hash
-            ) VALUES (
-                %s, '', '31-checkpoint', '31-task', 0, 'result', %s,
-                UTC_TIMESTAMP(), %s
-            )
-            """,
-            (
-                USER_SESSION_ID,
-                b"E2E_PENDING_WRITE_MARKER_31",
-                _pending_write_identity_hash(
-                    USER_SESSION_ID,
-                    "",
-                    "31-checkpoint",
-                    "31-task",
-                    0,
-                ),
-            ),
-        )
-        cursor.execute(
-            """
-            INSERT INTO checkpoints (
-                thread_id, checkpoint_ns, checkpoint_id,
-                checkpoint, metadata_data, created_at
-            ) VALUES (%s, '', '32-delete-checkpoint', %s, %s, UTC_TIMESTAMP())
-            """,
-            (
-                DELETE_SESSION_ID,
-                b"E2E_DELETE_CHECKPOINT_MARKER_32",
-                json.dumps({"source": "3.2-e2e"}, ensure_ascii=False),
-            ),
-        )
-        cursor.execute(
-            """
-            INSERT INTO checkpoint_writes (
-                thread_id, checkpoint_ns, checkpoint_id, task_id,
-                idx, channel, value, created_at, write_identity_hash
-            ) VALUES (
-                %s, '', '32-delete-checkpoint', '32-delete-task', 0,
-                'result', %s, UTC_TIMESTAMP(), %s
-            )
-            """,
-            (
-                DELETE_SESSION_ID,
-                b"E2E_DELETE_PENDING_WRITE_MARKER_32",
-                _pending_write_identity_hash(
-                    DELETE_SESSION_ID,
-                    "",
-                    "32-delete-checkpoint",
-                    "32-delete-task",
-                    0,
-                ),
-            ),
-        )
         for snapshot_key, payload in {
             "realtime": {
                 "status": "healthy",
@@ -507,6 +532,7 @@ def seed() -> None:
                 (json.dumps(payload, ensure_ascii=False), snapshot_key),
             )
         conn.commit()
+    _seed_postgres_checkpoints()
 
 
 def refresh_login_passwords() -> None:

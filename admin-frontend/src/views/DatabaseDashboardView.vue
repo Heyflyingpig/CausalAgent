@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { adminApi } from '../api'
 import SqlDigestTable from '../components/SqlDigestTable.vue'
 import StatusCard from '../components/StatusCard.vue'
@@ -23,6 +24,11 @@ import {
 } from '../lib/dashboard'
 import type { DashboardData, SnapshotMeta } from '../types'
 
+type DashboardView = 'database' | 'cleanup-worker' | 'outbox'
+
+const route = useRoute()
+const router = useRouter()
+
 const dashboard = ref<DashboardData | null>(null)
 const loading = ref(true)
 const pageNotice = ref('')
@@ -32,6 +38,21 @@ const auditing = ref(false)
 let autoRefreshTimer: number | undefined
 let noticeTimer: number | undefined
 let dashboardRequest: Promise<DashboardData> | null = null
+
+const activeView = computed<DashboardView>(() => {
+  const value = String(route.query.view || 'database')
+  return value === 'cleanup-worker' || value === 'outbox' ? value : 'database'
+})
+const operationId = computed(() => {
+  const value = route.query.operation_id
+  return typeof value === 'string' ? value : ''
+})
+
+const viewOptions: Array<{ label: string; value: DashboardView }> = [
+  { label: '数据库运行状态', value: 'database' },
+  { label: 'Cleanup Worker', value: 'cleanup-worker' },
+  { label: 'Outbox 队列', value: 'outbox' },
+]
 
 const failureMeta = computed<SnapshotMeta>(() => ({
   status: 'unknown',
@@ -55,7 +76,55 @@ const realtime = computed(() => group('realtime'))
 const capacity = computed(() => group('capacity'))
 const sqlPerformance = computed(() => group('sql_performance'))
 const integrity = computed(() => group('integrity'))
+const cleanupRuntime = computed(() => record(dashboard.value?.checkpoint_cleanup_runtime))
+const cleanupOutbox = computed(() => record(dashboard.value?.checkpoint_cleanup_outbox))
+const cleanupSummary = computed(() => record(cleanupOutbox.value.summary))
+const cleanupItems = computed<Record<string, unknown>[]>(() => {
+  const rows = cleanupOutbox.value.items
+  return Array.isArray(rows) ? rows.filter(isObject) : []
+})
 const policy = computed(() => record(dashboard.value?.refresh_policy))
+
+const cleanupWorkerStatus = computed(() => {
+  if (!dashboard.value || !cleanupRuntime.value.observed_at) return '未知'
+  if (cleanupRuntime.value.is_stale) {
+    return Number(cleanupSummary.value.expired_processing || 0) > 0 ? '异常' : '失联'
+  }
+  if (cleanupRuntime.value.last_error_present || Number(cleanupRuntime.value.run_failure_count || 0) > 0) {
+    return '警告'
+  }
+  if (cleanupRuntime.value.worker_status === 'stopped') return '已停止'
+  if (cleanupRuntime.value.worker_status === 'unknown') return '未知'
+  return cleanupRuntime.value.worker_status === 'processing' ? '处理中' : '空闲'
+})
+
+const cleanupWorkerStatusType = computed<'success' | 'warning' | 'danger' | 'info'>(() => {
+  if (cleanupWorkerStatus.value === '异常') return 'danger'
+  if (cleanupWorkerStatus.value === '警告' || cleanupWorkerStatus.value === '失联' || cleanupWorkerStatus.value === '已停止') return 'warning'
+  if (cleanupWorkerStatus.value === '空闲' || cleanupWorkerStatus.value === '处理中') return 'success'
+  return 'info'
+})
+// 兼容旧版 mock/过渡接口；真实共享快照包含 cleanup 字段时不再在数据库状态页展示 Job。
+const legacyJobsVisible = computed(() => Boolean(
+  dashboard.value
+  && !Object.prototype.hasOwnProperty.call(dashboard.value, 'checkpoint_cleanup_runtime')
+))
+
+/** 将当前三段视图写入 URL，保留从用户删除结果带入的 operation_id。 */
+function selectView(view: DashboardView): void {
+  void router.push({
+    path: '/database',
+    query: {
+      view,
+      ...(operationId.value ? { operation_id: operationId.value } : {}),
+    },
+  })
+}
+
+/** 为从用户删除结果带入的 Operation ID 标记对应 outbox 行。 */
+function outboxRowClassName({ row }: { row: Record<string, unknown> }): string {
+  return row.operation_id === operationId.value ? 'operation-highlight' : ''
+}
 
 const revisionMetric = computed(() => capacity.value.revision)
 const revision = computed(() => record(metricValue(revisionMetric.value)))
@@ -150,6 +219,8 @@ const lastObservedAt = computed(() => {
     sqlPerformance.value.observed_at,
     capacity.value.observed_at,
     integrity.value.observed_at,
+    cleanupRuntime.value.observed_at,
+    cleanupOutbox.value.observed_at,
   ].filter(Boolean).map(value => new Date(String(value)).getTime()).filter(Number.isFinite)
   return times.length ? `最后采集：${formatDate(Math.max(...times))}` : '尚未生成监控快照'
 })
@@ -343,7 +414,18 @@ async function requestIntegrityAudit(): Promise<void> {
   }
 }
 
-onMounted(() => void loadDashboard())
+onMounted(() => {
+  if (!route.query.view) {
+    void router.replace({
+      path: '/database',
+      query: {
+        view: 'database',
+        ...(operationId.value ? { operation_id: operationId.value } : {}),
+      },
+    })
+  }
+  void loadDashboard()
+})
 onBeforeUnmount(() => {
   clearAutoRefresh()
   clearNoticeTimer()
@@ -381,6 +463,21 @@ onBeforeUnmount(() => {
     :closable="false"
   />
 
+  <nav class="dashboard-segmented" aria-label="数据库看板视图">
+    <button
+      v-for="option in viewOptions"
+      :key="option.value"
+      type="button"
+      class="dashboard-segment"
+      :class="{ active: activeView === option.value }"
+      :aria-current="activeView === option.value ? 'page' : undefined"
+      @click="selectView(option.value)"
+    >
+      {{ option.label }}
+    </button>
+  </nav>
+
+  <template v-if="activeView === 'database'">
   <section class="status-grid" aria-label="核心状态">
     <StatusCard label="Revision" :value="revisionValue" :detail="revisionDetail" :meta="revisionMeta" />
     <StatusCard label="主库" :value="primaryValue" :detail="primaryDetail" :meta="primaryMeta" />
@@ -457,7 +554,7 @@ onBeforeUnmount(() => {
     </template>
   </section>
 
-  <section class="panel">
+  <section v-if="legacyJobsVisible" class="panel">
     <div class="panel-header">
       <div>
         <h2>Worker / Job 快照</h2>
@@ -481,4 +578,84 @@ onBeforeUnmount(() => {
       <el-table-column label="创建时间" min-width="180"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
     </el-table>
   </section>
+  </template>
+
+  <template v-else-if="activeView === 'cleanup-worker'">
+    <section class="panel cleanup-worker-panel">
+      <div class="panel-header">
+        <div>
+          <h2>PostgreSQL checkpoint 清理进程</h2>
+          <p>该视图只展示 cleanup worker 最近心跳和本次启动统计。</p>
+        </div>
+        <el-tag :type="cleanupWorkerStatusType" round>{{ cleanupWorkerStatus }}</el-tag>
+      </div>
+      <div class="inline-metrics four-columns">
+        <div><span>Worker 逻辑别名</span><strong>{{ cleanupRuntime.worker_alias || 'checkpoint-cleanup' }}</strong></div>
+        <div><span>启动时间</span><strong>{{ formatDate(cleanupRuntime.started_at) }}</strong></div>
+        <div><span>最近心跳</span><strong>{{ formatDate(cleanupRuntime.heartbeat_at || cleanupRuntime.observed_at) }}</strong></div>
+        <div><span>当前处理的 Outbox ID</span><strong>{{ cleanupRuntime.current_outbox_id ?? '—' }}</strong></div>
+        <div><span>本次启动成功数量</span><strong>{{ formatNumber(cleanupRuntime.startup_success_count ?? cleanupRuntime.run_success_count) }}</strong></div>
+        <div><span>本次启动失败数量</span><strong>{{ formatNumber(cleanupRuntime.startup_failure_count ?? cleanupRuntime.run_failure_count) }}</strong></div>
+        <div><span>心跳周期</span><strong>{{ cleanupRuntime.heartbeat_interval_seconds ? `${cleanupRuntime.heartbeat_interval_seconds} 秒` : '—' }}</strong></div>
+        <div><span>当前处理耗时</span><strong>{{ (cleanupRuntime.processing_duration_seconds ?? cleanupRuntime.current_processing_duration_seconds) == null ? '—' : `${cleanupRuntime.processing_duration_seconds ?? cleanupRuntime.current_processing_duration_seconds} 秒` }}</strong></div>
+      </div>
+      <div v-if="!dashboard || !cleanupRuntime.observed_at" class="section-state warning">尚未收到 cleanup worker 心跳。</div>
+      <div v-else-if="cleanupRuntime.is_stale" class="section-state warning">最近心跳已超过阈值，worker 可能失联。</div>
+      <div v-else-if="cleanupRuntime.last_error_present" class="section-state warning">最近一次 cleanup 处理出现失败，详细异常保留在服务端日志。</div>
+      <div v-else class="section-state">心跳正常，worker 当前{{ cleanupRuntime.worker_status === 'processing' ? '正在处理任务' : '空闲' }}。</div>
+    </section>
+  </template>
+
+  <template v-else>
+    <section class="panel outbox-panel">
+      <div class="panel-header">
+        <div>
+          <h2>Checkpoint Cleanup Outbox 队列</h2>
+          <p>最多展示 100 条待处理或异常记录。</p>
+        </div>
+        <span class="source-meta">{{ metaText(cleanupOutbox) }}</span>
+      </div>
+      <el-alert
+        v-if="operationId"
+        class="page-notice"
+        type="info"
+        :closable="false"
+        :title="`当前关注 Operation ID：${operationId}`"
+      />
+      <div class="inline-metrics four-columns">
+        <div><span>Pending</span><strong>{{ formatNumber(cleanupSummary.pending) }}</strong></div>
+        <div><span>已到执行时间</span><strong>{{ formatNumber(cleanupSummary.due_pending) }}</strong></div>
+        <div><span>Processing</span><strong>{{ formatNumber(cleanupSummary.processing) }}</strong></div>
+        <div><span>租约已过期</span><strong>{{ formatNumber(cleanupSummary.expired_processing) }}</strong></div>
+        <div><span>Failed</span><strong>{{ formatNumber(cleanupSummary.failed) }}</strong></div>
+        <div><span>最近完成时间</span><strong>{{ formatDate(cleanupSummary.latest_completed_at) }}</strong></div>
+        <div><span>最早待处理时间</span><strong>{{ formatDate(cleanupSummary.earliest_pending_at) }}</strong></div>
+      </div>
+      <div v-if="cleanupOutbox.warning" class="section-state warning">{{ cleanupOutbox.warning }}</div>
+      <el-table
+        v-if="cleanupItems.length"
+        :data="cleanupItems"
+        table-layout="auto"
+        :row-class-name="outboxRowClassName"
+      >
+        <el-table-column prop="outbox_id" label="Outbox ID" min-width="100" />
+        <el-table-column prop="thread_id" label="Thread ID" min-width="230" show-overflow-tooltip />
+        <el-table-column prop="operation_id" label="Operation ID" min-width="230" show-overflow-tooltip />
+        <el-table-column label="状态" min-width="120">
+          <template #default="{ row }">
+            <el-tag :type="row.error_state ? 'danger' : row.status === 'processing' ? 'warning' : 'info'">
+              {{ row.lease_expired ? '租约过期' : row.status === 'pending' && row.is_due ? '到期 Pending' : row.status }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="尝试次数" min-width="100"><template #default="{ row }">{{ row.attempts }} / {{ row.max_attempts }}</template></el-table-column>
+        <el-table-column label="可领取时间" min-width="180"><template #default="{ row }">{{ formatDate(row.available_at) }}</template></el-table-column>
+        <el-table-column label="租约到期时间" min-width="180"><template #default="{ row }">{{ formatDate(row.lease_expires_at) }}</template></el-table-column>
+        <el-table-column label="创建时间" min-width="180"><template #default="{ row }">{{ formatDate(row.created_at) }}</template></el-table-column>
+        <el-table-column label="完成时间" min-width="180"><template #default="{ row }">{{ formatDate(row.completed_at) }}</template></el-table-column>
+        <el-table-column label="错误" min-width="90"><template #default="{ row }">{{ row.has_error ? '有' : '无' }}</template></el-table-column>
+      </el-table>
+      <el-empty v-else description="当前没有待处理或异常 cleanup 记录" />
+    </section>
+  </template>
 </template>

@@ -1,4 +1,4 @@
-"""add durable R5 evaluation jobs
+"""add durable RAG_EVAL evaluation jobs
 
 Revision ID: b2c3d4e5f6a7
 Revises: a1b2c3d4e5f6
@@ -46,5 +46,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the durable R5 evaluation queue."""
+    """Drop the durable RAG_EVAL evaluation queue."""
     op.execute("DROP TABLE IF EXISTS rag_eval_jobs")

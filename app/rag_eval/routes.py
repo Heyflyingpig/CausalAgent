@@ -41,7 +41,7 @@ from app.rag_eval.profile_store import (
 from config.settings import settings
 
 rag_eval_bp = Blueprint("rag_eval", __name__, url_prefix="/api/rag_eval")
-dataset_registry = DatasetRegistry(Path(settings.R5_DATASET_ROOT))
+dataset_registry = DatasetRegistry(Path(settings.RAG_EVAL_DATASET_ROOT))
 
 
 def _json_response(data, status=200):

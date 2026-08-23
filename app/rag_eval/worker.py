@@ -49,7 +49,7 @@ def _run_cancellable_candidate(manager: IsolatedRunManager, run_id: str) -> None
         target=_run_candidate_child,
         args=(run_id,),
         daemon=False,
-        name=f"r5_candidate_{run_id}",
+        name=f"rag_eval_candidate_{run_id}",
     )
     process.start()
     while process.is_alive():
@@ -76,7 +76,7 @@ def _heartbeat_loop(
     lease_lost: threading.Event,
 ) -> None:
     """周期性刷新 SQL 租约和独立心跳文件；失联时触发 fencing。"""
-    interval = max(int(settings.R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS), 1)
+    interval = max(int(settings.RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS), 1)
     while not stop.wait(interval):
         try:
             if not job_service.heartbeat_job(run_id, worker_id):
@@ -143,7 +143,7 @@ def _run_one(manager: IsolatedRunManager, job: dict[str, Any], worker_id: str) -
         target=_heartbeat_loop,
         args=(manager, run_id, worker_id, stop, lease_lost),
         daemon=True,
-        name=f"r5_eval_heartbeat_{run_id}",
+        name=f"rag_eval_eval_heartbeat_{run_id}",
     )
     heartbeat.start()
     try:
@@ -183,14 +183,14 @@ def _run_one(manager: IsolatedRunManager, job: dict[str, Any], worker_id: str) -
                 job_service.fail_job(run_id, str(exc))
     finally:
         stop.set()
-        heartbeat.join(timeout=max(int(settings.R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS), 1) + 1)
+        heartbeat.join(timeout=max(int(settings.RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS), 1) + 1)
 
 
 def _run_slot(slot_index: int) -> None:
     """运行一个常驻评测 slot。"""
     manager = IsolatedRunManager()
     worker_id = f"{socket.gethostname()}:rag-eval:{slot_index}"
-    poll_interval = max(float(settings.R5_EVALUATION_POLL_INTERVAL_SECONDS), 0.1)
+    poll_interval = max(float(settings.RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS), 0.1)
     while True:
         _reconcile_stale_runs(manager)
         job = job_service.claim_next_job(worker_id)
@@ -208,10 +208,10 @@ def main() -> None:
         force=True,
     )
     check_database_readiness()
-    slot_count = max(int(settings.R5_EVALUATION_WORKERS), 1)
+    slot_count = max(int(settings.RAG_EVAL_EVALUATION_WORKERS), 1)
     logging.info("[rag-eval-worker] starting slot_count=%s", slot_count)
     slots = [
-        threading.Thread(target=_run_slot, args=(index,), daemon=False, name=f"r5_eval_slot_{index}")
+        threading.Thread(target=_run_slot, args=(index,), daemon=False, name=f"rag_eval_eval_slot_{index}")
         for index in range(1, slot_count + 1)
     ]
     for slot in slots:

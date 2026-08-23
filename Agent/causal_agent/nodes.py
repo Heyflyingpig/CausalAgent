@@ -1,8 +1,9 @@
 import asyncio
-from .state import CausalAgentState
+from .state import CausalAgentState, RagSubgraphState
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, Any, List, Tuple, Dict
@@ -14,8 +15,13 @@ import numpy as np
 import networkx as nx
 from mcp import ClientSession
 from langgraph.func import task
+from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 from Agent.llm_structured_output import StructuredOutputError, ainvoke_structured
+from .fault_tolerance import (
+    RAG_DEGRADATION_SUMMARY,
+    build_rag_degradation_result,
+)
 
 ## 基本配置
 from config.settings import settings
@@ -31,7 +37,22 @@ from .back_prompt import causal_rag_prompt
 from .back_prompt import causal_report_prompt
 
 # 数据库
-from Database.agent_connect import get_file_content, get_recent_file
+from Database.agent_connect import require_frozen_file_for_job
+
+
+def resume_value_to_message_content(value: Any) -> str:
+    """把 interrupt 恢复值转成消息可接受的文本，保留原值供节点逻辑继续使用。"""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def llm_prompt_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -175,11 +196,7 @@ async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     return {"messages": [response_message], "route_decision": route_decision}
 
 class foldQuery(BaseModel):
-    """从用户对话中提取文件名及因果分析所需的关键参数。"""
-    filename: Optional[str] = Field(
-        None,
-        description="从用户对话中识别出的要分析的数据文件名 (e.g., 'data.csv')。如果未明确提及，则留空。"
-    )
+    """只从用户对话中提取因果分析所需的关键参数。"""
     target: Optional[str] = Field(
         None,
         description="从用户对话中识别出的目标变量(target)或结果变量(outcome)。如果未提及，则留空。"
@@ -195,37 +212,62 @@ from Agent.Processing.fold_verify import validate_analysis
 from Agent.Processing.data_visualize import generate_visualizations
 
 
+FILE_LOAD_INTERRUPT_MESSAGE = (
+    "当前任务冻结的 CSV 文件无法读取或解析。请取消任务，重新上传可用的 CSV 文件后再试。"
+)
+
+
+def _normalize_optional_llm_text(value: str | None) -> str | None:
+    """将 LLM 可空文本中的明确缺失哨兵转换为 None。"""
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or normalized.casefold() in {"none", "null"}:
+        return None
+    return value
+
+
 async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     文件加载、解析与验证节点。
-    1.  使用LLM从对话中一次性提取文件名、目标和处理变量。
-    2.  从数据库加载文件内容。
+    1.  使用LLM从对话中提取目标和处理变量。
+    2.  按 Job 冻结的对象 ID 从数据库加载文件内容。
     3.  运行 get_data_summary 进行全面的数据分析。
     4.  调用 validate_analysis 进行严格的条件验证。
     5.  根据验证结果，决策进入 'preprocess' 节点或 'ask_human' 节点。
     """
     logging.info(" 步骤: 文件加载、解析与验证节点 ")
     user_id = state.get("user_id")
+    file_summary = state.get("file_summary") or {}
+    input_user_file_id = file_summary.get("user_file_id")
+    input_object_id = file_summary.get("object_id")
 
-    # 1. 使用LLM一次性提取文件名和分析意图
+    if not input_user_file_id or not input_object_id:
+        return {
+            "messages": [
+                AIMessage(
+                    content="请先上传并选择一个 CSV 文件，再开始因果分析。",
+                    name="fold",
+                )
+            ],
+            "fold_decision": "normal_chat",
+        }
+
+    # 1. 使用 LLM 提取分析参数，不从自然语言选择文件
     prompt = ChatPromptTemplate.from_messages([
             ("system",
             """你是一个智能助手，你的任务是从用户的最新消息中识别出以下信息，并以JSON格式返回：
-            1.  用户想要分析的文件名 (通常以 `.csv` 结尾)。
-            2.  用户关心的目标变量 (target/outcome)。
-            3.  用户想要评估效果的处理变量 (treatment/intervention)。
+            1. 用户关心的目标变量 (target/outcome)。
+            2. 用户想要评估效果的处理变量 (treatment/intervention)。
 
-            - 如果用户明确提到了文件名，请提取它。
-            - 如果用户只是说"分析数据"或"用最新的文件"，没有指定具体名称，请将 `filename` 字段设为 null（不要使用字符串 "None"）。
-            - 如果用户提到了目标或处理变量，请提取它们。如果没提，请设为 null（不要使用字符串 "None"）。
+            文件已经由当前 Job 的冻结输入确定，严禁从自然语言选择文件。
+            如果用户没有提到目标或处理变量，请将对应字段设为 null。
 
             示例:
-            - 用户: "用 `marketing_campaign.csv` 帮我分析一下'销售额'和'促销活动'的关系..."
-            -> 提取: `filename='marketing_campaign.csv'`, `target='销售额'`, `treatment='促销活动'`
+            - 用户: "帮我分析销售额和促销活动的关系..."
+            -> 提取: `target='销售额'`, `treatment='促销活动'`
             - 用户: "分析一下我的数据，看看是什么影响了客户流失"
-            -> 提取: `filename=null`, `target='客户流失'`, `treatment=null`
-            - 用户: "帮我跑一下最新的数据"
-            -> 提取: `filename=null`, `target=null`, `treatment=null`
+            -> 提取: `target='客户流失'`, `treatment=null`
             
             你必须严格按照 `foldQuery` 的 schema 返回一个 JSON 对象。
             **绝对不要**在你的回复中包含任何Markdown格式或解释性文字。
@@ -233,14 +275,12 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
 
             示例输出（所有字段都有值）:
             {{
-                "filename": "marketing_campaign.csv",
                 "target": "销售额",
                 "treatment": "促销活动"
             }}
             
             示例输出（部分字段为空）:
             {{
-                "filename": null,
                 "target": "客户流失",
                 "treatment": null
             }}
@@ -257,56 +297,48 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
             node_name="fold",
         )
 
-        filename = structured_response.filename
-        target = structured_response.target
-        treatment = structured_response.treatment
+        target = _normalize_optional_llm_text(structured_response.target)
+        treatment = _normalize_optional_llm_text(structured_response.treatment)
         
-    except StructuredOutputError as e:
-        logging.error(f"无法从LLM响应中解析或验证提取信息: {e}。将返回错误值")
-        filename = None
+    except StructuredOutputError:
+        logging.error("无法从 LLM 响应中解析或验证 fold 参数，将返回空值")
         target = None
         treatment = None
-    
-    loaded_filename = None
-    
-    logging.info(f"filename: {filename}, state.get('fold_name'): {state.get('fold_name')}")
+
     try:
-        if filename :
-            file_content_bytes = await asyncio.to_thread(get_file_content, user_id, filename)
-            state['fold_name'] = filename
-            
-            # 注意这里的文件名后续并没有用到
-            loaded_filename = filename
-        elif state.get('fold_name'):
-            loaded_filename = state.get('fold_name')
-            file_content_bytes = await asyncio.to_thread(get_file_content, user_id, loaded_filename)
-
-        else:
-            file_content_bytes , loaded_filename = await asyncio.to_thread(get_recent_file, user_id)
-
-        if not file_content_bytes or not loaded_filename:
-            raise FileNotFoundError("找不到任何可供分析的文件。请先上传一个CSV文件。")
-        
-        state['fold_name'] = loaded_filename
-        file_content_str = file_content_bytes.decode('utf-8')
+        file_row = await asyncio.to_thread(
+            require_frozen_file_for_job,
+            user_id,
+            state.get("job_id", ""),
+            input_user_file_id,
+            input_object_id,
+        )
+        file_content_str = file_row["file_content"].decode("utf-8")
         df = await asyncio.to_thread(pd.read_csv, io.StringIO(file_content_str))
         data_summary = await asyncio.to_thread(get_data_summary, df)
     
-    except Exception as e:
-        error_msg = f"在文件加载或解析阶段发生错误: {e}"
-        logging.error(error_msg, exc_info=True)
+    except Exception as exc:
+        logging.error(
+            "文件加载或解析阶段失败: error_type=%s",
+            type(exc).__name__,
+        )
         
         # 使用 interrupt() 暂停并等待用户输入
-        user_response = interrupt(error_msg)
-        new_message = HumanMessage(content=user_response)
+        user_response = interrupt(FILE_LOAD_INTERRUPT_MESSAGE)
+        new_message = HumanMessage(content=resume_value_to_message_content(user_response))
         
         return {"messages": [new_message], "fold_decision": "agent"}
 
-    ## 优化：只保存 file_content 和摘要，不保存 DataFrame
-    # 原因：DataFrame 序列化体积大，file_content 可随时重新生成 DataFrame
-    state['file_content'] = file_content_str
-    # state['dataframe'] = df  # 避免序列化开销
     state['analysis_parameters'] = data_summary
+    file_summary = {
+        "user_file_id": input_user_file_id,
+        "object_id": input_object_id,
+        "file_hash": file_summary.get("file_hash"),
+        "filename": file_summary.get("filename"),
+        "rows": data_summary.get("n_rows"),
+        "columns": data_summary.get("columns", []),
+    }
+    state["file_summary"] = file_summary
     
     # 运行确定性验证
     is_ready, issues, recommends = await asyncio.to_thread(
@@ -333,8 +365,7 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         
         return {"messages": new_messages, 
                 "analysis_parameters": state['analysis_parameters'], 
-                "fold_name": state['fold_name'], 
-                "file_content": state['file_content'],
+                "file_summary": file_summary,
                 "tool_call_request": False,
                 "fold_decision": "preprocess",
                 }
@@ -370,12 +401,11 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         # 让 fold_router 知道需要回到 agent 重新判断
         return {
             "messages": [
-                HumanMessage(content=user_response),
+                HumanMessage(content=resume_value_to_message_content(user_response)),
                 AIMessage(content="决策：已收到用户输入，返回 agent 重新判断", name="fold")
             ],
-            "fold_name": state['fold_name'],
-            "file_content": state['file_content'],
             "analysis_parameters": state['analysis_parameters'],
+            "file_summary": state.get("file_summary"),
             "fold_decision": "agent",
         }
 
@@ -391,22 +421,33 @@ async def preprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     logging.info(" 步骤: 数据预处理与分析节点 ")
 
-    # 从 file_content 动态生成 DataFrame
-    file_content = state.get("file_content")
     analysis_parameters = state.get("analysis_parameters", {})
 
-    if file_content is None or not analysis_parameters:
+    file_summary = state.get("file_summary") or {}
+    input_user_file_id = file_summary.get("user_file_id")
+    input_object_id = file_summary.get("object_id")
+
+    if (
+        not analysis_parameters
+        or not input_user_file_id
+        or not input_object_id
+    ):
         error_msg = "无法执行预处理，因为数据或其摘要信息在状态中丢失。"
         logging.error(error_msg)
-        
-        user_response = interrupt(error_msg)
-        new_message = HumanMessage(content=user_response)
-        
-        return {"messages": [new_message]}
+        raise RuntimeError(error_msg)
 
-    # 动态生成 DataFrame（从 file_content）
-    df = await asyncio.to_thread(pd.read_csv, io.StringIO(file_content))
-    logging.info(f"从 file_content 重新生成 DataFrame，shape: {df.shape}")
+    file_row = await asyncio.to_thread(
+        require_frozen_file_for_job,
+        state.get("user_id"),
+        state.get("job_id", ""),
+        input_user_file_id,
+        input_object_id,
+    )
+    df = await asyncio.to_thread(
+        pd.read_csv,
+        io.BytesIO(file_row["file_content"]),
+    )
+    logging.info("已从 Job 冻结文件重新生成 DataFrame，shape=%s", df.shape)
 
     # 生成可视化图表 
     visualizations = {}
@@ -478,15 +519,71 @@ from Agent.tool_node.rag_questions import get_rag_questions
 from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
 from Agent.tool_node.tool_message_adapter import (
     attach_tool_call_metadata,
+    latest_ai_tool_call_ids,
     latest_matching_tool_result,
     parse_tool_message_json,
 )
+
+
+def _mcp_tool_name(tool: Any) -> str | None:
+    """从 MCP/LangChain tool 对象或 OpenAI-style dict 中读取工具名。"""
+    if isinstance(tool, dict):
+        function = tool.get("function", {})
+        return function.get("name") if isinstance(function, dict) else None
+    return getattr(tool, "name", None)
+
+
+def _has_mcp_tool(mcp_tools: list, tool_name: str) -> bool:
+    """判断当前 MCP tool 列表是否包含指定工具。"""
+    return any(_mcp_tool_name(tool) == tool_name for tool in mcp_tools)
+
+
+def _explicit_direct_lingam_requested(state: CausalAgentState) -> bool:
+    """检测用户是否明确要求使用 DirectLiNGAM。"""
+    latest_text = _latest_human_text(state)
+    normalized = latest_text.lower()
+    compact = "".join(char for char in normalized if char.isalnum())
+    return any(
+        token in normalized
+        for token in ("directlingam", "direct lingam", "direct-lingam", "direct_lingam")
+    ) or "directlingam" in compact
+
+
+def _direct_mcp_tool_call(
+    tool_name: str,
+    state: CausalAgentState,
+    mcp_tools: list,
+) -> AIMessage:
+    """为确定性工具选择构造 ToolNode 可消费的标准 AIMessage。"""
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": tool_name,
+                "args": {},
+                "id": f"planner-{tool_name}-1",
+                "type": "tool_call",
+            }
+        ],
+    )
+    return normalize_mcp_tool_call_message(ai_message, state, mcp_tools)
 
 
 async def mcp_planner_node(state: CausalAgentState, llm: ChatOpenAI, mcp_tools: list) -> dict:
     """强制模型从可用 MCP tools 中选择一个，并返回标准 Tool Call。"""
     if not mcp_tools:
         raise RuntimeError("No MCP tools are available for causal analysis.")
+    if (
+        _explicit_direct_lingam_requested(state)
+        and _has_mcp_tool(mcp_tools, "causal_direct_lingam")
+    ):
+        logging.info("检测到明确 DirectLiNGAM 请求，确定性选择 causal_direct_lingam。")
+        return {
+            "messages": [
+                _direct_mcp_tool_call("causal_direct_lingam", state, mcp_tools)
+            ]
+        }
+
     # 固定 tool_choice 的请求使用关闭 Thinking 的隔离副本。
     planner_llm = llm.model_copy(
         update={
@@ -549,6 +646,12 @@ async def mcp_result_parser_node(state: CausalAgentState) -> dict:
         }
 
     parsed = parse_tool_message_json(latest_tool_message)
+    if parsed.get("error_type") == "ToolMessageProtocolError":
+        parsed = {
+            "success": False,
+            "error": parsed.get("error", "MCP ToolMessage 不是合法 JSON。"),
+            "error_type": "MCPProtocolError",
+        }
     if type(parsed.get("success")) is not bool:
         logging.warning(
             "MCP 返回结果缺少布尔型 success 字段: keys=%s",
@@ -581,12 +684,181 @@ async def mcp_result_parser_node(state: CausalAgentState) -> dict:
     }
 
 
-async def rag_node(state: CausalAgentState, llm: ChatOpenAI, rag_service: Any) -> dict:
-    """生成多模态检索问题，调用共享 RagService 并写回结构化结果。"""
-    logging.info("正在执行默认多模态 RAG 增强...")
-    questions = await get_rag_questions(state, llm, max_questions=3)
-    result = await rag_query_task(questions, rag_service)
-    return {"knowledge_base_result": result}
+async def rag_question_planner_node(
+    state: RagSubgraphState,
+    llm: ChatOpenAI,
+    rag_tools: list,
+    rag_available: bool = True,
+) -> dict:
+    """生成 RAG 问题，并通过私有 route 字段决定是否调用工具。"""
+    logging.info("正在启动 RAG 问题生成任务...")
+
+    if not rag_available or not rag_tools:
+        logging.warning(
+            "RAG 知识库或工具不可用，将在 Planner 预检阶段跳过 ToolNode。"
+        )
+        return {
+            "rag_route": "finish",
+            "rag_status": "unavailable",
+            "rag_questions": [],
+            "rag_parse_result": build_rag_degradation_result(
+                "RAG 知识库未初始化或工具未注册。"
+            ),
+        }
+
+    max_questions = 3
+    try:
+        rag_questions = await get_rag_questions(state, llm, max_questions=max_questions)
+    except StructuredOutputError as exc:
+        logging.warning("RAG 问题生成失败，将跳过知识库工具: %s", exc)
+        return {
+            "rag_route": "finish",
+            "rag_status": "unavailable",
+            "rag_questions": [],
+            "rag_parse_result": build_rag_degradation_result(str(exc)),
+        }
+    tool_name = "rag_enrichment_search"
+    tool_name = getattr(rag_tools[0], "name", tool_name)
+
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": tool_name,
+                "args": {
+                    "questions": rag_questions,
+                    "max_results": 5,
+                },
+                "id": "rag_enrichment_search_1",
+            }
+        ],
+    )
+    return {
+        "messages": [ai_message],
+        "rag_questions": rag_questions,
+        "rag_route": "call_tool",
+        "rag_status": "available",
+    }
+
+
+async def rag_result_parser_node(state: RagSubgraphState) -> dict:
+    """解析 RAG ToolMessage，只写入子图私有的中间结果。"""
+    messages = state.get("messages", [])
+    latest_tool_message, latest_tool_call = latest_matching_tool_result(messages)
+    if latest_tool_message is None:
+        error_message = (
+            "No RAG tool result was produced."
+            if latest_ai_tool_call_ids(messages)
+            else "RAG ToolMessage 与本次调用不匹配。"
+        )
+        return {
+            "rag_route": "finish",
+            "rag_status": "protocol_error",
+            "rag_tool_message": None,
+            "rag_parse_result": build_rag_degradation_result(
+                error_message,
+                status="protocol_error",
+            ),
+        }
+
+    parsed = parse_tool_message_json(latest_tool_message)
+    if parsed.get("error_type") == "ToolMessageProtocolError":
+        parsed = build_rag_degradation_result(
+            parsed.get("error", "RAG ToolMessage 不是合法 JSON。"),
+            status="protocol_error",
+        )
+        parsed["error_type"] = "ToolMessageProtocolError"
+        rag_status = "protocol_error"
+    elif type(parsed.get("success")) is not bool:
+        parsed = build_rag_degradation_result(
+            "RAG 工具返回结果缺少布尔型 success 字段。",
+            status="protocol_error",
+        )
+        rag_status = "protocol_error"
+    elif not parsed.get("success"):
+        error_type = parsed.get("error_type")
+        parsed = build_rag_degradation_result(
+            parsed.get("error", "RAG 工具返回失败结果。"),
+            status="unavailable",
+        )
+        if error_type:
+            parsed["error_type"] = error_type
+        rag_status = "unavailable"
+    else:
+        parsed["status"] = "available"
+        rag_status = "available"
+    result = attach_tool_call_metadata(
+        parsed,
+        latest_tool_message,
+        latest_tool_call,
+    )
+    return {
+        "rag_route": "finish",
+        "rag_status": rag_status,
+        "rag_tool_message": latest_tool_message,
+        "rag_parse_result": result,
+    }
+
+
+async def rag_finalize_node(state: RagSubgraphState) -> dict:
+    """统一生成子图最终输出，确保任何降级都具有稳定结构。"""
+    status = state.get("rag_status")
+    if status not in {"available", "unavailable", "protocol_error"}:
+        status = "unavailable"
+
+    parsed_result = state.get("rag_parse_result")
+    if isinstance(parsed_result, dict):
+        rag_output = dict(parsed_result)
+        if rag_output.get("success") is False:
+            if rag_output.get("status") not in {"unavailable", "protocol_error"}:
+                rag_output["status"] = status
+            rag_output.setdefault("summary", RAG_DEGRADATION_SUMMARY)
+            rag_output.setdefault("questions", [])
+            rag_output.setdefault("evidence_count", 0)
+            rag_output.setdefault("error", "RAG 子图未生成有效结果。")
+        else:
+            rag_output.setdefault("status", "available")
+            status = "available"
+    else:
+        rag_output = build_rag_degradation_result(
+            "RAG 子图未生成有效解析结果。",
+            status=status,
+        )
+
+    return {
+        "rag_route": "finish",
+        "rag_status": status,
+        "rag_output": rag_output,
+    }
+
+
+async def rag_subgraph_adapter_node(
+    state: CausalAgentState,
+    *,
+    rag_subgraph: Any,
+    runtime: Runtime,
+    config: RunnableConfig,
+) -> dict:
+    """把父 State 映射为 RAG 子图输入，并只投影最终结果回父图。"""
+    rag_input: RagSubgraphState = {
+        "messages": list(state.get("messages", [])),
+        "analysis_parameters": state.get("analysis_parameters"),
+        "preprocess_summary": state.get("preprocess_summary"),
+        "causal_analysis_result": state.get("causal_analysis_result"),
+    }
+    subgraph_result = await rag_subgraph.ainvoke(
+        rag_input,
+        config=config,
+        context=getattr(runtime, "context", None),
+    )
+    rag_output = (
+        subgraph_result.get("rag_output")
+        if isinstance(subgraph_result, dict)
+        else None
+    )
+    if not isinstance(rag_output, dict):
+        raise RuntimeError("RAG 子图未返回有效 rag_output。")
+    return {"knowledge_base_result": rag_output}
 
 
 # 环路检测模块
@@ -600,9 +872,17 @@ from Agent.Postprocessing.evaluate_edge.edge_utils import extract_critical_edges
 
 
 def _matrix_convention_for_analysis(analysis_result: Dict[str, Any]) -> str:
-    """根据算法标识或 OLC 特有元数据确定邻接矩阵方向。"""
+    """根据显式字段、算法标识或 OLC 元数据确定邻接矩阵方向。"""
+    explicit_convention = str(
+        analysis_result.get("matrix_convention", "")
+    ).strip().lower()
+    if explicit_convention in {"target_to_source", "causallearn", "olc"}:
+        return explicit_convention
+
     algorithm = str(analysis_result.get("algorithm", "")).strip().lower()
     raw_results = analysis_result.get("raw_results", {})
+    if algorithm == "direct_lingam":
+        return "target_to_source"
     if algorithm == "olc" or "coefficient_matrix" in raw_results:
         return "olc"
     return "causallearn"
@@ -623,15 +903,16 @@ def _as_revised_graph(
         else:
             arrows = ""
 
-        vis_edges.append(
-            {
-                "from": edge["source"],
-                "to": edge["target"],
-                "arrows": arrows,
-                "dashes": edge_type in {"undirected", "partially_oriented"},
-                "label": edge.get("label", ""),
-            }
-        )
+        vis_edge = {
+            "from": edge["source"],
+            "to": edge["target"],
+            "arrows": arrows,
+            "dashes": edge_type in {"undirected", "partially_oriented"},
+            "label": edge.get("label", ""),
+        }
+        if "weight" in edge:
+            vis_edge["weight"] = edge["weight"]
+        vis_edges.append(vis_edge)
 
     return {"nodes": list(graph_nodes), "edges": vis_edges}
 
@@ -851,6 +1132,46 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
 
 ## 调用元数据
 from Agent.Report.Metadata_sum import metadata_summary, metadata_mapping
+
+
+def _causal_method_context_for_report(analysis_result: Dict[str, Any]) -> str:
+    """为报告节点生成算法专用解释边界。"""
+    if not isinstance(analysis_result, dict):
+        return "No structured causal analysis result is available."
+
+    algorithm = str(analysis_result.get("algorithm", "")).strip().lower()
+    if algorithm != "direct_lingam":
+        return "No additional algorithm-specific reporting guidance is required."
+
+    implementation = analysis_result.get("implementation", {})
+    parameters = analysis_result.get("parameters", {})
+    raw_results = analysis_result.get("raw_results", {})
+    diagnostics = analysis_result.get("diagnostics", {})
+    causal_order_names = raw_results.get("causal_order_names", [])
+    causal_order_text = (
+        " -> ".join(str(name) for name in causal_order_names)
+        if isinstance(causal_order_names, list) and causal_order_names
+        else "not available"
+    )
+
+    return (
+        "DirectLiNGAM reporting guidance:\n"
+        f"- Implementation: causal-learn {implementation.get('version', 'unknown')} "
+        f"with embedded LiNGAM {implementation.get('embedded_version', 'unknown')}.\n"
+        f"- Parameters: measure={parameters.get('measure', 'unknown')}.\n"
+        f"- Samples/features: n_samples={diagnostics.get('n_samples', 'unknown')}, "
+        f"n_features={diagnostics.get('n_features', 'unknown')}.\n"
+        f"- Matrix convention: {analysis_result.get('matrix_convention', 'target_to_source')}; "
+        "B[target, source] means source -> target.\n"
+        f"- Estimated causal order: {causal_order_text}.\n"
+        "- Required assumptions: continuous numeric variables, linear structural equation model, "
+        "non-Gaussian and mutually independent errors, acyclic causal graph, and no unmodeled "
+        "latent confounders among the observed variables.\n"
+        "- Interpretation rule: weighted directed edges are candidate causal relations under these "
+        "assumptions, not experimentally verified causal facts."
+    )
+
+
 async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     报告模块：
@@ -871,11 +1192,14 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
          2. 因果分析结果：{causal_analysis_result}
         3. 知识库结果：{knowledge_base_result}
         4. 后处理结果：{postprocess_result}
+        5. 算法解释补充：{method_context}
 
         ## 因果分析结果解读规则
         - 如果因果分析结果包含 error_type，请明确说明算法未能产生有效因果图，不要声称“没有因果关系”。
         - 如果因果分析结果包含 fallback_from 和 fallback_reason，请说明原算法不适用并已改用 fallback_tool 的结果。
         - 只有当算法 success 为 true 且边列表为空时，才可以表述为“未发现显著因果边/因果关系”。
+        - 如果算法解释补充中出现 DirectLiNGAM，请明确说明线性、非高斯、误差独立、DAG 和无潜在混杂假设。
+        - DirectLiNGAM 的带权边只能解释为模型假设下的候选因果关系，不得写成实验已验证事实。
          
         ## 报告结构要求
         1. **数据概览**：基于上述数据概览进行总结
@@ -936,6 +1260,9 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         "causal_analysis_result": state.get("causal_analysis_result", {}),
         "knowledge_base_result": knowledge_summary,
         "postprocess_result": state.get("postprocess_result", {}),
+        "method_context": _causal_method_context_for_report(
+            state.get("causal_analysis_result", {})
+        ),
         "system_role": causal_report_prompt()
     })
 

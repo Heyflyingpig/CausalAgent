@@ -60,13 +60,20 @@ class JobSessionValidationTests(unittest.TestCase):
         connection = FakeConnection()
         with patch("app.agent.job_service.get_write_connection", return_value=connection):
             with self.assertRaises(PermissionError):
-                create_job(7, "missing-session", "hello")
+                create_job(
+                    7,
+                    "missing-session",
+                    "hello",
+                    "123e4567-e89b-42d3-a456-426614174000",
+                )
 
         self.assertTrue(connection.rolled_back)
         self.assertTrue(connection.closed)
-        self.assertEqual(len(connection.fake_cursor.statements), 1)
-        self.assertNotIn("INSERT INTO sessions", connection.fake_cursor.statements[0][0])
-        self.assertIn("FOR UPDATE", connection.fake_cursor.statements[0][0])
+        self.assertEqual(len(connection.fake_cursor.statements), 3)
+        self.assertTrue(
+            all("INSERT INTO sessions" not in sql for sql, _ in connection.fake_cursor.statements)
+        )
+        self.assertIn("FOR UPDATE", connection.fake_cursor.statements[2][0])
 
 
 if __name__ == "__main__":

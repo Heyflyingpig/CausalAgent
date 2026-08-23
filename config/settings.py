@@ -271,38 +271,46 @@ class AppConfig:
             default=10,
         )
         self.JOB_STALE_AFTER_SECONDS = self._get_int_config("JOB_STALE_AFTER_SECONDS", default=120)
-        self.JOB_MAX_ATTEMPTS = self._get_int_config("JOB_MAX_ATTEMPTS", default=3)
-        self.R5_EVALUATION_WORKERS = self._get_int_config("R5_EVALUATION_WORKERS", default=5)
-        if not 1 <= self.R5_EVALUATION_WORKERS <= 16:
-            raise ValueError("配置错误: R5_EVALUATION_WORKERS 必须在 1 到 16 之间。")
-        r5_kind_limits = (
-            ("R5_INGESTION_CONCURRENCY_LIMIT", 1),
-            ("R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT", 1),
-            ("R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT", 1),
-            ("R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT", 1),
-            ("R5_EVALUATION_CONCURRENCY_LIMIT", 3),
-            ("R5_RAG_QUERY_CONCURRENCY_LIMIT", 2),
+        self.JOB_DRAINING_STALE_AFTER_SECONDS = self._get_int_config(
+            "JOB_DRAINING_STALE_AFTER_SECONDS",
+            default=420,
         )
-        for name, default in r5_kind_limits:
+        self.JOB_MAX_ATTEMPTS = self._get_int_config("JOB_MAX_ATTEMPTS", default=3)
+        self.JOB_CHAT_HISTORY_LIMIT = self._get_int_config("JOB_CHAT_HISTORY_LIMIT", default=20)
+        self.RAG_EVAL_EVALUATION_WORKERS = self._get_int_config(
+            "RAG_EVAL_EVALUATION_WORKERS",
+            default=5,
+        )
+        if not 1 <= self.RAG_EVAL_EVALUATION_WORKERS <= 16:
+            raise ValueError("配置错误: RAG_EVAL_EVALUATION_WORKERS 必须在 1 到 16 之间。")
+        rag_eval_kind_limits = (
+            ("RAG_EVAL_INGESTION_CONCURRENCY_LIMIT", 1),
+            ("RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT", 1),
+            ("RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT", 1),
+            ("RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT", 1),
+            ("RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT", 3),
+            ("RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT", 2),
+        )
+        for name, default in rag_eval_kind_limits:
             value = self._get_int_config(name, default=default)
             if not 1 <= value <= 5:
                 raise ValueError(f"配置错误: {name} 必须在 1 到 5 之间。")
             setattr(self, name, value)
-        self.R5_DATASET_ROOT = self._get_config(
-            "R5_DATASET_ROOT",
+        self.RAG_EVAL_DATASET_ROOT = self._get_config(
+            "RAG_EVAL_DATASET_ROOT",
             required=False,
-            default="tmp/r5_datasets",
+            default="tmp/rag_eval_datasets",
         )
-        self.R5_EVALUATION_POLL_INTERVAL_SECONDS = self._get_float_config(
-            "R5_EVALUATION_POLL_INTERVAL_SECONDS",
+        self.RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS = self._get_float_config(
+            "RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS",
             default=1.0,
         )
-        self.R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS = self._get_int_config(
-            "R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS",
+        self.RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS = self._get_int_config(
+            "RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS",
             default=10,
         )
-        self.R5_EVALUATION_JOB_STALE_AFTER_SECONDS = self._get_int_config(
-            "R5_EVALUATION_JOB_STALE_AFTER_SECONDS",
+        self.RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS = self._get_int_config(
+            "RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS",
             default=120,
         )
         self.SSE_POLL_INTERVAL_SECONDS = self._get_float_config("SSE_POLL_INTERVAL_SECONDS", default=1.0)

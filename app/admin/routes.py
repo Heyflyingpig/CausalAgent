@@ -47,6 +47,7 @@ from app.admin.business_service import (
     get_session_detail,
     get_user_detail,
     list_files,
+    list_job_checkpoints,
     list_job_events,
     list_jobs,
     list_message_attachments,
@@ -710,6 +711,24 @@ def business_job_events(job_id: str):
     return api_success(data)
 
 
+@admin_bp.route("/business/jobs/<job_id>/checkpoints")
+@admin_api_endpoint
+@audited_access(
+    action="business.job.checkpoints.list",
+    target_type="analysis_job",
+    target_id=lambda values: str(values["job_id"]),
+)
+@admin_required
+def business_job_checkpoints(job_id: str):
+    """返回 PostgreSQL 中可精确归属当前任务的 checkpoint 安全摘要。"""
+    data = list_job_checkpoints(
+        job_id=job_id,
+        limit=parse_limit(request.args.get("limit")),
+        cursor=request.args.get("cursor"),
+    )
+    return api_success(data)
+
+
 @admin_bp.route("/business/jobs/<job_id>/content")
 @admin_api_endpoint
 @audited_access(
@@ -730,6 +749,10 @@ def business_job_content(job_id: str):
             field="offset",
         ),
         limit=content_chunk_limit(request.args.get("limit")),
+        sequence=parse_non_negative_int(
+            request.args.get("sequence"),
+            field="sequence",
+        ),
     )
     return api_success(data)
 
@@ -753,12 +776,12 @@ def business_files():
 @admin_api_endpoint
 @audited_access(
     action="business.file.detail.view",
-    target_type="uploaded_file",
+    target_type="user_file",
     target_id=lambda values: str(values["file_id"]),
 )
 @admin_required
 def business_file_detail(file_id: int):
-    """返回文件元数据且不夹带 BLOB 或哈希。"""
+    """返回文件元数据且不夹带 BLOB 或内部对象 ID。"""
     return api_success(get_file_detail(file_id))
 
 
@@ -766,7 +789,7 @@ def business_file_detail(file_id: int):
 @admin_api_endpoint
 @audited_access(
     action="business.file.preview",
-    target_type="uploaded_file",
+    target_type="user_file",
     target_id=lambda values: str(values["file_id"]),
     audit_success=False,
 )
@@ -780,7 +803,7 @@ def business_file_preview(file_id: int):
 @admin_api_endpoint
 @audited_access(
     action="business.file.download",
-    target_type="uploaded_file",
+    target_type="user_file",
     target_id=lambda values: str(values["file_id"]),
     audit_success=False,
 )
@@ -804,7 +827,7 @@ def business_file_download(file_id: int):
 @admin_api_endpoint
 @audited_access(
     action="business.file.delete.preview",
-    target_type="uploaded_file",
+    target_type="user_file",
     target_id=lambda values: str(values["file_id"]),
 )
 @admin_required
@@ -817,13 +840,13 @@ def business_file_delete_impact(file_id: int):
 @admin_api_endpoint
 @audited_access(
     action="business.file.delete",
-    target_type="uploaded_file",
+    target_type="user_file",
     target_id=lambda values: str(values["file_id"]),
     audit_success=False,
 )
 @admin_write_required
 def business_file_delete(file_id: int):
-    """物理删除 uploaded_files 记录和 BLOB，不提供回收站。"""
+    """删除 user_files 逻辑记录，并按引用计数清理不可变 BLOB。"""
     return api_success(delete_managed_file(
         file_id,
         request.get_json(silent=True),

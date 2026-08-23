@@ -22,12 +22,12 @@ _JOB_PRIORITIES = {
     "ingestion": 10,
 }
 _JOB_LIMIT_SETTINGS = {
-    "ingestion": "R5_INGESTION_CONCURRENCY_LIMIT",
-    "candidate_generation": "R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT",
-    "tuning_dataset_governance": "R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT",
-    "dataset_governance": "R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT",
-    "evaluation": "R5_EVALUATION_CONCURRENCY_LIMIT",
-    "rag_query": "R5_RAG_QUERY_CONCURRENCY_LIMIT",
+    "ingestion": "RAG_EVAL_INGESTION_CONCURRENCY_LIMIT",
+    "candidate_generation": "RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT",
+    "tuning_dataset_governance": "RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT",
+    "dataset_governance": "RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT",
+    "evaluation": "RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT",
+    "rag_query": "RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT",
 }
 
 
@@ -201,7 +201,7 @@ def get_capacity_snapshot() -> dict[str, Any]:
             """
         )
         oldest = cursor.fetchone() or {}
-        stale_after = max(int(getattr(settings, "R5_EVALUATION_JOB_STALE_AFTER_SECONDS", 120)), 30)
+        stale_after = max(int(getattr(settings, "RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS", 120)), 30)
         cursor.execute(
             f"""
             SELECT COUNT(*) AS stale_running_count,
@@ -221,7 +221,7 @@ def get_capacity_snapshot() -> dict[str, Any]:
             kinds[kind][status] = int(row["count"])
     queued_total = sum(item["queued"] for item in kinds.values())
     running_total = sum(item["running"] for item in kinds.values())
-    configured_slots = int(settings.R5_EVALUATION_WORKERS)
+    configured_slots = int(settings.RAG_EVAL_EVALUATION_WORKERS)
     return {
         "configured_slots": configured_slots,
         "queued_total": queued_total,
@@ -309,7 +309,7 @@ def cancel_evaluation(run_id: str) -> dict[str, Any] | None:
 
 def reconcile_stale_jobs(limit: int = 100) -> list[dict[str, Any]]:
     """将 heartbeat 超时任务失败关闭；绝不自动重跑。"""
-    stale_after = max(int(getattr(settings, "R5_EVALUATION_JOB_STALE_AFTER_SECONDS", 120)), 30)
+    stale_after = max(int(getattr(settings, "RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS", 120)), 30)
     safe_limit = min(max(int(limit or 100), 1), 500)
     message = f"RAG 任务 worker heartbeat 超时（{stale_after} 秒），任务未完成"
     conn = get_write_connection()
