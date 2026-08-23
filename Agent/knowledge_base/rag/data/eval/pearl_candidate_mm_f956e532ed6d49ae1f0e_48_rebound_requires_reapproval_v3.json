@@ -1,0 +1,3362 @@
+{
+  "schema_version": "rag_eval_v1",
+  "dataset_id": "pearl_candidate_mm_ba8c42a52764da20ec7d_48",
+  "dataset_kind": "generated_candidate",
+  "dataset_revision": "c71196de5022_20260807T054020474823Z_a68f2a74_reviewed_user-approved-20260807_bound_mm_ba8c42a52764da20ec7d_rebound_mm_f956e532ed6d49ae1f0e_rebound_mm_f956e532ed6d49ae1f0e",
+  "source_snapshot": {
+    "index_version": "mm_f956e532ed6d49ae1f0e",
+    "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+    "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+    "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+    "unit_count": 5281,
+    "vector_count": 5281,
+    "manifest_schema_version": 4
+  },
+  "samples": [
+    {
+      "sample_id": "generated-23Z_a68f2a74-0001",
+      "question": "What is the significance of the large circle with center B and points H, F, E, I, D, G in the illustration from Pearl's Causality book, and how does it relate to the concepts of models, reasoning, and inference?",
+      "reference_answer": "The illustration shows a large circle with center B and points H, F, E, I, D, G on its circumference, with multiple line segments from B to these points. The circle is accompanied by a person holding a long rod pointing at it, and arrows pointing to Y, Z, and X. This visual likely represents a causal model or inference framework, as the book title 'MODELS, REASONING, AND INFERENCE' suggests. The circle and its points may symbolize variables or nodes in a causal diagram, with the arrows indicating causal directions. The person pointing could represent an observer or researcher analyzing the model. The exact meaning is not detailed in the context, but the elements are part of the book's cover illustration.",
+      "expected_claims": [
+        "The illustration shows a large circle with center B and points H, F, E, I, D, G on its circumference, with multiple line segments from B to these points.",
+        "The circle is accompanied by a person holding a long rod pointing at it, and arrows pointing to Y, Z, and X.",
+        "This visual likely represents a causal model or inference framework, as the book title 'MODELS, REASONING, AND INFERENCE' suggests."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_23a53bfc684b404728f40e6995911a76bae323a5bfbe21610c5b4abf3175bc29",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 1,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The illustration shows a large circle with center B and points H, F, E, I, D, G on its circumference, with multiple line segments from B to these points.",
+          "The circle is accompanied by a person holding a long rod pointing at it, and arrows pointing to Y, Z, and X.",
+          "This visual likely represents a causal model or inference framework, as the book title 'MODELS, REASONING, AND INFERENCE' suggests."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 1,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0002",
+      "question": "What is the topic covered in section 3.4.2 of the document?",
+      "reference_answer": "Section 3.4.2 covers the topic of inference rules, as indicated in the table of contents.",
+      "expected_claims": [
+        "Section 3.4.2 covers the topic of inference rules, as indicated in the table of contents."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_28311e6fdc962f3dc34ac64f78402f503405153a29aea7734d67dc8379fecbda",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 10,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Section 3.4.2 covers the topic of inference rules, as indicated in the table of contents."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 2,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "document_navigation_or_structure_question"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0003",
+      "question": "How does the book describe the role of artificial intelligence in the development of causal analysis?",
+      "reference_answer": "The book states that causal analysis has developed into a mathematical theory with significant applications in fields including artificial intelligence.",
+      "expected_claims": [
+        "The book states that causal analysis has developed into a mathematical theory with significant applications in fields including artificial intelligence."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_6abffbd5a1f1c4bd31af2082357a9e240500b79a9c178191256b1b0c8974307c",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The book states that causal analysis has developed into a mathematical theory with significant applications in fields including artificial intelligence."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 3,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0004",
+      "question": "Could you please explain the visual elements and textual details depicted in the illustration from the document titled 'Pearl_2009_Causality-mono(1).pdf', specifically focusing on the CAMBRIDGE emblem and its associated symbols?",
+      "reference_answer": "The illustration shows the logo of Cambridge University Press, featuring a shield-shaped coat of arms with a quartered pattern. The top left quarter contains crossed axes and a sword, the top right contains crossed keys and a scepter, the bottom left has three stars, and the bottom right has three dots. To the right of the shield is the word 'CAMBRIDGE', and below it is 'UNIVERSITY PRESS'.",
+      "expected_claims": [
+        "The illustration shows the logo of Cambridge University Press, featuring a shield-shaped coat of arms with a quartered pattern.",
+        "The top left quarter contains crossed axes and a sword, the top right contains crossed keys and a scepter, the bottom left has three stars, and the bottom right has three dots.",
+        "To the right of the shield is the word 'CAMBRIDGE', and below it is 'UNIVERSITY PRESS'."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_66f07205f6c072ab485add4d1ef1165408071ab64635c74ae2533fcd3c7cc464",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 5,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The illustration shows the logo of Cambridge University Press, featuring a shield-shaped coat of arms with a quartered pattern.",
+          "The top left quarter contains crossed axes and a sword, the top right contains crossed keys and a scepter, the bottom left has three stars, and the bottom right has three dots.",
+          "To the right of the shield is the word 'CAMBRIDGE', and below it is 'UNIVERSITY PRESS'."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 4,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0005",
+      "question": "hey can u tell me what is in the bibliography part of this here pdf thing, like what pages and stuff, and what is it about?",
+      "reference_answer": "The bibliography section starts on page 429, followed by the Name Index on page 453 and the Subject Index on page 459.",
+      "expected_claims": [
+        "The bibliography section starts on page 429, followed by the Name Index on page 453 and the Subject Index on page 459."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_315abb6cd44ad2d85139dc13ba8c62b96e5c8fc0afddf7eda19a6cf0d1b5ce98",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 15,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The bibliography section starts on page 429, followed by the Name Index on page 453 and the Subject Index on page 459."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 5,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "ambiguous_reference",
+          "document_navigation_or_structure_question"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0006",
+      "question": "统计学中如何应用因果性理论？",
+      "reference_answer": "根据上下文，尤西·佩尔提出的因果性理论为将因果分析纳入统计学的标准课程开辟了道路，提供了简单的数学工具来研究因果联系与统计关联之间的关系。",
+      "expected_claims": [
+        "根据上下文，尤西·佩尔提出的因果性理论为将因果分析纳入统计学的标准课程开辟了道路，提供了简单的数学工具来研究因果联系与统计关联之间的关系。"
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_7f1faf95c9d791f7957832a726334c7e58e33cbd9d990b33c7623d44f44d0863",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "根据上下文，尤西·佩尔提出的因果性理论为将因果分析纳入统计学的标准课程开辟了道路，提供了简单的数学工具来研究因果联系与统计关联之间的关系。"
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 6,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_too_short_or_underspecified"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0007",
+      "question": "what is Y in the diagram?",
+      "reference_answer": "Y is one of the four nodes in the diagram, and in both graphs (a) and (b), Y is pointed to by both Z and X.",
+      "expected_claims": [
+        "Y is one of the four nodes in the diagram, and in both graphs (a) and (b), Y is pointed to by both Z and X."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_a48a8a742c93194010d5a01548826ba387b12630b47ca4d1f513594f411d1800",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 35,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Y is one of the four nodes in the diagram, and in both graphs (a) and (b), Y is pointed to by both Z and X."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 7,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_too_short_or_underspecified",
+          "ambiguous_reference"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0008",
+      "question": "Can you explain the content of Pearl_2009_Causality-mono(1).pdf using diagrams?",
+      "reference_answer": "The context provided is a table with the title 'Pearl_2009_Causality-mono(1).pdf' and no additional content, so there is no information available to explain its content.",
+      "expected_claims": [
+        "The context provided is a table with the title 'Pearl_2009_Causality-mono(1).",
+        "pdf' and no additional content, so there is no information available to explain its content."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_6053dfa48dda0851a2e68c2668d940e8365e8e15c48030dca0fbcd0ee74a6fe7",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 58,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The context provided is a table with the title 'Pearl_2009_Causality-mono(1).",
+          "pdf' and no additional content, so there is no information available to explain its content."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 8,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "document_navigation_or_structure_question"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0009",
+      "question": "How does Pearl's work on causality contribute to the paradigm shift in statistical thinking?",
+      "reference_answer": "Pearl's work on causality, as presented in the first edition of 'Causality', initiated a paradigm shift in the treatment of causality across statistics, philosophy, computer science, social science, and economics. It has been cited in over 2800 scientific publications and continues to help scientists break free from traditional statistical thinking. In the revised edition, Pearl clarifies difficult issues, addresses reader questions, and provides a comprehensive overview of recent advances in the field.",
+      "expected_claims": [
+        "Pearl's work on causality, as presented in the first edition of 'Causality', initiated a paradigm shift in the treatment of causality across statistics, philosophy, computer science, social science, and economics.",
+        "It has been cited in over 2800 scientific publications and continues to help scientists break free from traditional statistical thinking.",
+        "In the revised edition, Pearl clarifies difficult issues, addresses reader questions, and provides a comprehensive overview of recent advances in the field."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_0bfaba6eb0514772e8e05cf3b5af77940b678f881bb50b787be93e267106409c",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Pearl's work on causality, as presented in the first edition of 'Causality', initiated a paradigm shift in the treatment of causality across statistics, philosophy, computer science, social science, and economics.",
+          "It has been cited in over 2800 scientific publications and continues to help scientists break free from traditional statistical thinking.",
+          "In the revised edition, Pearl clarifies difficult issues, addresses reader questions, and provides a comprehensive overview of recent advances in the field."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 9,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0010",
+      "question": "what SLIPPERY connected to?",
+      "reference_answer": "SLIPPERY is X5, and it has an arrow from X4 (WET) pointing to it.",
+      "expected_claims": [
+        "SLIPPERY is X5, and it has an arrow from X4 (WET) pointing to it."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_971fe531bb66f5ee549663f2712fa6af65138c887535cb0127baa114a6a77af1",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 37,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "SLIPPERY is X5, and it has an arrow from X4 (WET) pointing to it."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 10,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_too_short_or_underspecified"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0011",
+      "question": "wat is teh relashun between smoking and tar in teh Pearl_2009_Causality-mono(1).pdf table?",
+      "reference_answer": "The table shows that among nonsmokers with no tar (X=0, Z=0), 10% have cancer; among smokers with no tar (X=1, Z=0), 90% have cancer; among nonsmokers with tar (X=0, Z=1), 5% have cancer; and among smokers with tar (X=1, Z=1), 85% have cancer. The group sizes are 47.5%, 2.5%, 2.5%, and 47.5% of the population, respectively.",
+      "expected_claims": [
+        "The table shows that among nonsmokers with no tar (X=0, Z=0), 10% have cancer;",
+        "among smokers with no tar (X=1, Z=0), 90% have cancer;",
+        "among nonsmokers with tar (X=0, Z=1), 5% have cancer;"
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_6f3d8e792c55a95dca6db277fe93bcd23e9c879246100866f7a39814c9f12d8d",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 106,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The table shows that among nonsmokers with no tar (X=0, Z=0), 10% have cancer;",
+          "among smokers with no tar (X=1, Z=0), 90% have cancer;",
+          "among nonsmokers with tar (X=0, Z=1), 5% have cancer;"
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 11,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "obvious_typo_or_informal_wording"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0012",
+      "question": "What is the target audience for the book on Causality?",
+      "reference_answer": "The book on Causality will interest students and professionals from a wide range of fields, including anyone who wishes to clarify meaningful connections from data, predict the effects of actions and policies, evaluate explanations of reported events, or form theories of causal understanding and causal language.",
+      "expected_claims": [
+        "The book on Causality will interest students and professionals from a wide range of fields, including anyone who wishes to clarify meaningful connections from data, predict the effects of actions and policies, evaluate explanations of reported events, or form theories of causal understanding and causal language."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_df27cc76258f083e963443dca4dff0270f11ebf0c03f7c32267f6bc25c838b61",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The book on Causality will interest students and professionals from a wide range of fields, including anyone who wishes to clarify meaningful connections from data, predict the effects of actions and policies, evaluate explanations of reported events, or form theories of causal understanding and causal language."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 12,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0013",
+      "question": "what Z2 do in picture?",
+      "reference_answer": "In figure (a), Z2 is a middle node on the path X→Z1→Z2→Z3→Y, and in figure (b), Z2 is a collider where the two paths from X to Y meet as a common child.",
+      "expected_claims": [
+        "In figure (a), Z2 is a middle node on the path X→Z1→Z2→Z3→Y, and in figure (b), Z2 is a collider where the two paths from X to Y meet as a common child."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_6f322e0cb911a09a9fe670c511514671f72018825e1e6070ba5754a280f5ba5b",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 40,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "In figure (a), Z2 is a middle node on the path X→Z1→Z2→Z3→Y, and in figure (b), Z2 is a collider where the two paths from X to Y meet as a common child."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 13,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_too_short_or_underspecified",
+          "ambiguous_reference"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0014",
+      "question": "what the Total column mean in the table and how it help us see the admission rates for males and females combined?",
+      "reference_answer": "The Total column in the table shows the combined number of admitted and applied for both males and females. For example, in Dept. A, the Total admitted is 50 and Total applied is 50, giving an unadjusted admission rate of 50%. In Dept. B, the Total admitted is 50 and Total applied is 150, giving an unadjusted admission rate of 50% as well. The Total column helps us see the overall admission rate across departments, which is 50% unadjusted and 37.5% adjusted.",
+      "expected_claims": [
+        "The Total column in the table shows the combined number of admitted and applied for both males and females.",
+        "For example, in Dept.",
+        "A, the Total admitted is 50 and Total applied is 50, giving an unadjusted admission rate of 50%."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_1533c465945c0c64991a9d31da1641aa275e75310231375f454df34a0365a5ea",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 152,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The Total column in the table shows the combined number of admitted and applied for both males and females.",
+          "For example, in Dept.",
+          "A, the Total admitted is 50 and Total applied is 50, giving an unadjusted admission rate of 50%."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 14,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "ambiguous_reference"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0015",
+      "question": "Who is Judea Pearl and what are his major contributions and awards in the field of computer science and statistics?",
+      "reference_answer": "Judea Pearl is a professor of computer science and statistics at the University of California, Los Angeles, where he leads the Cognitive Systems Laboratory and conducts research in artificial intelligence, human reasoning, and the philosophy of science. He is the author of Heuristics and Probabilistic Reasoning, a member of the National Academy of Engineering, and a founding Fellow of the American Association for Artificial Intelligence. He has received the 1999 IJCAI Research Excellence Award, the 2001 London School of Economics Lakatos Award, the 2004 ACM Allen Newell Award, and in 2008, the Benjamin Franklin Medal in Computer and Cognitive Science from the Franklin Institute.",
+      "expected_claims": [
+        "Judea Pearl is a professor of computer science and statistics at the University of California, Los Angeles, where he leads the Cognitive Systems Laboratory and conducts research in artificial intelligence, human reasoning, and the philosophy of science.",
+        "He is the author of Heuristics and Probabilistic Reasoning, a member of the National Academy of Engineering, and a founding Fellow of the American Association for Artificial Intelligence.",
+        "He has received the 1999 IJCAI Research Excellence Award, the 2001 London School of Economics Lakatos Award, the 2004 ACM Allen Newell Award, and in 2008, the Benjamin Franklin Medal in Computer and Cognitive Science from the Franklin Institute."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_985d06c742f2e27dbb245d4356b7f63c030449437e395df87ca84aa464769361",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Judea Pearl is a professor of computer science and statistics at the University of California, Los Angeles, where he leads the Cognitive Systems Laboratory and conducts research in artificial intelligence, human reasoning, and the philosophy of science.",
+          "He is the author of Heuristics and Probabilistic Reasoning, a member of the National Academy of Engineering, and a founding Fellow of the American Association for Artificial Intelligence.",
+          "He has received the 1999 IJCAI Research Excellence Award, the 2001 London School of Economics Lakatos Award, the 2004 ACM Allen Newell Award, and in 2008, the Benjamin Franklin Medal in Computer and Cognitive Science from the Franklin Institute."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 15,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0016",
+      "question": "In the provided causal Bayesian network diagram representing the intervention of turning on the sprinkler, what is the role of the variable labeled X4, and how does it relate to the other variables in the network?",
+      "reference_answer": "In the diagram, X4 is labeled as WET. It is a node in the causal Bayesian network that represents the condition of being wet. X4 receives directed edges from both X2 (RAIN) and X3 (SPRINKLER), indicating that rain and the sprinkler being on can both cause wetness. Additionally, X4 has a directed edge to X5 (SLIPPERY), meaning that wetness can lead to slipperiness. Thus, X4 serves as an intermediate variable connecting the causes (rain and sprinkler) to the effect (slippery).",
+      "expected_claims": [
+        "In the diagram, X4 is labeled as WET.",
+        "It is a node in the causal Bayesian network that represents the condition of being wet.",
+        "X4 receives directed edges from both X2 (RAIN) and X3 (SPRINKLER), indicating that rain and the sprinkler being on can both cause wetness."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_25fd7c2627af59ce6046ad4b2bcbcbd9ea173d11cd1bbdfe7cd23b39e2f427d6",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 45,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "In the diagram, X4 is labeled as WET.",
+          "It is a node in the causal Bayesian network that represents the condition of being wet.",
+          "X4 receives directed edges from both X2 (RAIN) and X3 (SPRINKLER), indicating that rain and the sprinkler being on can both cause wetness."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "single_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 16,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0017",
+      "question": "How do directed acyclic graphs (有向无环图) and the IC* algorithm relate to the causal structures depicted in the provided figures, and what do the different subfigures illustrate about the algorithm's steps?",
+      "reference_answer": "The directed acyclic graphs (有向无环图) are central to the causal structures shown in the figures. The first figure (1-hop) displays four DAGs (a)-(d) with nodes a-e, all sharing the same underlying undirected structure (a-b-c-d-e) but differing in arrow directions, representing different causal inference results. The second figure (2-hop) shows five causal structures (a)-(e) with nodes a-d, illustrating which structures satisfy minimality under given observational independence constraints; some include hidden variables (*). The IC* algorithm, as depicted in the third figure (3-hop), applies rules R1 and R2 to orient edges in causal discovery. The figure specifically illustrates R2, showing four stages (a)-(d) where a directed path from a to b (via marked links) leads to adding an arrow from a to b. In stage (d), an additional arrow from a to d is added, demonstrating the algorithm's iterative orientation process. Thus, the DAGs provide the structural framework, and the IC* algorithm refines them by adding arrows based on rules, as shown in the figures.",
+      "expected_claims": [
+        "The directed acyclic graphs (有向无环图) are central to the causal structures shown in the figures.",
+        "The first figure (1-hop) displays four DAGs (a)-(d) with nodes a-e, all sharing the same underlying undirected structure (a-b-c-d-e) but differing in arrow directions, representing different causal inference results.",
+        "The second figure (2-hop) shows five causal structures (a)-(e) with nodes a-d, illustrating which structures satisfy minimality under given observational independence constraints;"
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_d9eb0016f0e5ccf9ca7817e99beddec79d4a611fb970948ac23c3e8fa0894ab6",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 76,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_cc9a6d4ae5ddf0a63357d5884ac5f0f7799fe248c2b7bf7e769a6c7c5ad5e7fa",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 69,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_8d30c53162d21e127df9130e8144cdbd7c9135744797c266a556ef327014ddf5",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 75,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The directed acyclic graphs (有向无环图) are central to the causal structures shown in the figures.",
+          "The first figure (1-hop) displays four DAGs (a)-(d) with nodes a-e, all sharing the same underlying undirected structure (a-b-c-d-e) but differing in arrow directions, representing different causal inference results.",
+          "The second figure (2-hop) shows five causal structures (a)-(e) with nodes a-d, illustrating which structures satisfy minimality under given observational independence constraints;"
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 17,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0018",
+      "question": "so like, how does Pearl's book on causality, you know, it's about models and reasoning and inference, and it says it's for students and professionals who want to figure out meaningful connections from data and predict stuff, and then it also says it gives a full theory that combines probability, manipulation, counterfactuals, and structural methods, and it has simple math tools to study how causal links relate to statistical associations, so can you tell me how that all fits together for doing data analysis and understanding causality, especially for people in statistics and stuff?",
+      "reference_answer": "Pearl's book on causality is designed for students and professionals who want to clarify meaningful connections from data, predict the effects of actions and policies, and form causal understanding and theories. It presents a comprehensive theory that unifies probability, manipulation, counterfactuals, and structural methods within causality, and provides simple mathematical tools to study the relationship between causal connections and statistical associations. This makes it valuable for data analysis because it helps users move beyond mere statistical correlation to understand true causal effects, which is essential for fields like statistics, AI, business, epidemiology, social sciences, and economics. The book offers natural models, simple reasoning procedures, and precise mathematical definitions for causal concepts that traditional texts often avoid or overcomplicate, thereby opening the way for integrating causal analysis into standard curricula across these disciplines.",
+      "expected_claims": [
+        "Pearl's book on causality is designed for students and professionals who want to clarify meaningful connections from data, predict the effects of actions and policies, and form causal understanding and theories.",
+        "It presents a comprehensive theory that unifies probability, manipulation, counterfactuals, and structural methods within causality, and provides simple mathematical tools to study the relationship between causal connections and statistical associations.",
+        "This makes it valuable for data analysis because it helps users move beyond mere statistical correlation to understand true causal effects, which is essential for fields like statistics, AI, business, epidemiology, social sciences, and economics."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_dc9337fc6f3fd16c3be9a0d2408cbf6b1413d98ee0e3e6cecaca162cb7911af3",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 5,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_df27cc76258f083e963443dca4dff0270f11ebf0c03f7c32267f6bc25c838b61",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_7f1faf95c9d791f7957832a726334c7e58e33cbd9d990b33c7623d44f44d0863",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Pearl's book on causality is designed for students and professionals who want to clarify meaningful connections from data, predict the effects of actions and policies, and form causal understanding and theories.",
+          "It presents a comprehensive theory that unifies probability, manipulation, counterfactuals, and structural methods within causality, and provides simple mathematical tools to study the relationship between causal connections and statistical associations.",
+          "This makes it valuable for data analysis because it helps users move beyond mere statistical correlation to understand true causal effects, which is essential for fields like statistics, AI, business, epidemiology, social sciences, and economics."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 18,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_overly_compound",
+          "ambiguous_reference"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0019",
+      "question": "table in lipid and vitamin a study, what it tell us about causal theory?",
+      "reference_answer": "The table shows observed data for the Lipid Study and the Vitamin A Study, with counts of observations for different combinations of variables z, x, and y. This data is used to analyze causal relationships, as Pearl's causal theory unifies probabilistic, manipulative, counterfactual, and structural approaches to causality, and provides tools to study the connection between causal and statistical associations.",
+      "expected_claims": [
+        "The table shows observed data for the Lipid Study and the Vitamin A Study, with counts of observations for different combinations of variables z, x, and y.",
+        "This data is used to analyze causal relationships, as Pearl's causal theory unifies probabilistic, manipulative, counterfactual, and structural approaches to causality, and provides tools to study the connection between causal and statistical associations."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_17ebb14608689d562c3c5b4f65915c4f45ed98aa27435839d0d44ace79c3a822",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 301,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_98384e735314e461f8bd19098ee0e330d12ca963e7e7dc6d51cfe89c9ae65a79",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_7f1faf95c9d791f7957832a726334c7e58e33cbd9d990b33c7623d44f44d0863",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The table shows observed data for the Lipid Study and the Vitamin A Study, with counts of observations for different combinations of variables z, x, and y.",
+          "This data is used to analyze causal relationships, as Pearl's causal theory unifies probabilistic, manipulative, counterfactual, and structural approaches to causality, and provides tools to study the connection between causal and statistical associations."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 19,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed evidence; question explicitly names the lipid/vitamin table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0020",
+      "question": "Based on the observed data presented in Table 8.2 from Pearl_2009_Causality-mono(1).pdf, which includes the Lipid Study and the Vitamin A Study, and considering the conditional probability table mentioned in Table 3.3 from Pearl_Mackenzie_2018_The_Book_of_Why-mono(1).pdf, how can the observed frequencies be used to construct a conditional probability table for the variable combinations, and what causal conclusions might be drawn from the differences in observations between the two studies?",
+      "reference_answer": "The observed data in Table 8.2 provides counts for each combination of variables z, x, and y in both the Lipid Study and the Vitamin A Study. To construct a conditional probability table, one would compute the probability of y given x and z by dividing the number of observations for each combination by the total observations for that study. For example, in the Lipid Study, the probability of y=1 given x=0 and z=0 is 14/(158+14)=0.081, while in the Vitamin A Study, it is 11,514/(74+11,514)=0.994. These differences suggest that the relationship between x and y may be influenced by z, and the causal conclusions would depend on the assumptions encoded in the conditional probability table, as illustrated in Table 3.3. However, the provided context only includes the title of Table 3.3, not its contents, so further details are not available.",
+      "expected_claims": [
+        "The observed data in Table 8.2 provides counts for each combination of variables z, x, and y in both the Lipid Study and the Vitamin A Study.",
+        "To construct a conditional probability table, one would compute the probability of y given x and z by dividing the number of observations for each combination by the total observations for that study.",
+        "For example, in the Lipid Study, the probability of y=1 given x=0 and z=0 is 14/(158+14)=0.081, while in the Vitamin A Study, it is 11,514/(74+11,514)=0.994."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_17ebb14608689d562c3c5b4f65915c4f45ed98aa27435839d0d44ace79c3a822",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 301,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_3273d61206903eaa4bb89df55efb69e6258fa2a54d8d86d3bc7ff2bc4f40f3d1",
+          "document_id": "doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709",
+          "page_number": 117,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The observed data in Table 8.2 provides counts for each combination of variables z, x, and y in both the Lipid Study and the Vitamin A Study.",
+          "To construct a conditional probability table, one would compute the probability of y given x and z by dividing the number of observations for each combination by the total observations for that study.",
+          "For example, in the Lipid Study, the probability of y=1 given x=0 and z=0 is 14/(158+14)=0.081, while in the Vitamin A Study, it is 11,514/(74+11,514)=0.994."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 20,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_overly_compound",
+          "multi_figure_or_table_comparison",
+          "cross_document_question"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0021",
+      "question": "wat is the causl effect of treatment on recovery in the experimental group?",
+      "reference_answer": "Based on the provided context, the experimental group's recovery rates are shown in Table 9.2, which lists deaths and survivals for both experimental and nonexperimental conditions. For the experimental group (x), there are 16 deaths and 984 survivals, giving a recovery rate of 984/(16+984) = 984/1000 = 0.984. The nonexperimental group (x') has 14 deaths and 986 survivals, giving a recovery rate of 986/(14+986) = 986/1000 = 0.986. The table also includes combined data (2 deaths and 998 survivals) for a total of 28 deaths and 972 survivals across all groups. The causal effect of treatment on recovery in the experimental group, compared to the nonexperimental group, is the difference in recovery rates: 0.984 - 0.986 = -0.002, indicating a slightly lower recovery rate in the experimental group. However, the context does not provide additional statistical analysis or causal inference conclusions beyond these raw numbers.",
+      "expected_claims": [
+        "Based on the provided context, the experimental group's recovery rates are shown in Table 9.2, which lists deaths and survivals for both experimental and nonexperimental conditions.",
+        "For the experimental group (x), there are 16 deaths and 984 survivals, giving a recovery rate of 984/(16+984) = 984/1000 = 0.984.",
+        "The nonexperimental group (x') has 14 deaths and 986 survivals, giving a recovery rate of 986/(14+986) = 986/1000 = 0.986."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_db387c41ffaed12f92e8a8ec775e09d2cbde9b64c9e98e217b8460bb6b0f4618",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 197,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_b2c858c153145290e5737558492dc1d336dcdca0b20b8dff5e3fb4300a4b8086",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 6,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_17b73271e4a878d8e2df1e3922ab692a4eee7722674189b14bbdc33956ed1f1e",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 324,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Based on the provided context, the experimental group's recovery rates are shown in Table 9.2, which lists deaths and survivals for both experimental and nonexperimental conditions.",
+          "For the experimental group (x), there are 16 deaths and 984 survivals, giving a recovery rate of 984/(16+984) = 984/1000 = 0.984.",
+          "The nonexperimental group (x') has 14 deaths and 986 survivals, giving a recovery rate of 986/(14+986) = 986/1000 = 0.986."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 21,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed text+table evidence; question asks treatment/recovery effect rather than a table locator",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "obvious_typo_or_informal_wording"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0022",
+      "question": "How does Judea Pearl's work on causal inference use time information and conditional independence to distinguish true causality from spurious associations, as illustrated in Figure 2.5?",
+      "reference_answer": "Judea Pearl's work on causal inference, as described in his book, uses time information and conditional independence to distinguish true causality from spurious associations. In Figure 2.5, two directed graphs are shown: (a) depicts a structure where Z mediates the effect of X on Y, with S pointing to Z, X, and Y, indicating a true causal path from X to Y. (b) depicts a structure with a common cause or confounder W, where S points to Z and W, and W points to X and Y, illustrating that the dependence between X and Y may not be directly causal. The figure demonstrates how time information helps infer the correct causal direction from conditional independence patterns, thereby distinguishing genuine causal relationships from spurious ones.",
+      "expected_claims": [
+        "Judea Pearl's work on causal inference, as described in his book, uses time information and conditional independence to distinguish true causality from spurious associations.",
+        "In Figure 2.5, two directed graphs are shown: (a) depicts a structure where Z mediates the effect of X on Y, with S pointing to Z, X, and Y, indicating a true causal path from X to Y.",
+        "(b) depicts a structure with a common cause or confounder W, where S points to Z and W, and W points to X and Y, illustrating that the dependence between X and Y may not be directly causal."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_942099b010a7d4f1cbdf2f2aa8cd528e6880b8f8fef524cdc4360cfa74371d5c",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 78,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_0fff144e037c16823856a0ceceda1ead6d730be856d3055564af1d5b6c2575e5",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Judea Pearl's work on causal inference, as described in his book, uses time information and conditional independence to distinguish true causality from spurious associations.",
+          "In Figure 2.5, two directed graphs are shown: (a) depicts a structure where Z mediates the effect of X on Y, with S pointing to Z, X, and Y, indicating a true causal path from X to Y.",
+          "(b) depicts a structure with a common cause or confounder W, where S points to Z and W, and W points to X and Y, illustrating that the dependence between X and Y may not be directly causal."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 22,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed evidence; question explicitly targets Figure 2.5",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0023",
+      "question": "How do Judea Pearl's causal Bayesian networks and his comprehensive theory of causality relate to the diagrams in Figure 1.6?",
+      "reference_answer": "Judea Pearl's comprehensive theory of causality unifies probabilistic, manipulative, counterfactual, and structural methods, providing mathematical tools to study causal connections. The diagrams in Figure 1.6 illustrate this theory: (a) shows a causal Bayesian network representing a distribution, (b) and (c) show causal graphs with unobserved variables U1 and U2 that explain the distribution, with (c) having an additional edge from U1 to Y, demonstrating different causal structures. These diagrams exemplify Pearl's approach to representing causal relationships and statistical associations.",
+      "expected_claims": [
+        "Judea Pearl's comprehensive theory of causality unifies probabilistic, manipulative, counterfactual, and structural methods, providing mathematical tools to study causal connections.",
+        "The diagrams in Figure 1.6 illustrate this theory: (a) shows a causal Bayesian network representing a distribution, (b) and (c) show causal graphs with unobserved variables U1 and U2 that explain the distribution, with (c) having an additional edge from U1 to Y, demonstrating different causal structures.",
+        "These diagrams exemplify Pearl's approach to representing causal relationships and statistical associations."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_7df5d2a28788556b546d2bc97abb804430fe16a4862982db9517f6131a42fa52",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 57,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_7f1faf95c9d791f7957832a726334c7e58e33cbd9d990b33c7623d44f44d0863",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_985d06c742f2e27dbb245d4356b7f63c030449437e395df87ca84aa464769361",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Judea Pearl's comprehensive theory of causality unifies probabilistic, manipulative, counterfactual, and structural methods, providing mathematical tools to study causal connections.",
+          "The diagrams in Figure 1.6 illustrate this theory: (a) shows a causal Bayesian network representing a distribution, (b) and (c) show causal graphs with unobserved variables U1 and U2 that explain the distribution, with (c) having an additional edge from U1 to Y, demonstrating different causal structures.",
+          "These diagrams exemplify Pearl's approach to representing causal relationships and statistical associations."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 23,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed evidence; question explicitly targets diagrams/Figure 1.6",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0024",
+      "question": "Based on the provided context, which includes a table titled 'Pearl_2009_Causality-mono(1).pdf' showing recovery rates for treatment (C) versus control (¬C) in Figure 6.1, and Table 3.1 from the same document that presents group sizes and percentages of cancer cases for different combinations of smoking and tar exposure, how can the recovery rates from Figure 6.1 be interpreted in light of the causal relationships suggested by the data in Table 3.1, particularly regarding the potential confounding effects of smoking and tar exposure on the observed recovery rates?",
+      "reference_answer": "The context provides two tables from Pearl_2009_Causality-mono(1).pdf. Figure 6.1 displays recovery rates for treatment (C) versus control (¬C), but the actual numerical values are not provided in the context. Table 3.1 presents data on group sizes and percentages of cancer cases for four groups defined by smoking status (X) and tar exposure (Z): nonsmokers with no tar (X=0, Z=0) comprising 47.5% of the population with 10% cancer cases; smokers with no tar (X=1, Z=0) comprising 2.5% with 90% cancer cases; nonsmokers with tar (X=0, Z=1) comprising 2.5% with 5% cancer cases; and smokers with tar (X=1, Z=1) comprising 47.5% with 85% cancer cases. The recovery rates in Figure 6.1 would need to be compared across treatment and control groups, but since the actual recovery rate values are not given, we can only infer that the table suggests a complex relationship between smoking, tar exposure, and cancer incidence, which could act as confounders when interpreting the causal effect of treatment (C) on recovery. The data in Table 3.1 indicates that smoking and tar exposure are associated with different cancer rates, so any observed difference in recovery rates between treatment and control groups in Figure 6.1 must account for these potential confounding variables to establish causality, as per Pearl's framework.",
+      "expected_claims": [
+        "The context provides two tables from Pearl_2009_Causality-mono(1).",
+        "Figure 6.1 displays recovery rates for treatment (C) versus control (¬C), but the actual numerical values are not provided in the context.",
+        "Table 3.1 presents data on group sizes and percentages of cancer cases for four groups defined by smoking status (X) and tar exposure (Z): nonsmokers with no tar (X=0, Z=0) comprising 47.5% of the population with 10% cancer cases;"
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_db387c41ffaed12f92e8a8ec775e09d2cbde9b64c9e98e217b8460bb6b0f4618",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 197,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_6f3d8e792c55a95dca6db277fe93bcd23e9c879246100866f7a39814c9f12d8d",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 106,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The context provides two tables from Pearl_2009_Causality-mono(1).",
+          "Figure 6.1 displays recovery rates for treatment (C) versus control (¬C), but the actual numerical values are not provided in the context.",
+          "Table 3.1 presents data on group sizes and percentages of cancer cases for four groups defined by smoking status (X) and tar exposure (Z): nonsmokers with no tar (X=0, Z=0) comprising 47.5% of the population with 10% cancer cases;"
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 24,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_overly_compound",
+          "ambiguous_reference",
+          "multi_figure_or_table_comparison"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0025",
+      "question": "so like, the table thing with admission rate and the paragraph thing, how do they connect to the causal stuff from the lipid and vitamin a studies, and what does the table about males and females in departments show about admission rate, and how does that relate to the recovery rate table and the paragraph about the philosophy guy?",
+      "reference_answer": "The context provides three segments: a table showing recovery rates for treatment (C) and control (¬C) among males, females, and combined; a table showing admission rates for males and females across departments (with unadjusted rates of 50% for both, but adjusted rates of 25% for males and 37.5% for females); and a paragraph mentioning Brian Skyrms from UC Irvine's philosophy department. The admission rate table illustrates a Simpson's paradox-like scenario where unadjusted rates appear equal but adjusted rates differ, which is relevant to causal inference because it shows how confounding variables (department) can change conclusions. The recovery rate table similarly presents stratified data by gender, which is essential for drawing causal conclusions about treatment effects. The paragraph about Skyrms is a citation, not directly related to the data, but it indicates the source context. Together, these segments highlight the importance of examining subgroup data (like gender or department) when analyzing causal effects, as aggregate rates can be misleading.",
+      "expected_claims": [
+        "The context provides three segments: a table showing recovery rates for treatment (C) and control (¬C) among males, females, and combined;",
+        "a table showing admission rates for males and females across departments (with unadjusted rates of 50% for both, but adjusted rates of 25% for males and 37.5% for females);",
+        "and a paragraph mentioning Brian Skyrms from UC Irvine's philosophy department."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_db387c41ffaed12f92e8a8ec775e09d2cbde9b64c9e98e217b8460bb6b0f4618",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 197,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_1533c465945c0c64991a9d31da1641aa275e75310231375f454df34a0365a5ea",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 152,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_b38c6b9dc173acc9b3f0282543671e7213d42f5531d6ca928ac7287677c190da",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "paragraph",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The context provides three segments: a table showing recovery rates for treatment (C) and control (¬C) among males, females, and combined;",
+          "a table showing admission rates for males and females across departments (with unadjusted rates of 50% for both, but adjusted rates of 25% for males and 37.5% for females);",
+          "and a paragraph mentioning Brian Skyrms from UC Irvine's philosophy department."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 25,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed evidence; question explicitly targets admission/recovery tables",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "ambiguous_reference",
+          "multi_figure_or_table_comparison"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0026",
+      "question": "what Sackett data show about berkson paradox and how it relate to treatment recovery rate and causal effect?",
+      "reference_answer": "The Sackett data in Table 6.3 illustrates the Berkson paradox, which shows how conditioning on a collider (like hospital admission) can create a spurious negative association between two independent causes (like treatment and recovery). This paradox demonstrates that observational data can mislead causal inference if not properly accounted for. The treatment recovery rates in Pearl's Figure 6.1 show different rates for men, women, and combined, which when analyzed naively can lead to incorrect causal conclusions (like Simpson's paradox). The identifiable ACE in Table 8.1 shows a distribution where the average causal effect can be identified from observational data, but only when the proper adjustment is made. Together, these tables highlight the importance of careful causal analysis to avoid drawing wrong conclusions from observational data.",
+      "expected_claims": [
+        "The Sackett data in Table 6.3 illustrates the Berkson paradox, which shows how conditioning on a collider (like hospital admission) can create a spurious negative association between two independent causes (like treatment and recovery).",
+        "This paradox demonstrates that observational data can mislead causal inference if not properly accounted for.",
+        "The treatment recovery rates in Pearl's Figure 6.1 show different rates for men, women, and combined, which when analyzed naively can lead to incorrect causal conclusions (like Simpson's paradox)."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_db387c41ffaed12f92e8a8ec775e09d2cbde9b64c9e98e217b8460bb6b0f4618",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 197,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_3934b8575cab2c07ffbf978e6294d9cd8f6b88f24b3ac684ca1aa8fcaff0e839",
+          "document_id": "doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709",
+          "page_number": 184,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_d82ff1f70cd957fad6163a6a6d038d9d9f8629c0a6deb12ad1096c3bf8d62891",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 300,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The Sackett data in Table 6.3 illustrates the Berkson paradox, which shows how conditioning on a collider (like hospital admission) can create a spurious negative association between two independent causes (like treatment and recovery).",
+          "This paradox demonstrates that observational data can mislead causal inference if not properly accounted for.",
+          "The treatment recovery rates in Pearl's Figure 6.1 show different rates for men, women, and combined, which when analyzed naively can lead to incorrect causal conclusions (like Simpson's paradox)."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 26,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0027",
+      "question": "How does the causal Bayesian network in Figure 1.4 illustrate the concept of causal inference, and how does it relate to the confounding structure shown in Figure 2.5(b)?",
+      "reference_answer": "The causal Bayesian network in Figure 1.4 represents the intervention \"turning on the sprinkler\" by setting X3 (SPRINKLER) to ON and removing its causal link from upstream variables like X1 (SEASON). This network shows directed dependencies: SEASON → RAIN, RAIN → WET, SPRINKLER → WET, and WET → SLIPPERY. This illustrates causal inference by modeling how an intervention affects downstream variables. In contrast, Figure 2.5(b) depicts a structure with a common cause or confounder W, where the dependence between X and Y may not be directly causal. The network in Figure 1.4, by explicitly modeling the intervention, helps distinguish true causal effects from spurious associations, as discussed in the context of Figure 2.5.",
+      "expected_claims": [
+        "The causal Bayesian network in Figure 1.4 represents the intervention \"turning on the sprinkler\" by setting X3 (SPRINKLER) to ON and removing its causal link from upstream variables like X1 (SEASON).",
+        "This network shows directed dependencies: SEASON → RAIN, RAIN → WET, SPRINKLER → WET, and WET → SLIPPERY.",
+        "This illustrates causal inference by modeling how an intervention affects downstream variables."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_942099b010a7d4f1cbdf2f2aa8cd528e6880b8f8fef524cdc4360cfa74371d5c",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 78,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_14ccb8bcfcc32e0cb71b9b17cdcd0933b21b616eb0de5b297c6822134a318266",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 321,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_25fd7c2627af59ce6046ad4b2bcbcbd9ea173d11cd1bbdfe7cd23b39e2f427d6",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 45,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The causal Bayesian network in Figure 1.4 represents the intervention \"turning on the sprinkler\" by setting X3 (SPRINKLER) to ON and removing its causal link from upstream variables like X1 (SEASON).",
+          "This network shows directed dependencies: SEASON → RAIN, RAIN → WET, SPRINKLER → WET, and WET → SLIPPERY.",
+          "This illustrates causal inference by modeling how an intervention affects downstream variables."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 27,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed evidence; question explicitly targets Figure 1.4 and Figure 2.5(b)",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "multi_figure_or_table_comparison"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0028",
+      "question": "whts the diff btwn the recovery rates in fig 6.1 and the conditonal prob table in table 3.2?",
+      "reference_answer": "Figure 6.1 from Pearl_2009_Causality-mono(1).pdf shows recovery rates for treatment (C) and control (¬C) separately for males, females, and the combined group. Table 3.2 from Pearl_Mackenzie_2018_The_Book_of_Why-mono(1).pdf presents a simple conditional probability table. The key difference is that Figure 6.1 displays recovery rates as a table broken down by gender and treatment condition, while Table 3.2 shows a conditional probability table, which typically lists probabilities of outcomes given certain conditions, rather than raw recovery rates.",
+      "expected_claims": [
+        "Figure 6.1 from Pearl_2009_Causality-mono(1).",
+        "pdf shows recovery rates for treatment (C) and control (¬C) separately for males, females, and the combined group.",
+        "Table 3.2 from Pearl_Mackenzie_2018_The_Book_of_Why-mono(1)."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_db387c41ffaed12f92e8a8ec775e09d2cbde9b64c9e98e217b8460bb6b0f4618",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 197,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_0fd3add9e992a565dff4cea12aaac81038fa05cdc603e9bb561ad855a2588f5f",
+          "document_id": "doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709",
+          "page_number": 115,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_b38c6b9dc173acc9b3f0282543671e7213d42f5531d6ca928ac7287677c190da",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "paragraph",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Figure 6.1 from Pearl_2009_Causality-mono(1).",
+          "pdf shows recovery rates for treatment (C) and control (¬C) separately for males, females, and the combined group.",
+          "Table 3.2 from Pearl_Mackenzie_2018_The_Book_of_Why-mono(1)."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 28,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed table+figure evidence; both modalities are explicit, so page-level review is required",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "obvious_typo_or_informal_wording",
+          "multi_figure_or_table_comparison"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0029",
+      "question": "How do the causal Bayesian networks depicted in Figure 1.6(a), (b), and (c) of Pearl's 2009 monograph illustrate the relationship between statistical association and causal structure, and how does this visual representation align with Pearl's comprehensive theory of causality that unifies probabilistic, manipulative, counterfactual, and structural approaches? Additionally, how does the Bayesian network in Figure 1.2, which represents dependencies among five variables, serve as a practical example of the concepts discussed in the text, and what does the comparison between the unobserved variables U1 and U2 in Figure 1.6(b) and (c) reveal about the role of latent variables in causal inference?",
+      "reference_answer": "The causal Bayesian networks in Figure 1.6 illustrate the distinction between a purely probabilistic representation and causal structures. Figure 1.6(a) shows a Bayesian network with nodes X and Y but no edges, representing a distribution without causal assumptions. Figures 1.6(b) and (c) introduce unobserved variables U1 and U2 to explain the same distribution through different causal structures: in (b), X is connected to U1 and Y to U2 with no direct edge between X and Y, while in (c), an additional edge from U1 to Y is present. This demonstrates how multiple causal models can generate the same statistical distribution, highlighting the need for causal assumptions beyond probabilistic dependencies. Pearl's comprehensive theory of causality, as described in the text, unifies probabilistic, manipulative, counterfactual, and structural methods, providing mathematical tools to study the relationship between causal connections and statistical associations. The Bayesian network in Figure 1.2, with nodes SEASON (X1), RAIN (X2), SPRINKLER (X3), WET (X4), and SLIPPERY (X5), shows directed dependencies (X1→X2, X1→X3, X2→X4, X3→X4, X4→X5), serving as a concrete example of how such networks represent dependency structures among variables. The comparison between Figures 1.6(b) and (c) reveals that latent variables (U1 and U2) can be arranged differently to account for the same observed distribution, emphasizing that causal inference requires careful consideration of unobserved factors and their structural relationships.",
+      "expected_claims": [
+        "The causal Bayesian networks in Figure 1.6 illustrate the distinction between a purely probabilistic representation and causal structures.",
+        "Figure 1.6(a) shows a Bayesian network with nodes X and Y but no edges, representing a distribution without causal assumptions.",
+        "Figures 1.6(b) and (c) introduce unobserved variables U1 and U2 to explain the same distribution through different causal structures: in (b), X is connected to U1 and Y to U2 with no direct edge between X and Y, while in (c), an additional edge from U1 to Y is present."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_7df5d2a28788556b546d2bc97abb804430fe16a4862982db9517f6131a42fa52",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 57,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_7f1faf95c9d791f7957832a726334c7e58e33cbd9d990b33c7623d44f44d0863",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_971fe531bb66f5ee549663f2712fa6af65138c887535cb0127baa114a6a77af1",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 37,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The causal Bayesian networks in Figure 1.6 illustrate the distinction between a purely probabilistic representation and causal structures.",
+          "Figure 1.6(a) shows a Bayesian network with nodes X and Y but no edges, representing a distribution without causal assumptions.",
+          "Figures 1.6(b) and (c) introduce unobserved variables U1 and U2 to explain the same distribution through different causal structures: in (b), X is connected to U1 and Y to U2 with no direct edge between X and Y, while in (c), an additional edge from U1 to Y is present."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 29,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed evidence; question explicitly targets multiple figures",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_overly_compound",
+          "multi_figure_or_table_comparison"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0030",
+      "question": "Who is Sander Greenland and what is his connection to the monograph on causality?",
+      "reference_answer": "Sander Greenland is affiliated with the University of California, Los Angeles, School of Public Health. The context mentions him in relation to the monograph titled 'Pearl_2009_Causality-mono(1).pdf', which is a work on causality. However, the specific nature of his connection (e.g., author, contributor, or reviewer) is not detailed in the provided context.",
+      "expected_claims": [
+        "Sander Greenland is affiliated with the University of California, Los Angeles, School of Public Health.",
+        "The context mentions him in relation to the monograph titled 'Pearl_2009_Causality-mono(1).",
+        "pdf', which is a work on causality."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_e14db1a9e3095cad824c1b30f68854e7da6bddd6db8a1f10d670ed27869e3b21",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "list_item",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_6053dfa48dda0851a2e68c2668d940e8365e8e15c48030dca0fbcd0ee74a6fe7",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 58,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Sander Greenland is affiliated with the University of California, Los Angeles, School of Public Health.",
+          "The context mentions him in relation to the monograph titled 'Pearl_2009_Causality-mono(1).",
+          "pdf', which is a work on causality."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 30,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed text+table evidence; question asks a person/connection and does not target the table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0031",
+      "question": "wat is the role of DAG in Pearl's causality theory and how does table 8.1 relate to it?",
+      "reference_answer": "Pearl's causality theory unifies probabilistic, manipulative, counterfactual, and structural approaches, providing mathematical tools to study causal connections. A DAG (directed acyclic graph) is a graph with only unidirectional solid arrows, as shown in Figure 1.1(b), which shares the same skeleton as a graph with bidirectional edges. Table 8.1 presents a distribution resulting in an identifiable ACE (X S Y), showing probabilities for combinations of variables x, y, z. The DAG provides the structural framework for representing causal relationships, while the table provides empirical data that can be analyzed within that framework to draw causal conclusions.",
+      "expected_claims": [
+        "Pearl's causality theory unifies probabilistic, manipulative, counterfactual, and structural approaches, providing mathematical tools to study causal connections.",
+        "A DAG (directed acyclic graph) is a graph with only unidirectional solid arrows, as shown in Figure 1.1(b), which shares the same skeleton as a graph with bidirectional edges.",
+        "Table 8.1 presents a distribution resulting in an identifiable ACE (X S Y), showing probabilities for combinations of variables x, y, z."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_7f1faf95c9d791f7957832a726334c7e58e33cbd9d990b33c7623d44f44d0863",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_d82ff1f70cd957fad6163a6a6d038d9d9f8629c0a6deb12ad1096c3bf8d62891",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 300,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_a48a8a742c93194010d5a01548826ba387b12630b47ca4d1f513594f411d1800",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 35,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Pearl's causality theory unifies probabilistic, manipulative, counterfactual, and structural approaches, providing mathematical tools to study causal connections.",
+          "A DAG (directed acyclic graph) is a graph with only unidirectional solid arrows, as shown in Figure 1.1(b), which shares the same skeleton as a graph with bidirectional edges.",
+          "Table 8.1 presents a distribution resulting in an identifiable ACE (X S Y), showing probabilities for combinations of variables x, y, z."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 31,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed evidence; question explicitly asks how table 8.1 relates to DAG",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "obvious_typo_or_informal_wording"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0032",
+      "question": "How does Judea Pearl's comprehensive theory of causality, as presented in his work 'Causality', unify probabilistic, manipulative, counterfactual, and structural approaches, and what mathematical tools does he provide to study the relationship between causal connections and statistical associations, thereby making the work valuable for students and professionals across various fields?",
+      "reference_answer": "Judea Pearl's comprehensive theory of causality, as presented in his work 'Causality', unifies probabilistic, manipulative, counterfactual, and structural methods within the framework of causality. He provides simple mathematical tools to investigate the relationship between causal connections and statistical associations. This theory is valuable for students and professionals across fields such as statistics, artificial intelligence, business, epidemiology, social sciences, and economics, as it opens the way for incorporating causal analysis into standard curricula. The book offers natural models, simple reasoning procedures, and precise mathematical definitions of causal concepts that traditional texts often avoid or overly complicate. It is considered a must-read for anyone interested in causality, as it covers the latest advances in probabilistic and causal modeling, much of which was developed by Pearl and his colleagues.",
+      "expected_claims": [
+        "Judea Pearl's comprehensive theory of causality, as presented in his work 'Causality', unifies probabilistic, manipulative, counterfactual, and structural methods within the framework of causality.",
+        "He provides simple mathematical tools to investigate the relationship between causal connections and statistical associations.",
+        "This theory is valuable for students and professionals across fields such as statistics, artificial intelligence, business, epidemiology, social sciences, and economics, as it opens the way for incorporating causal analysis into standard curricula."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_df27cc76258f083e963443dca4dff0270f11ebf0c03f7c32267f6bc25c838b61",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_7f1faf95c9d791f7957832a726334c7e58e33cbd9d990b33c7623d44f44d0863",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_0fff144e037c16823856a0ceceda1ead6d730be856d3055564af1d5b6c2575e5",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Judea Pearl's comprehensive theory of causality, as presented in his work 'Causality', unifies probabilistic, manipulative, counterfactual, and structural methods within the framework of causality.",
+          "He provides simple mathematical tools to investigate the relationship between causal connections and statistical associations.",
+          "This theory is valuable for students and professionals across fields such as statistics, artificial intelligence, business, epidemiology, social sciences, and economics, as it opens the way for incorporating causal analysis into standard curricula."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_abstract_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 3,
+        "row_index": 32,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0033",
+      "question": "so like in the first picture we got U1 and U2 as hidden things right and then in the second picture there's also U1 and U2 but they connect to different stuff like U1 goes to Q and U2 goes to P so can you tell me how the U2 in the second picture is like the same as the U2 in the first picture or is it different and what does that mean for the causal stuff",
+      "reference_answer": "In the first picture (Figure 1.6), U2 is an unobserved variable connected to Y, with no direct connection to X. In the second picture, U2 is also an unobserved variable but it has an arrow pointing to P. The two U2s are conceptually similar in that they are both unobserved (latent) variables, but they are in different causal structures. In the first picture, U2 influences Y, while in the second picture, U2 influences P. This means that in the second picture, U2 is part of the causal mechanism affecting P, whereas in the first picture, U2 is part of the mechanism affecting Y. The presence of U2 in both graphs highlights that unobserved variables can play different roles in different causal models, and their connections determine the causal relationships among observed variables.",
+      "expected_claims": [
+        "In the first picture (Figure 1.6), U2 is an unobserved variable connected to Y, with no direct connection to X.",
+        "In the second picture, U2 is also an unobserved variable but it has an arrow pointing to P.",
+        "The two U2s are conceptually similar in that they are both unobserved (latent) variables, but they are in different causal structures."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_7df5d2a28788556b546d2bc97abb804430fe16a4862982db9517f6131a42fa52",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 57,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_cada2ede65b2a0e3ae73b62019fd467a89537e85f8e3d4841dbaa339a823afae",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 50,
+          "modality": "image",
+          "content_kind": "causal_graph",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "In the first picture (Figure 1.6), U2 is an unobserved variable connected to Y, with no direct connection to X.",
+          "In the second picture, U2 is also an unobserved variable but it has an arrow pointing to P.",
+          "The two U2s are conceptually similar in that they are both unobserved (latent) variables, but they are in different causal structures."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 33,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "ambiguous_reference",
+          "multi_figure_or_table_comparison"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0034",
+      "question": "Who is Brian Skyrms and what is his affiliation with the philosophy department?",
+      "reference_answer": "Brian Skyrms is affiliated with the philosophy department at the University of California, Irvine, as mentioned in the context from Pearl_2009_Causality-mono(1).pdf.",
+      "expected_claims": [
+        "Brian Skyrms is affiliated with the philosophy department at the University of California, Irvine, as mentioned in the context from Pearl_2009_Causality-mono(1)."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_b38c6b9dc173acc9b3f0282543671e7213d42f5531d6ca928ac7287677c190da",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "paragraph",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Brian Skyrms is affiliated with the philosophy department at the University of California, Irvine, as mentioned in the context from Pearl_2009_Causality-mono(1)."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 34,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0035",
+      "question": "哲学 因果 书 内容?",
+      "reference_answer": "根据上下文，这本书（《Causality》）对哲学领域的研究人员有价值，并展示了因果关系如何从模糊概念发展为具有显著应用价值的数学理论，在哲学等领域有重要应用。",
+      "expected_claims": [
+        "根据上下文，这本书（《Causality》）对哲学领域的研究人员有价值，并展示了因果关系如何从模糊概念发展为具有显著应用价值的数学理论，在哲学等领域有重要应用。"
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_98384e735314e461f8bd19098ee0e330d12ca963e7e7dc6d51cfe89c9ae65a79",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_6abffbd5a1f1c4bd31af2082357a9e240500b79a9c178191256b1b0c8974307c",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "根据上下文，这本书（《Causality》）对哲学领域的研究人员有价值，并展示了因果关系如何从模糊概念发展为具有显著应用价值的数学理论，在哲学等领域有重要应用。"
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 35,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_too_short_or_underspecified"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0036",
+      "question": "what the difference between the graph in 1-hop and the graph in 2-hop? how the arrow from a to b in 1-hop relate to the arrows in 2-hop?",
+      "reference_answer": "The 1-hop graph shows a simple two-node structure with nodes a and b connected by a solid edge, and a dashed arc with starred arrows pointing to both a and b, plus each node having a starred self-loop. The 2-hop graph shows four subgraphs (a), (b), (c), (d) with five nodes a, b, c, d, e, all sharing the same underlying undirected structure a-b-c-d-e but with different arrow directions. In the 1-hop graph, the solid edge between a and b gets a directed arrow from a to b in subgraph (b). In the 2-hop graph, subgraph (b) also has a directed arrow from a to b, and additionally from a to c. Subgraph (c) adds arrows from b to d and c to d, and from d to e. Subgraph (d) adds further arrows from b to e and c to e. So the arrow from a to b in the 1-hop graph is consistent with the arrow from a to b in subgraphs (b), (c), and (d) of the 2-hop graph, but the 2-hop graph extends the structure with more nodes and arrows.",
+      "expected_claims": [
+        "The 1-hop graph shows a simple two-node structure with nodes a and b connected by a solid edge, and a dashed arc with starred arrows pointing to both a and b, plus each node having a starred self-loop.",
+        "The 2-hop graph shows four subgraphs (a), (b), (c), (d) with five nodes a, b, c, d, e, all sharing the same underlying undirected structure a-b-c-d-e but with different arrow directions.",
+        "In the 1-hop graph, the solid edge between a and b gets a directed arrow from a to b in subgraph (b)."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_c407dca449a824fc34d2abed02ff49af27d604a8e3713bd3b1184d141853370b",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 75,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_d9eb0016f0e5ccf9ca7817e99beddec79d4a611fb970948ac23c3e8fa0894ab6",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 76,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The 1-hop graph shows a simple two-node structure with nodes a and b connected by a solid edge, and a dashed arc with starred arrows pointing to both a and b, plus each node having a starred self-loop.",
+          "The 2-hop graph shows four subgraphs (a), (b), (c), (d) with five nodes a, b, c, d, e, all sharing the same underlying undirected structure a-b-c-d-e but with different arrow directions.",
+          "In the 1-hop graph, the solid edge between a and b gets a directed arrow from a to b in subgraph (b)."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 36,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "ambiguous_reference"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0037",
+      "question": "Zhow can teh illustratons in figurs 1.1 and 2.5 from Pearl's book be used to explain teh role of Z in distinguishing between direct causal relationships and spurious associations, and how does teh presence of bidirectonal edges in fig 1.1(a) affect teh interpretation of Z's causal influence compared to teh DAG in fig 1.1(b)?",
+      "reference_answer": "In figure 1.1, both graphs (a) and (b) share the same skeleton with nodes W, Z, X, and Y, where W points to Z and X, and both Z and X point to Y. The key difference is that graph (a) includes a bidirectional edge between Z and X, while graph (b) is a directed acyclic graph (DAG) with only unidirectional arrows. This bidirectional edge in (a) suggests a potential feedback loop or unmeasured confounding between Z and X, which complicates the interpretation of Z's direct causal effect on Y. In contrast, the DAG in (b) allows for a clearer causal interpretation where Z directly influences Y through X.\n\nIn figure 2.5, the graphs illustrate how temporal information and conditional independence can be used to infer true causal relationships versus spurious associations. In graph (a), Z acts as a mediator between X and Y, with S pointing to Z, X, and Y, indicating that Z is a common cause of X and Y, and the relationship between X and Y is mediated through Z. In graph (b), W is introduced as a confounder, with S pointing to Z and W, and W pointing to both X and Y. Here, the association between X and Y may be spurious due to the common cause W, and Z's role is less direct. Thus, Z's causal influence on Y is only valid when confounding factors like W are controlled, as shown in the conditional independence patterns. The presence of bidirectional edges in figure 1.1(a) would similarly require careful consideration of unmeasured confounders, whereas the DAG in 1.1(b) provides a more straightforward causal structure for teaching model-based reasoning.",
+      "expected_claims": [
+        "In figure 1.1, both graphs (a) and (b) share the same skeleton with nodes W, Z, X, and Y, where W points to Z and X, and both Z and X point to Y.",
+        "The key difference is that graph (a) includes a bidirectional edge between Z and X, while graph (b) is a directed acyclic graph (DAG) with only unidirectional arrows.",
+        "This bidirectional edge in (a) suggests a potential feedback loop or unmeasured confounding between Z and X, which complicates the interpretation of Z's direct causal effect on Y."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_a48a8a742c93194010d5a01548826ba387b12630b47ca4d1f513594f411d1800",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 35,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_942099b010a7d4f1cbdf2f2aa8cd528e6880b8f8fef524cdc4360cfa74371d5c",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 78,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "In figure 1.1, both graphs (a) and (b) share the same skeleton with nodes W, Z, X, and Y, where W points to Z and X, and both Z and X point to Y.",
+          "The key difference is that graph (a) includes a bidirectional edge between Z and X, while graph (b) is a directed acyclic graph (DAG) with only unidirectional arrows.",
+          "This bidirectional edge in (a) suggests a potential feedback loop or unmeasured confounding between Z and X, which complicates the interpretation of Z's direct causal effect on Y."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 37,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: image",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "obvious_typo_or_informal_wording"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0038",
+      "question": "whats the diff between the survivals in the experimental and nonexperimental tables, and how does that relate to the high exposure deaths?",
+      "reference_answer": "In the experimental table (9.2), the survivals are 984 for the experimental group and 986 for the nonexperimental group, with deaths of 16 and 14 respectively. In the nonexperimental part of the same table, there are 2 deaths and 998 survivals for one condition, and 28 deaths and 972 survivals for the other. The first table (9.1) shows survivals of 69,130 for high exposure and 59,010 for low exposure, with deaths of 30 and 16 respectively. The high exposure deaths in the first table (30) are higher than the deaths in the experimental table (16), but the survivals in the first table are much larger overall, showing a different scale of data.",
+      "expected_claims": [
+        "In the experimental table (9.2), the survivals are 984 for the experimental group and 986 for the nonexperimental group, with deaths of 16 and 14 respectively.",
+        "In the nonexperimental part of the same table, there are 2 deaths and 998 survivals for one condition, and 28 deaths and 972 survivals for the other.",
+        "The first table (9.1) shows survivals of 69,130 for high exposure and 59,010 for low exposure, with deaths of 30 and 16 respectively."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_14ccb8bcfcc32e0cb71b9b17cdcd0933b21b616eb0de5b297c6822134a318266",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 321,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_17b73271e4a878d8e2df1e3922ab692a4eee7722674189b14bbdc33956ed1f1e",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 324,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "In the experimental table (9.2), the survivals are 984 for the experimental group and 986 for the nonexperimental group, with deaths of 16 and 14 respectively.",
+          "In the nonexperimental part of the same table, there are 2 deaths and 998 survivals for one condition, and 28 deaths and 972 survivals for the other.",
+          "The first table (9.1) shows survivals of 69,130 for high exposure and 59,010 for low exposure, with deaths of 30 and 16 respectively."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 38,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: table",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "obvious_typo_or_informal_wording"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0039",
+      "question": "who is Judea Pearl and where he work?",
+      "reference_answer": "Judea Pearl is a professor of computer science and statistics at the University of California, Los Angeles, where he leads the Cognitive Systems Laboratory and does research in artificial intelligence, human reasoning, and philosophy of science.",
+      "expected_claims": [
+        "Judea Pearl is a professor of computer science and statistics at the University of California, Los Angeles, where he leads the Cognitive Systems Laboratory and does research in artificial intelligence, human reasoning, and philosophy of science."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_985d06c742f2e27dbb245d4356b7f63c030449437e395df87ca84aa464769361",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Judea Pearl is a professor of computer science and statistics at the University of California, Los Angeles, where he leads the Cognitive Systems Laboratory and does research in artificial intelligence, human reasoning, and philosophy of science."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 39,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0040",
+      "question": "Wht is the role of causlity in structral equation systems and how does it relate to counterfactual reasoning and graphical models, as discused in Pearl's book, and who woud find this book valuable?",
+      "reference_answer": "In Pearl's book, causality plays a central role in clarifying structural equation systems, particularly in their causal interpretation. It also addresses concepts such as counterfactual reasoning and the general relationship between causal thinking and graphical models. The book is of interest to students and professionals from a wide range of fields, especially those who wish to clarify meaningful connections from data, predict the effects of actions and policies, evaluate explanations of reported events, or develop theories of causal understanding and causal language.",
+      "expected_claims": [
+        "In Pearl's book, causality plays a central role in clarifying structural equation systems, particularly in their causal interpretation.",
+        "It also addresses concepts such as counterfactual reasoning and the general relationship between causal thinking and graphical models.",
+        "The book is of interest to students and professionals from a wide range of fields, especially those who wish to clarify meaningful connections from data, predict the effects of actions and policies, evaluate explanations of reported events, or develop theories of causal understanding and causal language."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_dc6fb13b4cd50ea23b5a0e89eadc7b73f0b0328d3eab7318a7e4880b170d56ac",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_df27cc76258f083e963443dca4dff0270f11ebf0c03f7c32267f6bc25c838b61",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "In Pearl's book, causality plays a central role in clarifying structural equation systems, particularly in their causal interpretation.",
+          "It also addresses concepts such as counterfactual reasoning and the general relationship between causal thinking and graphical models.",
+          "The book is of interest to students and professionals from a wide range of fields, especially those who wish to clarify meaningful connections from data, predict the effects of actions and policies, evaluate explanations of reported events, or develop theories of causal understanding and causal language."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 40,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "obvious_typo_or_informal_wording"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0041",
+      "question": "According to the provided context, how does Judea Pearl's work in 'Causality' address the concept of causation, and what significance does it hold for the field of philosophy?",
+      "reference_answer": "The context indicates that Judea Pearl's book 'Causality' defends the primacy of the concept of causation, which has been long neglected in statistics and misunderstood in other disciplines, including philosophy. Pearl demystifies causation by clarifying its fundamental concepts through graphical models, thereby explaining the sources of many misunderstandings. This work is deemed invaluable for researchers in philosophy, as well as in artificial intelligence, statistics, economics, and epidemiology, and is predicted to be one of the most influential books of the next decade.",
+      "expected_claims": [
+        "The context indicates that Judea Pearl's book 'Causality' defends the primacy of the concept of causation, which has been long neglected in statistics and misunderstood in other disciplines, including philosophy.",
+        "Pearl demystifies causation by clarifying its fundamental concepts through graphical models, thereby explaining the sources of many misunderstandings.",
+        "This work is deemed invaluable for researchers in philosophy, as well as in artificial intelligence, statistics, economics, and epidemiology, and is predicted to be one of the most influential books of the next decade."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_98384e735314e461f8bd19098ee0e330d12ca963e7e7dc6d51cfe89c9ae65a79",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The context indicates that Judea Pearl's book 'Causality' defends the primacy of the concept of causation, which has been long neglected in statistics and misunderstood in other disciplines, including philosophy.",
+          "Pearl demystifies causation by clarifying its fundamental concepts through graphical models, thereby explaining the sources of many misunderstandings.",
+          "This work is deemed invaluable for researchers in philosophy, as well as in artificial intelligence, statistics, economics, and epidemiology, and is predicted to be one of the most influential books of the next decade."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 41,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "ambiguous_reference"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0042",
+      "question": "流行病学 因果推断 书籍",
+      "reference_answer": "根据提供的上下文，流行病学是Pearl的因果性理论应用的重要领域之一。该书为将因果分析纳入流行病学等领域的标准课程开辟了道路，并且对于流行病学领域的研究人员来说是无价的，因为它通过图形模型阐明了基本概念，并解释了误解的来源。",
+      "expected_claims": [
+        "根据提供的上下文，流行病学是Pearl的因果性理论应用的重要领域之一。",
+        "该书为将因果分析纳入流行病学等领域的标准课程开辟了道路，并且对于流行病学领域的研究人员来说是无价的，因为它通过图形模型阐明了基本概念，并解释了误解的来源。"
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_7f1faf95c9d791f7957832a726334c7e58e33cbd9d990b33c7623d44f44d0863",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_98384e735314e461f8bd19098ee0e330d12ca963e7e7dc6d51cfe89c9ae65a79",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 4,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "根据提供的上下文，流行病学是Pearl的因果性理论应用的重要领域之一。",
+          "该书为将因果分析纳入流行病学等领域的标准课程开辟了道路，并且对于流行病学领域的研究人员来说是无价的，因为它通过图形模型阐明了基本概念，并解释了误解的来源。"
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 42,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_too_short_or_underspecified"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0043",
+      "question": "what is the book about causlity by juda pearl and how does it help scietists?",
+      "reference_answer": "The book \"Causality: Models, Reasoning, and Inference\" by Judea Pearl, in its second edition, is about causality. It caused a paradigm shift in the treatment of causality in statistics, philosophy, computer science, social science, and economics. It helps scientists break free from traditional statistical thinking, as it has been cited in over 2800 scientific publications and continues to assist them in this way.",
+      "expected_claims": [
+        "The book \"Causality: Models, Reasoning, and Inference\" by Judea Pearl, in its second edition, is about causality.",
+        "It caused a paradigm shift in the treatment of causality in statistics, philosophy, computer science, social science, and economics.",
+        "It helps scientists break free from traditional statistical thinking, as it has been cited in over 2800 scientific publications and continues to assist them in this way."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_0bfaba6eb0514772e8e05cf3b5af77940b678f881bb50b787be93e267106409c",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_dc9337fc6f3fd16c3be9a0d2408cbf6b1413d98ee0e3e6cecaca162cb7911af3",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 5,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The book \"Causality: Models, Reasoning, and Inference\" by Judea Pearl, in its second edition, is about causality.",
+          "It caused a paradigm shift in the treatment of causality in statistics, philosophy, computer science, social science, and economics.",
+          "It helps scientists break free from traditional statistical thinking, as it has been cited in over 2800 scientific publications and continues to assist them in this way."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 43,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "obvious_typo_or_informal_wording"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0044",
+      "question": "what book about model reasoning and inference?",
+      "reference_answer": "The book is \"CAUSALITY: 模型、推理与推断 第二版\" by Judea Pearl from University of California, Los Angeles. It explains how causality became a mathematical theory with applications in statistics, AI, economics, philosophy, cognitive science, and health/social sciences.",
+      "expected_claims": [
+        "The book is \"CAUSALITY: 模型、推理与推断 第二版\" by Judea Pearl from University of California, Los Angeles.",
+        "It explains how causality became a mathematical theory with applications in statistics, AI, economics, philosophy, cognitive science, and health/social sciences."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_dc9337fc6f3fd16c3be9a0d2408cbf6b1413d98ee0e3e6cecaca162cb7911af3",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 5,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_6abffbd5a1f1c4bd31af2082357a9e240500b79a9c178191256b1b0c8974307c",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The book is \"CAUSALITY: 模型、推理与推断 第二版\" by Judea Pearl from University of California, Los Angeles.",
+          "It explains how causality became a mathematical theory with applications in statistics, AI, economics, philosophy, cognitive science, and health/social sciences."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 44,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0045",
+      "question": "z in table 8.1 and z in figure 1.1, what z doing?",
+      "reference_answer": "In table 8.1, z is a variable in the distribution P(x, y, z) that takes values 0 or 1, with probabilities like 0.275 when z=0, x=0, y=0. In figure 1.1, z is a node in both graphs (a) and (b), where W points to Z and X, and Z and X both point to Y. In graph (a), there is a dashed arrow from Z to X, but in graph (b), all arrows are one-way solid lines, making it a DAG.",
+      "expected_claims": [
+        "In table 8.1, z is a variable in the distribution P(x, y, z) that takes values 0 or 1, with probabilities like 0.275 when z=0, x=0, y=0.",
+        "In figure 1.1, z is a node in both graphs (a) and (b), where W points to Z and X, and Z and X both point to Y.",
+        "In graph (a), there is a dashed arrow from Z to X, but in graph (b), all arrows are one-way solid lines, making it a DAG."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_d82ff1f70cd957fad6163a6a6d038d9d9f8629c0a6deb12ad1096c3bf8d62891",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 300,
+          "modality": "table",
+          "content_kind": "table",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        },
+        {
+          "unit_id": "unit_a48a8a742c93194010d5a01548826ba387b12630b47ca4d1f513594f411d1800",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 35,
+          "modality": "image",
+          "content_kind": "illustration",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "In table 8.1, z is a variable in the distribution P(x, y, z) that takes values 0 or 1, with probabilities like 0.275 when z=0, x=0, y=0.",
+          "In figure 1.1, z is a node in both graphs (a) and (b), where W points to Z and X, and Z and X both point to Y.",
+          "In graph (a), there is a dashed arrow from Z to X, but in graph (b), all arrows are one-way solid lines, making it a DAG."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 2,
+        "row_index": 45,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "mixed table+figure evidence; both modalities are explicit, so page-level review is required",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "multi_figure_or_table_comparison"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0046",
+      "question": "What is the significance of Pearl's Causality in computer science?",
+      "reference_answer": "Pearl's Causality has caused a paradigm shift in the treatment of causality in computer science, among other fields, and has been cited in over 2800 scientific publications, helping scientists move beyond traditional statistical thinking.",
+      "expected_claims": [
+        "Pearl's Causality has caused a paradigm shift in the treatment of causality in computer science, among other fields, and has been cited in over 2800 scientific publications, helping scientists move beyond traditional statistical thinking."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_0bfaba6eb0514772e8e05cf3b5af77940b678f881bb50b787be93e267106409c",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "Pearl's Causality has caused a paradigm shift in the treatment of causality in computer science, among other fields, and has been cited in over 2800 scientific publications, helping scientists move beyond traditional statistical thinking."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 46,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": []
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0047",
+      "question": "Based on the provided context, who is the author of the work titled 'CAUSALITY' and what is the subtitle of this work, which is described as a second edition? Additionally, what is the author's affiliation as indicated in the context, and how does this information relate to the theme of '犹大 · 珀尔' in the context of model-based reasoning and inference?",
+      "reference_answer": "The author of the work titled 'CAUSALITY' is 犹大 · 珀尔 (Judea Pearl), as indicated in the context. The subtitle of this work is '模型、推理与推断' (Models, Reasoning, and Inference), and it is specified as the second edition. The author is affiliated with the University of California, Los Angeles. The theme '犹大 · 珀尔' directly refers to the author, who is a prominent figure in the field of causality, and the context highlights his work on models, reasoning, and inference, which aligns with the educator's focus on logic and model-based reasoning.",
+      "expected_claims": [
+        "The author of the work titled 'CAUSALITY' is 犹大 · 珀尔 (Judea Pearl), as indicated in the context.",
+        "The subtitle of this work is '模型、推理与推断' (Models, Reasoning, and Inference), and it is specified as the second edition.",
+        "The author is affiliated with the University of California, Los Angeles."
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_dc9337fc6f3fd16c3be9a0d2408cbf6b1413d98ee0e3e6cecaca162cb7911af3",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 5,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "The author of the work titled 'CAUSALITY' is 犹大 · 珀尔 (Judea Pearl), as indicated in the context.",
+          "The subtitle of this work is '模型、推理与推断' (Models, Reasoning, and Inference), and it is specified as the second edition.",
+          "The author is affiliated with the University of California, Los Angeles."
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 47,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "ambiguous_reference"
+        ]
+      }
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0048",
+      "question": "朱迪思 · 珀尔是哪个领域的教授？",
+      "reference_answer": "朱迪思 · 珀尔是加利福尼亚大学洛杉矶分校的计算机科学和统计学教授。",
+      "expected_claims": [
+        "朱迪思 · 珀尔是加利福尼亚大学洛杉矶分校的计算机科学和统计学教授。"
+      ],
+      "gold_evidence": [
+        {
+          "unit_id": "unit_985d06c742f2e27dbb245d4356b7f63c030449437e395df87ca84aa464769361",
+          "document_id": "doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d",
+          "page_number": 3,
+          "modality": "text",
+          "content_kind": "text",
+          "bound_index_version": "mm_f956e532ed6d49ae1f0e"
+        }
+      ],
+      "judge_rubric": {
+        "must_cover": [
+          "朱迪思 · 珀尔是加利福尼亚大学洛杉矶分校的计算机科学和统计学教授。"
+        ],
+        "avoid": [
+          "脱离证据编造因果结论",
+          "把相关性直接等同于因果关系",
+          "忽略题目中的限制条件或识别假设"
+        ]
+      },
+      "source": {
+        "generator": "ragas_0.4.3_generate_with_chunks",
+        "review_status": "needs_revision",
+        "synthesizer_name": "multi_hop_specific_query_synthesizer",
+        "source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "context_count": 1,
+        "row_index": 48,
+        "reviewer": "user-approved-20260807",
+        "review_authorization": "user-approved-20260807",
+        "review_authorized_at": "2026-08-07",
+        "expected_modality_basis": "all evidence locators use one modality: text",
+        "rebound_from_source_snapshot": {
+          "index_version": "mm_f956e532ed6d49ae1f0e",
+          "manifest_sha256": "c71196de5022f566311235d8455b075f0621167698b119336e063cc42b6a07a6",
+          "units_sha256": "5096d74d7a09ddd25749ed292e3b06f82ad8a2e74618e04e1db5fea1e5bf114d",
+          "build_state_sha256": "49591c678c898dc8f3f52ebcc873e46dbb6a0fa42961077b7d839bd1a1998c8c",
+          "unit_count": 5281,
+          "vector_count": 5281,
+          "manifest_schema_version": 4
+        },
+        "rebind_status": "requires_reapproval",
+        "review_flags": [
+          "question_too_short_or_underspecified"
+        ]
+      }
+    }
+  ],
+  "rebind": {
+    "target_index_version": "mm_f956e532ed6d49ae1f0e",
+    "status": "requires_reapproval",
+    "sample_count": 48
+  }
+}
