@@ -18,7 +18,15 @@ LEGACY_RAW_SCORE_SCALE = BM25_K1 + 1.0
 
 
 def candidate_identity(page_content: str, metadata: Mapping[str, Any]) -> str:
-    """Create a source-neutral identity without modifying source metadata."""
+    """创建供 dense 与 sparse 检索路径共享的稳定身份。
+
+    staged 多模态单元会在 Chroma metadata 和规范化 dense metadata 中携带稳定
+    的 ``unit_id``（或旧版 ``chunk_id``）。优先使用该标识，避免 dense 独有的
+    增强字段导致混合合并后同一单元出现两次；旧调用方则继续使用哈希回退。
+    """
+    stable_key = metadata.get("unit_id") or metadata.get("chunk_id")
+    if isinstance(stable_key, str) and stable_key:
+        return f"unit:{stable_key}"
     payload = json.dumps(
         {"content": page_content, "metadata": dict(metadata)},
         ensure_ascii=False,

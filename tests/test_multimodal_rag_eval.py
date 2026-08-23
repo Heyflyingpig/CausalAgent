@@ -84,6 +84,66 @@ class GenericRagEvalTests(unittest.TestCase):
         })
         self.assertEqual(result["score_summary"], {"faithfulness": 1.0})
 
+    def test_ragas_answer_relevancy_uses_explicit_embedding(self):
+        observed = {}
+        sentinel_embedding = object()
+
+        class FakeDataset:
+            @classmethod
+            def from_list(cls, rows):
+                return rows
+
+        class FakeMetric:
+            name = "answer_relevancy"
+
+        class FakeResult:
+            def to_pandas(self):
+                class FakeDataFrame:
+                    def notnull(self):
+                        return self
+
+                    def where(self, *_args, **_kwargs):
+                        return self
+
+                    def to_dict(self, _orient):
+                        return [{"answer_relevancy": 1.0}]
+
+                return FakeDataFrame()
+
+        def wrap_embedding(value):
+            observed["embedding"] = value
+            return value
+
+        components = {
+            "EvaluationDataset": FakeDataset,
+            "LangchainLLMWrapper": lambda value: value,
+            "LangchainEmbeddingsWrapper": wrap_embedding,
+            "RunConfig": lambda **kwargs: kwargs,
+            "evaluate": lambda *_args, **_kwargs: FakeResult(),
+            "metrics": [FakeMetric()],
+            "ragas": object(),
+        }
+        with patch.object(ragas_eval, "_load_legacy_ragas_components", return_value=components), patch.object(
+            ragas_eval, "_get_embedding_function", side_effect=AssertionError("should not use global embedding")
+        ):
+            result = ragas_eval.run_ragas_baseline(
+                {
+                    "ragas_rows": [
+                        {
+                            "user_input": "闂",
+                            "response": "鍥炵瓟",
+                            "retrieved_contexts": ["璇佹嵁"],
+                        }
+                    ]
+                },
+                metric_names=["answer_relevancy"],
+                max_retries=0,
+                embedding_function=sentinel_embedding,
+            )
+
+        self.assertIs(observed["embedding"], sentinel_embedding)
+        self.assertEqual(result["score_summary"], {"answer_relevancy": 1.0})
+
     def test_dataset_uses_generic_contract_without_source_adaptation(self):
         payload = {
             "schema_version": "rag_eval_v1",
@@ -132,6 +192,19 @@ class GenericRagEvalTests(unittest.TestCase):
             rag_eval.locator_matches(
                 metadata,
                 {"unit_id": "source-format-id", "page_number": 4},
+            )
+        )
+
+    def test_locator_match_excludes_index_binding_only_field(self):
+        metadata = {"unit_id": "unit-7", "document_id": "doc-1", "page_number": 3}
+
+        self.assertTrue(
+            rag_eval.locator_matches(
+                metadata,
+                {
+                    **metadata,
+                    "bound_index_version": "mm_immutable",
+                },
             )
         )
 

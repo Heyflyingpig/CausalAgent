@@ -46,8 +46,10 @@ class RagQuestionBundle(BaseModel):
     )
 
 
-def normalize_rag_question_output(bundle: RagQuestionBundle, max_questions: int) -> List[Dict]:
-    """把已校验的 Schema 实例转换为 RAG 工具输入。"""
+def normalize_rag_question_output(bundle: RagQuestionBundle | Dict[str, object], max_questions: int) -> List[Dict]:
+    """把结构化 Schema 实例或兼容的 dict 转换为 RAG 工具输入。"""
+    if isinstance(bundle, dict):
+        bundle = RagQuestionBundle.model_validate(bundle)
     questions = [question.model_dump() for question in bundle.questions[:max_questions]]
     if not questions:
         raise ValueError("RAG question output must contain at least one question.")

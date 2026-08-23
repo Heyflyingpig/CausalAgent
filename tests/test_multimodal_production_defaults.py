@@ -33,11 +33,23 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
                 "normalized": True,
             },
         )
-        self.assertFalse(config["vision"]["remote_enabled"])
+        self.assertTrue(config["vision"]["remote_enabled"])
         self.assertEqual(config["parser"], "docling")
         self.assertEqual(
             config["pdf_parser"],
-            {"page_range_mode": "single_page", "process_isolation": "spawn_per_page", "page_timeout_seconds": 900},
+            {
+                "page_range_mode": "single_page",
+                "process_isolation": "spawn_per_batch",
+                "batch_size": 8,
+                "page_timeout_seconds": 900,
+                "do_ocr": False,
+                "do_table_structure": False,
+                "generate_picture_images": False,
+                "generate_page_images": False,
+                "layout_batch_size": 1,
+                "table_batch_size": 1,
+                "ocr_batch_size": 1,
+            },
         )
         self.assertEqual(len(config["sources"]), 2)
         self.assertTrue(all(source["required"] for source in config["sources"]))
@@ -188,6 +200,7 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             version_dir = Path(directory)
             (version_dir / "units.jsonl").write_text(json.dumps(unit) + "\n", encoding="utf-8")
+            (version_dir / "manifest.json").write_text(json.dumps({"documents": []}), encoding="utf-8")
             with (
                 patch("Agent.knowledge_base.multimodal.production.Chroma", return_value=DenseOnlyMiss()),
                 patch("Agent.knowledge_base.multimodal.production._embeddings", return_value=object()),

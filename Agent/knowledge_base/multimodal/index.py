@@ -89,7 +89,11 @@ class StagedIndex:
 
     def count(self) -> int:
         """读取版本 collection 中的向量数量。"""
-        db = Chroma(persist_directory=str(self.version_dir / self.directory_name), collection_name=self.collection_name)
+        db = Chroma(
+            persist_directory=str(self.version_dir / self.directory_name),
+            collection_name=self.collection_name,
+            create_collection_if_not_exists=False,
+        )
         try:
             return db._collection.count()
         finally:
@@ -97,7 +101,7 @@ class StagedIndex:
 
     @staticmethod
     def _close(db: Any) -> None:
-        """Release the PersistentClient before Windows renames its directory."""
+        """在 Windows 重命名索引目录前释放 PersistentClient，避免文件占用。"""
         client = getattr(db, "_client", None)
         close = getattr(client, "close", None)
         if callable(close):

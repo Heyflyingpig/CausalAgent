@@ -1,20 +1,28 @@
+"""因果分析图的共享状态定义。
+
+本文件只描述节点之间传递的数据结构，不负责状态创建、持久化或业务处理。
+"""
+
 from operator import add
-from typing import Annotated, Any, Dict, List, Literal, NotRequired, Optional, TypedDict
+from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
+
+from typing_extensions import NotRequired
 
 from langchain_core.messages import BaseMessage
 
 
 class CausalAgentState(TypedDict):
     """
-    Represents the state of our graph. This TypedDict acts as the "memory"
-    or "state" that is passed between all the nodes in the graph.
+    表示因果分析图在各节点之间传递的共享状态。
+
+    这个 TypedDict 既是图的运行时状态，也是节点之间传递的上下文记忆。
 
     Attributes:
-        messages: The history of messages in the conversation.
-        user_id: The ID of the current user.
-        username: The name of the current user.
-        session_id: The ID of the current chat session.
-        tool_call_request: Whether downstream nodes should continue the tool flow.
+        messages: 对话消息历史。
+        user_id: 当前用户 ID。
+        username: 当前用户名。
+        session_id: 当前聊天会话 ID。
+        tool_call_request: 下游节点是否继续工具调用流程。
         analysis_parameters: 数据摘要及分析参数。
         file_content: 数据源文件内容字符串。
         causal_analysis_result: 因果分析任务结果。

@@ -1,6 +1,8 @@
 import dataclasses
 import logging
 import sys
+import threading
+import time
 import types
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -39,6 +41,45 @@ def _runtime_config(**embedding_overrides):
 
 
 class RagRuntimeLifecycleTests(unittest.TestCase):
+    def test_concurrent_runtime_creation_serializes_local_embedding_initialization(self):
+        active = 0
+        max_active = 0
+        counter_lock = threading.Lock()
+
+        def create_embedding(_config):
+            nonlocal active, max_active
+            with counter_lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with counter_lock:
+                active -= 1
+            return object()
+
+        with patch("Agent.knowledge_base.rag_runtime._validate_vector_db_directory"), patch(
+            "Agent.knowledge_base.rag_runtime._validate_embedding_config"
+        ), patch(
+            "Agent.knowledge_base.rag_runtime._create_embedding_function",
+            side_effect=create_embedding,
+        ), patch(
+            "Agent.knowledge_base.rag_runtime._open_existing_vector_db",
+            return_value=object(),
+        ), patch(
+            "Agent.knowledge_base.rag_runtime._count_chunks",
+            return_value=1,
+        ), patch(
+            "Agent.knowledge_base.rag_runtime.Bm25sSparseRetriever.from_vector_db",
+            return_value=object(),
+        ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                runtimes = list(executor.map(
+                    lambda _index: create_rag_runtime(_runtime_config(), answer_llm="llm"),
+                    range(2),
+                ))
+
+        self.assertEqual(len(runtimes), 2)
+        self.assertEqual(max_active, 1)
+
     def test_config_is_frozen_and_strips_secret_values(self):
         config = _runtime_config(api_key="must-not-survive")
 

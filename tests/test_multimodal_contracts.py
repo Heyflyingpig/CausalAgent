@@ -8,6 +8,7 @@ import os
 import json
 import io
 import base64
+import sqlite3
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -26,9 +27,14 @@ from Agent.knowledge_base.multimodal.parsers import ParsedDocument, ParsedItem, 
 from Agent.knowledge_base.multimodal.retrieval import _parent_context
 from Agent.knowledge_base.multimodal.retrieval import multimodal_rag_search
 from Agent.knowledge_base.rag_runtime import RagRuntimeConfig
-from Agent.knowledge_base.multimodal.vision import PROMPT_VERSION, REQUIRED_MODEL, VisionAnalyzer
+from Agent.knowledge_base.multimodal.vision import PROMPT_VERSION, REQUIRED_MODEL, RESPONSE_ADAPTER_VERSION, VisionAnalyzer
+from Agent.knowledge_base.query_rag import _merge_candidates
+from Agent.knowledge_base.sparse_retriever import candidate_identity
 from Agent.tool_node.rag_questions import normalize_rag_question_output
 from Agent.tool_node.rag_tool_registry import build_rag_tools
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _vision_payload(**overrides: object) -> str:
@@ -48,10 +54,27 @@ def _png_bytes(color: str = "white", size: tuple[int, int] = (8, 8)) -> bytes:
 def _outbound_record(analyzer: VisionAnalyzer, payload: bytes, context: str = "", image_index: int = 1, *, source_relative_path: str = "source.pdf", source_sha256: str = "a" * 64, document_id: str = "doc_" + "b" * 64, page_number: int = 1) -> OutboundImageRecord:
     """按 adapter 的归一化结果生成 fake outbound 记录。"""
     prepared = analyzer.prepare_image(payload)
-    return OutboundImageRecord(source_relative_path=source_relative_path, source_sha256=source_sha256, document_id=document_id, page_number=page_number, image_index=image_index, original_sha256=prepared.original_sha256, normalized_sha256=prepared.normalized_sha256, media_type=prepared.media_type, width=prepared.width, height=prepared.height, original_bytes=prepared.original_bytes, normalized_bytes=len(prepared.payload), transformation=prepared.transformation, context_sha256=sha256_bytes(context[:2000].encode("utf-8")), provider="wcode", model=analyzer.model, prompt_version=PROMPT_VERSION, remote_policy_sha256=analyzer.remote_policy_sha256)
+    return OutboundImageRecord(source_relative_path=source_relative_path, source_sha256=source_sha256, document_id=document_id, page_number=page_number, image_index=image_index, original_sha256=prepared.original_sha256, normalized_sha256=prepared.normalized_sha256, media_type=prepared.media_type, width=prepared.width, height=prepared.height, original_bytes=prepared.original_bytes, normalized_bytes=len(prepared.payload), transformation=prepared.transformation, context_sha256=sha256_bytes(context[:2000].encode("utf-8")), provider="wcode", model=analyzer.model, prompt_version=PROMPT_VERSION, response_adapter_version=RESPONSE_ADAPTER_VERSION, remote_policy_sha256=analyzer.remote_policy_sha256)
 
 
 class MultimodalContractTests(unittest.TestCase):
+    def test_candidate_identity_prefers_stable_unit_id_across_metadata_enrichment(self) -> None:
+        """Dense metadata 增强不能在混合合并时重复 Chroma 单元。"""
+        content = "unit content"
+        sparse_metadata = {"unit_id": "unit_123", "page_number": 3}
+        dense_metadata = {**sparse_metadata, "source": "source.pdf", "chunk_index": 7}
+        self.assertEqual(candidate_identity(content, sparse_metadata), candidate_identity(content, dense_metadata))
+        self.assertEqual(candidate_identity(content, sparse_metadata), "unit:unit_123")
+
+    def test_hybrid_rerank_rewards_candidates_seen_by_both_retrievers(self) -> None:
+        """混合证据在没有 gold 知识时也能获得共享检索器加分。"""
+        metadata = {"unit_id": "unit_123", "modality": "text"}
+        dense = {"page_content": "unit content", "metadata": metadata, "candidate_key": "unit:unit_123", "dense_score_norm": 0.8, "dense_score": 0.8, "sparse_score_norm": 0.0, "sparse_score": 0.0, "retrieval_sources": {"dense"}}
+        sparse = {"page_content": "unit content", "metadata": metadata, "candidate_key": "unit:unit_123", "dense_score_norm": 0.0, "dense_score": 0.0, "sparse_score_norm": 0.4, "sparse_score": 0.4, "retrieval_sources": {"sparse"}}
+        merged = _merge_candidates([dense], [sparse], return_before_final=True)
+        self.assertEqual(len(merged), 1)
+        self.assertAlmostEqual(merged[0]["rerank_score"], 0.65 * 0.8 + 0.25 * 0.4 + 0.2)
+
     """验证不依赖解析器、模型或远程 API 的核心安全契约。"""
 
     def test_bbox_rejects_reverse_coordinates(self) -> None:
@@ -88,7 +111,7 @@ class MultimodalContractTests(unittest.TestCase):
     @patch("Agent.knowledge_base.multimodal.index._embeddings")
     @patch("Agent.knowledge_base.multimodal.index.Chroma")
     def test_staged_index_closes_client_after_write(self, chroma: MagicMock, _embeddings: MagicMock) -> None:
-        """Persistent writes release the SQLite client before a staged directory move."""
+        """持久化写入在移动 staged 目录前释放 SQLite 客户端。"""
         db = MagicMock()
         db._collection.count.return_value = 1
         chroma.return_value = db
@@ -152,7 +175,8 @@ class MultimodalContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "sample.pdf"
             pdf = canvas.Canvas(str(source)); pdf.drawString(72, 720, "Causal inference sample document"); pdf.save()
-            parsed = parse_document(source, "mineru")
+            with patch.dict(os.environ, {"MULTIMODAL_DOCLING_ARTIFACTS_DIR": str(REPOSITORY_ROOT / "Agent" / "knowledge_base" / "models" / "docling"), "MULTIMODAL_DOCLING_BATCH_SIZE": "1"}):
+                parsed = parse_document(source, "mineru")
             self.assertEqual(parsed.parser_name, "docling")
             self.assertTrue(parsed.items, parsed.issues)
             self.assertTrue(any("Causal inference" in item.raw_text for item in parsed.items))
@@ -165,7 +189,8 @@ class MultimodalContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "sample.pdf"
             pdf = canvas.Canvas(str(source)); pdf.drawString(72, 720, "Causal inference"); pdf.showPage(); pdf.showPage(); pdf.save()
-            parsed = parse_document(source, "docling")
+            with patch.dict(os.environ, {"MULTIMODAL_DOCLING_ARTIFACTS_DIR": str(REPOSITORY_ROOT / "Agent" / "knowledge_base" / "models" / "docling"), "MULTIMODAL_DOCLING_BATCH_SIZE": "1"}):
+                parsed = parse_document(source, "docling")
             self.assertTrue(parsed.items)
             self.assertFalse(any(issue.severity is IssueSeverity.ERROR for issue in parsed.issues))
             self.assertTrue(any(issue.code == "pdf_page_empty" for issue in parsed.issues))
@@ -263,7 +288,10 @@ class MultimodalContractTests(unittest.TestCase):
         service = MultimodalKnowledgeBaseMaintenance()
         pearl = Path(__file__).resolve().parents[1] / "Agent" / "knowledge_base" / "source" / "Pearl_2009_Causality-mono(1).pdf"
         self.assertTrue(service._remote_resource_allowed(pearl, 1))
-        self.assertFalse(service._remote_resource_allowed(pearl, 7))
+        self.assertTrue(service._remote_resource_allowed(pearl, 7))
+        self.assertTrue(service._remote_resource_allowed(pearl, 487))
+        self.assertFalse(service._remote_resource_allowed(pearl, 0))
+        self.assertFalse(service._remote_resource_allowed(pearl, 488))
 
     def test_omnidocbench_audit_rejects_attribute_drift(self) -> None:
         """固定子集的公开标注属性漂移必须阻止 benchmark 被误用。"""
@@ -380,6 +408,30 @@ class MultimodalContractTests(unittest.TestCase):
             self.assertEqual(audit["status"], "success_schema_repair")
             self.assertEqual(audit["retry_count"], 1)
             self.assertIsInstance(audit["latency_ms"], int)
+
+    def test_vision_normalizes_text_lists_but_rejects_non_text_formula_values(self) -> None:
+        """字符串列表应无损拼接；任意对象不能直接转成字符串。"""
+        parsed = VisionAnalyzer._parse_analysis(_vision_payload(formula_latex=["x", "y"]))
+        self.assertEqual(parsed.formula_latex, "x\ny")
+        with self.assertRaisesRegex(ValueError, "invalid_schema"):
+            VisionAnalyzer._parse_analysis(_vision_payload(formula_latex={"value": "x"}))
+
+    def test_vision_schema_failure_records_only_sanitized_validation_paths(self) -> None:
+        """Schema 失败应暴露字段/类型路径用于诊断，不能暴露响应正文。"""
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"VISION_API_KEY": "key", "VISION_BASE_URL": "https://api.wcode.net/v1", "VISION_MODEL": REQUIRED_MODEL}):
+            image = _png_bytes()
+            broken = MagicMock(); broken.choices = [MagicMock(message=MagicMock(content=_vision_payload(confidence="not-a-number")))]
+            repair = MagicMock(); repair.choices = [MagicMock(message=MagicMock(content=_vision_payload(confidence="not-a-number")))]
+            client = MagicMock(); client.chat.completions.create.side_effect = [broken, repair]
+            analyzer = VisionAnalyzer(Path(directory), allow_remote_data=True, max_images=1)
+            with patch("Agent.knowledge_base.multimodal.vision.OpenAI", return_value=client):
+                with self.assertRaisesRegex(RuntimeError, "without persisting"):
+                    analyzer.analyze(image, "image/png", outbound_record=_outbound_record(analyzer, image))
+            failure = next(Path(directory).glob("*.failure.json"))
+            payload = json.loads(failure.read_text(encoding="utf-8"))
+            self.assertEqual(payload["failure_category"], "invalid_schema")
+            self.assertIn("confidence:float_parsing", payload["validation_error_paths"])
+            self.assertNotIn("not-a-number", failure.read_text(encoding="utf-8"))
 
     def test_vision_retries_429_with_jitter_and_redacts_failure(self) -> None:
         """429 必须抖动退避；最终失败审计不得包含异常正文或密钥。"""
@@ -806,7 +858,7 @@ class MultimodalContractTests(unittest.TestCase):
             embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
             store = AssetStore(root / "assets")
             preparer = VisionAnalyzer(root / "cache", allow_remote_data=False)
-            analyzer = MagicMock(); analyzer.model = REQUIRED_MODEL; analyzer.remote_policy_sha256 = preparer.remote_policy_sha256
+            analyzer = MagicMock(); analyzer.model = REQUIRED_MODEL; analyzer.response_adapter_version = RESPONSE_ADAPTER_VERSION; analyzer.remote_policy_sha256 = preparer.remote_policy_sha256
             analyzer.analyze.return_value = VisionAnalysis(content_kind="illustration", ocr_text="远程 OCR 文本", visible_facts=[], summary="", entities=[], table_markdown="", formula_latex="", directed_relations=[], uncertain_relations=[], informative=False, confidence=0.3)
             quality = {"eligible_images": 0, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 0, "low_value_images_skipped": 0, "filtered_short_text_units": 0}
             issues: list = []
@@ -833,7 +885,7 @@ class MultimodalContractTests(unittest.TestCase):
             embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
             store = AssetStore(root / "assets")
             preparer = VisionAnalyzer(root / "cache", allow_remote_data=False)
-            analyzer = MagicMock(); analyzer.model = REQUIRED_MODEL; analyzer.remote_policy_sha256 = preparer.remote_policy_sha256
+            analyzer = MagicMock(); analyzer.model = REQUIRED_MODEL; analyzer.response_adapter_version = RESPONSE_ADAPTER_VERSION; analyzer.remote_policy_sha256 = preparer.remote_policy_sha256
             analyzer.analyze.side_effect = RuntimeError("timeout")
             quality = {"eligible_images": 0, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 0, "low_value_images_skipped": 0, "filtered_short_text_units": 0}
             issues: list = []
@@ -881,7 +933,7 @@ class MultimodalContractTests(unittest.TestCase):
             record = _outbound_record(analyzer, image)
             path = root / "outbound_manifest.json"
             MultimodalKnowledgeBaseMaintenance._write_outbound_manifest(path, [record])
-            manifest = {"sources": [{"relative_path": "source.pdf", "content_hash": "a" * 64}], "build_configuration": {"remote_policy_hash": analyzer.remote_policy_sha256}, "outbound_manifest_sha256": sha256_bytes(path.read_bytes()), "outbound_image_count": 1}
+            manifest = {"sources": [{"relative_path": "source.pdf", "content_hash": "a" * 64}], "build_configuration": {"remote_policy_hash": analyzer.remote_policy_sha256, "vision": {"response_adapter_version": RESPONSE_ADAPTER_VERSION}}, "outbound_manifest_sha256": sha256_bytes(path.read_bytes()), "outbound_image_count": 1}
             self.assertEqual(MultimodalKnowledgeBaseMaintenance._audit_outbound_manifest(root, manifest), [])
             path.write_text("{}", encoding="utf-8")
             self.assertEqual(MultimodalKnowledgeBaseMaintenance._audit_outbound_manifest(root, manifest), ["outbound_manifest_mismatch"])
@@ -951,7 +1003,7 @@ class MultimodalContractTests(unittest.TestCase):
             root = Path(directory); image = _png_bytes(); source = root / "page.png"; source.write_bytes(image)
             service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
             embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
-            analyzer = MagicMock(); analyzer.model = REQUIRED_MODEL; analyzer.remote_policy_sha256 = service.remote_policy.policy_sha256
+            analyzer = MagicMock(); analyzer.model = REQUIRED_MODEL; analyzer.response_adapter_version = RESPONSE_ADAPTER_VERSION; analyzer.remote_policy_sha256 = service.remote_policy.policy_sha256
             quality = {"eligible_images": 0, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 0, "low_value_images_skipped": 0, "filtered_short_text_units": 0}
             issues: list = []
             item = ParsedItem(modality="image", content_kind="image", raw_text="caption", asset_bytes=image, asset_name="page.png", page_number=1)
@@ -987,7 +1039,15 @@ class MultimodalContractTests(unittest.TestCase):
             parsed = ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="causal inference content", page_number=1),), raw_artifacts=(("docling_page_0001.json", b"{}"),))
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed), patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
                 ocr_only = service.ingest([str(source)])
-            self.assertTrue((root / "indexes" / ocr_only["index_version"] / "local_parse_checkpoints").is_dir())
+            checkpoint_database = root / "indexes" / ocr_only["index_version"] / "checkpoints.sqlite3"
+            self.assertTrue(checkpoint_database.is_file())
+            connection = sqlite3.connect(checkpoint_database)
+            try:
+                rows = connection.execute("SELECT checkpoint_json FROM local_parse_checkpoints").fetchall()
+            finally:
+                connection.close()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(json.loads(rows[0][0])["schema_version"], "local-parse-v2")
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page") as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
                 vlm_version = service.ingest([str(source)], allow_remote_data=True, max_images=1, reuse_local_from_index_version=ocr_only["index_version"])
             parse_page.assert_not_called()
@@ -1011,8 +1071,14 @@ class MultimodalContractTests(unittest.TestCase):
             parsed = ParsedDocument("docling", "2.115.0", (ParsedItem("image", "image", raw_text="OCR text", asset_bytes=b"image-bytes", asset_name="page.png", page_number=1),), raw_artifacts=(("docling_page_0001.json", b"{}"),))
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed), patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
                 ocr_only = service.ingest([str(source)])
-            checkpoint_path = next((root / "indexes" / ocr_only["index_version"] / "local_parse_checkpoints").rglob("*.json"))
-            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            checkpoint_database = root / "indexes" / ocr_only["index_version"] / "checkpoints.sqlite3"
+            connection = sqlite3.connect(checkpoint_database)
+            try:
+                row = connection.execute("SELECT checkpoint_json FROM local_parse_checkpoints").fetchone()
+            finally:
+                connection.close()
+            self.assertIsNotNone(row)
+            checkpoint = json.loads(row[0])
             source_asset = root / "assets" / checkpoint["items"][0]["asset_uri"]
             source_asset.unlink()
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed) as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):

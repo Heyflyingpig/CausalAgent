@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,7 @@ SAFE_EMBEDDING_CONFIG_KEYS = {
     "missing",
     "message",
 }
+_LOCAL_EMBEDDING_INIT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -195,6 +197,14 @@ def _create_embedding_function(config: RagRuntimeConfig) -> Any:
     )
 
 
+def _create_embedding_function_thread_safe(config: RagRuntimeConfig) -> Any:
+    """串行化进程内本地模型构造，规避 Transformers/PyTorch 首次加载竞态。"""
+    if config.embedding_config.get("mode") != "local":
+        return _create_embedding_function(config)
+    with _LOCAL_EMBEDDING_INIT_LOCK:
+        return _create_embedding_function(config)
+
+
 def _open_existing_vector_db(config: RagRuntimeConfig, embedding: Any) -> Any:
     """仅打开已存在的 Chroma collection，禁止缺失时自动创建。"""
     import chromadb
@@ -224,7 +234,7 @@ def create_rag_runtime(config: RagRuntimeConfig, answer_llm: Any) -> RagRuntime:
     stages = (
         ("vector_db_directory", lambda: _validate_vector_db_directory(config)),
         ("embedding_config", lambda: _validate_embedding_config(config)),
-        ("embedding_instance", lambda: _create_embedding_function(config)),
+        ("embedding_instance", lambda: _create_embedding_function_thread_safe(config)),
     )
     embedding = None
     for stage, operation in stages:

@@ -132,11 +132,16 @@ class RagService:
                 candidates,
                 max_chars=production_config.max_evidence_chars,
             )
-            total_evidence_count += len(evidence_payloads)
+            answer_evidence_payloads = query_rag.compress_evidence_payloads(
+                evidence_payloads,
+                max_contexts=production_config.answer_max_contexts,
+                strategy=production_config.answer_context_compression,
+            )
+            total_evidence_count += len(answer_evidence_payloads)
             if answer_question is None:
-                answer_result = self.answer_question(question_payload, evidence_payloads)
+                answer_result = self.answer_question(question_payload, answer_evidence_payloads)
             else:
-                answer_result = answer_question(question_payload, evidence_payloads)
+                answer_result = answer_question(question_payload, answer_evidence_payloads)
             question_results.append(answer_result)
 
         formatter = summary_formatter or query_rag.format_rag_summary_for_prompt

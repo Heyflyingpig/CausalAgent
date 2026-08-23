@@ -23,7 +23,7 @@ from .contracts import OutboundImageRecord, VisionAnalysis, canonical_json, sha2
 from .remote_policy import RemoteSamplePolicy
 
 PROMPT_VERSION = "vision-v2"
-RESPONSE_ADAPTER_VERSION = "response-ocr-lines-v1"
+RESPONSE_ADAPTER_VERSION = "response-ocr-lines-v2"
 REQUIRED_MODEL = "qwen/qwen3-vl-8b-instruct"
 DEFAULT_MAX_PIXELS = 16_000_000
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
@@ -48,10 +48,11 @@ class NormalizedImage:
 class VisionResponseError(ValueError):
     """携带脱敏失败类别的响应契约错误。"""
 
-    def __init__(self, category: str) -> None:
+    def __init__(self, category: str, *, validation_error_paths: list[str] | None = None) -> None:
         """保存不会泄露原始响应的稳定失败分类。"""
         super().__init__(category)
         self.category = category
+        self.validation_error_paths = tuple(validation_error_paths or ())
 
 
 class VisionAnalyzer:
@@ -241,10 +242,28 @@ class VisionAnalyzer:
             raise VisionResponseError("invalid_json")
         try:
             payload = json.loads(candidate[start:end + 1])
-            if isinstance(payload, dict) and isinstance(payload.get("ocr_text"), list) and all(isinstance(line, str) for line in payload["ocr_text"]):
-                payload = {**payload, "ocr_text": "\n".join(payload["ocr_text"])}
+            if isinstance(payload, dict):
+                payload = dict(payload)
+                for field in ("ocr_text", "table_markdown", "formula_latex"):
+                    value = payload.get(field)
+                    if isinstance(value, list) and all(isinstance(line, str) for line in value):
+                        payload[field] = "\n".join(value)
             return VisionAnalysis.model_validate(payload)
-        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+        except ValidationError as exc:
+            paths = {
+                f"{'.'.join(str(part) for part in error.get('loc', ()))}:{error.get('type', 'validation_error')}"
+                for error in exc.errors()
+            }
+            allowed_fields = {
+                "content_kind", "ocr_text", "visible_facts", "summary", "entities",
+                "table_markdown", "formula_latex", "directed_relations", "uncertain_relations",
+                "confidence", "informative", "<root>",
+            }
+            safe_paths = sorted(
+                path for path in paths if path.split(":", 1)[0].split(".", 1)[0] in allowed_fields
+            )[:16]
+            raise VisionResponseError("invalid_schema", validation_error_paths=safe_paths) from exc
+        except (ValueError, json.JSONDecodeError) as exc:
             raise VisionResponseError("invalid_schema") from exc
 
     @staticmethod
@@ -292,4 +311,6 @@ class VisionAnalyzer:
         """持久化可复用的脱敏失败状态，不保存响应或异常正文。"""
         failure_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"status": "failed", "failure_type": type(error).__name__ if error else "UnknownError", "failure_category": failure_category, "model": self.model, "prompt_version": PROMPT_VERSION}
+        if isinstance(error, VisionResponseError) and error.validation_error_paths:
+            payload["validation_error_paths"] = list(error.validation_error_paths)
         failure_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

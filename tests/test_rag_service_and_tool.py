@@ -11,6 +11,58 @@ from Agent.knowledge_base.rag_service import (
 
 
 class RagServiceTests(unittest.TestCase):
+    def test_formal_answer_context_budget_and_page_dedup_are_applied(self):
+        from Agent.knowledge_base import query_rag
+
+        runtime = SimpleNamespace(
+            config=SimpleNamespace(production_config_path="production.json"),
+            vector_db=object(),
+            embedding=object(),
+            sparse_retriever=object(),
+            answer_llm=object(),
+        )
+        service = RagService(runtime)
+        config = query_rag.RagRetrievalConfig(
+            answer_max_contexts=3,
+            answer_context_compression="page_dedupe",
+        )
+        candidates = [
+            {"metadata": {"doc_id": "doc", "page_number": 1, "content_kind": "text", "content_hash": "a"}, "page_content": "a1"},
+            {"metadata": {"doc_id": "doc", "page_number": 1, "content_kind": "text", "content_hash": "b"}, "page_content": "a2"},
+            {"metadata": {"doc_id": "doc", "page_number": 1, "content_kind": "table", "content_hash": "c"}, "page_content": "table"},
+            {"metadata": {"doc_id": "doc", "page_number": 2, "content_kind": "text", "content_hash": "d"}, "page_content": "b1"},
+        ]
+        captured = {}
+
+        def capture_answer(_payload, evidence):
+            captured["evidence"] = evidence
+            return {"answer": "ok"}
+
+        with patch.object(service, "_load_retrieval_config", return_value=config), patch.object(
+            service, "build_retrieval_trace", return_value={"stages": {"final": candidates}}
+        ), patch.object(
+            query_rag, "_build_evidence_payloads", side_effect=query_rag._build_evidence_payloads
+        ), patch.object(
+            service, "answer_question", side_effect=capture_answer
+        ), patch.object(query_rag, "format_rag_summary_for_prompt", return_value="summary"):
+            service.get_response(["q"])
+
+        self.assertEqual([item["content"] for item in captured["evidence"]], ["a1", "table", "b1"])
+
+    def test_page_dedupe_keeps_distinct_content_kinds_and_honors_budget(self):
+        from Agent.knowledge_base import query_rag
+
+        payloads = [
+            {"content": "a1", "metadata": {"doc_id": "doc", "page_number": 1, "content_kind": "text"}},
+            {"content": "a2", "metadata": {"doc_id": "doc", "page_number": 1, "content_kind": "text"}},
+            {"content": "table", "metadata": {"doc_id": "doc", "page_number": 1, "content_kind": "table"}},
+            {"content": "b1", "metadata": {"doc_id": "doc", "page_number": 2, "content_kind": "text"}},
+        ]
+
+        result = query_rag.compress_evidence_payloads(payloads, max_contexts=2, strategy="page_dedupe")
+
+        self.assertEqual([item["content"] for item in result], ["a1", "table"])
+
     def test_unavailable_service_returns_stable_fresh_result(self):
         service = UnavailableRagService()
         first = service.get_response(["secret question"])
