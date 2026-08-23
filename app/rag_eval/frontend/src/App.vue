@@ -2,6 +2,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   AlertCircle,
+  ArrowLeft,
+  ArrowRight,
   ArrowDown,
   ArrowUp,
   BarChart3,
@@ -20,17 +22,25 @@ import {
   PanelLeftOpen,
   Play,
   RefreshCw,
+  ShieldCheck,
   SlidersHorizontal,
   Trash2,
   TrendingUp,
+  Target,
   Upload,
 } from "lucide-vue-next";
+import {
+  getReviewCounts,
+  nextReviewState,
+  summarizeEvaluationProgress,
+} from "./reviewWorkflow";
 
 type RunStatus = "created" | "queued" | "running" | "cancelling" | "staged" | "succeeded" | "cancelled" | "failed";
-type NavId = "workspace" | "evaluation" | "reports";
+type NavId = "workspace" | "candidates" | "evaluation" | "reports";
 type EvaluationSection = "config" | "events" | "comparison";
 type ComparisonMode = "time_trend" | "run_diff" | "strategy_diff";
 type ReportTab = "pipeline" | "retrieval" | "ragas";
+type CandidateReviewPhase = "intro" | "review" | "complete";
 
 interface SourceEntry {
   source_id: string;
@@ -54,8 +64,12 @@ interface RunState {
   run_id: string;
   kind: string;
   status: RunStatus;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
   source_ids?: string[];
   source_names?: string[];
+  source_label?: string;
   max_pages?: number | null;
   page_ranges?: Array<{ source_id: string; start_page: number; end_page: number }>;
   current_stage?: string;
@@ -64,10 +78,70 @@ interface RunState {
   unit_count?: number;
   vector_count?: number;
   question_count?: number;
+  missing_count?: number;
+  round?: number;
   ingestion_run_id?: string;
+  evaluation_run_id?: string;
+  old_revision?: string;
+  new_revision?: string;
+  protected_count?: number;
+  diagnosed_count?: number;
+  replaced_count?: number;
+  rejected_candidate_count?: number;
+  archived_dataset_path?: string;
   error?: string;
   result_available?: boolean;
   events?: RunEvent[];
+  candidate_artifact_name?: string;
+  audit_artifact_name?: string;
+  review_manifest_artifact_name?: string;
+  candidate_dataset_revision?: string;
+  review_status?: string;
+  batch_id?: string;
+  batch_position?: number;
+  batch_size?: number;
+  strategy_profile?: { profile_id?: string; name?: string; kind?: string };
+}
+
+interface TuningDatasetRunState extends RunState {
+  requested_count?: number;
+  generated_count?: number;
+  accepted_count?: number;
+  rejected_count?: number;
+  output_dataset_revision?: string;
+  summary?: Record<string, number | string | null>;
+  baseline_source?: string;
+  carried_evidence_count?: number;
+  dropped_fail_count?: number;
+  fresh_evaluated_count?: number;
+  reused_across_configs?: boolean;
+}
+
+interface EvaluationBatch {
+  batch_id: string;
+  run_count: number;
+  runs: RunState[];
+}
+
+interface CandidateSample { sample_id: string; question: string; reference_answer: string; expected_claims?: string[]; gold_evidence?: Array<Record<string, unknown>>; }
+interface CandidateDataset { dataset_revision: string; samples: CandidateSample[]; }
+interface CandidateAudit {
+  coverage?: { selected_unit_count?: number; covered_unit_count?: number; samples_with_evidence?: number; };
+  generated_candidate_count?: number;
+  accepted_count?: number;
+  rejected_count?: number;
+  generation_errors?: string[];
+}
+interface CandidateReviewManifest { reviewer?: string; decisions?: Array<{ sample_id: string; decision: "approved" | "rejected" | "needs_revision"; note?: string }>; }
+interface GoldDatasetStatus {
+  exists: boolean;
+  dataset_id?: string;
+  dataset_revision?: string;
+  sample_count?: number;
+  bound_index_version?: string;
+  production_index_version?: string;
+  compatibility?: "unselected" | "compatible" | "rebind_required";
+  compatibility_message?: string;
 }
 
 interface IngestionHistory {
@@ -171,10 +245,32 @@ interface ProductionConfig {
 const sources = ref<SourceEntry[]>([]);
 const selectedSourceIds = ref<string[]>([]);
 const ingestion = ref<RunState | null>(null);
+const ingestionHistory = ref<RunState[]>([]);
+const selectedIngestionRunId = ref("");
 const evaluationRun = ref<RunState | null>(null);
+const evaluationBatchRuns = ref<RunState[]>([]);
+const tuningDatasetRun = ref<TuningDatasetRunState | null>(null);
+const candidateRun = ref<RunState | null>(null);
+const candidateDataset = ref<CandidateDataset | null>(null);
+const candidateAudit = ref<CandidateAudit | null>(null);
 const evaluationResult = ref<EvaluationResult | null>(null);
 const events = ref<RunEvent[]>([]);
-const datasetText = ref("");
+const goldDataset = ref<GoldDatasetStatus>({ exists: false });
+const reviewerName = ref("");
+const candidateDecisions = ref<Record<string, "approved" | "rejected" | "needs_revision">>({});
+const candidateNotes = ref<Record<string, string>>({});
+const candidateReviewIndex = ref(0);
+const candidateReviewPhase = ref<CandidateReviewPhase>("intro");
+const candidateReviewedIds = ref<Set<string>>(new Set());
+const candidateLoading = ref(false);
+const candidateFreezeLoading = ref(false);
+const candidateGenerationConfigOpen = ref(false);
+const candidateMaxUnits = ref(63);
+const candidateQuestionsPerUnit = ref(1);
+const candidateMaxWorkers = ref(2);
+const candidateMessage = ref("");
+const candidateActionError = ref("");
+const goldReplaceDialogOpen = ref(false);
 const pageLimit = ref<"4" | "12" | "all" | "custom">("4");
 const pageRanges = ref<Record<string, PageRangeDraft>>({});
 const activeNav = ref<NavId>("workspace");
@@ -211,6 +307,8 @@ const ragasProfile = ref("generic_pipeline");
 const retrievalDraft = ref<Record<string, unknown>>({});
 const ragasDraft = ref<Record<string, unknown>>({});
 const executeRagas = ref(true);
+const parallelEvaluationEnabled = ref(false);
+const parallelProfileIds = ref<string[]>([]);
 const configLoading = ref(false);
 const configSaving = ref(false);
 const configMessage = ref("");
@@ -222,6 +320,8 @@ const uploadLoading = ref(false);
 const sourceDeleteLoading = ref<string | null>(null);
 const ingestionLoading = ref(false);
 const evaluationLoading = ref(false);
+const tuningDatasetLoading = ref(false);
+const tuningDatasetError = ref("");
 const catalogError = ref("");
 const sourceNotice = ref("");
 const actionError = ref("");
@@ -230,11 +330,13 @@ const evaluationAwaitingCompletion = ref<string | null>(null);
 let eventSource: EventSource | null = null;
 let pollTimer: number | null = null;
 let evaluationToastTimer: number | null = null;
+let batchPollTimer: number | null = null;
 
 const retrievalFieldKeys = [
   "dense_fetch_k", "dense_mmr_k", "sparse_fetch_k", "final_top_k",
-  "dense_score_threshold", "final_rerank_threshold", "mmr_lambda",
+  "dense_score_threshold", "final_rerank_threshold", "mmr_lambda", "answer_max_contexts",
 ];
+const answerCompressionOptions = ["none", "page_dedupe"];
 const ragasFieldKeys = [
   "limit", "max_contexts", "max_context_chars", "max_response_chars",
   "ragas_timeout", "ragas_max_workers", "ragas_max_retries", "ragas_max_wait",
@@ -277,7 +379,55 @@ const displayEvents = computed(() => {
   });
   return visible;
 });
+const evaluationProgressRows = computed(() => summarizeEvaluationProgress(events.value));
+const evaluationCompletedStages = computed(() => evaluationProgressRows.value.filter((row) => row.status === "done").length);
 const evaluationActive = computed(() => Boolean(evaluationRun.value && ["created", "queued", "running", "cancelling"].includes(evaluationRun.value.status)));
+const tuningDatasetActive = computed(() => Boolean(tuningDatasetRun.value && ["created", "queued", "running", "cancelling"].includes(tuningDatasetRun.value.status)));
+const parallelEvaluationActive = computed(() => evaluationBatchRuns.value.some((run) => !terminalStatuses.includes(run.status)));
+const parallelCompletedCount = computed(() => evaluationBatchRuns.value.filter((run) => terminalStatuses.includes(run.status)).length);
+const candidateActive = computed(() => Boolean(candidateRun.value && ["created", "queued", "running", "cancelling"].includes(candidateRun.value.status)));
+const goldCandidateTarget = 48;
+const currentCandidateSample = computed(() => candidateDataset.value?.samples[candidateReviewIndex.value] || null);
+const candidateReviewCounts = computed(() => getReviewCounts(candidateDataset.value?.samples || [], candidateDecisions.value, candidateReviewedIds.value));
+const candidateApprovalDelta = computed(() => Math.max(0, goldCandidateTarget - candidateReviewCounts.value.approved));
+const candidateRequestedCount = computed(() => candidateMaxUnits.value * candidateQuestionsPerUnit.value);
+const candidateBoundToSelectedIndex = computed(() => Boolean(
+  candidateRun.value
+  && ingestion.value
+  && candidateRun.value.ingestion_run_id === ingestion.value.run_id
+ && candidateRun.value.index_version === ingestion.value.index_version,
+));
+const candidateEvidenceCoverage = computed(() => {
+  const total = candidateDataset.value?.samples.length || 0;
+  const covered = Number(candidateAudit.value?.coverage?.samples_with_evidence || 0);
+  return { total, covered: Math.min(Math.max(covered, 0), total), complete: total > 0 && covered >= total };
+});
+const candidateReviewSaved = computed(() => candidateRun.value?.review_status === "reviewed");
+const candidateGateSummary = computed(() => [
+  {
+    key: "evidence",
+    label: "证据蕴含",
+    detail: candidateDataset.value ? `${candidateEvidenceCoverage.value.covered} / ${candidateEvidenceCoverage.value.total} 题有 Gold evidence` : "候选题生成后自动检查",
+    state: candidateDataset.value ? (candidateEvidenceCoverage.value.complete ? "pass" : "review") : "pending",
+  },
+  {
+    key: "retrieval",
+    label: "检索合理性",
+    detail: candidateBoundToSelectedIndex.value ? "证据定位已绑定当前索引，待发布前验证" : "需绑定当前索引并复审",
+    state: candidateBoundToSelectedIndex.value && candidateReviewSaved.value ? "review" : "pending",
+  },
+  {
+    key: "distribution",
+    label: "分布平衡",
+    detail: candidateDataset.value ? "模态、来源与难度分布待自动校验" : "候选题生成后自动检查",
+    state: "pending",
+  },
+]);
+const canBindProductionBaseline = computed(() => Boolean(
+  goldDataset.value.exists
+  && goldDataset.value.bound_index_version
+  && goldDataset.value.bound_index_version === goldDataset.value.production_index_version,
+));
 const ragasInProgress = computed(() => evaluationActive.value && (
   String(evaluationRun.value?.current_stage || "").toLowerCase().includes("ragas")
   || events.value.some((event) => /ragas/i.test(String(event.message || "")))
@@ -360,8 +510,51 @@ function formatBeijingDateTime(value?: string): string {
   return date ? `${date} ${formatBeijingTime(value)}` : "";
 }
 
+function ingestionSourceLabel(run?: Pick<RunState, "source_label" | "source_names"> | null): string {
+  const explicit = String(run?.source_label || "").trim();
+  if (explicit) return explicit;
+  const names = (run?.source_names || []).map((name) => String(name).trim()).filter(Boolean);
+  return names.length ? names.join("、") : "知识源未记录";
+}
+
+function ingestionDisplayName(run?: RunState | null): string {
+  if (!run) return "未选择索引";
+  const date = formatBeijingDate(run.created_at) || "日期未知";
+  return `${date} · ${ingestionSourceLabel(run)} · ${statusLabel(run.status)}`;
+}
+
+function indexReferenceLabel(indexVersion?: string): string {
+  if (!indexVersion) return "--";
+  const matchingRun = ingestionHistory.value.find((run) => run.index_version === indexVersion);
+  return matchingRun ? ingestionDisplayName(matchingRun) : `历史索引 · ${indexVersion}`;
+}
+
 function statusLabel(status?: string): string {
   return ({ created: "已创建", queued: "排队中", running: "运行中", cancelling: "取消中", staged: "已就绪", succeeded: "已完成", cancelled: "已取消", failed: "失败", pass: "通过", needs_review: "待复核" } as Record<string, string>)[status || ""] || "未开始";
+}
+
+function evaluationStageLabel(step: string): string {
+  return ({
+    validate_datasets: "数据校验",
+    retrieval_eval: "检索评测",
+    ragas_eval: "Ragas 评测",
+    trace_export: "Trace 导出",
+    summary: "汇总报告",
+  } as Record<string, string>)[step] || step;
+}
+
+function evaluationPhaseLabel(phase?: string): string {
+  return ({ prepare: "准备题集", judge: "Judge 评分", retrieval: "逐题检索", answer: "生成回答" } as Record<string, string>)[phase || ""] || phase || "阶段处理中";
+}
+
+function evaluationProgressPercent(current?: number, total?: number, status?: string): number {
+  if (status === "done") return 100;
+  if (typeof current !== "number" || typeof total !== "number" || total <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.round((current / total) * 100)));
+}
+
+function evaluationProgressStatusLabel(status: string): string {
+  return ({ pending: "待开始", running: "进行中", done: "已完成", error: "失败" } as Record<string, string>)[status] || status;
 }
 
 function statusTone(status?: string): string {
@@ -408,7 +601,7 @@ async function uploadSource(event: Event) {
 
 async function deleteSource(source: SourceEntry) {
   if (source.source_kind !== "uploaded") return;
-  if (!window.confirm(`确认删除“${source.name}”？这只会删除上传文件，不会删除已生成的 staged index 或评测报告。`)) return;
+  if (!window.confirm(`确认删除“${source.name}”？这只会删除上传文件，不会删除已生成的隔离索引或评测报告。`)) return;
   actionError.value = "";
   sourceNotice.value = "";
   sourceDeleteLoading.value = source.source_id;
@@ -476,20 +669,78 @@ function stopWatching() {
   pollTimer = null;
 }
 
-type RunKind = "ingestion" | "evaluation";
+function stopBatchPolling() {
+  if (batchPollTimer !== null) window.clearInterval(batchPollTimer);
+  batchPollTimer = null;
+}
+
+async function refreshEvaluationBatch() {
+  if (!evaluationBatchRuns.value.length) return;
+  const states = await Promise.all(evaluationBatchRuns.value.map((run) =>
+    api<RunState>(`/api/rag_eval/isolated/evaluation-runs/${encodeURIComponent(run.run_id)}`),
+  ));
+  evaluationBatchRuns.value = states;
+  const selected = states.find((run) => run.run_id === evaluationRun.value?.run_id);
+  if (selected) {
+    evaluationRun.value = selected;
+    events.value = selected.events || [];
+  }
+  if (states.every((run) => terminalStatuses.includes(run.status))) {
+    stopBatchPolling();
+    evaluationLoading.value = false;
+    localStorage.setItem("evaluation_batch_run_ids", JSON.stringify(states.map((run) => run.run_id)));
+    await loadEvaluationHistory();
+    const succeeded = states.filter((run) => run.status === "succeeded").length;
+    evaluationToast.value = `并行实验已结束：${succeeded}/${states.length} 个成功，可进入对比分析。`;
+  }
+}
+
+function startBatchPolling() {
+  stopBatchPolling();
+  void refreshEvaluationBatch();
+  batchPollTimer = window.setInterval(() => refreshEvaluationBatch().catch(() => undefined), 3000);
+}
+
+async function focusBatchRun(run: RunState) {
+  evaluationRun.value = run;
+  events.value = run.events || [];
+  if (terminalStatuses.includes(run.status)) {
+    stopWatching();
+    if (["succeeded", "failed"].includes(run.status) && run.result_available) await loadEvaluationResult(run.run_id);
+  } else {
+    watchRun("evaluation", run.run_id);
+  }
+}
+
+type RunKind = "ingestion" | "candidate" | "evaluation" | "tuning_dataset";
 
 async function refreshRun(kind: RunKind, runId: string) {
   const url = kind === "ingestion"
     ? `/api/rag_eval/isolated/ingestion-runs/${encodeURIComponent(runId)}`
-    : `/api/rag_eval/isolated/evaluation-runs/${encodeURIComponent(runId)}`;
+    : kind === "candidate"
+      ? `/api/rag_eval/isolated/candidate-runs/${encodeURIComponent(runId)}`
+      : kind === "evaluation"
+        ? `/api/rag_eval/isolated/evaluation-runs/${encodeURIComponent(runId)}`
+        : `/api/rag_eval/isolated/tuning-dataset-runs/${encodeURIComponent(runId)}`;
   const state = await api<RunState>(url);
   if (kind === "ingestion") ingestion.value = state;
-  else evaluationRun.value = state;
+  else if (kind === "candidate") candidateRun.value = state;
+  else if (kind === "evaluation") {
+    evaluationRun.value = state;
+    events.value = state.events || [];
+  } else if (kind === "tuning_dataset") {
+    tuningDatasetRun.value = state as TuningDatasetRunState;
+    events.value = state.events || [];
+  }
   if (kind === "evaluation") notifyEvaluationFinished(state);
   if (terminalStatuses.includes(state.status)) {
     if (kind === "ingestion") ingestionLoading.value = false;
-    else evaluationLoading.value = false;
-    if (kind === "evaluation" && state.status === "succeeded" && state.result_available) await loadEvaluationResult(runId);
+    else if (kind === "candidate") {
+      candidateLoading.value = false;
+      if (state.status === "succeeded") await loadCandidateDataset(runId);
+    } else if (kind === "evaluation") evaluationLoading.value = false;
+    else if (kind === "tuning_dataset") tuningDatasetLoading.value = false;
+    if (kind === "evaluation" && ["succeeded", "failed"].includes(state.status) && state.result_available) await loadEvaluationResult(runId);
     stopWatching();
   }
   return state;
@@ -506,18 +757,28 @@ function watchRun(kind: RunKind, runId: string) {
   stopWatching();
   const stream = kind === "ingestion"
     ? `/api/rag_eval/isolated/ingestion-runs/${encodeURIComponent(runId)}/stream`
-    : `/api/rag_eval/isolated/evaluation-runs/${encodeURIComponent(runId)}/stream`;
+    : kind === "candidate"
+      ? `/api/rag_eval/isolated/candidate-runs/${encodeURIComponent(runId)}/stream`
+      : kind === "evaluation"
+        ? `/api/rag_eval/isolated/evaluation-runs/${encodeURIComponent(runId)}/stream`
+        : `/api/rag_eval/isolated/tuning-dataset-runs/${encodeURIComponent(runId)}/stream`;
   eventSource = new EventSource(stream);
+  pollTimer = window.setInterval(() => {
+    void refreshRun(kind, runId).catch(() => undefined);
+  }, 5000);
   eventSource.onmessage = async (message) => {
     const event = JSON.parse(message.data) as RunEvent;
-    appendEvent(event);
+    if (kind === "evaluation" || kind === "tuning_dataset") appendEvent(event);
+    if (["stage_start", "candidate_progress", "ingestion_progress", "governance_progress", "question_start", "step_start", "step_done", "step_error"].includes(event.type)) await refreshRun(kind, runId);
     if (["run_done", "run_error", "run_cancelled"].includes(event.type)) await refreshRun(kind, runId);
   };
   eventSource.onerror = async () => {
     eventSource?.close(); eventSource = null;
+    if (pollTimer !== null) window.clearInterval(pollTimer);
+    pollTimer = null;
     try {
       await refreshRun(kind, runId);
-      const current = kind === "ingestion" ? ingestion.value : evaluationRun.value;
+      const current = kind === "ingestion" ? ingestion.value : kind === "candidate" ? candidateRun.value : kind === "evaluation" ? evaluationRun.value : tuningDatasetRun.value;
       if (current && !terminalStatuses.includes(current.status)) pollTimer = window.setInterval(() => refreshRun(kind, runId).catch(() => undefined), 5000);
     } catch (error) { actionError.value = error instanceof Error ? error.message : "运行状态读取失败"; }
   };
@@ -594,7 +855,10 @@ async function loadEvaluationDiff() {
     diffResult.value = await api<EvaluationDiff>(`/api/rag_eval/isolated/evaluation-diff?${params.toString()}`);
   } catch (error) {
     diffResult.value = null;
-    comparisonError.value = error instanceof Error ? error.message : "评测 diff 加载失败";
+    const message = error instanceof Error ? error.message : "评测 diff 加载失败";
+    comparisonError.value = message.includes("different dataset identities")
+      ? incompatibleDatasetComparisonMessage()
+      : message;
   } finally { diffLoading.value = false; }
 }
 
@@ -732,10 +996,22 @@ function renderMarkdown(markdown: string): string {
 function runProfileName(run: EvaluationHistoryItem): string {
   return String(run.strategy?.profile_name || run.strategy?.profile_id || "未记录 profile");
 }
+function runDatasetRevision(run: EvaluationHistoryItem): string {
+  const revision = String(run.dataset_identity?.dataset_revision || "").trim();
+  return revision ? `rev ${revision.slice(0, 16)}` : "未记录 revision";
+}
 function runDatasetSubtitle(run: EvaluationHistoryItem): string {
-  return `${String(run.dataset_identity?.dataset_id || "dataset")} · ${formatBeijingDateTime(run.created_at) || run.run_id}`;
+  return `${String(run.dataset_identity?.dataset_id || "dataset")} · ${runDatasetRevision(run)} · ${formatBeijingDateTime(run.created_at) || run.run_id}`;
 }
 function historyLabel(run: EvaluationHistoryItem): string { return `${runProfileName(run)} · ${runDatasetSubtitle(run)}`; }
+function incompatibleDatasetComparisonMessage(): string {
+  const base = historyRuns.value.find((run) => run.run_id === diffBaseRunId.value);
+  const candidate = historyRuns.value.find((run) => run.run_id === diffCandidateRunId.value);
+  if (!base || !candidate) return "无法进行严格 A/B：两次运行使用了不同版本的题集。请选择相同 Gold revision 的运行。";
+  const baseDataset = String(base.dataset_identity?.dataset_id || "题集");
+  const candidateDataset = String(candidate.dataset_identity?.dataset_id || "题集");
+  return `无法进行严格 A/B：基线使用 ${baseDataset}（${runDatasetRevision(base)}），候选使用 ${candidateDataset}（${runDatasetRevision(candidate)}）。同名题集不代表题目内容相同；逐题指标只可比较完全相同的 Gold revision。请选择相同 revision 的运行，或仅将两次结果作非严格的趋势参考。`;
+}
 function formatMetric(value: unknown): string { return typeof value === "number" ? value.toFixed(4) : value === null || value === undefined || value === "" ? "未评分" : String(value); }
 function formatConfigValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "未设置";
@@ -783,6 +1059,7 @@ function toggleSource(sourceId: string) { selectedSourceIds.value = selectedSour
 
 function selectNav(nav: NavId) {
   activeNav.value = nav;
+  if (nav === "candidates") { void loadGoldDatasetStatus(); }
   if (nav === "evaluation") { evaluationSection.value = "config"; void loadConfig(); }
   if (nav === "reports") { void loadEvaluationHistory(); }
 }
@@ -792,6 +1069,11 @@ function selectEvaluationSection(section: EvaluationSection) {
   evaluationSection.value = section;
   if (section === "config") void loadConfig();
   if (section === "comparison") void refreshComparison();
+}
+
+function openEvaluationDiagnostics() {
+  selectNav("evaluation");
+  selectEvaluationSection("comparison");
 }
 
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value; localStorage.setItem("sidebar_collapsed", String(sidebarCollapsed.value)); }
@@ -817,6 +1099,26 @@ function evaluationRagasOptions(): Record<string, unknown> {
   );
 }
 
+function profileRagasOptions(profile: StrategyProfile): Record<string, unknown> {
+  return Object.fromEntries(
+    evaluationRagasKeys
+      .filter((key) => key in profile.ragas)
+      .map((key) => [key, profile.ragas[key]]),
+  );
+}
+
+function toggleParallelProfile(profileId: string) {
+  parallelProfileIds.value = parallelProfileIds.value.includes(profileId)
+    ? parallelProfileIds.value.filter((value) => value !== profileId)
+    : parallelProfileIds.value.length < 4
+      ? [...parallelProfileIds.value, profileId]
+      : parallelProfileIds.value;
+}
+
+function profileName(profileId?: string): string {
+  return strategyProfiles.value.find((profile) => profile.profile_id === profileId)?.name || profileId || "未命名实验";
+}
+
 function selectedStrategyProfile(): StrategyProfile | null {
   return strategyProfiles.value.find((profile) => profile.profile_id === strategyProfileId.value) || null;
 }
@@ -829,7 +1131,11 @@ function applyStrategyProfile(profileId = strategyProfileId.value) {
   profileNameDraft.value = profile.name;
   retrievalProfile.value = profile.retrieval_profile;
   ragasProfile.value = profile.ragas_profile;
-  retrievalDraft.value = { ...profile.retrieval };
+  retrievalDraft.value = {
+    answer_max_contexts: 6,
+    answer_context_compression: "none",
+    ...profile.retrieval,
+  };
   ragasDraft.value = { ...profile.ragas };
 }
 
@@ -846,6 +1152,11 @@ async function loadStrategyProfileCatalog() {
     || "active_current";
   if (storedProfileId && !storedProfile) localStorage.removeItem(strategyProfileStorageKey);
   applyStrategyProfile(preferredProfileId);
+  const availableIds = new Set(strategyProfiles.value.map((profile) => profile.profile_id));
+  parallelProfileIds.value = parallelProfileIds.value.filter((profileId) => availableIds.has(profileId));
+  if (!parallelProfileIds.value.length && strategyProfiles.value.length) {
+    parallelProfileIds.value = strategyProfiles.value.slice(0, Math.min(2, strategyProfiles.value.length)).map((profile) => profile.profile_id);
+  }
 }
 
 async function loadProductionConfig() {
@@ -941,14 +1252,254 @@ async function publishConfig() {
   finally { configSaving.value = false; }
 }
 
+async function loadGoldDatasetStatus() {
+  try {
+    const target = ingestion.value;
+    const query = target?.run_id && target?.index_version
+      ? `?ingestion_run_id=${encodeURIComponent(target.run_id)}&index_version=${encodeURIComponent(target.index_version)}`
+      : "";
+    goldDataset.value = await api<GoldDatasetStatus>(`/api/rag_eval/gold-v2/status${query}`);
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : "本地 Gold 基准集状态加载失败";
+  }
+}
+
+async function loadIngestionHistory() {
+  const history = await api<IngestionHistory>("/api/rag_eval/isolated/ingestion-runs?page=1&page_size=50");
+  ingestionHistory.value = history.items;
+}
+
+async function selectIngestionRun(runId: string) {
+  const state = await refreshRun("ingestion", runId);
+  selectedIngestionRunId.value = state.run_id;
+  localStorage.setItem("ingestion_run_id", state.run_id);
+  if (state.source_ids?.length) selectedSourceIds.value = [...state.source_ids];
+  await loadGoldDatasetStatus();
+}
+
+async function loadCandidateDataset(runId: string) {
+  const state = candidateRun.value;
+  if (!state?.candidate_artifact_name) return;
+  try {
+    const artifact = (name: string) => `/api/rag_eval/isolated/candidate-runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(name)}`;
+    const [dataset, audit, review] = await Promise.all([
+      api<CandidateDataset>(artifact(state.candidate_artifact_name)),
+      state.audit_artifact_name ? api<CandidateAudit>(artifact(state.audit_artifact_name)).catch(() => null) : Promise.resolve(null),
+      state.review_manifest_artifact_name ? api<CandidateReviewManifest>(artifact(state.review_manifest_artifact_name)).catch(() => null) : Promise.resolve(null),
+    ]);
+    candidateDataset.value = dataset;
+    candidateAudit.value = audit;
+    const saved = new Map((review?.decisions || []).map((item) => [item.sample_id, item]));
+    candidateReviewedIds.value = new Set(dataset.samples.filter((sample) => saved.has(sample.sample_id)).map((sample) => sample.sample_id));
+    candidateDecisions.value = Object.fromEntries(dataset.samples.map((sample) => [sample.sample_id, saved.get(sample.sample_id)?.decision || "needs_revision"]));
+    candidateNotes.value = Object.fromEntries(dataset.samples.map((sample) => [sample.sample_id, saved.get(sample.sample_id)?.note || ""]));
+    reviewerName.value = review?.reviewer || reviewerName.value;
+    candidateReviewIndex.value = Math.min(candidateReviewIndex.value, Math.max(dataset.samples.length - 1, 0));
+    candidateReviewPhase.value = candidateReviewedIds.value.size >= dataset.samples.length && dataset.samples.length > 0 ? "complete" : "intro";
+  } catch (error) {
+    candidateActionError.value = error instanceof Error ? error.message : "候选题产物加载失败";
+  }
+}
+
+function openCandidateGenerationConfig() {
+  candidateActionError.value = "";
+  candidateMessage.value = "";
+  if (!ingestionReady.value) {
+    candidateActionError.value = "请先在工作台选择一个已就绪的 staged 索引。";
+    return;
+  }
+  candidateGenerationConfigOpen.value = true;
+}
+
+async function startCandidateGeneration() {
+  candidateActionError.value = "";
+  candidateMessage.value = "";
+  if (!ingestionReady.value || !ingestion.value) {
+    candidateActionError.value = "请先完成知识源摄取并生成隔离索引";
+    return;
+  }
+  candidateLoading.value = true;
+  try {
+    const state = await api<RunState>("/api/rag_eval/isolated/candidate-runs", {
+      method: "POST",
+      body: JSON.stringify({
+        ingestion_run_id: ingestion.value.run_id,
+        index_version: ingestion.value.index_version,
+        max_units: candidateMaxUnits.value,
+        questions_per_unit: candidateQuestionsPerUnit.value,
+        max_workers: candidateMaxWorkers.value,
+      }),
+    });
+    candidateRun.value = state;
+    candidateDataset.value = null;
+    candidateAudit.value = null;
+    candidateReviewedIds.value = new Set();
+    candidateReviewPhase.value = "intro";
+    candidateReviewIndex.value = 0;
+    candidateGenerationConfigOpen.value = false;
+    localStorage.setItem("candidate_run_id", state.run_id);
+    candidateMessage.value = `已基于 ${ingestionDisplayName(ingestion.value)} 创建新的候选题生成任务；旧审核记录保留在历史运行中。`;
+    watchRun("candidate", state.run_id);
+  } catch (error) {
+    candidateLoading.value = false;
+    candidateActionError.value = error instanceof Error ? error.message : "候选题生成启动失败";
+  }
+}
+
+function startCandidateReview() {
+  if (!candidateDataset.value) return;
+  const firstPendingIndex = candidateDataset.value.samples.findIndex((sample) => !candidateReviewedIds.value.has(sample.sample_id));
+  candidateReviewIndex.value = firstPendingIndex >= 0 ? firstPendingIndex : 0;
+  candidateReviewPhase.value = candidateReviewCounts.value.reviewed >= candidateReviewCounts.value.total ? "complete" : "review";
+}
+
+function openCandidateSample(index: number) {
+  if (!candidateDataset.value?.samples.length) return;
+  candidateReviewIndex.value = Math.min(Math.max(index, 0), candidateDataset.value.samples.length - 1);
+  candidateReviewPhase.value = "review";
+}
+
+function setCandidateDecision(decision: "approved" | "rejected" | "needs_revision") {
+  const sample = currentCandidateSample.value;
+  if (!sample) return;
+  candidateDecisions.value = { ...candidateDecisions.value, [sample.sample_id]: decision };
+  candidateReviewedIds.value = new Set(candidateReviewedIds.value).add(sample.sample_id);
+  const next = nextReviewState(
+    candidateReviewIndex.value,
+    candidateDataset.value?.samples.length || 0,
+    candidateReviewedIds.value.size,
+  );
+  candidateReviewPhase.value = next.phase;
+  if (next.phase === "review") candidateReviewIndex.value = next.index;
+}
+
+async function saveCandidateReview() {
+  if (!candidateRun.value || !candidateDataset.value) return;
+  const phaseBeforeSave = candidateReviewPhase.value;
+  const reviewedBeforeSave = new Set(candidateReviewedIds.value);
+  candidateActionError.value = "";
+  candidateMessage.value = "";
+  candidateLoading.value = true;
+  try {
+    const payload = {
+      reviewer: reviewerName.value.trim(),
+      decisions: candidateDataset.value.samples.map((sample) => ({ sample_id: sample.sample_id, decision: candidateDecisions.value[sample.sample_id] || "needs_revision", note: candidateNotes.value[sample.sample_id] || "" })),
+      updates: candidateDataset.value.samples.map((sample) => ({ sample_id: sample.sample_id, question: sample.question, reference_answer: sample.reference_answer, expected_claims: sample.expected_claims || [], gold_evidence: sample.gold_evidence || [] })),
+    };
+    const result = await api<{ candidate_artifact_name: string; review_manifest_artifact_name: string }>(`/api/rag_eval/isolated/candidate-runs/${encodeURIComponent(candidateRun.value.run_id)}/review`, { method: "POST", body: JSON.stringify(payload) });
+    candidateRun.value = { ...candidateRun.value, ...result };
+    candidateMessage.value = "审核结果已保存。冻结会使用这份已保存的审核清单。";
+    await loadCandidateDataset(candidateRun.value.run_id);
+    if (phaseBeforeSave === "review" && reviewedBeforeSave.size < (candidateDataset.value?.samples.length || 0)) {
+      candidateReviewedIds.value = reviewedBeforeSave;
+      candidateReviewPhase.value = "review";
+    }
+  } catch (error) {
+    candidateActionError.value = error instanceof Error ? error.message : "审核保存失败";
+  } finally { candidateLoading.value = false; }
+}
+
+async function rebindCandidateToCurrentIndex() {
+  if (!candidateRun.value || !ingestionReady.value || !ingestion.value?.index_version) {
+    candidateActionError.value = "请先在评测中心选择一个已就绪的 staged 索引。";
+    return;
+  }
+  candidateActionError.value = "";
+  candidateMessage.value = "";
+  candidateLoading.value = true;
+  try {
+    const result = await api<{ candidate_artifact_name: string; review_manifest_artifact_name: string }>(`/api/rag_eval/isolated/candidate-runs/${encodeURIComponent(candidateRun.value.run_id)}/rebind`, {
+      method: "POST",
+      body: JSON.stringify({ ingestion_run_id: ingestion.value.run_id, index_version: ingestion.value.index_version }),
+    });
+    candidateRun.value = { ...candidateRun.value, ...result };
+    candidateMessage.value = `已重绑到 ${ingestionDisplayName(ingestion.value)}；所有候选题已回到待复审状态。`;
+    candidateReviewedIds.value = new Set();
+    candidateReviewPhase.value = "intro";
+    candidateReviewIndex.value = 0;
+    await loadCandidateDataset(candidateRun.value.run_id);
+  } catch (error) {
+    candidateActionError.value = error instanceof Error ? error.message : "候选题 locator 重绑失败";
+  } finally { candidateLoading.value = false; }
+}
+
+async function freezeGoldDataset(replaceExisting = false) {
+  if (!candidateRun.value || !ingestion.value?.index_version || !candidateBoundToSelectedIndex.value) {
+    candidateActionError.value = "当前候选题仍绑定其他索引；请先重绑到所选 staged 索引并重新审核。";
+    return;
+  }
+  candidateActionError.value = "";
+  candidateMessage.value = "";
+  candidateFreezeLoading.value = true;
+  try {
+    const result = await api<{ sample_count: number; archived_dataset_path?: string }>("/api/rag_eval/gold-v2/freeze", {
+      method: "POST",
+      body: JSON.stringify({
+        candidate_run_id: candidateRun.value.run_id,
+        ingestion_run_id: ingestion.value.run_id,
+        index_version: ingestion.value.index_version,
+        replace_existing: replaceExisting,
+      }),
+    });
+    goldReplaceDialogOpen.value = false;
+    candidateMessage.value = result.archived_dataset_path ? `已替换并冻结 ${result.sample_count} 题 Gold 基准集；旧基准已归档。` : `已冻结 ${result.sample_count} 题 Gold 基准集。`;
+    await loadGoldDatasetStatus();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "冻结 Gold 基准集失败";
+    if (!replaceExisting && /already exists|已存在/i.test(message)) goldReplaceDialogOpen.value = true;
+    else candidateActionError.value = message;
+  } finally { candidateFreezeLoading.value = false; }
+}
+
+async function bindEvaluationBaseline() {
+  candidateActionError.value = "";
+  candidateMessage.value = "";
+  if (!canBindProductionBaseline.value) {
+    candidateActionError.value = "正式生产基准只绑定已发布的 active 索引；请先完成当前 staged 索引的重绑、复审和冻结，或将该索引发布为正式索引。";
+    return;
+  }
+  try {
+    await api("/api/rag_eval/baseline-v2/bind", { method: "POST", body: "{}" });
+    candidateMessage.value = "已绑定评测基准：当前 Gold 基准集与正式检索配置会作为后续对比基线。";
+  } catch (error) {
+    candidateActionError.value = error instanceof Error ? error.message : "绑定评测基准失败";
+  }
+}
+
+async function startTuningDatasetRun() {
+  tuningDatasetError.value = "";
+  if (!ingestionReady.value || !ingestion.value) {
+    tuningDatasetError.value = "请先在工作台完成知识源摄取并生成隔离索引。";
+    return;
+  }
+  if (evaluationActive.value || tuningDatasetActive.value) return;
+  tuningDatasetLoading.value = true;
+  events.value = [];
+  try {
+    const state = await api<TuningDatasetRunState>("/api/rag_eval/isolated/tuning-dataset-runs", {
+      method: "POST",
+      body: JSON.stringify({
+        ingestion_run_id: ingestion.value.run_id,
+        index_version: ingestion.value.index_version,
+      }),
+    });
+    tuningDatasetRun.value = state;
+    localStorage.setItem("tuning_dataset_run_id", state.run_id);
+    watchRun("tuning_dataset", state.run_id);
+  } catch (error) {
+    tuningDatasetLoading.value = false;
+    tuningDatasetError.value = error instanceof Error ? error.message : "调参测试集治理启动失败";
+  }
+}
+
 async function startEvaluation() {
   actionError.value = "";
-  if (!ingestionReady.value || !ingestion.value) { actionError.value = "请先在工作台完成知识源摄取并生成 staged index"; return; }
-  if (!datasetText.value.trim()) { actionError.value = "请粘贴通用 rag_eval_v1 题集 JSON"; return; }
-  let dataset: Record<string, unknown>;
-  try { dataset = JSON.parse(datasetText.value) as Record<string, unknown>; }
-  catch { actionError.value = "题集 JSON 格式无效，请检查引号和括号是否完整"; return; }
-  if (dataset.schema_version !== "rag_eval_v1" || !Array.isArray(dataset.samples) || !dataset.samples.length) { actionError.value = "题集必须包含 schema_version=rag_eval_v1 和非空 samples"; return; }
+  if (!ingestionReady.value || !ingestion.value) { actionError.value = "请先在工作台完成知识源摄取并生成隔离索引"; return; }
+  if (!goldDataset.value.exists) { actionError.value = "请先在候选题审核中冻结本地 Gold 基准集"; return; }
+  if (goldDataset.value.compatibility !== "compatible") {
+    actionError.value = goldDataset.value.compatibility_message || "当前 Gold 测试集未绑定所选索引，请先重绑并复审";
+    return;
+  }
   const strategy = selectedStrategyProfile();
   if (!strategy) { actionError.value = "当前策略 profile 不存在，请重新加载"; return; }
   const steps = executeRagas.value
@@ -956,12 +1507,51 @@ async function startEvaluation() {
     : ["validate_datasets", "retrieval_eval", "summary"];
   evaluationLoading.value = true; evaluationResult.value = null; events.value = [];
   try {
+    if (parallelEvaluationEnabled.value) {
+      const profiles = parallelProfileIds.value
+        .map((profileId) => strategyProfiles.value.find((profile) => profile.profile_id === profileId))
+        .filter((profile): profile is StrategyProfile => Boolean(profile));
+      if (profiles.length < 2 || profiles.length > 4) throw new Error("并行实验请选择 2 到 4 个不同策略 profile");
+      const batch = await api<EvaluationBatch>("/api/rag_eval/isolated/evaluation-batches", {
+        method: "POST",
+        body: JSON.stringify({
+          ingestion_run_id: ingestion.value.run_id,
+          index_version: ingestion.value.index_version,
+          dataset_source: "gold_v2",
+          experiments: profiles.map((profile) => ({
+            strategy_profile: { profile_id: profile.profile_id, name: profile.name, kind: profile.kind },
+            retrieval: {
+              profile: profile.retrieval_profile,
+              overrides: profile.profile_id === strategyProfileId.value ? { ...retrievalDraft.value } : { ...profile.retrieval },
+            },
+            ragas: {
+              profile: profile.ragas_profile,
+              ...(profile.profile_id === strategyProfileId.value ? evaluationRagasOptions() : profileRagasOptions(profile)),
+              run: executeRagas.value,
+              prepare_only: false,
+            },
+            steps,
+          })),
+        }),
+      });
+      stopWatching();
+      evaluationBatchRuns.value = batch.runs;
+      evaluationRun.value = batch.runs[0] || null;
+      localStorage.setItem("evaluation_batch_run_ids", JSON.stringify(batch.runs.map((run) => run.run_id)));
+      if (evaluationRun.value) localStorage.setItem("evaluation_run_id", evaluationRun.value.run_id);
+      startBatchPolling();
+      evaluationSection.value = "events";
+      return;
+    }
+    stopBatchPolling();
+    evaluationBatchRuns.value = [];
+    localStorage.removeItem("evaluation_batch_run_ids");
     const state = await api<RunState>("/api/rag_eval/isolated/evaluation-runs", {
       method: "POST",
       body: JSON.stringify({
         ingestion_run_id: ingestion.value.run_id,
         index_version: ingestion.value.index_version,
-        eval_dataset: dataset,
+        dataset_source: "gold_v2",
         strategy_profile: { profile_id: strategy.profile_id, name: strategy.name, kind: strategy.kind },
         retrieval: { profile: retrievalProfile.value, overrides: { ...retrievalDraft.value } },
         ragas: { profile: ragasProfile.value, ...evaluationRagasOptions(), run: executeRagas.value, prepare_only: false },
@@ -977,6 +1567,15 @@ async function startEvaluation() {
 }
 
 async function cancelEvaluation() {
+  if (parallelEvaluationActive.value) {
+    try {
+      await Promise.all(evaluationBatchRuns.value
+        .filter((run) => !terminalStatuses.includes(run.status))
+        .map((run) => api<RunState>(`/api/rag_eval/isolated/evaluation-runs/${encodeURIComponent(run.run_id)}/cancel`, { method: "POST", body: "{}" })));
+      await refreshEvaluationBatch();
+    } catch (error) { actionError.value = error instanceof Error ? error.message : "取消并行评测失败"; }
+    return;
+  }
   if (!evaluationRun.value) return;
   try {
     evaluationRun.value = await api<RunState>(`/api/rag_eval/isolated/evaluation-runs/${encodeURIComponent(evaluationRun.value.run_id)}/cancel`, { method: "POST", body: "{}" });
@@ -986,9 +1585,29 @@ async function cancelEvaluation() {
 }
 
 async function restoreIngestionRun(preferredId: string | null): Promise<boolean> {
+  try {
+    const history = await api<IngestionHistory>("/api/rag_eval/isolated/ingestion-runs?page=1&page_size=50");
+    ingestionHistory.value = history.items;
+    const preferredRun = history.items.find((item) => item.run_id === preferredId)
+      || history.items.find((item) => ["created", "queued", "running", "cancelling"].includes(item.status))
+      || history.items.find((item) => item.status === "staged");
+    if (preferredRun) {
+      ingestion.value = preferredRun;
+      selectedIngestionRunId.value = preferredRun.run_id;
+      localStorage.setItem("ingestion_run_id", preferredRun.run_id);
+      if (preferredRun.source_ids?.length) selectedSourceIds.value = [...preferredRun.source_ids];
+      if (!terminalStatuses.includes(preferredRun.status)) watchRun("ingestion", preferredRun.run_id);
+      sourceNotice.value = (terminalStatuses.includes(preferredRun.status) ? "已恢复最新完成的摄取任务：" : "已恢复当前运行中的摄取任务：") + preferredRun.run_id;
+      return true;
+    }
+  } catch {
+    // 保持旧 run 恢复路径，避免历史接口临时不可用时页面无法恢复。
+  }
+
   if (preferredId) {
     try {
       const state = await refreshRun("ingestion", preferredId);
+      selectedIngestionRunId.value = state.run_id;
       if (!terminalStatuses.includes(state.status)) watchRun("ingestion", preferredId);
       return true;
     } catch {
@@ -999,15 +1618,7 @@ async function restoreIngestionRun(preferredId: string | null): Promise<boolean>
 
   try {
     const history = await api<IngestionHistory>("/api/rag_eval/isolated/ingestion-runs?page=1&page_size=50");
-    const state = history.items.find((item) => ["created", "queued", "running", "cancelling"].includes(item.status))
-      || history.items.find((item) => item.status === "staged");
-    if (!state) return false;
-    ingestion.value = state;
-    localStorage.setItem("ingestion_run_id", state.run_id);
-    if (state.source_ids?.length) selectedSourceIds.value = [...state.source_ids];
-    if (!terminalStatuses.includes(state.status)) watchRun("ingestion", state.run_id);
-    sourceNotice.value = "已从持久化记录恢复摄取状态：" + state.run_id;
-    return true;
+    return false;
   } catch {
     return false;
   }
@@ -1016,14 +1627,62 @@ async function restoreIngestionRun(preferredId: string | null): Promise<boolean>
 async function refreshWorkspace() {
   actionError.value = "";
   await loadCatalog();
+  await loadIngestionHistory();
   const ingestionId = localStorage.getItem("ingestion_run_id") || localStorage.getItem("r5_ingestion_run_id");
   await restoreIngestionRun(ingestionId);
+  await loadGoldDatasetStatus();
 }
 
 async function restoreRuns() {
   const ingestionId = localStorage.getItem("ingestion_run_id") || localStorage.getItem("r5_ingestion_run_id");
+  const candidateId = localStorage.getItem("candidate_run_id");
   const evaluationId = localStorage.getItem("evaluation_run_id") || localStorage.getItem("r5_evaluation_run_id");
+  const storedBatchIds = (() => {
+    try {
+      const value = JSON.parse(localStorage.getItem("evaluation_batch_run_ids") || "[]");
+      return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+    } catch { return []; }
+  })();
   await restoreIngestionRun(ingestionId);
+  if (candidateId) {
+    try {
+      const state = await refreshRun("candidate", candidateId);
+      if (!terminalStatuses.includes(state.status)) watchRun("candidate", candidateId);
+      else if (state.status === "succeeded" && candidateBoundToSelectedIndex.value) await loadCandidateDataset(candidateId);
+      else if (state.status === "succeeded") {
+        candidateRun.value = null;
+        localStorage.removeItem("candidate_run_id");
+        candidateMessage.value = "已忽略与当前工作索引不一致的历史候选题；请基于当前索引生成新的候选集。";
+      }
+    } catch { localStorage.removeItem("candidate_run_id"); }
+  }
+  const tuningDatasetId = localStorage.getItem("tuning_dataset_run_id");
+  if (tuningDatasetId) {
+    try {
+      const state = await refreshRun("tuning_dataset", tuningDatasetId);
+      if (!terminalStatuses.includes(state.status)) watchRun("tuning_dataset", tuningDatasetId);
+    } catch { localStorage.removeItem("tuning_dataset_run_id"); }
+  }
+  if (storedBatchIds.length >= 2) {
+    try {
+      evaluationBatchRuns.value = await Promise.all(storedBatchIds.map((runId) =>
+        api<RunState>(`/api/rag_eval/isolated/evaluation-runs/${encodeURIComponent(runId)}`),
+      ));
+      parallelEvaluationEnabled.value = true;
+      const batchProfileIds = evaluationBatchRuns.value
+        .map((run) => String(run.strategy_profile?.profile_id || ""))
+        .filter(Boolean);
+      if (batchProfileIds.length) parallelProfileIds.value = batchProfileIds;
+      evaluationRun.value = evaluationBatchRuns.value.find((run) => run.run_id === evaluationId) || evaluationBatchRuns.value[0];
+      events.value = evaluationRun.value?.events || [];
+      if (parallelEvaluationActive.value) startBatchPolling();
+      else evaluationLoading.value = false;
+      return;
+    } catch {
+      evaluationBatchRuns.value = [];
+      localStorage.removeItem("evaluation_batch_run_ids");
+    }
+  }
   if (evaluationId) {
     try {
       const state = await refreshRun("evaluation", evaluationId);
@@ -1045,15 +1704,32 @@ watch(strategyProfileId, (profileId, previousProfileId) => {
 });
 
 onMounted(async () => {
+  document.addEventListener("visibilitychange", refreshVisibleRun);
   sidebarCollapsed.value = localStorage.getItem("sidebar_collapsed") === "true" || localStorage.getItem("r5_sidebar_collapsed") === "true";
   await loadCatalog();
   await loadConfig();
+  await loadGoldDatasetStatus();
   await restoreRuns();
 });
 onUnmounted(() => {
+  document.removeEventListener("visibilitychange", refreshVisibleRun);
   stopWatching();
+  stopBatchPolling();
   dismissEvaluationToast();
 });
+
+function refreshVisibleRun() {
+  if (document.hidden) return;
+  if (tuningDatasetRun.value && !terminalStatuses.includes(tuningDatasetRun.value.status)) {
+    void refreshRun("tuning_dataset", tuningDatasetRun.value.run_id).catch(() => undefined);
+  } else if (evaluationRun.value && !terminalStatuses.includes(evaluationRun.value.status)) {
+    void refreshRun("evaluation", evaluationRun.value.run_id).catch(() => undefined);
+  } else if (candidateRun.value && !terminalStatuses.includes(candidateRun.value.status)) {
+    void refreshRun("candidate", candidateRun.value.run_id).catch(() => undefined);
+  } else if (ingestion.value && !terminalStatuses.includes(ingestion.value.status)) {
+    void refreshRun("ingestion", ingestion.value.run_id).catch(() => undefined);
+  }
+}
 </script>
 
 <template>
@@ -1071,6 +1747,7 @@ onUnmounted(() => {
       <div class="sidebar-caption">CAUSAL AGENT</div>
       <nav class="side-nav" aria-label="主导航">
         <button class="nav-item" :class="{ active: activeNav === 'workspace' }" title="工作台" aria-label="工作台" @click="selectNav('workspace')"><LayoutDashboard :size="17" /><span>工作台</span></button>
+        <button class="nav-item" :class="{ active: activeNav === 'candidates' }" title="候选题审核" aria-label="候选题审核" @click="selectNav('candidates')"><FileText :size="17" /><span>候选题审核</span></button>
         <button class="nav-item" :class="{ active: activeNav === 'evaluation' }" title="评测中心" aria-label="评测中心" @click="selectNav('evaluation')"><Gauge :size="17" /><span>评测中心</span></button>
         <div v-if="activeNav === 'evaluation'" class="nav-submenu" aria-label="评测中心导航">
           <button class="nav-subitem" :class="{ active: evaluationSection === 'config' }" @click="selectEvaluationSection('config')">评测配置</button>
@@ -1079,14 +1756,14 @@ onUnmounted(() => {
         </div>
         <button class="nav-item" :class="{ active: activeNav === 'reports' }" title="报告编辑" aria-label="报告编辑" @click="selectNav('reports')"><FileChartColumn :size="17" /><span>报告编辑</span></button>
       </nav>
-      <div class="sidebar-footer"><span class="sidebar-status-dot"></span><div><strong>隔离环境</strong><small>staged index only</small></div></div>
+      <div class="sidebar-footer"><span class="sidebar-status-dot"></span><div><strong>隔离环境</strong><small>隔离索引专用</small></div></div>
     </aside>
 
     <section class="app-main" :class="{ 'comparison-main': activeNav === 'evaluation' && evaluationSection === 'comparison' }">
       <header class="topbar">
         <div>
           <p class="kicker">知识检索与评测</p>
-          <h1>{{ activeNav === 'workspace' ? '隔离知识源工作台' : activeNav === 'reports' ? '报告编辑' : evaluationSection === 'config' ? '评测配置' : evaluationSection === 'events' ? '评测流程事件' : '对比分析' }}</h1>
+          <h1>{{ activeNav === 'workspace' ? '隔离知识源工作台' : activeNav === 'candidates' ? '候选题逐题审核' : activeNav === 'reports' ? '报告编辑' : evaluationSection === 'config' ? '评测配置' : evaluationSection === 'events' ? '评测流程事件' : '对比分析' }}</h1>
         </div>
         <div class="topbar-meta"><span class="live-dot"></span><span>后端接口已连接</span><button class="icon-button" title="刷新当前数据" aria-label="刷新当前数据" @click="activeNav === 'reports' ? loadEvaluationHistory() : refreshWorkspace()"><RefreshCw :size="16" :class="{ spinning: sourceLoading || historyLoading }" /></button></div>
       </header>
@@ -1100,16 +1777,154 @@ onUnmounted(() => {
             <article class="panel source-panel">
               <div class="panel-header"><div class="panel-title"><span class="icon-badge coral"><Database :size="18" /></span><div><p class="eyebrow">SOURCE INPUT</p><h2>选择知识源</h2></div></div><div class="source-panel-actions"><span class="count-label">{{ selectedSources.length }} / {{ sources.length }}</span><input ref="uploadInput" class="visually-hidden" type="file" :accept="supportedUploadExtensions.join(',')" @change="uploadSource" /><button type="button" class="secondary-button upload-button" :disabled="busy" @click="openUploadDialog"><Upload :size="15" />{{ uploadLoading ? '上传中' : '上传知识源' }}</button></div></div>
               <div class="source-capability-note"><strong>多模态解析</strong><span>支持 {{ supportedUploadLabel }}；文本、表格、图片以及 PDF 中的版面、公式、表格和图片会统一解析为可追溯的知识单元。</span></div>
+              <label class="index-selector workspace-index-selector"><span>本次工作索引（全局）</span><select v-model="selectedIngestionRunId" @change="selectIngestionRun(selectedIngestionRunId)"><option v-for="run in ingestionHistory" :key="run.run_id" :value="run.run_id">{{ ingestionDisplayName(run) }}</option></select><small>切换后，候选审核、Gold 冻结与评测都会使用这一套索引；其他页面不能切换。</small></label>
               <div v-if="sourceLoading && !sources.length" class="empty-line"><LoaderCircle class="spin" :size="17" />加载来源目录</div>
               <div v-else-if="!sources.length" class="empty-line"><FileText :size="17" />暂无可选来源</div>
               <div v-else class="source-list"><div v-for="source in sources" :key="source.source_id" class="source-row" :class="{ selected: selectedSourceIds.includes(source.source_id) }"><label class="source-select"><input type="checkbox" :checked="selectedSourceIds.includes(source.source_id)" @change="toggleSource(source.source_id)" /><span class="source-check"><Check :size="14" /></span><span class="source-copy"><strong>{{ source.name }}</strong><small>{{ source.source_kind === 'uploaded' ? '用户上传' : '固定来源' }} · {{ source.page_count ? `${source.page_count} 页` : '页数待读取' }} · {{ formatBytes(source.size_bytes) }} · {{ source.content_sha256.slice(0, 12) }}</small></span></label><button v-if="source.source_kind === 'uploaded'" type="button" class="source-delete-button" :disabled="busy || sourceDeleteLoading === source.source_id" :title="`删除 ${source.name}`" :aria-label="`删除 ${source.name}`" @click="deleteSource(source)"><Trash2 :size="15" /></button></div></div>
-              <div class="run-options"><label>运行范围<select v-model="pageLimit"><option value="4">快速联调 · 4 页</option><option value="12">Smoke · 12 页</option><option value="all">全部来源页</option><option value="custom">自定义页码范围</option></select></label><span>{{ pageLimit === 'custom' ? '按来源分别执行物理页范围' : '快速模式按选中来源顺序累计页数' }}；每次创建新的 staged index</span></div>
+              <div class="run-options"><label>运行范围<select v-model="pageLimit"><option value="4">快速联调 · 4 页</option><option value="12">Smoke · 12 页</option><option value="all">全部来源页</option><option value="custom">自定义页码范围</option></select></label><span>{{ pageLimit === 'custom' ? '按来源分别执行物理页范围' : '快速模式按选中来源顺序累计页数' }}；每次创建新的隔离索引</span></div>
               <div v-if="pageLimit === 'custom'" class="custom-range-panel"><div class="custom-range-heading"><strong>按来源设置物理页码</strong><small>页码从 1 开始，首尾包含；本次共 {{ customPageTotal }} 页</small></div><div v-for="source in selectedSources" :key="`range-${source.source_id}`" class="custom-range-row"><span>{{ source.name }}</span><input v-model="pageRanges[source.source_id].start" type="number" min="1" aria-label="开始页" /><span>至</span><input v-model="pageRanges[source.source_id].end" type="number" min="1" aria-label="结束页" /><small>页</small></div></div>
               <div class="panel-footer"><button class="primary-button" :disabled="busy || !selectedSourceIds.length" @click="startIngestion"><Play :size="16" />{{ ingestionReady ? '重新摄取' : '开始摄取' }}</button><button v-if="ingestion && ['created','running','cancelling'].includes(ingestion.status)" class="secondary-button danger" :disabled="ingestion.status === 'cancelling'" @click="cancelIngestion">取消</button></div>
-              <div v-if="ingestion" class="run-summary"><div class="summary-line"><span>摄取任务</span><code>{{ ingestion.run_id }}</code><span class="status-pill" :class="statusTone(ingestion.status)">{{ statusLabel(ingestion.status) }}</span></div><div class="progress-track"><span :style="{ width: ingestion.status === 'staged' ? '100%' : ingestion.status === 'running' ? '48%' : '0%' }"></span></div><div class="summary-metrics"><span>units <b>{{ ingestion.unit_count ?? '--' }}</b></span><span>vectors <b>{{ ingestion.vector_count ?? '--' }}</b></span><span>index <b>{{ ingestion.index_version || '--' }}</b></span></div></div>
+              <div v-if="ingestion" class="run-summary"><div class="summary-line"><span>当前索引</span><strong>{{ ingestionDisplayName(ingestion) }}</strong><span class="status-pill" :class="statusTone(ingestion.status)">{{ statusLabel(ingestion.status) }}</span></div><div class="progress-track"><span :style="{ width: ingestion.status === 'staged' ? '100%' : ingestion.status === 'running' ? '48%' : '0%' }"></span></div><div class="summary-metrics"><span>units <b>{{ ingestion.unit_count ?? '--' }}</b></span><span>vectors <b>{{ ingestion.vector_count ?? '--' }}</b></span><span title="索引版本 ID">版本 <code>{{ ingestion.index_version || '--' }}</code></span></div></div>
             </article>
-              <aside class="panel workspace-guide"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><SlidersHorizontal :size="18" /></span><div><p class="eyebrow">NEXT STEP</p><h2>统一评测流程</h2></div></div></div><div class="guide-body"><div class="guide-state" :class="{ ready: ingestionReady }"><Check :size="17" /><span>{{ ingestionReady ? 'staged index 已就绪' : '等待 staged index' }}</span></div><p>工作台只负责选择知识源和生成隔离索引。题集、retrieval、Ragas judge、事件和报告统一在评测中心管理。</p><button class="primary-button" :disabled="!ingestionReady" @click="selectNav('evaluation')"><Gauge :size="16" />前往评测中心</button><button class="secondary-button" :disabled="!evaluationRun" @click="evaluationRun && openReport(evaluationRun.run_id)"><FileChartColumn :size="16" />编辑最近报告</button></div></aside>
+              <aside class="panel workspace-guide"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><SlidersHorizontal :size="18" /></span><div><p class="eyebrow">NEXT STEP</p><h2>统一评测流程</h2></div></div></div><div class="guide-body"><div class="guide-state" :class="{ ready: ingestionReady }"><Check :size="17" /><span>{{ ingestionReady ? '索引已就绪' : '等待索引就绪' }}</span></div><p>工作台只负责选择知识源和生成隔离索引。题集、retrieval、Ragas judge、事件和报告统一在评测中心管理。</p><button class="primary-button" :disabled="!ingestionReady" @click="selectNav('evaluation')"><Gauge :size="16" />前往评测中心</button><button class="secondary-button" :disabled="!evaluationRun" @click="evaluationRun && openReport(evaluationRun.run_id)"><FileChartColumn :size="16" />编辑最近报告</button></div></aside>
           </section>
+          <section class="panel tuning-dataset-panel" aria-labelledby="tuning-dataset-title">
+            <div class="panel-header">
+              <div class="panel-title"><span class="icon-badge teal"><Target :size="18" /></span><div><p class="eyebrow">QUESTION GOVERNANCE</p><h2 id="tuning-dataset-title">低分题自动替换</h2></div></div>
+              <span v-if="tuningDatasetRun" class="status-pill" :class="statusTone(tuningDatasetRun.status)">{{ statusLabel(tuningDatasetRun.status) }}</span>
+            </div>
+            <div class="tuning-dataset-body">
+              <div class="tuning-dataset-copy"><strong>自动淘汰未达门槛的生成题，由 AI 复核的新替补题顶替，循环实测直到整组达标</strong><p>针对当前索引的 Gold 自动生成题做质量闭环：四项 Ragas 指标任一低于最低单题分即视为坏题淘汰。已通过题沿用同索引历史逐题证据，不再重复实测；替补题必须通过证据核验与 AI 审核才会顶替上场。基线优先继承本索引最近一次登记的调参集。全程隔离，不进入正式评测报告、对比分析或 Gold。</p></div>
+              <div class="tuning-dataset-facts"><span><small>目标题数</small><b>48</b></span><span><small>最低单题分</small><b>0.20</b></span><span><small>当前索引</small><code>{{ ingestion?.index_version || '--' }}</code></span></div>
+              <div v-if="tuningDatasetError" class="review-feedback error"><AlertCircle :size="15" /><span>{{ tuningDatasetError }}</span></div>
+              <div class="tuning-dataset-actions"><button class="primary-button" :disabled="tuningDatasetLoading || tuningDatasetActive || !ingestionReady" @click="startTuningDatasetRun"><Target :size="16" />{{ tuningDatasetActive ? '治理进行中…' : tuningDatasetLoading ? '提交中…' : '开始自动治理' }}</button><button v-if="tuningDatasetActive" class="secondary-button danger" disabled>请等待当前轮完成</button></div>
+              <div v-if="tuningDatasetRun" class="tuning-dataset-status">
+                <span>运行 {{ tuningDatasetRun.run_id }}</span>
+                <span v-if="tuningDatasetRun.round">第 {{ tuningDatasetRun.round }} 轮</span>
+                <span v-if="tuningDatasetRun.current_stage">阶段：{{ tuningDatasetRun.current_stage }}</span>
+                <span v-if="tuningDatasetRun.question_count">本轮评测题数：{{ tuningDatasetRun.question_count }}</span>
+                <span v-if="tuningDatasetRun.missing_count">待补题数：{{ tuningDatasetRun.missing_count }}</span>
+                <span v-if="typeof tuningDatasetRun.carried_evidence_count === 'number'">沿用历史证据：{{ tuningDatasetRun.carried_evidence_count }} 题</span>
+                <span v-if="typeof tuningDatasetRun.fresh_evaluated_count === 'number'">本次实测：{{ tuningDatasetRun.fresh_evaluated_count }} 题</span>
+                <span v-if="tuningDatasetRun.baseline_source">基线：{{ tuningDatasetRun.baseline_source === 'pearl_gold_v2' ? 'Gold 自动题' : tuningDatasetRun.baseline_source }}</span>
+                <span v-if="tuningDatasetRun.reused_across_configs" title="沿用题的证据来自不同检索或 judge 配置，集合级指标为混合配置结果">混合配置证据</span>
+              </div>
+            </div>
+          </section>
+        </template>
+
+        <template v-else-if="activeNav === 'candidates'">
+          <div v-if="candidateActionError" class="alert danger-alert"><AlertCircle :size="17" /><span>{{ candidateActionError }}</span></div>
+          <section class="panel dataset-review-gate" aria-labelledby="dataset-review-gate-title">
+            <div class="panel-header dataset-review-gate-header">
+              <div class="panel-title"><span class="icon-badge slate"><ShieldCheck :size="18" /></span><div><p class="eyebrow">DATASET REVIEW &amp; RELEASE</p><h2 id="dataset-review-gate-title">题集审核与发布</h2></div></div>
+              <span class="status-pill" :class="goldDataset.exists ? 'success' : 'muted'">{{ goldDataset.exists ? '当前 Gold 已冻结' : '等待审核发布' }}</span>
+            </div>
+            <div class="dataset-review-intro">
+              <div><strong>逐题审核通过后，冻结你自己的正式基准集</strong><p>评测结果只生成只读诊断，不会直接改写当前 Gold。新的 revision 必须经过证据、检索合理性、分布平衡和逐题审核后，才能由你明确冻结。</p></div>
+              <button type="button" class="secondary-button" @click="openEvaluationDiagnostics"><GitCompare :size="15" />查看评测诊断</button>
+            </div>
+            <div class="dataset-review-gates" role="list" aria-label="Gold 发布前自动门禁">
+              <article v-for="gate in candidateGateSummary" :key="gate.key" class="dataset-review-gate-card" :class="gate.state" role="listitem">
+                <div class="dataset-review-gate-card-top"><strong>{{ gate.label }}</strong><span class="gate-state-label">{{ gate.state === 'pass' ? '结构通过' : gate.state === 'review' ? '待复核' : '待检测' }}</span></div>
+                <span>{{ gate.detail }}</span>
+              </article>
+            </div>
+            <div class="dataset-review-meta" aria-live="polite">
+              <span><small>当前 Gold revision</small><code>{{ goldDataset.dataset_revision || '尚未冻结' }}</code></span>
+              <span><small>题目数量</small><strong>{{ goldDataset.sample_count || 0 }} 题</strong></span>
+              <span><small>绑定索引</small><code>{{ goldDataset.bound_index_version || '尚未绑定' }}</code></span>
+            </div>
+            <div class="dataset-review-note"><AlertCircle :size="15" /><span>门禁未接入真实自动审查时保持“待检测”，不会因为结构字段存在就自动发布；旧 Gold 与历史 revision 始终保留。</span></div>
+          </section>
+          <section v-if="candidateGenerationConfigOpen" class="panel review-gate-panel candidate-generation-panel">
+            <div class="panel-header review-gate-body"><div class="panel-title"><span class="icon-badge teal"><SlidersHorizontal :size="18" /></span><div><p class="eyebrow">CANDIDATE GENERATION CONFIG</p><h2>配置候选题生成</h2></div></div><div class="review-gate-copy"><strong>确认后才会开始生成</strong><small>候选题会只基于当前工作索引生成；已有候选题与审核记录保留在历史运行中。</small></div></div>
+            <div class="candidate-generation-note"><strong>当前工作索引</strong><span>{{ ingestionDisplayName(ingestion) }}</span><code>{{ ingestion?.index_version || '--' }}</code></div>
+            <div class="candidate-plan-summary"><span>预计请求 <b>{{ candidateRequestedCount }}</b> 道候选题</span><span>冻结目标：审核通过 48 道</span><small>最终可审核题数可能小于请求数：重复、证据不完整或质量不足的题目会被筛掉。</small></div>
+            <div class="run-options candidate-run-options"><label>选中知识单元<input v-model.number="candidateMaxUnits" type="number" min="1" max="128" /></label><label>每单元题数<input v-model.number="candidateQuestionsPerUnit" type="number" min="1" max="3" /></label><label>并行 worker<input v-model.number="candidateMaxWorkers" type="number" min="1" max="4" /></label><small>worker 只影响生成速度；较高并行可能增加模型接口压力。默认 63 × 1、2 worker，为通过筛选后保留 48 题留出余量。</small></div>
+            <div class="panel-footer"><button class="secondary-button" :disabled="candidateLoading" @click="candidateGenerationConfigOpen = false">返回审核</button><button class="primary-button" :disabled="candidateLoading" @click="startCandidateGeneration"><Play :size="16" />{{ candidateLoading ? '提交中…' : '确认并开始生成' }}</button></div>
+          </section>
+          <section v-else-if="!candidateDataset" class="panel review-gate-panel">
+            <div class="panel-header review-gate-body">
+              <div class="panel-title"><span class="icon-badge teal"><FileText :size="18" /></span><div><p class="eyebrow">CANDIDATE REVIEW</p><h2>为当前索引生成候选题</h2></div></div>
+              <div class="review-gate-copy"><strong>{{ candidateRun?.status === 'failed' ? '候选生成失败' : candidateActive ? '候选题生成中' : ingestionReady ? '可开始生成' : '等待索引就绪' }}</strong><small>生成 63 道候选题；审核通过其中 48 道后，可冻结为 72 题 Gold 基准集。</small></div>
+              <button v-if="!candidateActive" class="primary-button" :disabled="candidateLoading || !ingestionReady" @click="openCandidateGenerationConfig"><Play :size="16" />生成候选题</button>
+              <button v-else class="secondary-button danger" :disabled="candidateRun?.status === 'cancelling'" @click="candidateRun && api(`/api/rag_eval/isolated/candidate-runs/${encodeURIComponent(candidateRun.run_id)}/cancel`, { method: 'POST', body: '{}' }).then(() => refreshRun('candidate', candidateRun!.run_id))">取消生成</button>
+            </div>
+            <div v-if="candidateRun?.status === 'failed'" class="review-feedback error"><AlertCircle :size="15" /><span>生成失败：{{ candidateRun.error || '请查看候选生成审计产物。' }}。修复模型 API 后，可重新打开配置并提交新任务。</span></div>
+            <div v-if="candidateRun" class="panel-footer"><span class="status-pill" :class="statusTone(candidateRun.status)">{{ statusLabel(candidateRun.status) }}</span><code>{{ candidateRun.run_id }}</code></div>
+          </section>
+
+          <section v-else class="panel candidate-review-panel">
+            <template v-if="candidateReviewPhase === 'intro'">
+              <div class="candidate-flow-hero candidate-review-start">
+                <div class="candidate-flow-icon"><ShieldCheck :size="28" /></div>
+                <p class="eyebrow">REVIEW WORKFLOW</p>
+                <h2>准备开始候选题审核</h2>
+                <p class="candidate-flow-lead">本次审核共 {{ candidateReviewCounts.total }} 道候选题。每题都会记录独立审核状态；完成最后一题后会进入收尾页，不会回到第一题。</p>
+                <div class="candidate-start-facts">
+                  <span><small>当前索引</small><strong>{{ ingestionDisplayName(ingestion) }}</strong></span>
+                  <span><small>候选题数</small><strong>{{ candidateReviewCounts.total }} 题</strong></span>
+                  <span><small>已审核</small><strong>{{ candidateReviewCounts.reviewed }} / {{ candidateReviewCounts.total }}</strong></span>
+                </div>
+                <div class="candidate-start-steps" aria-label="审核流程">
+                  <span class="active"><b>01</b><strong>逐题审核</strong><small>检查问题、答案与证据</small></span>
+                  <span><b>02</b><strong>审核完成</strong><small>确认统计与冻结条件</small></span>
+                  <span><b>03</b><strong>冻结 Gold</strong><small>保存后提交正式基准集</small></span>
+                </div>
+                <div class="candidate-flow-actions">
+                  <button class="primary-button" @click="startCandidateReview"><Play :size="16" />{{ candidateReviewCounts.reviewed ? '继续审核' : '开始审核' }}</button>
+                  <button class="secondary-button" @click="selectNav('evaluation')"><ArrowLeft :size="15" />返回评测中心</button>
+                </div>
+              </div>
+            </template>
+            <template v-else-if="candidateReviewPhase === 'complete'">
+              <div class="candidate-flow-hero candidate-review-complete">
+                <div class="candidate-flow-icon success"><Check :size="28" /></div>
+                <p class="eyebrow">REVIEW COMPLETE</p>
+                <h2>候选题审核已完成</h2>
+                <p class="candidate-flow-lead">{{ candidateReviewCounts.reviewed }} 道题均已记录审核结论。请核对下面的汇总后保存审核结果，再决定是否冻结 Gold 基准集。</p>
+                <div class="review-complete-counts">
+                  <span class="approved"><small>已通过</small><strong>{{ candidateReviewCounts.approved }}</strong></span>
+                  <span class="needs-revision"><small>待修改</small><strong>{{ candidateReviewCounts.needsRevision }}</strong></span>
+                  <span class="rejected"><small>已拒绝</small><strong>{{ candidateReviewCounts.rejected }}</strong></span>
+                  <span><small>已审核</small><strong>{{ candidateReviewCounts.reviewed }} / {{ candidateReviewCounts.total }}</strong></span>
+                </div>
+                <div class="freeze-readiness" :class="{ ready: candidateApprovalDelta === 0 }">
+                  <strong>{{ candidateApprovalDelta === 0 ? '已满足冻结条件' : `距离冻结还差 ${candidateApprovalDelta} 道通过题` }}</strong>
+                  <span>Gold 由 Pearl 固定题与本次审核通过的 48 道候选题组成。</span>
+                </div>
+                <div class="candidate-review-jump-panel">
+                  <div><strong>需要修改题目？</strong><small>点击题号可直接回到对应题目。</small></div>
+                  <div class="candidate-review-jump-grid" aria-label="选择要修改的题目">
+                    <button v-for="(sample, index) in candidateDataset.samples" :key="sample.sample_id" type="button" :class="candidateDecisions[sample.sample_id] || 'needs_revision'" :aria-label="`修改第 ${index + 1} 题`" :title="sample.sample_id" @click="openCandidateSample(index)">{{ index + 1 }}</button>
+                  </div>
+                </div>
+                <div class="candidate-flow-actions">
+                  <button class="secondary-button" :disabled="candidateLoading" @click="saveCandidateReview"><Check :size="15" />保存审核结果</button>
+                  <button class="primary-button" :disabled="candidateFreezeLoading || candidateApprovalDelta !== 0 || candidateReviewCounts.pending !== 0 || !candidateBoundToSelectedIndex" @click="freezeGoldDataset()"><Database :size="15" />冻结 Gold 基准集</button>
+                  <button class="secondary-button" @click="selectNav('evaluation')"><ArrowLeft :size="15" />回到评测工作台</button>
+                </div>
+                <p v-if="candidateMessage" class="review-feedback success"><Check :size="15" />{{ candidateMessage }}</p>
+                <p v-if="candidateActionError" class="review-feedback error"><AlertCircle :size="15" />{{ candidateActionError }}</p>
+              </div>
+            </template>
+            <template v-else>
+            <div class="panel-header candidate-review-header"><div class="panel-title"><span class="icon-badge teal"><FileText :size="18" /></span><div><p class="eyebrow">ONE QUESTION AT A TIME</p><h2>候选题逐题审核</h2></div></div><div class="candidate-position"><strong>第 {{ candidateReviewIndex + 1 }} / {{ candidateDataset.samples.length }} 题</strong><code>{{ currentCandidateSample?.sample_id }}</code></div></div>
+            <div class="candidate-review-progress"><span :style="{ width: `${candidateReviewCounts.total ? (candidateReviewCounts.reviewed / candidateReviewCounts.total) * 100 : 0}%` }"></span></div>
+            <div v-if="currentCandidateSample" class="candidate-review-layout">
+              <article class="candidate-card"><div class="candidate-card-toolbar"><span class="review-status" :class="candidateDecisions[currentCandidateSample.sample_id] || 'needs_revision'">{{ candidateDecisions[currentCandidateSample.sample_id] === 'approved' ? '已通过' : candidateDecisions[currentCandidateSample.sample_id] === 'rejected' ? '已拒绝' : '待修改' }}</span><span>{{ candidateReviewedIds.has(currentCandidateSample.sample_id) ? '已记录结论' : '选择后自动进入下一题；最后一题进入完成页' }}</span></div>
+                <div class="decision-buttons"><button type="button" :class="{ selected: candidateDecisions[currentCandidateSample.sample_id] === 'approved' }" @click="setCandidateDecision('approved')"><Check :size="16" />通过</button><button type="button" :class="{ selected: candidateDecisions[currentCandidateSample.sample_id] === 'needs_revision' }" @click="setCandidateDecision('needs_revision')"><RefreshCw :size="16" />待修改</button><button type="button" :class="{ selected: candidateDecisions[currentCandidateSample.sample_id] === 'rejected' }" @click="setCandidateDecision('rejected')"><Trash2 :size="16" />拒绝</button></div>
+                <label>问题<textarea v-model="currentCandidateSample.question" rows="3"></textarea></label><label>参考答案<textarea v-model="currentCandidateSample.reference_answer" rows="4"></textarea></label><label>审核备注<textarea v-model="candidateNotes[currentCandidateSample.sample_id]" rows="2" placeholder="记录需要修改的原因或审核说明"></textarea></label>
+                <details><summary>查看预期论点（{{ currentCandidateSample.expected_claims?.length || 0 }}）</summary><pre>{{ JSON.stringify(currentCandidateSample.expected_claims || [], null, 2) }}</pre></details><details><summary>查看 Gold evidence（{{ currentCandidateSample.gold_evidence?.length || 0 }}）</summary><pre>{{ JSON.stringify(currentCandidateSample.gold_evidence || [], null, 2) }}</pre></details>
+                <div class="candidate-navigation"><button class="secondary-button" :disabled="candidateReviewIndex === 0" @click="candidateReviewIndex -= 1"><ArrowLeft :size="15" />上一题</button><button class="secondary-button" :disabled="candidateReviewIndex >= candidateDataset.samples.length - 1" @click="candidateReviewIndex += 1">下一题<ArrowRight :size="15" /></button></div>
+              </article>
+              <aside class="candidate-review-summary"><h3>实时审核摘要</h3><div class="review-count-grid"><span><small>已通过</small><strong>{{ candidateReviewCounts.approved }}</strong></span><span><small>待修改</small><strong>{{ candidateReviewCounts.needsRevision }}</strong></span><span><small>已拒绝</small><strong>{{ candidateReviewCounts.rejected }}</strong></span><span><small>待审核</small><strong>{{ candidateReviewCounts.pending }}</strong></span><span><small>候选总数</small><strong>{{ candidateReviewCounts.total }}</strong></span></div><div class="freeze-readiness" :class="{ ready: candidateApprovalDelta === 0 }"><strong>{{ candidateApprovalDelta === 0 ? '已满足冻结条件' : `距离冻结还差 ${candidateApprovalDelta} 道通过题` }}</strong><span>Gold 由 Pearl 固定题与本次审核通过的 48 道候选题组成。</span></div><div class="generation-coverage"><strong>生成覆盖（只读）</strong><span>选中单元 {{ candidateAudit?.coverage?.selected_unit_count ?? '--' }} · 覆盖单元 {{ candidateAudit?.coverage?.covered_unit_count ?? '--' }} · 含证据题目 {{ candidateAudit?.coverage?.samples_with_evidence ?? '--' }}</span></div><label>审核人<input v-model="reviewerName" type="text" maxlength="120" placeholder="可选" /></label></aside>
+            </div>
+          <div class="review-action-bar"><div><strong>先重绑/保存，再冻结</strong><span>下一次重绑将写入：{{ ingestionDisplayName(ingestion) }}。若旧候选题无法重绑，可基于当前工作索引重新生成候选集；历史审核记录不会被删除。</span></div><div class="review-gate-actions"><button class="secondary-button" :disabled="candidateLoading || !ingestionReady" :title="`重绑到 ${ingestionDisplayName(ingestion)}`" @click="rebindCandidateToCurrentIndex"><RefreshCw :size="15" />重绑所选索引并复审</button><button class="secondary-button" :disabled="candidateLoading || !ingestionReady" :title="`配置并基于 ${ingestionDisplayName(ingestion)} 生成新的候选题`" @click="openCandidateGenerationConfig"><RefreshCw :size="15" />重新生成当前索引候选集</button><button class="secondary-button" :disabled="candidateLoading" @click="saveCandidateReview"><Check :size="15" />保存逐题审核</button><button class="primary-button" :disabled="candidateFreezeLoading || candidateApprovalDelta !== 0 || candidateReviewCounts.pending !== 0 || !candidateBoundToSelectedIndex" @click="freezeGoldDataset()"><Database :size="15" />冻结 Gold 基准集</button><button class="secondary-button" :disabled="!canBindProductionBaseline" title="仅用于绑定已发布的正式 active 索引；不会绑定当前 staged 索引" @click="bindEvaluationBaseline"><Gauge :size="15" />绑定正式生产基准</button></div><p v-if="!candidateBoundToSelectedIndex" class="review-feedback error"><AlertCircle :size="15" />当前候选题绑定 <code>{{ candidateRun?.index_version || '--' }}</code>，而所选评测索引为 <code>{{ ingestion?.index_version || '--' }}</code>；可先点击“重绑所选索引并复审”，若显示无法重绑 locator，则点击“重新生成当前索引候选集”。</p><p v-if="goldDataset.exists && !canBindProductionBaseline" class="review-feedback"><AlertCircle :size="15" />正式 active 索引：{{ indexReferenceLabel(goldDataset.production_index_version) }}；当前已冻结 Gold（旧版本）：{{ indexReferenceLabel(goldDataset.bound_index_version) }}。完成重绑、复审、保存和冻结替换后，这里才会更新。</p><p v-if="candidateMessage" class="review-feedback success"><Check :size="15" />{{ candidateMessage }}</p><p v-if="candidateActionError" class="review-feedback error"><AlertCircle :size="15" />{{ candidateActionError }}</p></div>
+            </template>
+          </section>
+          <div v-if="goldReplaceDialogOpen" class="gold-replace-backdrop" role="presentation"><section class="gold-replace-dialog" role="dialog" aria-modal="true" aria-labelledby="gold-replace-title"><p class="eyebrow">EXISTING GOLD DATASET</p><h2 id="gold-replace-title">替换当前 Gold 基准集？</h2><p>当前本地 Gold 已存在。确认替换后，旧基准会先归档到本地 history，再冻结当前审核结果；不会直接丢失。</p><div class="review-gate-actions"><button class="secondary-button" @click="goldReplaceDialogOpen = false">保留当前基准</button><button class="primary-button" :disabled="candidateFreezeLoading" @click="freezeGoldDataset(true)">确认替换并冻结</button></div></section></div>
         </template>
 
         <template v-else-if="activeNav === 'evaluation'">
@@ -1123,9 +1938,14 @@ onUnmounted(() => {
               </div>
             </div>
             <small class="strategy-profile-hint">内置 profile 不可直接修改；保存自定义 profile 后，只有显式发布才会切换正式默认配置。当前正式：{{ strategyProfiles.find((profile) => profile.profile_id === publishedProfileId)?.name || 'active_current' }}</small>
+            <label class="switch-row parallel-evaluation-switch"><input v-model="parallelEvaluationEnabled" type="checkbox" /><span class="switch-control"></span><span><strong>并行运行多个策略实验</strong><small>一次选择 2–4 个已保存 profile。后端会分别创建独立 run，并由评测 worker 的多个 slot 并行领取；每个 run 的题集、配置和报告仍完全隔离。</small></span></label>
+            <div v-if="parallelEvaluationEnabled" class="parallel-profile-grid">
+              <label v-for="profile in strategyProfiles" :key="`parallel-${profile.profile_id}`" :class="{ selected: parallelProfileIds.includes(profile.profile_id), disabled: !parallelProfileIds.includes(profile.profile_id) && parallelProfileIds.length >= 4 }"><input type="checkbox" :checked="parallelProfileIds.includes(profile.profile_id)" :disabled="!parallelProfileIds.includes(profile.profile_id) && parallelProfileIds.length >= 4" @change="toggleParallelProfile(profile.profile_id)" /><span><strong>{{ profile.name }}</strong><small>{{ profile.retrieval_profile }} · {{ profile.ragas_profile }}</small></span></label>
+              <small class="parallel-profile-hint">已选择 {{ parallelProfileIds.length }}/4。当前正在编辑的 profile 会使用页面中的未保存草稿；其他 profile 使用各自已保存快照。</small>
+            </div>
           </section>
-          <div class="evaluation-intro"><div><p class="kicker">评测中心</p><h2>{{ evaluationSection === 'config' ? '统一启动 retrieval baseline 与 Ragas judge' : evaluationSection === 'events' ? '跟踪本次评测的每个阶段' : '比较不同时间、知识源与策略运行' }}</h2><p>评测绑定明确的 staged index 和通用 rag_eval_v1 题集；每次运行都会生成独立报告产物。</p></div><span v-if="evaluationRun" class="status-pill" :class="statusTone(evaluationRun.status)">{{ statusLabel(evaluationRun.status) }}</span></div>
-          <div v-if="actionError || configError || comparisonError" class="alert danger-alert"><AlertCircle :size="17" /><span>{{ actionError || configError || comparisonError }}</span></div>
+          <div class="evaluation-intro"><div><p class="kicker">评测中心</p><h2>{{ evaluationSection === 'config' ? '配置并启动评测' : evaluationSection === 'events' ? '跟踪本次评测的每个阶段' : '比较不同时间、知识源与策略运行' }}</h2><p>每次运行绑定所选索引和题集快照，独立产出报告产物。</p></div><span v-if="evaluationRun" class="status-pill" :class="statusTone(evaluationRun.status)">{{ statusLabel(evaluationRun.status) }}</span></div>
+          <div v-if="actionError || configError || comparisonError" class="alert danger-alert" role="alert"><AlertCircle :size="17" /><span>{{ actionError || configError || comparisonError }}</span></div>
           <div v-if="configMessage" class="alert success-alert"><Check :size="17" /><span>{{ configMessage }}</span></div>
 
           <template v-if="evaluationSection === 'config'">
@@ -1138,6 +1958,7 @@ onUnmounted(() => {
                   <div class="config-selectors"><label>检索 profile<select v-model="retrievalProfile"><option v-for="profile in Object.keys(configData.retrieval_profiles)" :key="profile" :value="profile">{{ profile }}</option></select></label><label>Ragas profile<select v-model="ragasProfile"><option v-for="profile in configData.ragas.available_profiles" :key="profile" :value="profile">{{ profile }}</option></select></label></div>
                   <div class="config-section-heading"><strong>检索参数</strong><small>鼠标悬停参数说明可查看建议范围和硬限制</small></div>
                   <div class="config-fields"><label v-for="field in retrievalFieldKeys" :key="`retrieval-${field}`" class="config-field"><span class="field-title"><span>{{ configMeta(field).label }}</span><span class="config-help" :title="configTooltip(field)">?</span></span><input :value="draftDisplay(retrievalDraft, field)" type="number" :step="configMeta(field).integer ? 1 : 0.01" @input="updateDraft(retrievalDraft, field, $event)" /><small>建议 {{ formatRange(configMeta(field).recommended) }} · 硬限制 {{ formatRange(configMeta(field).allowed) }}</small></label></div>
+                  <label class="config-field config-select-field"><span class="field-title"><span>正式回答 evidence 压缩</span><span class="config-help" title="正式回答和 Ragas judge 会复用压缩后的 evidence；page_dedupe 会按文档、物理页和内容类型去重。">?</span></span><select v-model="retrievalDraft.answer_context_compression"><option v-for="option in answerCompressionOptions" :key="option" :value="option">{{ option === 'none' ? '不压缩（P0）' : '按文档/页/内容类型去重（P2）' }}</option></select><small>该字段与“正式回答最大上下文数”共同控制正式回答 evidence；Ragas judge 会复用同一结果</small></label>
                   <div class="config-section-heading"><strong>Ragas judge 参数</strong><small>超出硬限制会被后端拒绝，建议范围外会提示复核</small></div>
                   <div class="config-fields"><label v-for="field in ragasFieldKeys" :key="`ragas-${field}`" class="config-field"><span class="field-title"><span>{{ configMeta(field).label }}</span><span class="config-help" :title="configTooltip(field)">?</span></span><input :value="draftDisplay(ragasDraft, field)" type="number" :step="configMeta(field).integer ? 1 : 0.01" @input="updateDraft(ragasDraft, field, $event)" /><small>建议 {{ formatRange(configMeta(field).recommended) }} · 硬限制 {{ formatRange(configMeta(field).allowed) }}</small></label></div>
                   <div class="metric-selector"><strong>Ragas 指标</strong><label v-for="metric in metricOptions" :key="metric"><input type="checkbox" :checked="isMetricSelected(metric)" @change="toggleMetric(metric)" />{{ metric }}</label></div>
@@ -1147,12 +1968,12 @@ onUnmounted(() => {
               </article>
               <aside class="panel production-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge gold"><Database :size="18" /></span><div><p class="eyebrow">PRODUCTION CONFIG</p><h2>当前正式配置</h2></div></div><span class="status-pill" :class="productionConfig?.exists ? 'success' : 'muted'">{{ productionConfig?.exists ? '已存在' : '未发布' }}</span></div><div class="production-body"><p>这里展示正式 RAG 当前读取的检索参数。只有显式点击发布后才会更新正式配置文件。</p><pre v-if="productionConfig?.retrieval_config">{{ JSON.stringify(productionConfig.retrieval_config, null, 2) }}</pre><div v-else class="empty-line">暂无正式配置</div><div class="production-meta" v-if="productionConfig?.metadata"><span>最近发布</span><code>{{ String(productionConfig.metadata.published_at || '--') }}</code></div></div></aside>
             </section>
-             <section class="panel dataset-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge coral"><FileText :size="18" /></span><div><p class="eyebrow">DATASET INPUT</p><h2>通用 rag_eval_v1 题集</h2></div></div><span class="count-label">不绑定特定题集</span></div><div class="dataset-body"><p>评测数据由本次运行显式快照保存。当前正式题集可以粘贴到这里，后续知识源评测继续复用同一 schema。</p><textarea v-model="datasetText" rows="8" placeholder="请粘贴 rag_eval_v1 题集 JSON"></textarea></div><div class="bound-index"><span>评测索引</span><code>{{ ingestion?.index_version || '--' }}</code><span class="bound-check"><Check :size="13" />{{ ingestionReady ? '已就绪' : '请先摄取知识源' }}</span></div><div class="panel-footer"><button class="primary-button" :disabled="evaluationLoading || !ingestionReady" @click="startEvaluation"><Play :size="16" />{{ executeRagas ? '开始完整评测' : '开始只运行检索' }}</button><button v-if="evaluationRun && ['created','running','cancelling'].includes(evaluationRun.status)" class="secondary-button danger" :disabled="evaluationRun.status === 'cancelling'" @click="cancelEvaluation">取消</button></div></section>
+             <section class="panel dataset-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge coral"><Database :size="18" /></span><div><p class="eyebrow">INDEX-BOUND DATASET</p><h2>当前工作索引与测试集</h2></div></div><span class="status-pill" :class="goldDataset.compatibility === 'compatible' ? 'success' : goldDataset.compatibility === 'rebind_required' ? 'danger' : 'muted'">{{ goldDataset.compatibility === 'compatible' ? '可严格评测' : goldDataset.compatibility === 'rebind_required' ? '需重绑' : '待选择' }}</span></div><div class="dataset-body"><p>评测只对与当前索引绑定的题集生效：严格 Recall/MRR 按绑定的证据定位计算。若需切换索引，请返回“隔离知识源工作台”；题目文本可复用，但新索引必须重绑并复审证据。</p><div class="gold-dataset-summary" :class="{ empty: !goldDataset.exists }"><template v-if="goldDataset.exists"><span><small>数据集</small><code>{{ goldDataset.dataset_id }}</code></span><span><small>绑定索引</small><strong>{{ indexReferenceLabel(goldDataset.bound_index_version) }}</strong><code>{{ goldDataset.bound_index_version || '--' }}</code></span><span><small>样本数</small><strong>{{ goldDataset.sample_count }}</strong></span></template><span v-else>请先进入“候选题审核”，保存审核结果并冻结 Gold 基准集。</span></div></div><div class="bound-index" :class="{ incompatible: goldDataset.compatibility === 'rebind_required' }"><span>当前工作索引</span><strong>{{ ingestionDisplayName(ingestion) }}</strong><code>{{ ingestion?.index_version || '--' }}</code><span class="bound-check"><Check v-if="goldDataset.compatibility === 'compatible'" :size="13" /><AlertCircle v-else :size="13" />{{ goldDataset.compatibility_message || '请先选择索引' }}</span></div><div class="panel-footer"><button class="primary-button" :disabled="evaluationLoading || !ingestionReady || !goldDataset.exists || goldDataset.compatibility !== 'compatible' || (parallelEvaluationEnabled && (parallelProfileIds.length < 2 || parallelProfileIds.length > 4))" @click="startEvaluation"><Play :size="16" />{{ parallelEvaluationEnabled ? `并行启动 ${parallelProfileIds.length} 个实验` : executeRagas ? '开始完整评测' : '开始只运行检索' }}</button><button v-if="parallelEvaluationActive || (evaluationRun && ['created','queued','running','cancelling'].includes(evaluationRun.status))" class="secondary-button danger" :disabled="evaluationRun?.status === 'cancelling'" @click="cancelEvaluation">{{ parallelEvaluationActive ? '取消全部并行实验' : '取消' }}</button></div></section>
           </template>
 
-          <template v-else-if="evaluationSection === 'events'"><div v-if="evaluationActive" class="ai-waiting-notice"><LoaderCircle class="spin" :size="17" /><span>{{ evaluationWaitingMessage }}</span></div><section class="panel evaluation-events-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge slate"><CircleDot :size="18" /></span><div><p class="eyebrow">EVALUATION TRACE</p><h2>评测流程事件</h2></div></div><span class="count-label">{{ displayEvents.length }} 条（重复进度已合并）</span></div><div class="event-list evaluation-event-list"><div v-if="!displayEvents.length" class="empty-line">等待评测中心启动任务</div><div v-for="(event, index) in displayEvents" :key="`${event.timestamp}-${index}`" class="event-row"><span class="event-time">{{ formatBeijingTime(event.timestamp) }}</span><span class="event-type">{{ event.type }}</span><span>{{ event.message }}</span></div></div></section><div class="event-actions"><button class="secondary-button" @click="selectEvaluationSection('config')"><SlidersHorizontal :size="15" />返回评测配置</button><button class="secondary-button" :disabled="!evaluationRun" @click="evaluationRun && openReport(evaluationRun.run_id)"><FileChartColumn :size="15" />编辑本次报告</button></div></template>
+          <template v-else-if="evaluationSection === 'events'"><div v-if="evaluationActive || parallelEvaluationActive" class="ai-waiting-notice"><LoaderCircle class="spin" :size="17" /><span>{{ parallelEvaluationActive ? `并行实验进行中，已完成 ${parallelCompletedCount}/${evaluationBatchRuns.length}；各 run 会独立生成报告。` : evaluationWaitingMessage }}</span></div><section v-if="evaluationBatchRuns.length" class="panel parallel-run-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><GitCompare :size="18" /></span><div><p class="eyebrow">PARALLEL EXPERIMENTS</p><h2>并行实验状态</h2></div></div><span class="count-label">{{ parallelCompletedCount }} / {{ evaluationBatchRuns.length }} 完成</span></div><div class="parallel-run-grid"><button v-for="run in evaluationBatchRuns" :key="run.run_id" :class="{ selected: evaluationRun?.run_id === run.run_id }" @click="focusBatchRun(run)"><span><strong>{{ profileName(run.strategy_profile?.profile_id) }}</strong><small>{{ run.run_id }}</small></span><span class="status-pill" :class="statusTone(run.status)">{{ statusLabel(run.status) }}</span></button></div></section><section class="panel evaluation-progress-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><Gauge :size="18" /></span><div><p class="eyebrow">PIPELINE PROGRESS</p><h2>评测阶段进度</h2></div></div><span class="count-label">{{ evaluationCompletedStages }} / {{ evaluationProgressRows.length }} 阶段完成</span></div><div class="progress-stage-grid"><article v-for="(row, index) in evaluationProgressRows" :key="row.step" class="progress-stage-card" :class="row.status"><div class="progress-stage-heading"><span class="progress-stage-index">{{ String(index + 1).padStart(2, '0') }}</span><div><strong>{{ evaluationStageLabel(row.step) }}</strong><small>{{ evaluationProgressStatusLabel(row.status) }}</small></div></div><div class="progress-stage-track"><span :style="{ width: `${evaluationProgressPercent(row.current, row.total, row.status)}%` }"></span></div><div class="progress-stage-meta"><span v-if="row.phase">{{ evaluationPhaseLabel(row.phase) }}</span><strong v-if="row.current !== undefined && row.total !== undefined">{{ row.current }} / {{ row.total }}</strong><span v-else>{{ row.status === 'done' ? '阶段已完成' : row.status === 'pending' ? '等待前序阶段' : '等待事件更新' }}</span></div><div v-if="row.substeps?.length" class="progress-substeps"><span v-for="substep in row.substeps" :key="substep.phase"><small>{{ evaluationPhaseLabel(substep.phase) }}</small><b v-if="substep.current !== undefined && substep.total !== undefined">{{ substep.current }} / {{ substep.total }}</b></span></div></article></div></section><section class="panel evaluation-events-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge slate"><CircleDot :size="18" /></span><div><p class="eyebrow">EVALUATION TRACE</p><h2>评测流程事件</h2></div></div><span class="count-label">{{ displayEvents.length }} 条（重复进度已合并）</span></div><div class="event-list evaluation-event-list"><div v-if="!displayEvents.length" class="empty-line">等待评测中心启动任务</div><div v-for="(event, index) in displayEvents" :key="`${event.timestamp}-${index}`" class="event-row"><span class="event-time">{{ formatBeijingTime(event.timestamp) }}</span><span class="event-type">{{ event.type }}</span><span>{{ event.message }}</span></div></div></section><div class="event-actions"><button class="secondary-button" @click="selectEvaluationSection('config')"><SlidersHorizontal :size="15" />返回评测配置</button><button class="secondary-button" :disabled="!evaluationRun" @click="evaluationRun && openReport(evaluationRun.run_id)"><FileChartColumn :size="15" />编辑当前报告</button><button v-if="evaluationBatchRuns.length && !parallelEvaluationActive" class="primary-button" @click="selectEvaluationSection('comparison')"><GitCompare :size="15" />对比实验结果</button></div></template>
 
-          <template v-else><section class="comparison-layout"><article class="panel comparison-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><GitCompare :size="18" /></span><div><p class="eyebrow">EVALUATION COMPARISON</p><h2>时间趋势与运行对比</h2></div></div><span class="count-label">隔离数据</span></div><div class="comparison-controls"><label>时间跨度<select v-model="historyRange"><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="90d">近 90 天</option><option value="all">全部历史</option></select></label><label>知识源<select v-model="historySource"><option value="">全部知识源</option><option v-for="source in sourceFilterOptions" :key="source" :value="source">{{ source }}</option></select></label><label>粒度<select v-model="comparisonGranularity"><option value="day">按天</option><option value="run">按运行</option></select></label><button class="secondary-button" @click="refreshComparison"><RefreshCw :size="15" />刷新</button></div><div class="comparison-mode-grid"><button class="comparison-mode" :class="{ selected: comparisonMode === 'time_trend' }" @click="comparisonMode = 'time_trend'"><TrendingUp :size="18" /><span>时间趋势</span><small>观察指标随时间变化</small></button><button class="comparison-mode" :class="{ selected: comparisonMode === 'run_diff' }" @click="comparisonMode = 'run_diff'"><GitCompare :size="18" /><span>运行 A/B</span><small>比较基线与候选 run</small></button><button class="comparison-mode" :class="{ selected: comparisonMode === 'strategy_diff' }" @click="comparisonMode = 'strategy_diff'"><SlidersHorizontal :size="18" /><span>策略对比</span><small>比较检索与 Ragas 配置</small></button></div><div v-if="historyLoading || diffLoading" class="comparison-empty"><LoaderCircle class="spin" :size="24" />正在读取隔离评测</div><template v-else-if="comparisonMode === 'time_trend'"><div v-if="!trendRows.length" class="comparison-empty"><TrendingUp :size="24" /><strong>暂无可比较的隔离评测</strong><p>完成通用 rag_eval_v1 评测后，这里会展示真实历史趋势。</p></div><div v-else class="comparison-table-wrap"><table class="comparison-table"><thead><tr><th>时间</th><th>运行数</th><th v-for="metric in historyMetricKeys" :key="metric">{{ metricLabel(metric) }}</th></tr></thead><tbody><tr v-for="row in trendRows" :key="row.label"><td class="mono">{{ row.label }}</td><td>{{ row.count }}</td><td v-for="metric in historyMetricKeys" :key="metric">{{ formatMetric(row.metrics[metric]) }}</td></tr></tbody></table></div></template><template v-else><div class="diff-controls"><label>基线<select v-model="diffBaseRunId"><option v-for="run in historyRuns" :key="`base-${run.run_id}`" :value="run.run_id">{{ historyLabel(run) }}</option></select></label><label>候选<select v-model="diffCandidateRunId"><option v-for="run in historyRuns" :key="`candidate-${run.run_id}`" :value="run.run_id">{{ historyLabel(run) }}</option></select></label><button class="secondary-button" @click="loadEvaluationDiff"><GitCompare :size="15" />加载对比</button></div><div v-if="!diffResult" class="comparison-empty"><GitCompare :size="24" /><strong>选择两个隔离评测运行</strong><p>运行 A/B 与策略对比要求题集 identity 一致；跨题集比较会被后端拒绝。</p></div><template v-else><div class="comparison-table-wrap metric-comparison-wrap"><table class="comparison-table metric-comparison-table"><thead><tr><th>指标</th><th>基线</th><th>候选</th><th>变化</th></tr></thead><tbody><tr v-for="metric in diffResult.metric_deltas" :key="metric.metric"><th scope="row">{{ metricLabel(metric.metric) }}</th><td>{{ formatMetric(metric.base) }}</td><td>{{ formatMetric(metric.candidate) }}</td><td><span class="metric-change" :class="metricDeltaTone(metric.delta)" :title="metricDeltaLabel(metric.delta)"><ArrowUp v-if="metric.delta !== null && metric.delta > 0" :size="15" aria-hidden="true" /><ArrowDown v-else-if="metric.delta !== null && metric.delta < 0" :size="15" aria-hidden="true" /><Minus v-else :size="15" aria-hidden="true" /><span>{{ formatMetric(metric.delta) }}</span></span></td></tr></tbody></table></div><div v-if="diffResult.config_deltas.length" class="config-diff-section"><div class="diff-section-heading"><div><h3>配置差异</h3><p>以下差异来自两次 run 的独立配置快照。</p></div><span>{{ diffResult.config_deltas.length }} 项</span></div><div class="comparison-table-wrap config-diff-wrap"><table class="comparison-table config-diff-table"><thead><tr><th>配置项</th><th>基线</th><th>候选</th></tr></thead><tbody><tr v-for="item in diffResult.config_deltas" :key="item.field"><th scope="row">{{ configFieldLabel(item.field) }}<small class="config-field-path">{{ item.field }}</small></th><td><code>{{ formatConfigValue(item.base) }}</code></td><td><code>{{ formatConfigValue(item.candidate) }}</code></td></tr></tbody></table></div></div><div class="diff-summary"><span>样本 {{ diffResult.summary.sample_count }}</span><span>整体改善 {{ diffResult.summary.improved_count }}</span><span>整体退化 {{ diffResult.summary.regressed_count }}</span><span title="持续坏例可与整体改善、整体退化和指标分歧重叠">持续坏例 {{ diffResult.summary.persistent_bad_case_count }} <small>可重叠</small></span></div><div class="comparison-legend" aria-label="指标变化图例"><span class="positive"><ArrowUp :size="14" />改善</span><span class="negative"><ArrowDown :size="14" />退化</span><span class="flat"><Minus :size="14" />持平</span><span class="unscored">未评分</span><small>数值越高越好；持续坏例可与样本结论重叠</small></div><div class="sample-diff-toolbar"><label>样本筛选<select v-model="sampleFilter"><option value="all">全部样本</option><option value="regressed">整体退化</option><option value="mixed">指标分歧</option><option value="improved">整体改善</option><option value="unchanged">基本持平</option><option value="unscored">未评分</option></select></label><label>排序<select v-model="sampleSort"><option value="default">按样本编号</option><option value="classification">退化优先</option><option value="largest_drop">最大下降优先</option></select></label><span class="sample-count-label">显示 {{ visibleSampleDeltas.length }} / {{ diffResult.sample_deltas.length }} 条</span></div><div class="comparison-table-wrap sample-diff-wrap"><table class="comparison-table sample-diff-table"><thead><tr><th>样本编号</th><th>对比结论</th><th v-for="metric in sampleMetricKeys" :key="metric">{{ metricLabel(metric) }}<small>基线 / 候选 / 变化</small></th></tr></thead><tbody><tr v-for="sample in visibleSampleDeltas" :key="sample.sample_id"><td class="mono" :title="sample.question">{{ sample.sample_id }}</td><td><span class="classification-badge" :class="sampleClassificationTone(sample.classification)">{{ sampleClassificationLabel(sample.classification) }}</span></td><td v-for="metric in sampleMetricKeys" :key="metric" class="sample-metric-cell"><template v-if="sampleMetric(sample, metric)"><div class="sample-metric"><div class="sample-metric-line"><small>基线</small><span>{{ formatMetric(sampleMetric(sample, metric)?.base) }}</span></div><div class="sample-metric-line"><small>候选</small><span :class="['sample-metric-candidate', metricDeltaTone(sampleMetric(sample, metric)?.delta ?? null)]">{{ formatMetric(sampleMetric(sample, metric)?.candidate) }} <span class="sample-metric-delta"><ArrowUp v-if="(sampleMetric(sample, metric)?.delta ?? 0) > 0" :size="13" /><ArrowDown v-else-if="(sampleMetric(sample, metric)?.delta ?? 0) < 0" :size="13" /><Minus v-else :size="13" />{{ formatMetric(sampleMetric(sample, metric)?.delta ?? null) }}</span></span></div></div></template><span v-else class="unscored">未评分</span></td></tr><tr v-if="!visibleSampleDeltas.length"><td class="sample-empty" :colspan="sampleMetricKeys.length + 2">没有符合条件的样本</td></tr></tbody></table></div></template></template></article><aside class="panel quick-actions-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge gold"><Gauge :size="18" /></span><div><p class="eyebrow">快捷操作流程</p><h2>快速处理本次对比</h2></div></div></div><div class="quick-action-list"><button class="quick-action" @click="selectEvaluationSection('config')"><span class="quick-step">01</span><span><strong>加载并修改配置</strong><small>先确认当前检索与 Ragas 参数</small></span><ChevronDown :size="16" /></button><button class="quick-action" @click="selectEvaluationSection('events')"><span class="quick-step">02</span><span><strong>核对执行事件</strong><small>确认评测没有被取消或卡住</small></span><ChevronDown :size="16" /></button><button class="quick-action" :disabled="!evaluationRun" @click="evaluationRun && openReport(evaluationRun.run_id)"><span class="quick-step">03</span><span><strong>编辑本次报告</strong><small>在报告编辑中切换三类 Markdown</small></span><ChevronDown :size="16" /></button><button class="quick-action" @click="selectNav('workspace')"><span class="quick-step">04</span><span><strong>更换知识源</strong><small>回到工作台创建新的 staged index</small></span><ChevronDown :size="16" /></button></div></aside></section></template>
+          <template v-else><section class="comparison-layout"><article class="panel comparison-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><GitCompare :size="18" /></span><div><p class="eyebrow">EVALUATION COMPARISON</p><h2>时间趋势与运行对比</h2></div></div><span class="count-label">隔离数据</span></div><div class="comparison-controls"><label>时间跨度<select v-model="historyRange"><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="90d">近 90 天</option><option value="all">全部历史</option></select></label><label>知识源<select v-model="historySource"><option value="">全部知识源</option><option v-for="source in sourceFilterOptions" :key="source" :value="source">{{ source }}</option></select></label><label>粒度<select v-model="comparisonGranularity"><option value="day">按天</option><option value="run">按运行</option></select></label><button class="secondary-button" @click="refreshComparison"><RefreshCw :size="15" />刷新</button></div><div class="comparison-mode-grid"><button class="comparison-mode" :class="{ selected: comparisonMode === 'time_trend' }" @click="comparisonMode = 'time_trend'"><TrendingUp :size="18" /><span>时间趋势</span><small>观察指标随时间变化</small></button><button class="comparison-mode" :class="{ selected: comparisonMode === 'run_diff' }" @click="comparisonMode = 'run_diff'"><GitCompare :size="18" /><span>运行 A/B</span><small>比较基线与候选 run</small></button><button class="comparison-mode" :class="{ selected: comparisonMode === 'strategy_diff' }" @click="comparisonMode = 'strategy_diff'"><SlidersHorizontal :size="18" /><span>策略对比</span><small>比较检索与 Ragas 配置</small></button></div><div v-if="historyLoading || diffLoading" class="comparison-empty"><LoaderCircle class="spin" :size="24" />正在读取隔离评测</div><template v-else-if="comparisonMode === 'time_trend'"><div v-if="!trendRows.length" class="comparison-empty"><TrendingUp :size="24" /><strong>暂无可比较的评测</strong><p>完成一次完整评测后，这里会展示真实历史趋势。</p></div><div v-else class="comparison-table-wrap"><table class="comparison-table"><thead><tr><th>时间</th><th>运行数</th><th v-for="metric in historyMetricKeys" :key="metric">{{ metricLabel(metric) }}</th></tr></thead><tbody><tr v-for="row in trendRows" :key="row.label"><td class="mono">{{ row.label }}</td><td>{{ row.count }}</td><td v-for="metric in historyMetricKeys" :key="metric">{{ formatMetric(row.metrics[metric]) }}</td></tr></tbody></table></div></template><template v-else><div class="diff-controls"><label>基线<select v-model="diffBaseRunId"><option v-for="run in historyRuns" :key="`base-${run.run_id}`" :value="run.run_id">{{ historyLabel(run) }}</option></select></label><label>候选<select v-model="diffCandidateRunId"><option v-for="run in historyRuns" :key="`candidate-${run.run_id}`" :value="run.run_id">{{ historyLabel(run) }}</option></select></label><button class="secondary-button" @click="loadEvaluationDiff"><GitCompare :size="15" />加载对比</button></div><div v-if="!diffResult" class="comparison-empty"><GitCompare :size="24" /><strong>选择两个隔离评测运行</strong><p>运行 A/B 与策略对比要求题集 identity 一致；跨题集比较会被后端拒绝。</p></div><template v-else><div class="comparison-table-wrap metric-comparison-wrap"><table class="comparison-table metric-comparison-table"><thead><tr><th>指标</th><th>基线</th><th>候选</th><th>变化</th></tr></thead><tbody><tr v-for="metric in diffResult.metric_deltas" :key="metric.metric"><th scope="row">{{ metricLabel(metric.metric) }}</th><td>{{ formatMetric(metric.base) }}</td><td>{{ formatMetric(metric.candidate) }}</td><td><span class="metric-change" :class="metricDeltaTone(metric.delta)" :title="metricDeltaLabel(metric.delta)"><ArrowUp v-if="metric.delta !== null && metric.delta > 0" :size="15" aria-hidden="true" /><ArrowDown v-else-if="metric.delta !== null && metric.delta < 0" :size="15" aria-hidden="true" /><Minus v-else :size="15" aria-hidden="true" /><span>{{ formatMetric(metric.delta) }}</span></span></td></tr></tbody></table></div><div v-if="diffResult.config_deltas.length" class="config-diff-section"><div class="diff-section-heading"><div><h3>配置差异</h3><p>以下差异来自两次 run 的独立配置快照。</p></div><span>{{ diffResult.config_deltas.length }} 项</span></div><div class="comparison-table-wrap config-diff-wrap"><table class="comparison-table config-diff-table"><thead><tr><th>配置项</th><th>基线</th><th>候选</th></tr></thead><tbody><tr v-for="item in diffResult.config_deltas" :key="item.field"><th scope="row">{{ configFieldLabel(item.field) }}<small class="config-field-path">{{ item.field }}</small></th><td><code>{{ formatConfigValue(item.base) }}</code></td><td><code>{{ formatConfigValue(item.candidate) }}</code></td></tr></tbody></table></div></div><div class="diff-summary"><span>样本 {{ diffResult.summary.sample_count }}</span><span>整体改善 {{ diffResult.summary.improved_count }}</span><span>整体退化 {{ diffResult.summary.regressed_count }}</span><span title="持续坏例可与整体改善、整体退化和指标分歧重叠">持续坏例 {{ diffResult.summary.persistent_bad_case_count }} <small>可重叠</small></span></div><div class="comparison-legend" aria-label="指标变化图例"><span class="positive"><ArrowUp :size="14" />改善</span><span class="negative"><ArrowDown :size="14" />退化</span><span class="flat"><Minus :size="14" />持平</span><span class="unscored">未评分</span><small>数值越高越好；持续坏例可与样本结论重叠</small></div><div class="sample-diff-toolbar"><label>样本筛选<select v-model="sampleFilter"><option value="all">全部样本</option><option value="regressed">整体退化</option><option value="mixed">指标分歧</option><option value="improved">整体改善</option><option value="unchanged">基本持平</option><option value="unscored">未评分</option></select></label><label>排序<select v-model="sampleSort"><option value="default">按样本编号</option><option value="classification">退化优先</option><option value="largest_drop">最大下降优先</option></select></label><span class="sample-count-label">显示 {{ visibleSampleDeltas.length }} / {{ diffResult.sample_deltas.length }} 条</span></div><div class="comparison-table-wrap sample-diff-wrap"><table class="comparison-table sample-diff-table"><thead><tr><th>样本编号</th><th>对比结论</th><th v-for="metric in sampleMetricKeys" :key="metric">{{ metricLabel(metric) }}<small>基线 / 候选 / 变化</small></th></tr></thead><tbody><tr v-for="sample in visibleSampleDeltas" :key="sample.sample_id"><td class="mono" :title="sample.question">{{ sample.sample_id }}</td><td><span class="classification-badge" :class="sampleClassificationTone(sample.classification)">{{ sampleClassificationLabel(sample.classification) }}</span></td><td v-for="metric in sampleMetricKeys" :key="metric" class="sample-metric-cell"><template v-if="sampleMetric(sample, metric)"><div class="sample-metric"><div class="sample-metric-line"><small>基线</small><span>{{ formatMetric(sampleMetric(sample, metric)?.base) }}</span></div><div class="sample-metric-line"><small>候选</small><span :class="['sample-metric-candidate', metricDeltaTone(sampleMetric(sample, metric)?.delta ?? null)]">{{ formatMetric(sampleMetric(sample, metric)?.candidate) }} <span class="sample-metric-delta"><ArrowUp v-if="(sampleMetric(sample, metric)?.delta ?? 0) > 0" :size="13" /><ArrowDown v-else-if="(sampleMetric(sample, metric)?.delta ?? 0) < 0" :size="13" /><Minus v-else :size="13" />{{ formatMetric(sampleMetric(sample, metric)?.delta ?? null) }}</span></span></div></div></template><span v-else class="unscored">未评分</span></td></tr><tr v-if="!visibleSampleDeltas.length"><td class="sample-empty" :colspan="sampleMetricKeys.length + 2">没有符合条件的样本</td></tr></tbody></table></div></template></template></article><aside class="panel quick-actions-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge gold"><Gauge :size="18" /></span><div><p class="eyebrow">快捷操作流程</p><h2>快速处理本次对比</h2></div></div></div><div class="quick-action-list"><button class="quick-action" @click="selectEvaluationSection('config')"><span class="quick-step">01</span><span><strong>加载并修改配置</strong><small>先确认当前检索与 Ragas 参数</small></span><ChevronDown :size="16" /></button><button class="quick-action" @click="selectEvaluationSection('events')"><span class="quick-step">02</span><span><strong>核对执行事件</strong><small>确认评测没有被取消或卡住</small></span><ChevronDown :size="16" /></button><button class="quick-action" :disabled="!evaluationRun" @click="evaluationRun && openReport(evaluationRun.run_id)"><span class="quick-step">03</span><span><strong>编辑本次报告</strong><small>在报告编辑中切换三类 Markdown</small></span><ChevronDown :size="16" /></button><button class="quick-action" @click="selectNav('workspace')"><span class="quick-step">04</span><span><strong>更换知识源</strong><small>回到工作台创建新的隔离索引</small></span><ChevronDown :size="16" /></button></div></aside></section></template>
         </template>
 
         <template v-else>
@@ -1161,7 +1982,7 @@ onUnmounted(() => {
            <div v-if="reportNotice" class="alert success-alert"><Check :size="17" /><span>{{ reportNotice }}</span></div>
            <section class="report-layout"><aside class="panel report-sidebar"><div class="panel-header"><div class="panel-title"><span class="icon-badge gold"><FileChartColumn :size="18" /></span><div><p class="eyebrow">REPORT HISTORY</p><h2>报告运行</h2></div></div></div><div class="report-filters"><label>时间跨度<select v-model="historyRange"><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="90d">近 90 天</option><option value="all">全部历史</option></select></label><label>知识源<select v-model="historySource"><option value="">全部知识源</option><option v-for="source in sourceFilterOptions" :key="source" :value="source">{{ source }}</option></select></label><button class="secondary-button" @click="loadEvaluationHistory"><RefreshCw :size="15" />刷新历史</button></div><div class="report-run-list"><button v-for="run in historyRuns" :key="run.run_id" class="report-run-item" :class="{ selected: reportRunId === run.run_id }" @click="reportRunId = run.run_id; loadReportArtifact()"><span><strong>{{ runProfileName(run) }}</strong><small>{{ runDatasetSubtitle(run) }} · {{ run.question_count || 0 }} 题</small><small>{{ run.source_label || '知识源未记录' }}</small><small v-if="run.stale" class="stale-hint">长时间无进展，可确认后删除</small></span><span class="status-pill" :class="statusTone(run.status)">{{ statusLabel(run.status) }}</span></button><div v-if="!historyRuns.length" class="empty-line">暂无符合筛选条件的评测运行</div></div></aside><article class="panel report-viewer"><div class="panel-header"><div><p class="eyebrow">{{ currentReportRunLabel }}</p><h2>{{ reportTab === 'pipeline' ? '流程报告' : reportTab === 'retrieval' ? '检索报告' : 'Ragas 报告' }}</h2></div><div class="report-header-actions"><span class="count-label">{{ selectedReportRun?.index_version || '--' }}</span><button class="secondary-button danger" :disabled="!reportDeleteCanProceed || reportDeleteLoading" @click="deleteReport"><Trash2 :size="15" />{{ reportDeleteLoading ? '删除中…' : selectedReportRun?.stale ? '删除卡住任务' : selectedReportRun && ['created', 'running', 'cancelling'].includes(selectedReportRun.status) ? '运行中不可删' : '删除报告' }}</button></div></div><div class="report-tabs" role="tablist"><button v-for="tab in (['pipeline','retrieval','ragas'] as ReportTab[])" :key="tab" :class="{ selected: reportTab === tab }" @click="selectReportTab(tab)">{{ tab === 'pipeline' ? '流程报告' : tab === 'retrieval' ? '检索报告' : 'Ragas 报告' }}</button></div><div v-if="reportLoading" class="report-empty"><LoaderCircle class="spin" :size="24" />正在加载 Markdown 报告</div><div v-else-if="!reportMarkdown" class="report-empty"><FileText :size="25" /><strong>请选择一个评测运行</strong><span>完成一次隔离评测后，报告会出现在这里。</span></div><div v-else class="markdown-preview" v-html="renderMarkdown(reportMarkdown)"></div></article></section>
         </template>
-        <footer class="page-footer"><span>每次摄取生成新的隔离运行目录</span><span>active pointer 不参与本流程</span><span>索引：{{ ingestion?.index_version || '--' }}</span></footer>
+        <footer class="page-footer"><span>每次摄取生成新的隔离运行目录</span><span>全程隔离，不触碰生产知识库</span><span>索引：{{ ingestion?.index_version || '--' }}</span></footer>
       </main>
     </section>
   </div>

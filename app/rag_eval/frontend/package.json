@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/**/*.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "^5.2.4",
