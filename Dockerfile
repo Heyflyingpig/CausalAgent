@@ -25,7 +25,8 @@ RUN pip install --no-cache-dir -r requirements-base.txt
 # 先安装 CPU 版 PyTorch，避免从 PyPI 拉取包含 CUDA 组件的超大 wheel
 RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu \
-    torch==2.7.1+cpu
+    torch==2.7.1+cpu \
+    torchvision==0.22.1+cpu
 
 # 再安装所有依赖
 COPY requirements.txt .

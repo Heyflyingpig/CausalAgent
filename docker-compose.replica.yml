@@ -81,6 +81,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: causalagent_app
+    command: ["sh", "-c", "exec gunicorn --bind 0.0.0.0:5001 --workers ${WEB_WORKERS:-1} --threads ${WEB_THREADS:-12} --timeout ${WEB_TIMEOUT:-120} CausalAgent:app"]
     environment:
       - MYSQL_HOST=mysql-primary
       - MYSQL_WRITE_HOST=mysql-primary
@@ -132,7 +133,8 @@ services:
       - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
-      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-1}
+      - R5_DATASET_ROOT=/app/tmp/r5_datasets
+      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-5}
       - R5_EVALUATION_POLL_INTERVAL_SECONDS=${R5_EVALUATION_POLL_INTERVAL_SECONDS:-1}
       - R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
       - R5_EVALUATION_JOB_STALE_AFTER_SECONDS=${R5_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
@@ -154,6 +156,7 @@ services:
       - /app/鏉傞」
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - ./tmp/r5_datasets:/app/tmp/r5_datasets
     depends_on:
       mysql-primary:
         condition: service_healthy
@@ -205,7 +208,7 @@ services:
       - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
-      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-1}
+      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-5}
       - R5_EVALUATION_POLL_INTERVAL_SECONDS=${R5_EVALUATION_POLL_INTERVAL_SECONDS:-1}
       - R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
       - R5_EVALUATION_JOB_STALE_AFTER_SECONDS=${R5_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
@@ -382,6 +385,7 @@ services:
       dockerfile: Dockerfile
     container_name: causalchat_rag_eval_worker
     command: python -m app.rag_eval.worker
+    env_file: .env
     environment:
       - MYSQL_HOST=mysql-primary
       - MYSQL_WRITE_HOST=mysql-primary
@@ -400,14 +404,18 @@ services:
       - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
       - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
       - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
-      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-1}
+      - R5_DATASET_ROOT=/app/tmp/r5_datasets
+      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-5}
+      - R5_INGESTION_CONCURRENCY_LIMIT=${R5_INGESTION_CONCURRENCY_LIMIT:-1}
+      - R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
+      - R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - R5_EVALUATION_CONCURRENCY_LIMIT=${R5_EVALUATION_CONCURRENCY_LIMIT:-3}
+      - R5_RAG_QUERY_CONCURRENCY_LIMIT=${R5_RAG_QUERY_CONCURRENCY_LIMIT:-2}
       - R5_EVALUATION_POLL_INTERVAL_SECONDS=${R5_EVALUATION_POLL_INTERVAL_SECONDS:-1}
       - R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
       - R5_EVALUATION_JOB_STALE_AFTER_SECONDS=${R5_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
       - R5_EVALUATION_STALE_AFTER_SECONDS=${R5_EVALUATION_STALE_AFTER_SECONDS:-1800}
-      - API_KEY=${API_KEY}
-      - BASE_URL=${BASE_URL}
-      - MODEL=${MODEL}
       - LLM_STRUCTURED_OUTPUT_METHOD=${LLM_STRUCTURED_OUTPUT_METHOD:-json_mode}
       - SECRET_KEY=${SECRET_KEY}
       - FLASK_ENV=development
@@ -419,13 +427,14 @@ services:
       - /app/__pycache__
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - ./tmp/r5_datasets:/app/tmp/r5_datasets
     depends_on:
       mysql-primary:
         condition: service_healthy
       mysql-replica:
         condition: service_healthy
     networks:
-      - causalchat_replica_network
+      - causalagent_replica_network
     restart: unless-stopped
 
 networks:

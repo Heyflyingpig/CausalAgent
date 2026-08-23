@@ -29,7 +29,22 @@ def upgrade_mysql_schema(project_root: Path | None = None) -> None:
 
 
 def setup_postgres_checkpoint_schema() -> None:
-    """执行 LangGraph 官方 PostgreSQL checkpoint schema setup。"""
+    """执行 LangGraph 官方 PostgreSQL checkpoint schema setup。
+
+    仅当配置了 PostgreSQL checkpoint 密码时执行；未配置（例如只部署隔离评测
+    链路、无 LangGraph checkpoint 需求的生产拓扑）时优雅跳过，避免统一
+    bootstrap 因缺少 PostgreSQL 而整体失败。
+    """
+    try:
+        from config.checkpoint_settings import CheckpointPostgresConfig
+
+        config = CheckpointPostgresConfig.from_env()
+    except Exception as exc:
+        LOGGER.warning("无法读取 PostgreSQL checkpoint 配置，跳过 schema setup: %s", exc)
+        return
+    if not config.password:
+        LOGGER.warning("未配置 CHECKPOINT_POSTGRES_PASSWORD，跳过 PostgreSQL checkpoint schema setup")
+        return
     LOGGER.info("开始执行 PostgreSQL checkpoint schema setup")
     asyncio.run(setup_checkpoint_schema_once())
 

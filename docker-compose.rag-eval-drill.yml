@@ -1,0 +1,116 @@
+services:
+  mysql-primary:
+    build:
+      context: ./Database/mysql
+      dockerfile: Dockerfile.primary
+    environment:
+      MYSQL_ROOT_PASSWORD: drill-root-password
+      MYSQL_DATABASE: rag_eval_drill
+      MYSQL_USER: drill_user
+      MYSQL_PASSWORD: drill_password
+      MYSQL_WRITE_USER: drill_writer
+      MYSQL_WRITE_PASSWORD: drill_writer_password
+      MYSQL_READ_USER: drill_reader
+      MYSQL_READ_PASSWORD: drill_reader_password
+      MYSQL_REPLICATION_USER: drill_replica
+      MYSQL_REPLICATION_PASSWORD: drill_replica_password
+    volumes:
+      - rag_eval_drill_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  postgres-checkpoint:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: rag_eval_drill_checkpoint
+      POSTGRES_USER: drill_checkpoint
+      POSTGRES_PASSWORD: drill_checkpoint_password
+    volumes:
+      - rag_eval_drill_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  db-bootstrap:
+    image: causalagent:latest
+    command: python -m Database.bootstrap
+    environment: &drill_environment
+      RAG_EVAL_DRILL: "true"
+      SECRET_KEY: drill-secret
+      API_KEY: drill-api-key
+      BASE_URL: https://unit-test.invalid
+      MODEL: drill-model
+      MYSQL_HOST: mysql-primary
+      MYSQL_WRITE_HOST: mysql-primary
+      MYSQL_READ_HOSTS: ""
+      MYSQL_PORT: "3306"
+      MYSQL_ROOT_PASSWORD: drill-root-password
+      MYSQL_USER: drill_user
+      MYSQL_PASSWORD: drill_password
+      MYSQL_WRITE_USER: drill_writer
+      MYSQL_WRITE_PASSWORD: drill_writer_password
+      MYSQL_READ_USER: drill_reader
+      MYSQL_READ_PASSWORD: drill_reader_password
+      MYSQL_DATABASE: rag_eval_drill
+      CHECKPOINT_POSTGRES_HOST: postgres-checkpoint
+      CHECKPOINT_POSTGRES_PORT: "5432"
+      CHECKPOINT_POSTGRES_DATABASE: rag_eval_drill_checkpoint
+      CHECKPOINT_POSTGRES_USER: drill_checkpoint
+      CHECKPOINT_POSTGRES_PASSWORD: drill_checkpoint_password
+      R5_EVALUATION_WORKERS: "5"
+      R5_INGESTION_CONCURRENCY_LIMIT: "1"
+      R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT: "1"
+      R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
+      R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
+      R5_EVALUATION_CONCURRENCY_LIMIT: "3"
+      R5_RAG_QUERY_CONCURRENCY_LIMIT: "2"
+      R5_EVALUATION_JOB_STALE_AFTER_SECONDS: "30"
+      VISION_ALLOW_REMOTE_DATA: "true"
+      LANGCHAIN_API_KEY: ""
+      LANGCHAIN_TRACING_V2: "false"
+      LANGSMITH_TRACING: "false"
+    volumes:
+      - .:/app
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      postgres-checkpoint:
+        condition: service_healthy
+
+  drill:
+    image: causalagent:latest
+    command: ["sh", "-c", "sleep infinity"]
+    environment: *drill_environment
+    volumes:
+      - .:/app
+      - rag_eval_drill_runs:/app/tmp/r5_isolated_runs
+      - rag_eval_drill_sources:/app/tmp/r5_sources
+      - rag_eval_drill_datasets:/app/tmp/r5_datasets
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+
+  rag-eval-worker:
+    image: causalagent:latest
+    command: python -m app.rag_eval.worker
+    environment: *drill_environment
+    volumes:
+      - .:/app
+      - rag_eval_drill_runs:/app/tmp/r5_isolated_runs
+      - rag_eval_drill_sources:/app/tmp/r5_sources
+      - rag_eval_drill_datasets:/app/tmp/r5_datasets
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+
+volumes:
+  rag_eval_drill_mysql:
+  rag_eval_drill_postgres:
+  rag_eval_drill_runs:
+  rag_eval_drill_sources:
+  rag_eval_drill_datasets:

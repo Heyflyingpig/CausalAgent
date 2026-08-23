@@ -132,6 +132,9 @@ services:
       
       # === 关键区别5：生产环境变量 ===
       - FLASK_ENV=production
+      - R5_ISOLATED_RUN_ROOT=/app/tmp/r5_isolated_runs
+      - R5_SOURCE_ROOT=/app/tmp/r5_sources
+      - R5_DATASET_ROOT=/app/tmp/r5_datasets
       
       # 原因：
       # - production模式关闭调试信息
@@ -156,9 +159,14 @@ services:
       # 代码已经在构建时COPY到镜像内了
       
       # 只挂载需要持久化的数据
-      - ./knowledge_base/db:/app/knowledge_base/db
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/source:/app/Agent/knowledge_base/source:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
       - ./static/generated_graphs:/app/static/generated_graphs
       - app_logs_prod:/app/logs  # 新增：应用日志持久化
+      - r5_isolated_runs:/app/tmp/r5_isolated_runs  # 隔离运行目录（与 rag-eval-worker 共享）
+      - r5_sources:/app/tmp/r5_sources              # 知识源目录（与 rag-eval-worker 共享）
+      - r5_datasets:/app/tmp/r5_datasets            # 数据集目录（与 rag-eval-worker 共享）
     
     # 原因：
     # - 代码在镜像内，不依赖宿主机文件系统
@@ -169,6 +177,8 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     
     networks:
       - causalagent_network_prod
@@ -233,6 +243,8 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
 
     networks:
       - causalagent_network_prod
@@ -244,6 +256,91 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  rag-eval-worker:
+    image: causalagent:latest
+    container_name: causalagent_rag_eval_worker_prod
+    command: python -m app.rag_eval.worker
+
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-5}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
+      - MYSQL_CONNECT_TIMEOUT_SECONDS=${MYSQL_CONNECT_TIMEOUT_SECONDS:-5}
+      - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
+      - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
+      - R5_ISOLATED_RUN_ROOT=/app/tmp/r5_isolated_runs
+      - R5_SOURCE_ROOT=/app/tmp/r5_sources
+      - R5_DATASET_ROOT=/app/tmp/r5_datasets
+      - R5_EVALUATION_WORKERS=${R5_EVALUATION_WORKERS:-5}
+      - R5_INGESTION_CONCURRENCY_LIMIT=${R5_INGESTION_CONCURRENCY_LIMIT:-1}
+      - R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
+      - R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - R5_EVALUATION_CONCURRENCY_LIMIT=${R5_EVALUATION_CONCURRENCY_LIMIT:-3}
+      - R5_RAG_QUERY_CONCURRENCY_LIMIT=${R5_RAG_QUERY_CONCURRENCY_LIMIT:-2}
+      - R5_EVALUATION_POLL_INTERVAL_SECONDS=${R5_EVALUATION_POLL_INTERVAL_SECONDS:-1}
+      - R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${R5_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - R5_EVALUATION_JOB_STALE_AFTER_SECONDS=${R5_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
+      - R5_EVALUATION_STALE_AFTER_SECONDS=${R5_EVALUATION_STALE_AFTER_SECONDS:-1800}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=production
+      - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
+
+    volumes:
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/source:/app/Agent/knowledge_base/source:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - r5_isolated_runs:/app/tmp/r5_isolated_runs
+      - r5_sources:/app/tmp/r5_sources
+      - r5_datasets:/app/tmp/r5_datasets
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+
+    networks:
+      - causalagent_network_prod
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  db-bootstrap:
+    image: causalagent:latest
+    container_name: causalagent_db_bootstrap_prod
+    command: python -m Database.bootstrap
+
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - FLASK_ENV=production
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+    networks:
+      - causalagent_network_prod
 
 networks:
   causalagent_network_prod:
@@ -262,6 +359,15 @@ volumes:
     # 3. 测试恢复流程
   
   app_logs_prod:
+    driver: local
+
+  r5_isolated_runs:
+    driver: local
+
+  r5_sources:
+    driver: local
+
+  r5_datasets:
     driver: local
 
 # ==========================================

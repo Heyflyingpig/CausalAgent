@@ -1,0 +1,198 @@
+# 预发 V1：与生产目标一致的 MySQL 主从 + PostgreSQL checkpoint 拓扑。
+# 仅能搭配隔离 `.env.staging` 使用；每个 Python 进程启动前都会执行环境门禁。
+services:
+  mysql-primary:
+    build:
+      context: ./Database/mysql
+      dockerfile: Dockerfile.primary
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rag_eval_staging}
+      MYSQL_USER: ${MYSQL_USER:?MYSQL_USER is required}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_WRITE_USER: ${MYSQL_WRITE_USER:?MYSQL_WRITE_USER is required}
+      MYSQL_WRITE_PASSWORD: ${MYSQL_WRITE_PASSWORD:?MYSQL_WRITE_PASSWORD is required}
+      MYSQL_READ_USER: ${MYSQL_READ_USER:?MYSQL_READ_USER is required}
+      MYSQL_READ_PASSWORD: ${MYSQL_READ_PASSWORD:?MYSQL_READ_PASSWORD is required}
+      MYSQL_REPLICA_STATUS_USER: ${MYSQL_REPLICA_STATUS_USER:?MYSQL_REPLICA_STATUS_USER is required}
+      MYSQL_REPLICA_STATUS_PASSWORD: ${MYSQL_REPLICA_STATUS_PASSWORD:?MYSQL_REPLICA_STATUS_PASSWORD is required}
+      MYSQL_REPLICATION_USER: ${MYSQL_REPLICATION_USER:-replica}
+      MYSQL_REPLICATION_PASSWORD: ${MYSQL_REPLICATION_PASSWORD:?MYSQL_REPLICATION_PASSWORD is required}
+    volumes: [rag_eval_staging_mysql_primary:/var/lib/mysql]
+    networks: [rag_eval_staging]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mysql-replica:
+    build:
+      context: ./Database/mysql
+      dockerfile: Dockerfile.replica
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      MYSQL_REPLICATION_USER: ${MYSQL_REPLICATION_USER:-replica}
+      MYSQL_REPLICATION_PASSWORD: ${MYSQL_REPLICATION_PASSWORD:?MYSQL_REPLICATION_PASSWORD is required}
+      MYSQL_PRIMARY_HOST: mysql-primary
+      MYSQL_PRIMARY_PORT: "3306"
+    volumes: [rag_eval_staging_mysql_replica:/var/lib/mysql]
+    networks: [rag_eval_staging]
+    depends_on:
+      mysql-primary: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres-checkpoint:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${CHECKPOINT_POSTGRES_DATABASE:-rag_eval_staging_checkpoint}
+      POSTGRES_USER: ${CHECKPOINT_POSTGRES_USER:?CHECKPOINT_POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${CHECKPOINT_POSTGRES_PASSWORD:?CHECKPOINT_POSTGRES_PASSWORD is required}
+    volumes: [rag_eval_staging_postgres_checkpoint:/var/lib/postgresql/data]
+    networks: [rag_eval_staging]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  db-bootstrap:
+    image: ${STAGING_APP_IMAGE:?STAGING_APP_IMAGE must be an immutable image digest}
+    command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec python -m Database.bootstrap"]
+    environment: &app_environment
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required}
+      STAGING_VOLUME_NAMES: rag_eval_staging_mysql_primary,rag_eval_staging_mysql_replica,rag_eval_staging_postgres_checkpoint,rag_eval_staging_runs,rag_eval_staging_sources,rag_eval_staging_datasets,rag_eval_staging_gateway_logs
+      MYSQL_HOST: mysql-primary
+      MYSQL_WRITE_HOST: mysql-primary
+      MYSQL_READ_HOSTS: mysql-replica
+      MYSQL_PORT: "3306"
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rag_eval_staging}
+      MYSQL_USER: ${MYSQL_USER:?MYSQL_USER is required}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_WRITE_USER: ${MYSQL_WRITE_USER:?MYSQL_WRITE_USER is required}
+      MYSQL_WRITE_PASSWORD: ${MYSQL_WRITE_PASSWORD:?MYSQL_WRITE_PASSWORD is required}
+      MYSQL_READ_USER: ${MYSQL_READ_USER:?MYSQL_READ_USER is required}
+      MYSQL_READ_PASSWORD: ${MYSQL_READ_PASSWORD:?MYSQL_READ_PASSWORD is required}
+      MYSQL_REPLICA_STATUS_USER: ${MYSQL_REPLICA_STATUS_USER:?MYSQL_REPLICA_STATUS_USER is required}
+      MYSQL_REPLICA_STATUS_PASSWORD: ${MYSQL_REPLICA_STATUS_PASSWORD:?MYSQL_REPLICA_STATUS_PASSWORD is required}
+      CHECKPOINT_POSTGRES_HOST: postgres-checkpoint
+      CHECKPOINT_POSTGRES_PORT: "5432"
+      CHECKPOINT_POSTGRES_DATABASE: ${CHECKPOINT_POSTGRES_DATABASE:-rag_eval_staging_checkpoint}
+      CHECKPOINT_POSTGRES_USER: ${CHECKPOINT_POSTGRES_USER:?CHECKPOINT_POSTGRES_USER is required}
+      CHECKPOINT_POSTGRES_PASSWORD: ${CHECKPOINT_POSTGRES_PASSWORD:?CHECKPOINT_POSTGRES_PASSWORD is required}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      API_KEY: ${API_KEY:?API_KEY is required}
+      BASE_URL: ${BASE_URL:?BASE_URL is required}
+      MODEL: ${MODEL:?MODEL is required}
+      FLASK_ENV: staging
+      VISION_ALLOW_REMOTE_DATA: "true"
+      R5_EVALUATION_WORKERS: "5"
+      R5_INGESTION_CONCURRENCY_LIMIT: "1"
+      R5_CANDIDATE_GENERATION_CONCURRENCY_LIMIT: "1"
+      R5_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
+      R5_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
+      R5_EVALUATION_CONCURRENCY_LIMIT: "3"
+      R5_RAG_QUERY_CONCURRENCY_LIMIT: "2"
+      R5_ISOLATED_RUN_ROOT: /app/tmp/r5_isolated_runs
+      R5_SOURCE_ROOT: /app/tmp/r5_sources
+      R5_DATASET_ROOT: /app/tmp/r5_datasets
+    networks: [rag_eval_staging]
+    depends_on:
+      mysql-primary: {condition: service_healthy}
+      postgres-checkpoint: {condition: service_healthy}
+
+  app:
+    image: ${STAGING_APP_IMAGE:?STAGING_APP_IMAGE must be an immutable image digest}
+    command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec gunicorn --bind 0.0.0.0:5001 --workers 1 --threads 12 --timeout 120 CausalAgent:app"]
+    environment: *app_environment
+    volumes:
+      - rag_eval_staging_runs:/app/tmp/r5_isolated_runs
+      - rag_eval_staging_sources:/app/tmp/r5_sources
+      - rag_eval_staging_datasets:/app/tmp/r5_datasets
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+    networks: [rag_eval_staging]
+    depends_on:
+      mysql-replica: {condition: service_healthy}
+      db-bootstrap: {condition: service_completed_successfully}
+    logging: &bounded_logging
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+
+  worker:
+    image: ${STAGING_APP_IMAGE:?STAGING_APP_IMAGE must be an immutable image digest}
+    command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec python -m app.agent.worker"]
+    environment: *app_environment
+    volumes:
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+    networks: [rag_eval_staging]
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    logging: *bounded_logging
+
+  monitor:
+    image: ${STAGING_APP_IMAGE:?STAGING_APP_IMAGE must be an immutable image digest}
+    command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec python -m Database.monitor_worker"]
+    environment: *app_environment
+    networks: [rag_eval_staging]
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    logging: *bounded_logging
+
+  checkpoint-cleanup:
+    image: ${STAGING_APP_IMAGE:?STAGING_APP_IMAGE must be an immutable image digest}
+    command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec python -m Database.checkpoint_cleanup_worker"]
+    environment: *app_environment
+    networks: [rag_eval_staging]
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    logging: *bounded_logging
+
+  rag-eval-worker:
+    image: ${STAGING_APP_IMAGE:?STAGING_APP_IMAGE must be an immutable image digest}
+    command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec python -m app.rag_eval.worker"]
+    environment: *app_environment
+    volumes:
+      - rag_eval_staging_runs:/app/tmp/r5_isolated_runs
+      - rag_eval_staging_sources:/app/tmp/r5_sources
+      - rag_eval_staging_datasets:/app/tmp/r5_datasets
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+    networks: [rag_eval_staging]
+    depends_on:
+      db-bootstrap: {condition: service_completed_successfully}
+    logging: *bounded_logging
+
+  gateway:
+    image: nginx:1.27-alpine
+    # nginx:alpine 无 logrotate/cron，轮转由容器内脚本执行（缺陷2修复）。
+    command: ["sh", "/usr/local/bin/rotate_gateway_logs.sh"]
+    ports: ["${STAGING_GATEWAY_PORT:-8088}:8080"]
+    volumes:
+      - ./deploy/staging/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/staging/logrotate.conf:/etc/nginx/logrotate.conf:ro
+      - ./deploy/staging/rotate_gateway_logs.sh:/usr/local/bin/rotate_gateway_logs.sh:ro
+      - rag_eval_staging_gateway_logs:/var/log/nginx
+    stop_grace_period: 30s
+    networks: [rag_eval_staging]
+    depends_on:
+      app: {condition: service_started}
+    logging: *bounded_logging
+
+networks:
+  rag_eval_staging: {driver: bridge}
+
+volumes:
+  rag_eval_staging_mysql_primary: {driver: local}
+  rag_eval_staging_mysql_replica: {driver: local}
+  rag_eval_staging_postgres_checkpoint: {driver: local}
+  rag_eval_staging_runs: {driver: local}
+  rag_eval_staging_sources: {driver: local}
+  rag_eval_staging_datasets: {driver: local}
+  rag_eval_staging_gateway_logs: {driver: local}
