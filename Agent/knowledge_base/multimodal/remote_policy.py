@@ -23,11 +23,3 @@ class RemoteSamplePolicy:
     def allows_pearl_page(self, filename: str, page_number: int | None) -> bool:
         """仅允许清单中精确指定的 Pearl 页码。"""
         return page_number is not None and page_number in self.payload["pearl_pdf_pages"].get(filename, [])
-
-    def allows_omnidocbench_path(self, root: Path, path: Path) -> bool:
-        """仅允许清单中精确指定的 OmniDocBench 相对路径。"""
-        try:
-            relative = path.resolve().relative_to(root.resolve()).as_posix()
-        except ValueError:
-            return False
-        return relative in self.payload["omnidocbench_relative_paths"]

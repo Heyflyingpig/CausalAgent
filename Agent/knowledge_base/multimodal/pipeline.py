@@ -1436,7 +1436,6 @@ class MultimodalKnowledgeBaseMaintenance:
             "min_eligible_images": int(os.getenv("MULTIMODAL_QUALITY_MIN_ELIGIBLE_IMAGES", "0")),
             "min_enriched_images": int(os.getenv("MULTIMODAL_QUALITY_MIN_ENRICHED_IMAGES", "0")),
             "min_enrichment_rate": float(os.getenv("MULTIMODAL_QUALITY_MIN_ENRICHMENT_RATE", "0")),
-            "max_ocr_probe_failed": int(os.getenv("MULTIMODAL_QUALITY_MAX_OCR_PROBE_FAILED", "0")),
         }
 
     def _quality_evaluation(self, manifest: dict[str, Any], directory: Path) -> dict[str, Any]:
@@ -1447,18 +1446,12 @@ class MultimodalKnowledgeBaseMaintenance:
         policy = manifest["quality_policy"]
         observed = dict(manifest["quality_observations"])
         eligible = int(observed.get("eligible_images", 0)); enriched = int(observed.get("enriched_images", 0))
-        probe = {"passed": 0, "failed": 0, "skipped": 0}
-        report = directory / "omnidocbench_eval.json"
-        if report.exists():
-            payload = json.loads(report.read_text(encoding="utf-8"))
-            probe = {"passed": int(payload.get("passed_cases", 0)), "failed": int(payload.get("failed_cases", 0)), "skipped": int(payload.get("skipped_cases", 0))}
-        observed.update({"eligible_images": eligible, "enriched_images": enriched, "vision_failed_images": int(observed.get("vision_failed_images", 0)), "skipped_images": int(observed.get("skipped_images", 0)), "ocr_probe": probe})
+        observed.update({"eligible_images": eligible, "enriched_images": enriched, "vision_failed_images": int(observed.get("vision_failed_images", 0)), "skipped_images": int(observed.get("skipped_images", 0))})
         rate = enriched / eligible if eligible else 0.0
         failures: list[str] = []
         if eligible < int(policy["min_eligible_images"]): failures.append("eligible_images_below_minimum")
         if enriched < int(policy["min_enriched_images"]): failures.append("enriched_images_below_minimum")
         if rate < float(policy["min_enrichment_rate"]): failures.append("enrichment_rate_below_minimum")
-        if probe["failed"] > int(policy["max_ocr_probe_failed"]): failures.append("ocr_probe_failed_above_maximum")
         return {"passed": not failures, "policy": policy, "observed": observed, "enrichment_rate": rate, "failures": failures}
 
     def _audit_manifest_chain(self, manifest: dict[str, Any], units: list[KnowledgeUnit], store: AssetStore) -> list[str]:
@@ -1548,7 +1541,7 @@ class MultimodalKnowledgeBaseMaintenance:
             "vision_model": os.getenv("VISION_MODEL", REQUIRED_MODEL),
             "vision_api_key_configured": bool(os.getenv("VISION_API_KEY")),
             "vision_base_url_configured": bool(os.getenv("VISION_BASE_URL")),
-            "allowed_remote_sources": ["Pearl fixed samples", "OmniDocBench fixed subset"],
+            "allowed_remote_sources": ["Pearl fixed samples"],
             "asset_root": str(self.asset_root),
             "index_root": str(self.index_root),
             "parser": parser_status,
@@ -1572,20 +1565,14 @@ class MultimodalKnowledgeBaseMaintenance:
         }
 
     def _remote_resource_allowed(self, source_path: Path, page_number: int | None) -> bool:
-        """只允许固定 Pearl 页或清单内 OmniDocBench 文件进入远程视觉。"""
+        """只允许固定 Pearl 页进入维护 CLI 的远程视觉。"""
         resolved = source_path.resolve()
         base = Path(__file__).resolve().parents[1]
         pearl_root = (base / "source").resolve()
         pearl_names = {"Pearl_2009_Causality-mono(1).pdf", "Pearl_Mackenzie_2018_The_Book_of_Why-mono(1).pdf"}
         if resolved.parent == pearl_root and resolved.name in pearl_names:
             return self.remote_policy.allows_pearl_page(resolved.name, page_number)
-        raw_roots = os.getenv("MULTIMODAL_OMNIDOCBENCH_ROOT", "").strip()
-        if not raw_roots:
-            return False
-        try:
-            return self.remote_policy.allows_omnidocbench_path(Path(raw_roots), resolved)
-        except ValueError:
-            return False
+        return False
 
     def _resolve_table_recovery_provider(self, analyzer: VisionAnalyzer, allow_remote_data: bool) -> TableRecoveryProvider | None:
         """Resolve the replaceable table adapter without exposing transport details to parsing."""

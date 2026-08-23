@@ -200,6 +200,7 @@ skills/
 # test
 tests/*
 !tests/test_multimodal_*.py
+!tests/test_multimodal_cli.py
 !tests/test_isolated_rag_runs.py
 !tests/test_isolated_evaluation.py
 !tests/test_isolated_rag_eval_routes.py

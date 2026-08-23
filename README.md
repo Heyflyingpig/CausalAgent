@@ -199,25 +199,12 @@ graph TD;
 python -m Agent.knowledge_base.multimodal.cli inspect --source <path>
 # 在实际 Docker worker 中准备 R2 固定 12 页清单（推荐）：
 .\scripts\prepare-r2-outbound-manifest.ps1 -MaxPages 12
-# 2026-08-07 user-approved rebuild: Pearl remote policy covers all 487/402
-# physical pages, but remote calls still require the immutable outbound manifest.
-# R3a: first run the local-only maintenance preflight, then create the full review manifest.
-# Neither command sends images or creates a candidate index.
-.\scripts\run-r3-maintenance-preflight.ps1
-.\scripts\prepare-r3-outbound-manifest.ps1 -OutputFile tmp\r3-review-manifest.json
-# R3b only, after manual approval and a separate data-egress authorization:
-.\scripts\run-r3-maintenance-preflight.ps1 -RequireVisionConfiguration
-# 经人工审阅和数据外发授权后：
+# 隔离评测会为显式选中的来源生成本次不可变 outbound manifest。
 python -m Agent.knowledge_base.multimodal.cli run --source <path> --allow-remote-data --outbound-manifest .\tmp\r2-review-manifest.json --max-images 12 --timeout-seconds 600
 python -m Agent.knowledge_base.multimodal.cli run --source <path> --allow-remote-data --outbound-manifest <approved-manifest.json> --reuse-local-checkpoints-from <index-version>
 python -m Agent.knowledge_base.multimodal.cli evaluate --index-version <version>
 python -m Agent.knowledge_base.multimodal.cli publish --index-version <version>
-python -m Agent.knowledge_base.multimodal.cli omnidocbench-audit --root Agent/knowledge_base/multimodal_benchmarks/omnidocbench
-python -m Agent.knowledge_base.multimodal.omnidocbench_export --root Agent/knowledge_base/multimodal_benchmarks/omnidocbench --output-dir Agent/knowledge_base/multimodal_benchmarks/omnidocbench/official_export
-python -m Agent.knowledge_base.multimodal.cli omnidocbench-export-official --root Agent/knowledge_base/multimodal_benchmarks/omnidocbench --selection-manifest Agent/knowledge_base/multimodal_benchmarks/omnidocbench/production_100/production_100_manifest.json --output-dir Agent/knowledge_base/multimodal_benchmarks/omnidocbench/production_100/official_export_docling
 ```
-
-OmniDocBench 本地固定子集只用于研究验证，当前覆盖 6 页代表样本；生产抽样的 100 页由 `production_100_manifest.json` 固定版本、页面哈希与标注属性。`omnidocbench_export` 可生成官方 end-to-end 所需的 GT JSON、同名页面 Markdown 和哈希 manifest；传入 `--selection-manifest` 时按生产清单导出。100 页 Docling Markdown 已在官方 Docker 运行时完成 end-to-end 评测（文本 Edit Distance、表格 TEDS、公式 CDM、阅读顺序）；该证据只衡量解析器，不证明知识库索引已通过发布门禁。布局 mAP 尚未运行。当前生产 active 索引已发布为 `mm_74b5aef2f5e7322b5a79`；固定 OmniDocBench 子集始终使用隔离索引，不能作为生产知识源发布。完整开发依赖通过 `requirements.txt` 引入 `requirements-multimodal.txt`；基础生产镜像仍不安装多模态解析与测试依赖。详细开发记录见 `README/开发日志.md`。
 
 ### 后处理
 *对因果图进行后处理，包括环路检测、边合理性评估等，提高因果结构的可解释性与可靠性*

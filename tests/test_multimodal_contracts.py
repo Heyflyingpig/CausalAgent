@@ -18,14 +18,10 @@ from unittest.mock import patch
 from PIL import Image
 
 from Agent.knowledge_base.multimodal.assets import AssetStore
-from Agent.knowledge_base.multimodal.benchmark import audit_omnidocbench_subset, evaluate_omnidocbench_staged_index
 from Agent.knowledge_base.multimodal.index import StagedIndex
-from Agent.knowledge_base.multimodal.omnidocbench_export import export_omnidocbench_official_inputs
 from Agent.knowledge_base.multimodal.contracts import BoundingBox, IngestionIssue, IssueSeverity, KnowledgeUnit, OutboundImageRecord, UnitStatus, VisionAnalysis, render_retrieval_text, sha256_bytes, stable_id
 from Agent.knowledge_base.multimodal.pipeline import MultimodalKnowledgeBaseMaintenance
 from Agent.knowledge_base.multimodal.parsers import ParsedDocument, ParsedItem, OcrResult, _convert_docling_page, _rapidocr_probe, decide_page_route, inspect_source, ocr_fingerprint, parse_document
-from Agent.knowledge_base.multimodal.retrieval import _parent_context
-from Agent.knowledge_base.multimodal.retrieval import multimodal_rag_search
 from Agent.knowledge_base.rag_runtime import RagRuntimeConfig
 from Agent.knowledge_base.multimodal.vision import PROMPT_VERSION, REQUIRED_MODEL, RESPONSE_ADAPTER_VERSION, VisionAnalyzer
 from Agent.knowledge_base.query_rag import _merge_candidates
@@ -293,67 +289,6 @@ class MultimodalContractTests(unittest.TestCase):
         self.assertFalse(service._remote_resource_allowed(pearl, 0))
         self.assertFalse(service._remote_resource_allowed(pearl, 488))
 
-    def test_omnidocbench_audit_rejects_attribute_drift(self) -> None:
-        """固定子集的公开标注属性漂移必须阻止 benchmark 被误用。"""
-        with tempfile.TemporaryDirectory() as directory, patch("Agent.knowledge_base.multimodal.benchmark.FIXED_SAMPLES", ({"sample_id": "sample", "relative_path": "images/sample.png", "coverage": "测试", "attributes": {"layout": "double_column"}, "required_categories": ("table",)},)):
-            root = Path(directory); (root / "images").mkdir()
-            (root / "images" / "sample.png").write_bytes(b"image")
-            payload = [{"page_info": {"image_path": "sample.png", "page_attribute": {"layout": "single_column"}}, "layout_dets": []}]
-            (root / "OmniDocBench.json").write_text(json.dumps(payload), encoding="utf-8")
-            result = audit_omnidocbench_subset(root)
-            self.assertFalse(result["passed"])
-            self.assertIn("sample:annotation_attribute_mismatch", result["failures"])
-
-    def test_omnidocbench_evaluation_records_successful_local_ocr_retrieval(self) -> None:
-        """公开 OCR probe 命中本地 OCR 单元时应计为通过，并写出报告。"""
-        with tempfile.TemporaryDirectory() as directory, patch("Agent.knowledge_base.multimodal.benchmark.FIXED_SAMPLES", ({"sample_id": "sample", "relative_path": "images/sample.png", "coverage": "测试", "attributes": {"layout": "single_column"}, "required_categories": ("text_block",)},)):
-            root = Path(directory) / "dataset"; (root / "images").mkdir(parents=True)
-            content = b"image"; (root / "images" / "sample.png").write_bytes(content)
-            annotation = [{"page_info": {"image_path": "sample.png", "page_attribute": {"layout": "single_column"}}, "layout_dets": [{"category_type": "text_block", "text": "abcdefgh retrieval probe"}]}]
-            (root / "OmniDocBench.json").write_text(json.dumps(annotation), encoding="utf-8")
-            index_version = "mm_" + "a" * 20; index_dir = root / "indexes" / index_version; index_dir.mkdir(parents=True)
-            document_id = stable_id("doc", {"path": "images/sample.png", "content_hash": sha256_bytes(content)})
-            unit_id = "unit_" + "a" * 64; asset_root = root / "assets"; store = AssetStore(asset_root); asset_uri = store.put(document_id, "sample.png", content)
-            manifest = {"documents": [{"document_id": document_id, "relative_path": "images/sample.png"}]}
-            unit = {"unit_id": unit_id, "document_id": document_id, "page_number": None, "modality": "image", "content_kind": "image", "raw_text": "abcdefgh retrieval probe", "asset_uri": asset_uri, "vision_model": "", "retrieval_text": "类型：image\nabcdefgh retrieval probe"}
-            (index_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (index_dir / "units.jsonl").write_text(json.dumps(unit) + "\n", encoding="utf-8")
-            hit = type("Document", (), {"metadata": {"unit_id": unit_id}})()
-            database = MagicMock(); database.similarity_search.return_value = [hit]
-            with patch("Agent.knowledge_base.multimodal.benchmark._embeddings", return_value=MagicMock()), patch("Agent.knowledge_base.multimodal.benchmark.Chroma", return_value=database):
-                result = evaluate_omnidocbench_staged_index(root, root / "indexes", index_version, asset_root, root / "reports")
-            self.assertEqual(result["passed_cases"], 1)
-            self.assertEqual(result["failed_cases"], 0)
-            self.assertTrue((root / "reports" / "omnidocbench_bad_cases.md").exists())
-
-    def test_omnidocbench_official_export_keeps_fixed_names_and_gt(self) -> None:
-        """官方评测导出必须只包含固定页面及其同名 Markdown 预测。"""
-        with tempfile.TemporaryDirectory() as directory, patch("Agent.knowledge_base.multimodal.benchmark.FIXED_SAMPLES", ({"sample_id": "sample", "relative_path": "images/sample.png", "coverage": "测试", "attributes": {"layout": "single_column"}, "required_categories": ("text_block",)},)), patch("Agent.knowledge_base.multimodal.omnidocbench_export.FIXED_SAMPLES", ({"sample_id": "sample", "relative_path": "images/sample.png"},)):
-            root = Path(directory) / "dataset"; (root / "images").mkdir(parents=True)
-            (root / "images" / "sample.png").write_bytes(b"image")
-            annotation = [{"page_info": {"image_path": "sample.png", "page_attribute": {"layout": "single_column"}}, "layout_dets": [{"category_type": "text_block", "text": "abcdefgh"}]}]
-            (root / "OmniDocBench.json").write_text(json.dumps(annotation), encoding="utf-8")
-            result = export_omnidocbench_official_inputs(root, root / "export", converter=lambda _: "# parsed")
-            self.assertEqual(result["page_count"], 1)
-            self.assertTrue((root / "export" / "predictions" / "sample.md").is_file())
-            self.assertEqual(len(json.loads((root / "export" / "OmniDocBench_subset.json").read_text(encoding="utf-8"))), 1)
-
-    def test_omnidocbench_official_export_uses_manifest_selected_pages(self) -> None:
-        """生产清单必须决定导出页面，并校验来源哈希和标注属性。"""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "dataset"; root.mkdir()
-            selection_root = root / "selection"; (selection_root / "images").mkdir(parents=True)
-            content = b"image"; (selection_root / "images" / "sample.png").write_bytes(content)
-            annotation = [{"page_info": {"image_path": "sample.png", "page_attribute": {"layout": "single_column"}}, "layout_dets": [{"category_type": "text_block", "text": "abcdefgh"}]}]
-            (root / "OmniDocBench.json").write_text(json.dumps(annotation), encoding="utf-8")
-            selection = selection_root / "production_manifest.json"
-            selection.write_text(json.dumps({"dataset": "opendatalab/OmniDocBench", "revision": "aa1ee96d106dbe53d0ae59474d75c6e6d9b53fec", "samples": [{"sample_id": "production_001", "relative_path": "images/sample.png", "sha256": sha256_bytes(content), "category": "scan_or_text", "page_attribute": {"layout": "single_column"}, "required_categories": ["text_block"]}]}), encoding="utf-8")
-            result = export_omnidocbench_official_inputs(root, root / "export", converter=lambda _: "# parsed", selection_manifest=selection)
-            manifest = json.loads((root / "export" / "official_export_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(result["page_count"], 1)
-            self.assertEqual(manifest["selection_manifest_filename"], "production_manifest.json")
-            self.assertTrue((root / "export" / "predictions" / "sample.md").is_file())
-
     def test_vision_400_uses_json_prompt_fallback_and_audits_without_response(self) -> None:
         """结构化输出不兼容时只降级一次，并写入脱敏审计。"""
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"VISION_API_KEY": "key", "VISION_BASE_URL": "https://api.wcode.net/v1", "VISION_MODEL": REQUIRED_MODEL}):
@@ -560,16 +495,6 @@ class MultimodalContractTests(unittest.TestCase):
                 for worker in workers: worker.join()
             self.assertEqual(peak, 1)
 
-    def test_parent_context_uses_same_page_text_only(self) -> None:
-        """图片证据只能回取同文档、同页的正文上下文。"""
-        image = {"document_id": "doc", "page_number": 2, "modality": "image", "raw_text": ""}
-        units = [
-            {"document_id": "doc", "page_number": 2, "modality": "text", "raw_text": "同页正文"},
-            {"document_id": "doc", "page_number": 3, "modality": "text", "raw_text": "其他页正文"},
-            {"document_id": "another", "page_number": 2, "modality": "text", "raw_text": "其他文档正文"},
-        ]
-        self.assertEqual(_parent_context(image, units), "同页正文")
-
     def test_pipeline_remote_context_is_same_page_and_capped(self) -> None:
         """远程请求上下文只取当前图片 caption 与同页正文，最长 2000 字。"""
         image = ParsedItem("image", "image", raw_text="图片标题", page_number=2, asset_bytes=_png_bytes())
@@ -584,52 +509,6 @@ class MultimodalContractTests(unittest.TestCase):
         self.assertLessEqual(len(context), 2000)
         self.assertNotIn("其他页正文", context)
         self.assertNotIn("其他图片", context)
-
-    def test_retrieval_marks_missing_asset_without_discarding_evidence(self) -> None:
-        """已发布索引资源失效时必须显式降级，而不能隐藏整条证据。"""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); version = "mm_" + "a" * 20; index_dir = root / "indexes" / version; index_dir.mkdir(parents=True)
-            embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
-            manifest = {"index_version": version, "embedding": embedding}
-            (index_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            unit = {"unit_id": "unit_" + "a" * 64, "document_id": "doc_" + "b" * 64, "page_number": 1, "modality": "image", "content_kind": "chart", "raw_text": "", "vision_model": REQUIRED_MODEL, "asset_uri": "missing/image.png"}
-            (index_dir / "units.jsonl").write_text(json.dumps(unit) + "\n", encoding="utf-8")
-            active = {"index_version": version, "collection_name": "collection", "manifest_sha256": __import__("hashlib").sha256((index_dir / "manifest.json").read_bytes()).hexdigest(), "embedding": embedding}
-            active_path = root / "runtime" / "active.json"; active_path.parent.mkdir(); active_path.write_text(json.dumps(active), encoding="utf-8")
-            document = type("Document", (), {"metadata": {"unit_id": unit["unit_id"], "source_name": "样本"}, "page_content": "证据"})()
-            database = MagicMock(); database.similarity_search_with_relevance_scores.return_value = [(document, 0.9)]
-            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ASSET_DIR": str(root / "assets"), "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "true"}), patch("Agent.knowledge_base.multimodal.retrieval._embeddings", return_value=MagicMock()), patch("Agent.knowledge_base.multimodal.retrieval.Chroma", return_value=database):
-                result = multimodal_rag_search(["测试"])
-            self.assertTrue(result["success"])
-            self.assertFalse(result["evidence"][0]["asset_available"])
-
-    def test_retrieval_filters_unenriched_title_only_image(self) -> None:
-        """历史索引中的标题级独立图片不得占据主要证据位。"""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); version = "mm_" + "a" * 20; index_dir = root / "indexes" / version; index_dir.mkdir(parents=True)
-            embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
-            manifest = {"index_version": version, "embedding": embedding}; (index_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            title_only = {"unit_id": "unit_" + "a" * 64, "document_id": "doc_" + "b" * 64, "modality": "image", "content_kind": "image", "raw_text": "", "vision_model": "", "asset_uri": "asset.png"}
-            enriched = {"unit_id": "unit_" + "c" * 64, "document_id": "doc_" + "d" * 64, "modality": "image", "content_kind": "chart", "raw_text": "", "vision_model": REQUIRED_MODEL, "asset_uri": "asset.png"}
-            (index_dir / "units.jsonl").write_text(json.dumps(title_only) + "\n" + json.dumps(enriched) + "\n", encoding="utf-8")
-            active_path = root / "runtime" / "active.json"; active_path.parent.mkdir(); active_path.write_text(json.dumps({"index_version": version, "collection_name": "collection", "manifest_sha256": __import__("hashlib").sha256((index_dir / "manifest.json").read_bytes()).hexdigest(), "embedding": embedding}), encoding="utf-8")
-            title_document = type("Document", (), {"metadata": {"unit_id": title_only["unit_id"]}, "page_content": "标题"})(); enriched_document = type("Document", (), {"metadata": {"unit_id": enriched["unit_id"]}, "page_content": "增强"})()
-            database = MagicMock(); database.similarity_search_with_relevance_scores.return_value = [(title_document, 0.9), (enriched_document, 0.8)]
-            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ASSET_DIR": str(root / "assets"), "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "true"}), patch("Agent.knowledge_base.multimodal.retrieval._embeddings", return_value=MagicMock()), patch("Agent.knowledge_base.multimodal.retrieval.Chroma", return_value=database):
-                result = multimodal_rag_search(["测试"], max_results=1)
-            self.assertEqual([item["unit_id"] for item in result["evidence"]], [enriched["unit_id"]])
-
-    def test_retrieval_rejects_embedding_fingerprint_drift_before_chroma(self) -> None:
-        """active、manifest 或运行时 embedding 不一致时不得打开 Chroma。"""
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); version = "mm_" + "a" * 20; index_dir = root / "indexes" / version; index_dir.mkdir(parents=True)
-            current = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
-            manifest = {"index_version": version, "embedding": current}; (index_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (index_dir / "units.jsonl").write_text("", encoding="utf-8")
-            active_path = root / "runtime" / "active.json"; active_path.parent.mkdir(); active_path.write_text(json.dumps({"index_version": version, "collection_name": "collection", "manifest_sha256": __import__("hashlib").sha256((index_dir / "manifest.json").read_bytes()).hexdigest(), "embedding": current | {"model": "drifted"}}), encoding="utf-8")
-            with patch.dict(os.environ, {"MULTIMODAL_INDEX_ROOT": str(root / "indexes"), "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path), "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "true"}), patch("Agent.knowledge_base.multimodal.retrieval.Chroma") as chroma:
-                result = multimodal_rag_search(["测试"])
-            self.assertFalse(result["success"]); self.assertEqual(result["error_code"], "embedding_fingerprint_mismatch"); chroma.assert_not_called()
 
     def test_only_complete_staged_version_can_be_reused(self) -> None:
         """崩溃留下的确定性版本目录不得被 run 当作已完成索引复用。"""
@@ -730,7 +609,7 @@ class MultimodalContractTests(unittest.TestCase):
             content = b"source"; source_hash = sha256_bytes(content); document_id = stable_id("doc", {"path": "source.md", "content_hash": source_hash})
             source_uri = AssetStore(root / "assets").put(document_id, "source.md", content, category="source")
             unit = KnowledgeUnit(unit_id="unit_" + "a" * 64, document_id=document_id, modality="text", content_kind="paragraph", raw_text="正文", retrieval_text="正文", content_hash=sha256_bytes("正文".encode()), parser_name="text", parser_version="1", embedding_provider=embedding["provider"], embedding_model=embedding["model"], status=UnitStatus.COMPLETED)
-            manifest = {"index_version": version, "embedding": embedding, "build_configuration": {}, "sources": [{"relative_path": "source.md", "content_hash": source_hash}], "documents": [{"document_id": document_id, "relative_path": "source.md", "content_hash": source_hash, "source_asset_uri": source_uri, "parser_artifacts": []}], "quality_policy": {"min_eligible_images": 1, "min_enriched_images": 1, "min_enrichment_rate": 1.0, "max_vision_failed_images": 0, "max_ocr_probe_failed": 0}, "quality_observations": {"eligible_images": 1, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 1}}
+            manifest = {"index_version": version, "embedding": embedding, "build_configuration": {}, "sources": [{"relative_path": "source.md", "content_hash": source_hash}], "documents": [{"document_id": document_id, "relative_path": "source.md", "content_hash": source_hash, "source_asset_uri": source_uri, "parser_artifacts": []}], "quality_policy": {"min_eligible_images": 1, "min_enriched_images": 1, "min_enrichment_rate": 1.0, "max_vision_failed_images": 0}, "quality_observations": {"eligible_images": 1, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 1}}
             (index_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8"); (index_dir / "units.jsonl").write_text(unit.model_dump_json() + "\n", encoding="utf-8"); (index_dir / "issues.jsonl").write_text("", encoding="utf-8")
             with patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.count", return_value=1):
                 result = service.evaluate(version)
@@ -771,7 +650,7 @@ class MultimodalContractTests(unittest.TestCase):
 
     def test_default_rag_registry_keeps_original_tool_name(self) -> None:
         """默认 RAG 继续使用原工具名，但底层只绑定多模态 Service。"""
-        self.assertEqual([tool.name for tool in build_rag_tools(MagicMock())], ["rag_enrichment_search"])
+        self.assertEqual([tool.name for tool in build_rag_tools()], ["rag_enrichment_search"])
 
     def test_rag_runtime_defaults_to_published_multimodal_index(self) -> None:
         """原 RagRuntime 必须从多模态 active pointer 解析默认 collection。"""

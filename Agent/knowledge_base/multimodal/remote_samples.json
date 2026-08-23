@@ -894,13 +894,5 @@
       401,
       402
     ]
-  },
-  "omnidocbench_relative_paths": [
-    "images/notes_1ba14cb325bc448f7201b20502ecf2b5_11.jpg",
-    "images/page-c7792da7-4167-4f5c-a7ca-ec0f8833f83b.png",
-    "images/page-67013be9-58e5-4842-809d-7a3c1fc91fc7.png",
-    "images/yanbaor2_0071908e787f90267682e19ef093bb18dda6e1c1614534c445ddd62c425b3a94.pdf_44.jpg",
-    "images/page-d1561665-5359-42fe-920c-d6e3bff81953.png",
-    "images/page-59ff417b-63b3-40a4-a6ac-8fc2cdf71b5f.png"
-  ]
+  }
 }

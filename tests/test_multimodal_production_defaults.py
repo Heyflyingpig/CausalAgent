@@ -246,8 +246,8 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
             ],
         )
 
-    def test_benchmark_sources_cannot_satisfy_the_production_source_contract(self) -> None:
-        """OmniDocBench 等测试来源不得被误判为冻结的正式知识源。"""
+    def test_non_production_sources_cannot_satisfy_the_production_source_contract(self) -> None:
+        """任意非生产来源不得被误判为冻结的正式知识源。"""
         config = load_production_defaults()
         production_manifest = {
             "sources": [

@@ -8,8 +8,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .benchmark import audit_omnidocbench_subset, evaluate_omnidocbench_staged_index
-from .omnidocbench_export import export_omnidocbench_official_inputs
 from .pipeline import MultimodalKnowledgeBaseMaintenance
 from .production import production_source_paths
 
@@ -42,13 +40,6 @@ def build_parser() -> argparse.ArgumentParser:
     commands.choices["run"].add_argument("--publish", action="store_true")
     for name in ("evaluate", "publish", "status", "rollback"):
         sub = commands.add_parser(name); sub.add_argument("--index-version", required=name != "status")
-    benchmark_audit = commands.add_parser("omnidocbench-audit")
-    benchmark_audit.add_argument("--root", required=True)
-    benchmark_eval = commands.add_parser("omnidocbench-evaluate")
-    benchmark_eval.add_argument("--root", required=True); benchmark_eval.add_argument("--index-version", required=True)
-    benchmark_eval.add_argument("--asset-root", required=True); benchmark_eval.add_argument("--index-root", required=True); benchmark_eval.add_argument("--output-dir", required=True)
-    benchmark_export = commands.add_parser("omnidocbench-export-official")
-    benchmark_export.add_argument("--root", required=True); benchmark_export.add_argument("--output-dir", required=True); benchmark_export.add_argument("--selection-manifest")
     return parser
 
 
@@ -56,12 +47,7 @@ def main() -> int:
     """执行一个维护命令并以 JSON 输出可审计结果。"""
     load_dotenv()
     args = build_parser().parse_args(); service = MultimodalKnowledgeBaseMaintenance()
-    if args.command == "omnidocbench-audit": result = audit_omnidocbench_subset(Path(args.root))
-    elif args.command == "omnidocbench-export-official": result = export_omnidocbench_official_inputs(Path(args.root), Path(args.output_dir), selection_manifest=Path(args.selection_manifest) if args.selection_manifest else None)
-    elif args.command == "omnidocbench-evaluate":
-        result = evaluate_omnidocbench_staged_index(Path(args.root), Path(args.index_root), args.index_version, Path(args.asset_root), Path(args.output_dir))
-        (Path(args.index_root) / args.index_version / "omnidocbench_eval.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    elif args.command == "inspect": result = service.inspect(args.source or [str(path) for path in production_source_paths()])
+    if args.command == "inspect": result = service.inspect(args.source or [str(path) for path in production_source_paths()])
     elif args.command == "prepare-outbound-manifest": result = service.prepare_outbound_manifest(args.source or [str(path) for path in production_source_paths()], args.output, max_images=args.max_images, max_pages=args.max_pages, all_production_pages=args.all_production_pages, checkpoint_dir=args.checkpoint_dir)
     elif args.command == "r2-smoke": result = service.run_r2_smoke(args.source or [str(path) for path in production_source_paths()], args.outbound_manifest, args.output)
     elif args.command == "ingest": result = service.ingest(args.source or [str(path) for path in production_source_paths()], allow_remote_data=args.allow_remote_data, max_images=args.max_images, retry_failed=args.retry_failed, retry_generation=args.retry_generation, retry_from_index_version=args.retry_from_index_version, reuse_local_from_index_version=args.reuse_local_checkpoints_from, outbound_manifest=args.outbound_manifest)
