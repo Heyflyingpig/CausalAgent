@@ -40,7 +40,7 @@ READINESS_REQUIRED_FILES = (
     Path("app/rag_eval/worker.py"),
     Path("app/rag_eval/job_service.py"),
     Path("Agent/knowledge_base/rag/rag_eval/rag_eval.py"),
-    Path("Database/migrations/versions/i9e0f1a2b3c4_add_rag_eval_queue_priority.py"),
+    Path("Database/migrations/versions/j9e0f1a2b3c4_merge_agent_jobs_and_rag_eval.py"),
 )
 CHECK_FIELDS = {"id", "layer", "capability", "source_format", "runner", "target", "expected", "mutates_external_state", "requires"}
 

@@ -10,6 +10,7 @@ from alembic import command
 from alembic.config import Config
 
 from Database.checkpoint_setup import setup_checkpoint_schema_once
+from Database.migration_version_repair import repair_legacy_revision_ids
 
 
 LOGGER = logging.getLogger(__name__)
@@ -63,6 +64,14 @@ def run_bootstrap(project_root: Path | None = None) -> None:
     mysql_bootstrap = create_mysql_bootstrap()
     if not mysql_bootstrap.bootstrap():
         raise RuntimeError("MySQL 数据库连接检查失败，停止执行后续初始化。")
+
+    connection = mysql_bootstrap.open_connection()
+    try:
+        repaired = repair_legacy_revision_ids(connection)
+    finally:
+        connection.close()
+    if repaired:
+        LOGGER.warning("已修复历史重复 Alembic revision: %s", ", ".join(repaired))
 
     upgrade_mysql_schema(project_root)
     setup_postgres_checkpoint_schema()

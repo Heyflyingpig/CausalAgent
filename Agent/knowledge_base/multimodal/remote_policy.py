@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 class RemoteSamplePolicy:
-    """只允许已记录的页面或公开数据集固定文件进入远程视觉调用。"""
+    """只允许清单中精确指定的 Pearl 页面进入维护 CLI 的远程视觉调用。"""
 
     def __init__(self, manifest_path: Path | None = None) -> None:
         """加载仓库内不可变的抽样清单。"""

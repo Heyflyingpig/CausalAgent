@@ -94,7 +94,7 @@ class DatabaseBootstrap:
 
     def check_database_connection(self) -> bool:
         try:
-            conn = mysql.connector.connect(**self.mysql_config)
+            conn = self.open_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             row = cursor.fetchone()
@@ -107,6 +107,10 @@ class DatabaseBootstrap:
         except mysql.connector.Error as err:
             logging.error("数据库连接检查失败: %s", err)
             return False
+
+    def open_connection(self):
+        """打开供 bootstrap 的迁移前置检查使用的写库连接。"""
+        return mysql.connector.connect(**self.mysql_config)
 
     def bootstrap(self) -> bool:
         self.create_database_if_not_exists()

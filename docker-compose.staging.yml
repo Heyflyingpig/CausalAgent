@@ -21,7 +21,7 @@ services:
     volumes: [rag_eval_staging_mysql_primary:/var/lib/mysql]
     networks: [rag_eval_staging]
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping --protocol=tcp -h 127.0.0.1 -P 3306 -u root"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -41,7 +41,7 @@ services:
     depends_on:
       mysql-primary: {condition: service_healthy}
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping --protocol=tcp -h 127.0.0.1 -P 3306 -u root"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -91,6 +91,9 @@ services:
       MODEL: ${MODEL:?MODEL is required}
       FLASK_ENV: staging
       VISION_ALLOW_REMOTE_DATA: "true"
+      VISION_API_KEY: ${VISION_API_KEY:?VISION_API_KEY is required for staging remote VLM}
+      VISION_BASE_URL: ${VISION_BASE_URL:?VISION_BASE_URL is required for staging remote VLM}
+      VISION_MODEL: ${VISION_MODEL:-qwen/qwen3-vl-8b-instruct}
       RAG_EVAL_EVALUATION_WORKERS: "5"
       RAG_EVAL_INGESTION_CONCURRENCY_LIMIT: "1"
       RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT: "1"

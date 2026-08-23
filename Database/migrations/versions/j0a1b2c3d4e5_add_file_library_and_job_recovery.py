@@ -1,6 +1,6 @@
 """replace legacy files and add resumable analysis-job inputs
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: j0a1b2c3d4e5
 Revises: f9a0b1c2d3e4
 Create Date: 2026-08-07 00:00:00.000000
 
@@ -11,7 +11,7 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "a1b2c3d4e5f6"
+revision: str = "j0a1b2c3d4e5"
 down_revision: Union[str, Sequence[str], None] = "f9a0b1c2d3e4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

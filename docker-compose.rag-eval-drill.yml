@@ -17,7 +17,7 @@ services:
     volumes:
       - rag_eval_drill_mysql:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping --protocol=tcp -h 127.0.0.1 -P 3306 -u root"]
       interval: 5s
       timeout: 3s
       retries: 20
