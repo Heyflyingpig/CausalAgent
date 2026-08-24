@@ -647,3 +647,30 @@
 - 【日志管理修复：补齐登录时间写入失败事件】
   - 保留 `mysql.connector.Error` 的数据库失败事件路径，为超时、连接异常和未知异常增加 `auth.login.last_login_update_failed` 事件及稳定原因码。
   - 更新认证服务测试和事件目录测试，验证登录时间写入失败不会阻断登录且不回显异常原文。
+
+---
+2026.8.24
+- 【日志管理第三阶段：独立 Grafana 异常日志看板实现】
+  - 保持 `causalagent-logs` Dashboard UID 和既有 Loki 数据源不变，将展示范围固定为 `warning`、`error`、`critical`，并继续在 Loki 中保留 INFO/DEBUG 供 Explore 排障。
+  - 增加环境、服务、分类和异常级别筛选，以及异常总量、级别趋势、服务/分类分布、Top 10 事件码和最近 200 条异常日志面板。
+  - `event_code` 仅在查询阶段解析；request、Job、用户、节点、工具和实例字段不新增为 Dashboard 变量或 Loki 标签。
+  - 本次不新增 Flask/Vue 日志入口，不修改生产 Compose；只执行基础静态检查，真实 Grafana/Loki、浏览器和故障场景验收仍待人工完成。
+
+---
+2026.8.24
+- 【修复：旧 Job 执行占用阻塞数据库升级】
+  - 为 `b2c3d4e5f6a7` 前的旧库增加只读迁移 preflight 和显式 dry-run/apply 修复工具，不改写历史 migration，也不自动清理业务数据。
+  - 修复命令要求数据库、revision 和候选条数三重确认，拒绝运行中 Job、部分迁移 schema 和状态漂移；事务内只清除非运行 Job 的旧 `worker_id` / `locked_at`。
+  - 程序化 bootstrap 保留共享 JSON stderr 日志配置，避免 Alembic `fileConfig` 覆盖最终失败事件，并补充数据库修复与启动编排测试。
+
+---
+2026.8.24
+- 【Grafana 默认简体中文】
+  - 开发 Compose 将 Grafana 服务器默认语言设置为 `zh-Hans`，新账号和未保存个人语言偏好的账号默认使用简体中文。
+  - 保留 Grafana 个人偏好优先级，不修改生产 Compose、数据卷、Loki 或异常日志看板查询。
+
+---
+2026.8.24
+- 【管理员侧栏新增 Grafana 切换入口】
+  - 在管理员侧栏页脚的“进入聊天”上方新增“进入 Grafana”按钮，直接跳转到默认开发环境的 `http://127.0.0.1:3000/`。
+  - 为桌面展开、折叠和移动端布局补齐交换图标、按钮间距及 Mock E2E/组件测试覆盖，不改变 Flask 管理员鉴权或 Grafana 登录边界。
