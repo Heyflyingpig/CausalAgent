@@ -154,6 +154,7 @@ class AdminUserCapabilityTests(unittest.TestCase):
             "分析数据",
             JOB_IDEMPOTENCY_KEY,
             None,
+            web_search_enabled=False,
         )
 
     def test_agent_job_creation_requires_idempotency_key(self):

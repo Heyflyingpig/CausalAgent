@@ -193,6 +193,23 @@ class JobIdempotencyTests(unittest.TestCase):
         self.assertEqual(connection.commits, 0)
         self.assertEqual(connection.rollbacks, 1)
 
+    def test_web_search_enabled_changes_fingerprint(self):
+        """切换 web_search_enabled 应改变请求指纹，同键复用会触发 409 冲突。"""
+        disabled = _request_fingerprint("session-1", "hello", None, False)
+        enabled = _request_fingerprint("session-1", "hello", None, True)
+        self.assertNotEqual(disabled, enabled)
+
+    def test_create_job_rejects_non_bool_web_search_enabled(self):
+        """create_job 不再宽松转换，非布尔值直接抛 ValueError。"""
+        with self.assertRaises(ValueError):
+            create_job(
+                7,
+                "session-1",
+                "hello",
+                JOB_REQUEST_KEY,
+                web_search_enabled="false",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
