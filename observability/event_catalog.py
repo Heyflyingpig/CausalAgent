@@ -70,6 +70,7 @@ REASON_CODES = frozenset(
         "knowledge_base_missing",
         "lock_operation_failed",
         "lock_release_failed",
+        "migration_precondition_failed",
         "node_error",
         "node_timeout",
         "ownership_mismatch",

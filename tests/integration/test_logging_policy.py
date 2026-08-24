@@ -28,6 +28,7 @@ OFFLINE_PRINT_ALLOWLIST = {
     "Agent/knowledge_base/query_rag.py",
     "Agent/knowledge_base/rag_eval.py",
     "Database/database_init.py",
+    "Database/job_execution_upgrade_repair.py",
     "Database/lifecycle_repair.py",
     "Database/mysql_checkpointer.py",
     "app/auth/admin_cli.py",

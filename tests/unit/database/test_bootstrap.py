@@ -5,6 +5,10 @@ from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 from Database import bootstrap
+from Database.job_execution_upgrade_repair import (
+    JobExecutionUpgradeBlockedError,
+    UpgradeCompatibilityReport,
+)
 
 
 class BootstrapTests(TestCase):
@@ -22,6 +26,10 @@ class BootstrapTests(TestCase):
                 return_value=mysql_bootstrap,
             ),
             patch(
+                "Database.bootstrap.check_upgrade_compatibility",
+                side_effect=lambda config: events.append("preflight"),
+            ),
+            patch(
                 "Database.bootstrap.upgrade_mysql_schema",
                 side_effect=lambda project_root: events.append("alembic"),
             ),
@@ -33,7 +41,7 @@ class BootstrapTests(TestCase):
         ):
             bootstrap.run_bootstrap(Path("C:/project"))
 
-        self.assertEqual(events, ["mysql", "alembic", "postgres"])
+        self.assertEqual(events, ["mysql", "preflight", "alembic", "postgres"])
 
     def test_run_bootstrap_stops_before_migration_when_mysql_is_unavailable(self):
         """MySQL 连接检查失败时不能继续执行迁移或 PostgreSQL setup。"""
@@ -45,6 +53,9 @@ class BootstrapTests(TestCase):
                 "Database.bootstrap.create_mysql_bootstrap",
                 return_value=mysql_bootstrap,
             ),
+            patch(
+                "Database.bootstrap.check_upgrade_compatibility"
+            ) as check_upgrade_compatibility,
             patch("Database.bootstrap.upgrade_mysql_schema") as upgrade_mysql_schema,
             patch(
                 "Database.bootstrap.setup_postgres_checkpoint_schema"
@@ -52,6 +63,39 @@ class BootstrapTests(TestCase):
             patch("Database.bootstrap.LOGGER"),
         ):
             with self.assertRaisesRegex(RuntimeError, "MySQL 数据库连接检查失败"):
+                bootstrap.run_bootstrap()
+
+        check_upgrade_compatibility.assert_not_called()
+        upgrade_mysql_schema.assert_not_called()
+        setup_postgres_checkpoint_schema.assert_not_called()
+
+    def test_run_bootstrap_stops_before_alembic_when_compatibility_is_blocked(self):
+        """旧终态租约不兼容时不能进入 Alembic 或 PostgreSQL setup。"""
+        mysql_bootstrap = MagicMock()
+        mysql_bootstrap.bootstrap.return_value = True
+        report = UpgradeCompatibilityReport(
+            revisions=("a1b2c3d4e5f6",),
+            analysis_jobs_exists=True,
+            migration_columns=(),
+            running_count=0,
+            repairable_count=8,
+        )
+
+        with (
+            patch(
+                "Database.bootstrap.create_mysql_bootstrap",
+                return_value=mysql_bootstrap,
+            ),
+            patch(
+                "Database.bootstrap.check_upgrade_compatibility",
+                side_effect=JobExecutionUpgradeBlockedError(report),
+            ),
+            patch("Database.bootstrap.upgrade_mysql_schema") as upgrade_mysql_schema,
+            patch(
+                "Database.bootstrap.setup_postgres_checkpoint_schema"
+            ) as setup_postgres_checkpoint_schema,
+        ):
+            with self.assertRaises(JobExecutionUpgradeBlockedError):
                 bootstrap.run_bootstrap()
 
         upgrade_mysql_schema.assert_not_called()
@@ -66,4 +110,5 @@ class BootstrapTests(TestCase):
 
         config, revision = upgrade.call_args.args
         self.assertEqual(config.config_file_name, str(project_root / "alembic.ini"))
+        self.assertIs(config.attributes["configure_logger"], False)
         self.assertEqual(revision, "head")

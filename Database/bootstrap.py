@@ -6,6 +6,10 @@ import asyncio
 import logging
 from pathlib import Path
 
+from Database.job_execution_upgrade_repair import (
+    JobExecutionUpgradeBlockedError,
+    check_upgrade_compatibility,
+)
 from observability.logging_runtime import configure_logging, current_environment, log_event
 
 if __name__ == "__main__":
@@ -41,6 +45,9 @@ def upgrade_mysql_schema(project_root: Path | None = None) -> None:
     """使用项目现有 Alembic 迁移将 MySQL schema 升级到当前 head。"""
     root = project_root or _project_root()
     alembic_config = Config(str(root / "alembic.ini"))
+    # Programmatic bootstrap already owns the root JSON stderr handler. The
+    # Alembic CLI keeps its normal fileConfig behaviour.
+    alembic_config.attributes["configure_logger"] = False
     command.upgrade(alembic_config, "head")
 
 
@@ -64,6 +71,7 @@ def run_bootstrap(project_root: Path | None = None) -> None:
     if not mysql_bootstrap.bootstrap():
         raise RuntimeError("MySQL 数据库连接检查失败，停止执行后续初始化。")
 
+    check_upgrade_compatibility(mysql_bootstrap.mysql_config)
     upgrade_mysql_schema(project_root)
     setup_postgres_checkpoint_schema()
     log_event(
@@ -77,6 +85,18 @@ def main() -> int:
     configure_logging("maintenance", current_environment(), logging.INFO)
     try:
         run_bootstrap()
+    except JobExecutionUpgradeBlockedError as exc:
+        log_event(
+            LOGGER,
+            "maintenance.startup.failed",
+            details={
+                "phase": "migration_preflight",
+                "dependency": "mysql_schema",
+                "reason_code": "migration_precondition_failed",
+            },
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return 1
     except Exception as exc:
         log_event(
             LOGGER,
