@@ -11,6 +11,7 @@ from Agent.causal_agent.fault_tolerance import (
     degrade_rag_tool_result,
     degrade_rag_parser_failure,
     degrade_rag_finalize_failure,
+    degrade_web_search_parser_failure,
     degrade_web_search_planner,
     recover_mcp_tool_failure,
     short_retry,
@@ -208,6 +209,7 @@ def build_web_search_subgraph(llm):
         ),
         input_schema=WebSearchState,
         timeout=timeout(run_timeout=120, idle_timeout=45),
+        error_handler=guarded_error_handler(degrade_web_search_parser_failure),
     )
     graph.set_entry_point("planner")
     graph.add_edge("planner", "academic_search")

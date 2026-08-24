@@ -18,6 +18,7 @@ from .fault_tolerance import (
     recover_fold_to_agent,
     recover_preprocess_to_agent,
     degrade_rag_adapter_result,
+    degrade_web_search_adapter_result,
     route_to_normal_chat,
     short_retry,
     timeout,
@@ -101,7 +102,11 @@ def build_graph(
         rag_adapter_node,
         error_handler=guarded_error_handler(degrade_rag_adapter_result),
     )
-    workflow.add_node("web_search", web_search_subgraph)
+    workflow.add_node(
+        "web_search",
+        web_search_subgraph,
+        error_handler=guarded_error_handler(degrade_web_search_adapter_result),
+    )
     workflow.add_node(
         "postprocess",
         postprocess_node_with_llm,

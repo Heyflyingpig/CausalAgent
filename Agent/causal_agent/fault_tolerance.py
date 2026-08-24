@@ -270,6 +270,56 @@ def degrade_academic_search(state: CausalAgentState, error: NodeError) -> dict:
     }
 
 
+WebSearchStatus = Literal["available", "unavailable", "protocol_error"]
+
+
+def build_web_search_degradation_result(
+    error: Any = None,
+    *,
+    status: WebSearchStatus = "unavailable",
+) -> dict[str, Any]:
+    """构造统一的联网搜索降级结果"""
+    if isinstance(error, asyncio.CancelledError):
+        raise error
+    if isinstance(error, BaseException):
+        error_message = sanitize_error(error)
+    elif error is None:
+        error_message = "联网搜索子图未生成有效结果。"
+    else:
+        error_message = str(error)
+    return {
+        "success": False,
+        "status": status,
+        "query": "",
+        "results": [],
+        "content": [],
+        "error": error_message,
+    }
+
+
+def degrade_web_search_parser_failure(state: CausalAgentState, error: NodeError) -> dict:
+    """web_search result_parser 失败后的协议降级：写统一 web_search_result。"""
+    return {
+        "web_search_result": build_web_search_degradation_result(
+            error.error,
+            status="protocol_error",
+        )
+    }
+
+
+def degrade_web_search_adapter_result(state: CausalAgentState, error: NodeError) -> Command:
+    """父图 web_search 节点失败的最后一道兜底：写统一结果并回到 agent。"""
+    return Command(
+        update={
+            "web_search_result": build_web_search_degradation_result(
+                error.error,
+                status="protocol_error",
+            )
+        },
+        goto="agent",
+    )
+
+
 def recover_postprocess_to_report(state: CausalAgentState, error: NodeError) -> Command:
     """后处理失败后的恢复：使用原始分析结果继续报告生成。"""
     message = f"{_error_message(error)}；将使用原始分析结果继续生成报告。"
