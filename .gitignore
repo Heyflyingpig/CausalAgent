@@ -208,6 +208,7 @@ tests/*
 !tests/test_isolated_evaluation.py
 !tests/test_isolated_rag_eval_routes.py
 !tests/test_rag_eval_worker_queue.py
+!tests/test_rag_eval_artifact.py
 !tests/test_rag_eval_run_lifecycle.py
 !tests/test_rag_eval_dataset_registry.py
 !tests/test_rag_eval_index_binding.py
@@ -232,8 +233,7 @@ study/
 !/docs/
 !docs/难题.md
 # 评测功能的本地运行状态与摄取生成产物
-tmp/rag_eval_isolated_runs/
-tmp/rag_eval_sources/
+/tmp/
 
 Agent/knowledge_base/rag/docs/
 Agent/knowledge_base/rag/output/reports/
@@ -250,14 +250,16 @@ admin-frontend/playwright-report/
 
 # 前端构建产物(Vite 打包结果,由源码本地构建生成,不入库)
 app/static/rag_eval_app/
+!app/static/rag_eval_app/
+!app/static/rag_eval_app/assets/
+!app/static/rag_eval_app/assets/*
 admin-frontend/dist/
 
 # 预发隔离环境密钥(仅本地,严禁提交)
 .env.staging
 
-# RAG 治理运行时产物(白名单豁免 isolated_runs.py 硬编码依赖的 _v3 对)
+# RAG 评测运行时产物统一位于 /tmp/rag_eval/，不入库。
 *.governance.lock
-Document/rag_gold_v2_governance_*_20*.json
 Agent/knowledge_base/rag/data/eval/history/
 Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*
 !Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_rebound_requires_reapproval_v3.json

@@ -134,7 +134,8 @@ services:
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
       - JOB_CHAT_HISTORY_LIMIT=${JOB_CHAT_HISTORY_LIMIT:-20}
-      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval_datasets
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
       - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-20}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
@@ -151,7 +152,7 @@ services:
       - /app/杂项
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
-      - ./tmp/rag_eval_datasets:/app/tmp/rag_eval_datasets
+      - ./tmp/rag_eval:/app/tmp/rag_eval
     depends_on:
       mysql-primary:
         condition: service_healthy
@@ -332,7 +333,8 @@ services:
       - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
       - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
       - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
-      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval_datasets
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
       - RAG_EVAL_EVALUATION_WORKERS=${RAG_EVAL_EVALUATION_WORKERS:-5}
       - RAG_EVAL_INGESTION_CONCURRENCY_LIMIT=${RAG_EVAL_INGESTION_CONCURRENCY_LIMIT:-1}
       - RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
@@ -356,7 +358,7 @@ services:
       - /app/杂项
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
-      - ./tmp/rag_eval_datasets:/app/tmp/rag_eval_datasets
+      - ./tmp/rag_eval:/app/tmp/rag_eval
     depends_on:
       mysql-primary:
         condition: service_healthy

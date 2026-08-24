@@ -132,9 +132,8 @@ services:
       
       # === 关键区别5：生产环境变量 ===
       - FLASK_ENV=production
-      - RAG_EVAL_ISOLATED_RUN_ROOT=/app/tmp/rag_eval_isolated_runs
-      - RAG_EVAL_SOURCE_ROOT=/app/tmp/rag_eval_sources
-      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval_datasets
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
       
       # 原因：
       # - production模式关闭调试信息
@@ -164,9 +163,11 @@ services:
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
       - ./static/generated_graphs:/app/static/generated_graphs
       - app_logs_prod:/app/logs  # 新增：应用日志持久化
-      - rag_eval_isolated_runs:/app/tmp/rag_eval_isolated_runs  # 隔离运行目录（与 rag-eval-worker 共享）
-      - rag_eval_sources:/app/tmp/rag_eval_sources              # 知识源目录（与 rag-eval-worker 共享）
-      - rag_eval_datasets:/app/tmp/rag_eval_datasets            # 数据集目录（与 rag-eval-worker 共享）
+      - rag_eval_isolated_runs:/app/tmp/rag_eval/runs                    # 隔离运行目录（与 rag-eval-worker 共享）
+      - rag_eval_sources:/app/tmp/rag_eval/sources                       # 知识源目录（与 rag-eval-worker 共享）
+      - rag_eval_datasets:/app/tmp/rag_eval/datasets/registered          # 数据集目录（与 rag-eval-worker 共享）
+      - rag_eval_artifacts:/app/tmp/rag_eval/artifacts
+      - rag_eval_reports:/app/tmp/rag_eval/reports
     
     # 原因：
     # - 代码在镜像内，不依赖宿主机文件系统
@@ -273,9 +274,8 @@ services:
       - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
       - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
       - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
-      - RAG_EVAL_ISOLATED_RUN_ROOT=/app/tmp/rag_eval_isolated_runs
-      - RAG_EVAL_SOURCE_ROOT=/app/tmp/rag_eval_sources
-      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval_datasets
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
       - RAG_EVAL_EVALUATION_WORKERS=${RAG_EVAL_EVALUATION_WORKERS:-5}
       - RAG_EVAL_INGESTION_CONCURRENCY_LIMIT=${RAG_EVAL_INGESTION_CONCURRENCY_LIMIT:-1}
       - RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
@@ -300,9 +300,11 @@ services:
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/source:/app/Agent/knowledge_base/source:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
-      - rag_eval_isolated_runs:/app/tmp/rag_eval_isolated_runs
-      - rag_eval_sources:/app/tmp/rag_eval_sources
-      - rag_eval_datasets:/app/tmp/rag_eval_datasets
+      - rag_eval_isolated_runs:/app/tmp/rag_eval/runs
+      - rag_eval_sources:/app/tmp/rag_eval/sources
+      - rag_eval_datasets:/app/tmp/rag_eval/datasets/registered
+      - rag_eval_artifacts:/app/tmp/rag_eval/artifacts
+      - rag_eval_reports:/app/tmp/rag_eval/reports
 
     depends_on:
       mysql:
@@ -368,6 +370,12 @@ volumes:
     driver: local
 
   rag_eval_datasets:
+    driver: local
+
+  rag_eval_artifacts:
+    driver: local
+
+  rag_eval_reports:
     driver: local
 
 # ==========================================

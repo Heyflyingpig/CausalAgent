@@ -9,14 +9,16 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from config.rag_eval_paths import RAG_EVAL_LEGACY_ROOT
+
 from Agent.knowledge_base.rag.rag_eval.contracts import EVAL_SCHEMA_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_PEARL_SOURCE = ROOT / "Agent" / "knowledge_base" / "multimodal" / "production_eval_v1.json"
-DEFAULT_PEARL_OUTPUT = ROOT / "Agent" / "knowledge_base" / "rag" / "data" / "eval" / "pearl_gold_v1.json"
+DEFAULT_PEARL_OUTPUT = RAG_EVAL_LEGACY_ROOT / "datasets" / "pearl_gold_v1.json"
 DEFAULT_PUBMED_SOURCE = ROOT / "Agent" / "knowledge_base" / "rag" / "data" / "external" / "pubmedqa" / "processed" / "pubmedqa_eval_dataset.json"
-DEFAULT_PUBMED_OUTPUT = ROOT / "Agent" / "knowledge_base" / "rag" / "data" / "eval" / "medical_gold_v1.json"
+DEFAULT_PUBMED_OUTPUT = RAG_EVAL_LEGACY_ROOT / "datasets" / "medical_gold_v1.json"
 
 
 def _read_json(path: Path) -> Any:

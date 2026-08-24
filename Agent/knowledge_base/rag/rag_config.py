@@ -8,13 +8,20 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List
 
+from config.rag_eval_paths import (
+    RAG_EVAL_MACHINE_OUTPUT_DIR,
+    RAG_EVAL_OUTPUT_ROOT,
+    RAG_EVAL_REPORT_OUTPUT_DIR,
+    RAG_EVAL_RUN_OUTPUT_DIR,
+)
+
 RAG_DIR = Path(__file__).resolve().parent  # rag 子目录根路径。
 KNOWLEDGE_BASE_DIR = RAG_DIR.parent  # knowledge_base 根路径。
 DATA_DIR = RAG_DIR / "data"  # RAG 数据集和外部数据目录。
-OUTPUT_DIR = RAG_DIR / "output"  # RAG 评测输出根目录。
-MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"  # JSON / JSONL 等机器可读输出目录。
-REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"  # Markdown 报告输出目录。
-RUNS_DIR = OUTPUT_DIR / "runs"  # 每次 pipeline run 的快照目录。
+OUTPUT_DIR = RAG_EVAL_OUTPUT_ROOT  # RAG 评测输出根目录。
+MACHINE_OUTPUT_DIR = RAG_EVAL_MACHINE_OUTPUT_DIR  # JSON / JSONL 等机器可读输出目录。
+REPORT_OUTPUT_DIR = RAG_EVAL_REPORT_OUTPUT_DIR  # Markdown 报告输出目录。
+RUNS_DIR = RAG_EVAL_RUN_OUTPUT_DIR  # 每次 pipeline run 的快照目录。
 SOURCE_DIR = KNOWLEDGE_BASE_DIR / "source"  # 旧因果资料源文档目录。
 DEFAULT_EMBEDDING_MODEL_PATH = KNOWLEDGE_BASE_DIR / "models" / "bge-small-zh-v1.5"  # 默认本地 embedding。
 VECTOR_DB_DIR = KNOWLEDGE_BASE_DIR / "db"  # 当前向量库持久化目录，禁止随意清空。

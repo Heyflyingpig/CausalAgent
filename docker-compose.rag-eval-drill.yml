@@ -88,9 +88,9 @@ services:
     environment: *drill_environment
     volumes:
       - .:/app
-      - rag_eval_drill_runs:/app/tmp/rag_eval_isolated_runs
-      - rag_eval_drill_sources:/app/tmp/rag_eval_sources
-      - rag_eval_drill_datasets:/app/tmp/rag_eval_datasets
+      - rag_eval_drill_runs:/app/tmp/rag_eval/runs
+      - rag_eval_drill_sources:/app/tmp/rag_eval/sources
+      - rag_eval_drill_datasets:/app/tmp/rag_eval/datasets/registered
     depends_on:
       db-bootstrap:
         condition: service_completed_successfully
@@ -101,9 +101,9 @@ services:
     environment: *drill_environment
     volumes:
       - .:/app
-      - rag_eval_drill_runs:/app/tmp/rag_eval_isolated_runs
-      - rag_eval_drill_sources:/app/tmp/rag_eval_sources
-      - rag_eval_drill_datasets:/app/tmp/rag_eval_datasets
+      - rag_eval_drill_runs:/app/tmp/rag_eval/runs
+      - rag_eval_drill_sources:/app/tmp/rag_eval/sources
+      - rag_eval_drill_datasets:/app/tmp/rag_eval/datasets/registered
     depends_on:
       db-bootstrap:
         condition: service_completed_successfully

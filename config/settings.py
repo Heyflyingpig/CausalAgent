@@ -296,10 +296,15 @@ class AppConfig:
             if not 1 <= value <= 5:
                 raise ValueError(f"配置错误: {name} 必须在 1 到 5 之间。")
             setattr(self, name, value)
+        self.RAG_EVAL_ROOT = self._get_config(
+            "RAG_EVAL_ROOT",
+            required=False,
+            default="tmp/rag_eval",
+        )
         self.RAG_EVAL_DATASET_ROOT = self._get_config(
             "RAG_EVAL_DATASET_ROOT",
             required=False,
-            default="tmp/rag_eval_datasets",
+            default=str(Path(self.RAG_EVAL_ROOT) / "datasets" / "registered"),
         )
         self.RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS = self._get_float_config(
             "RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS",

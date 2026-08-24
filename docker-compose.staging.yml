@@ -101,9 +101,8 @@ services:
       RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT: "1"
       RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT: "3"
       RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT: "2"
-      RAG_EVAL_ISOLATED_RUN_ROOT: /app/tmp/rag_eval_isolated_runs
-      RAG_EVAL_SOURCE_ROOT: /app/tmp/rag_eval_sources
-      RAG_EVAL_DATASET_ROOT: /app/tmp/rag_eval_datasets
+      RAG_EVAL_ROOT: /app/tmp/rag_eval
+      RAG_EVAL_DATASET_ROOT: /app/tmp/rag_eval/datasets/registered
     networks: [rag_eval_staging]
     depends_on:
       mysql-primary: {condition: service_healthy}
@@ -114,9 +113,11 @@ services:
     command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec gunicorn --bind 0.0.0.0:5001 --workers 1 --threads 12 --timeout 120 CausalAgent:app"]
     environment: *app_environment
     volumes:
-      - rag_eval_staging_runs:/app/tmp/rag_eval_isolated_runs
-      - rag_eval_staging_sources:/app/tmp/rag_eval_sources
-      - rag_eval_staging_datasets:/app/tmp/rag_eval_datasets
+      - rag_eval_staging_runs:/app/tmp/rag_eval/runs
+      - rag_eval_staging_sources:/app/tmp/rag_eval/sources
+      - rag_eval_staging_datasets:/app/tmp/rag_eval/datasets/registered
+      - rag_eval_staging_artifacts:/app/tmp/rag_eval/artifacts
+      - rag_eval_staging_reports:/app/tmp/rag_eval/reports
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
     networks: [rag_eval_staging]
@@ -162,9 +163,11 @@ services:
     command: ["sh", "-c", "python scripts/staging_environment_guard.py && exec python -m app.rag_eval.worker"]
     environment: *app_environment
     volumes:
-      - rag_eval_staging_runs:/app/tmp/rag_eval_isolated_runs
-      - rag_eval_staging_sources:/app/tmp/rag_eval_sources
-      - rag_eval_staging_datasets:/app/tmp/rag_eval_datasets
+      - rag_eval_staging_runs:/app/tmp/rag_eval/runs
+      - rag_eval_staging_sources:/app/tmp/rag_eval/sources
+      - rag_eval_staging_datasets:/app/tmp/rag_eval/datasets/registered
+      - rag_eval_staging_artifacts:/app/tmp/rag_eval/artifacts
+      - rag_eval_staging_reports:/app/tmp/rag_eval/reports
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
     networks: [rag_eval_staging]
@@ -198,4 +201,6 @@ volumes:
   rag_eval_staging_runs: {driver: local}
   rag_eval_staging_sources: {driver: local}
   rag_eval_staging_datasets: {driver: local}
+  rag_eval_staging_artifacts: {driver: local}
+  rag_eval_staging_reports: {driver: local}
   rag_eval_staging_gateway_logs: {driver: local}

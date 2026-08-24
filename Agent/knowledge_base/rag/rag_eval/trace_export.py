@@ -16,11 +16,8 @@ except ModuleNotFoundError:
         sys.path.insert(0, str(project_root))
     from Agent.knowledge_base.rag.tools.report_utils import build_trace_markdown_report, write_markdown_file
 
-
-RAG_DIR = Path(__file__).resolve().parents[1]
-OUTPUT_DIR = RAG_DIR / "output"
-MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
-REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
+from config.rag_eval_paths import RAG_EVAL_MACHINE_OUTPUT_DIR as MACHINE_OUTPUT_DIR
+from config.rag_eval_paths import RAG_EVAL_REPORT_OUTPUT_DIR as REPORT_OUTPUT_DIR
 
 DEFAULT_RETRIEVAL_RESULT_PATH = MACHINE_OUTPUT_DIR / "rag_eval_result.json"
 DEFAULT_RAGAS_RESULT_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_result.json"

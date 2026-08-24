@@ -27,11 +27,12 @@ from Agent.knowledge_base.multimodal.index import StagedIndex, embedding_fingerp
 from Agent.knowledge_base.rag.operation_datasets.dataset_utils import (
     convert_ragas_generated_row_to_eval_sample,
 )
+from config.rag_eval_paths import RAG_EVAL_CANDIDATE_DATASET_ROOT
 from config.settings import settings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "tmp" / "rag_eval_candidate_datasets"
+DEFAULT_OUTPUT_ROOT = RAG_EVAL_CANDIDATE_DATASET_ROOT
 MAX_GENERATION_WORKERS = 4
 MAX_QUESTIONS_PER_UNIT = 3
 DEFAULT_MAX_UNITS = 32

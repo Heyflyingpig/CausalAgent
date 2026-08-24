@@ -133,7 +133,8 @@ services:
       - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
-      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval_datasets
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
       - RAG_EVAL_EVALUATION_WORKERS=${RAG_EVAL_EVALUATION_WORKERS:-5}
       - RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS:-1}
       - RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
@@ -156,7 +157,7 @@ services:
       - /app/鏉傞」
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
-      - ./tmp/rag_eval_datasets:/app/tmp/rag_eval_datasets
+      - ./tmp/rag_eval:/app/tmp/rag_eval
     depends_on:
       mysql-primary:
         condition: service_healthy
@@ -404,7 +405,8 @@ services:
       - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
       - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
       - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
-      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval_datasets
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
       - RAG_EVAL_EVALUATION_WORKERS=${RAG_EVAL_EVALUATION_WORKERS:-5}
       - RAG_EVAL_INGESTION_CONCURRENCY_LIMIT=${RAG_EVAL_INGESTION_CONCURRENCY_LIMIT:-1}
       - RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
@@ -427,7 +429,7 @@ services:
       - /app/__pycache__
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
-      - ./tmp/rag_eval_datasets:/app/tmp/rag_eval_datasets
+      - ./tmp/rag_eval:/app/tmp/rag_eval
     depends_on:
       mysql-primary:
         condition: service_healthy

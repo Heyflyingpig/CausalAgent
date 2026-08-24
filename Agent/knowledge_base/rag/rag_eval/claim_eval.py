@@ -31,12 +31,8 @@ from Agent.knowledge_base.rag.tools.report_utils import (
     build_claim_eval_markdown_report,
     write_markdown_file,
 )
-
-
-RAG_DIR = Path(__file__).resolve().parents[1]
-OUTPUT_DIR = RAG_DIR / "output"
-MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
-REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
+from config.rag_eval_paths import RAG_EVAL_MACHINE_OUTPUT_DIR as MACHINE_OUTPUT_DIR
+from config.rag_eval_paths import RAG_EVAL_REPORT_OUTPUT_DIR as REPORT_OUTPUT_DIR
 DEFAULT_RAGAS_RESULT_PATH = MACHINE_OUTPUT_DIR / "ragas_eval_result.json"
 DEFAULT_OUTPUT_PATH = MACHINE_OUTPUT_DIR / "claim_eval_result.json"
 DEFAULT_REPORT_PATH = REPORT_OUTPUT_DIR / "claim_eval_report.md"

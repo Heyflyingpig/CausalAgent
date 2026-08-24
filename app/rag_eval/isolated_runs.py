@@ -49,18 +49,16 @@ from Agent.knowledge_base.query_rag import (
     _normalize_question_payload,
 )
 from config.settings import settings
+from config.rag_eval_paths import (
+    RAG_EVAL_ISOLATED_RUN_ROOT,
+    RAG_EVAL_SOURCE_ROOT,
+    RAG_EVAL_TUNING_DATASET_ROOT,
+)
 from app.rag_eval.index_binding import IndexBindingGate, IndexIdentity
 
 
-ISOLATED_RUN_ROOT = Path(
-    os.getenv("RAG_EVAL_ISOLATED_RUN_ROOT", str(_PROJECT_ROOT / "tmp" / "rag_eval_isolated_runs"))
-).resolve()
-RAG_EVAL_SOURCE_ROOT = Path(
-    os.getenv("RAG_EVAL_SOURCE_ROOT", str(_PROJECT_ROOT / "tmp" / "rag_eval_sources"))
-).resolve()
-TUNING_DATASET_ROOT = Path(
-    os.getenv("RAG_EVAL_TUNING_DATASET_ROOT", str(_PROJECT_ROOT / "tmp" / "rag_eval_tuning_datasets"))
-).resolve()
+ISOLATED_RUN_ROOT = RAG_EVAL_ISOLATED_RUN_ROOT
+TUNING_DATASET_ROOT = RAG_EVAL_TUNING_DATASET_ROOT
 _SOURCE_METADATA_LOCK = threading.RLock()
 _RUN_ID_PATTERN = re.compile(r"^[0-9A-Za-z_-]{8,80}$")
 _MAX_EVENTS = 500

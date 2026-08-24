@@ -15,6 +15,7 @@ from typing import Any
 from Agent.knowledge_base.rag.operation_datasets.candidate_generation import _write_dataset
 from Agent.knowledge_base.rag.rag_config import RETRIEVAL_PROFILES
 from Agent.knowledge_base.rag.rag_eval.contracts import evaluation_identity, load_eval_dataset_bundle
+from config.rag_eval_paths import RAG_EVAL_BASELINE_ROOT
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -22,7 +23,7 @@ DEFAULT_PEARL_GOLD_V1 = PROJECT_ROOT / "Agent" / "knowledge_base" / "rag" / "dat
 DEFAULT_GOLD_V2_OUTPUT = PROJECT_ROOT / "Agent" / "knowledge_base" / "rag" / "data" / "eval" / "pearl_gold_v2.json"
 DEFAULT_ACTIVE_POINTER = PROJECT_ROOT / "Agent" / "knowledge_base" / "multimodal_runtime" / "active_index.json"
 DEFAULT_INDEX_ROOT = PROJECT_ROOT / "Agent" / "knowledge_base" / "multimodal_indexes"
-DEFAULT_BASELINE_ROOT = PROJECT_ROOT / "tmp" / "rag_eval_baselines"
+DEFAULT_BASELINE_ROOT = RAG_EVAL_BASELINE_ROOT
 GOLD_V2_ID = "pearl_gold_v2"
 BASELINE_V2_SCHEMA = "rag_baseline_v2"
 REVIEW_SCHEMA = "rag_candidate_review_v1"

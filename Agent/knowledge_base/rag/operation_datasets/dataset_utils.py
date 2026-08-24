@@ -12,12 +12,8 @@ from Agent.knowledge_base.rag.rag_config import (
     RAG_EVAL_DATASET_NAME,
     RAG_EVAL_DATASET_PATH,
 )
-
-
-RAG_DIR = Path(__file__).resolve().parents[1]
-OUTPUT_DIR = RAG_DIR / "output"
-MACHINE_OUTPUT_DIR = OUTPUT_DIR / "machine"
-REPORT_OUTPUT_DIR = OUTPUT_DIR / "reports"
+from config.rag_eval_paths import RAG_EVAL_MACHINE_OUTPUT_DIR as MACHINE_OUTPUT_DIR
+from config.rag_eval_paths import RAG_EVAL_REPORT_OUTPUT_DIR as REPORT_OUTPUT_DIR
 ALLOWED_QUESTION_TYPES = {
     "definition",
     "comparison",
