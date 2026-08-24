@@ -72,6 +72,14 @@ try:
 except ValueError:
     _EVALUATION_STALE_AFTER_SECONDS = 1800
 _ACTIVE_EVALUATION_STATUSES = {"created", "queued", "running", "cancelling"}
+_ACTIVE_INGESTION_STATUSES = {"created", "queued", "running", "cancelling"}
+_TERMINAL_RUN_STATUSES = {"staged", "succeeded", "cancelled", "failed"}
+_DELETABLE_DERIVED_KINDS = {
+    "rag_query",
+    "candidate_generation",
+    "dataset_governance",
+    "tuning_dataset_governance",
+}
 _PERSISTENT_WORKER_KINDS = {"ingestion", "candidate_generation", "rag_query", "evaluation", "dataset_governance", "tuning_dataset_governance"}
 _GOVERNANCE_CANDIDATE_BATCH_SIZE = 8
 _GOVERNANCE_CANDIDATE_MAX_ATTEMPTS = 3
@@ -243,6 +251,25 @@ def _read_json(path: Path) -> Dict[str, Any]:
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _json_contains_value(payload: Any, values: set[str]) -> bool:
+    """在已读取的 JSON 结构中查找明确的运行或题集身份。"""
+    if isinstance(payload, dict):
+        return any(_json_contains_value(value, values) for value in payload.values())
+    if isinstance(payload, list):
+        return any(_json_contains_value(value, values) for value in payload)
+    return isinstance(payload, str) and payload in values
+
+
+def _read_reference_json(path: Path) -> Any:
+    """读取删除门禁依赖的 JSON；存在但损坏时必须 fail closed。"""
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"引用门禁文件损坏，暂不能删除: {path.name}") from exc
 
 
 def _default_governance_reviewer(sample: Dict[str, Any], *, purpose: str) -> Dict[str, Any]:
@@ -921,24 +948,32 @@ def delete_uploaded_source(source_id: str) -> Dict[str, Any]:
     if match is None:
         raise KeyError(f"uploaded source not found: {normalized_id}")
 
-    active_runs = []
-    if ISOLATED_RUN_ROOT.is_dir():
-        for run_dir in ISOLATED_RUN_ROOT.iterdir():
-            if not run_dir.is_dir():
-                continue
-            state = _read_json(run_dir / "run.json")
-            if (
-                state.get("kind") == "ingestion"
-                and state.get("status") in {"created", "running", "cancelling"}
-                and normalized_id in state.get("source_ids", [])
-            ):
-                active_runs.append(str(state.get("run_id") or run_dir.name))
-    if active_runs:
-        raise RuntimeError(f"知识源正在摄取，暂不能删除：{active_runs[0]}")
+    with _path_file_lock(RAG_EVAL_SOURCE_ROOT / ".lifecycle.lock"):
+        active_runs = []
+        if ISOLATED_RUN_ROOT.is_dir():
+            for run_dir in ISOLATED_RUN_ROOT.iterdir():
+                if not run_dir.is_dir():
+                    continue
+                state = _read_json(run_dir / "run.json")
+                if (
+                    state.get("kind") == "ingestion"
+                    and state.get("status") in _ACTIVE_INGESTION_STATUSES
+                    and normalized_id in state.get("source_ids", [])
+                ):
+                    active_runs.append(str(state.get("run_id") or run_dir.name))
+        if active_runs:
+            raise RuntimeError(f"知识源正在摄取，暂不能删除：{active_runs[0]}")
 
-    path, entry = match
-    path.resolve().relative_to(RAG_EVAL_SOURCE_ROOT.resolve())
-    path.unlink()
+        path, entry = match
+        path.resolve().relative_to(RAG_EVAL_SOURCE_ROOT.resolve())
+        path.unlink()
+        display_names = _read_source_display_names()
+        if normalized_id in display_names:
+            display_names.pop(normalized_id, None)
+            try:
+                _write_source_display_names(display_names)
+            except OSError:
+                logging.warning("删除来源显示名元数据失败: %s", normalized_id, exc_info=True)
     return {"source_id": normalized_id, "name": entry["name"], "status": "deleted", "deleted": True}
 
 
@@ -1082,9 +1117,12 @@ class IsolatedRunManager:
             "vector_count": 0,
             "events": [],
         }
-        with self._lock:
-            self._runs[run_id] = state
-            _write_json(run_dir / "run.json", state)
+        with _path_file_lock(RAG_EVAL_SOURCE_ROOT / ".lifecycle.lock"):
+            if any(not path.is_file() for path in source_paths):
+                raise ValueError("选定的知识源在摄取任务创建前已被删除")
+            with self._lock:
+                self._runs[run_id] = state
+                _write_json(run_dir / "run.json", state)
         self._emit(run_id, "run_created", "创建隔离知识源摄取任务", {
             "source_ids": list(source_ids or []),
             "source_count": len(source_paths),
@@ -1581,6 +1619,96 @@ class IsolatedRunManager:
         with self._lock:
             if state.get("status") in _ACTIVE_EVALUATION_STATUSES:
                 state["cancel_requested"] = True
+            shutil.rmtree(target)
+            self._runs.pop(run_id, None)
+            self._queues.pop(run_id, None)
+        return {"run_id": run_id, "status": "deleted", "deleted": True}
+
+    def delete_ingestion_run(self, run_id: str) -> Dict[str, Any]:
+        """删除没有下游引用的终态摄取运行及其 staged index。"""
+        state = self._load(run_id)
+        if state.get("kind") != "ingestion":
+            raise ValueError("run is not an ingestion")
+        if state.get("status") in _ACTIVE_INGESTION_STATUSES:
+            return {
+                "run_id": run_id,
+                "status": "running",
+                "message": "摄取任务仍在运行，请先取消并等待终态",
+            }
+        if state.get("status") not in _TERMINAL_RUN_STATUSES:
+            raise ValueError("只能删除已结束的摄取运行")
+        self._ensure_run_has_no_references(state)
+        return self._remove_run_directory(run_id)
+
+    def delete_derived_run(self, run_id: str) -> Dict[str, Any]:
+        """删除没有下游引用的终态候选、治理或 staged RAG 运行。"""
+        state = self._load(run_id)
+        if state.get("kind") not in _DELETABLE_DERIVED_KINDS:
+            raise ValueError("run type does not support derived artifact deletion")
+        if state.get("status") in _ACTIVE_INGESTION_STATUSES:
+            return {
+                "run_id": run_id,
+                "status": "running",
+                "message": "运行仍在进行，请先取消并等待终态",
+            }
+        if state.get("status") not in _TERMINAL_RUN_STATUSES:
+            raise ValueError("只能删除已结束的运行")
+        self._ensure_run_has_no_references(state)
+        return self._remove_run_directory(run_id)
+
+    def _ensure_run_has_no_references(self, target_state: Dict[str, Any]) -> None:
+        """删除前阻止下游运行、正式 Gold 或生产 active pointer 失去来源。"""
+        run_id = str(target_state.get("run_id") or "")
+        kind = str(target_state.get("kind") or "")
+        index_version = str(target_state.get("index_version") or "")
+        dataset_id = str(target_state.get("dataset_id") or "")
+        references: List[str] = []
+
+        if ISOLATED_RUN_ROOT.is_dir():
+            for run_dir in ISOLATED_RUN_ROOT.iterdir():
+                if not run_dir.is_dir() or run_dir.name == run_id:
+                    continue
+                state = _read_json(run_dir / "run.json")
+                if not state:
+                    continue
+                if kind == "ingestion":
+                    matches = (
+                        state.get("ingestion_run_id") == run_id
+                        or (index_version and state.get("index_version") == index_version)
+                    )
+                else:
+                    identity_values = {value for value in (run_id, dataset_id) if value}
+                    matches = bool(identity_values) and _json_contains_value(state, identity_values)
+                if matches:
+                    references.append(
+                        f"{state.get('run_id') or run_dir.name}({state.get('kind') or 'unknown'}/{state.get('status') or 'unknown'})"
+                    )
+
+        try:
+            from Agent.knowledge_base.rag.operation_datasets import benchmark_v2
+
+            if kind == "ingestion" and index_version:
+                active_pointer = _read_reference_json(Path(benchmark_v2.DEFAULT_ACTIVE_POINTER))
+                if _json_contains_value(active_pointer, {index_version}):
+                    references.append("production_active_index")
+            gold_payload = _read_reference_json(Path(benchmark_v2.DEFAULT_GOLD_V2_OUTPUT))
+            identity_values = {value for value in (run_id, index_version, dataset_id) if value}
+            if identity_values and _json_contains_value(gold_payload, identity_values):
+                references.append("gold_v2")
+        except (ImportError, OSError, TypeError, ValueError):
+            logging.warning("检查正式索引或 Gold 引用失败，拒绝删除 %s", run_id, exc_info=True)
+            raise ValueError("无法确认正式索引或 Gold 引用状态，暂不能删除")
+
+        if references:
+            unique_references = list(dict.fromkeys(references))
+            raise ValueError("运行仍被下游或正式产物引用：" + "、".join(unique_references))
+
+    def _remove_run_directory(self, run_id: str) -> Dict[str, Any]:
+        """在终态检查完成后删除一个受路径校验保护的运行目录。"""
+        target = _run_dir(run_id)
+        if not target.is_dir():
+            raise KeyError(f"isolated run not found: {run_id}")
+        with self._lock:
             shutil.rmtree(target)
             self._runs.pop(run_id, None)
             self._queues.pop(run_id, None)

@@ -82,6 +82,16 @@ class _FakeIsolatedRunManager:
         self.states.pop(run_id)
         return {"run_id": run_id, "status": "deleted", "deleted": True}
 
+    def delete_ingestion_run(self, run_id):
+        if run_id not in self.states:
+            raise KeyError(run_id)
+        self.calls.append(("delete_ingestion_run", run_id))
+        return {"run_id": run_id, "status": "deleted", "deleted": True}
+
+    def delete_derived_run(self, run_id):
+        self.calls.append(("delete_derived_run", run_id))
+        return {"run_id": run_id, "status": "deleted", "deleted": True}
+
     def get_artifact_path(self, run_id, artifact_name):
         if run_id != "eval-test" or artifact_name not in {"summary.json", "summary.md"}:
             raise ValueError("artifact is unavailable")
@@ -447,6 +457,30 @@ class IsolatedRagEvalRouteTests(unittest.TestCase):
         cancelled = self.client.post("/api/rag_eval/isolated/ingestion-runs/ingest-test/cancel")
         self.assertEqual(cancelled.status_code, 200)
         self.assertTrue(cancelled.get_json()["data"]["cancel_requested"])
+
+        deleted = self.client.delete("/api/rag_eval/isolated/ingestion-runs/ingest-test")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.get_json()["data"]["deleted"])
+        self.assertEqual(self.manager.calls[-1], ("delete_ingestion_run", "ingest-test"))
+
+    def test_derived_run_delete_contracts(self):
+        for path in [
+            "/api/rag_eval/isolated/candidate-runs/candidate-test",
+            "/api/rag_eval/isolated/tuning-dataset-runs/tuning-test",
+            "/api/rag_eval/gold-v2/governance-runs/governance-test",
+        ]:
+            with self.subTest(path=path):
+                response = self.client.delete(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.get_json()["data"]["deleted"])
+        self.assertEqual(
+            self.manager.calls[-3:],
+            [
+                ("delete_derived_run", "candidate-test"),
+                ("delete_derived_run", "tuning-test"),
+                ("delete_derived_run", "governance-test"),
+            ],
+        )
 
     def test_rag_query_contract_carries_staged_identity(self):
         started = self.client.post(

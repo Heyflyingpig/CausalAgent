@@ -45,6 +45,7 @@ type CandidateReviewPhase = "intro" | "review" | "complete";
 interface SourceEntry {
   source_id: string;
   name: string;
+  display_name?: string;
   size_bytes: number;
   content_sha256: string;
   source_kind?: "frozen" | "uploaded";
@@ -273,6 +274,7 @@ const candidateReviewIndex = ref(0);
 const candidateReviewPhase = ref<CandidateReviewPhase>("intro");
 const candidateReviewedIds = ref<Set<string>>(new Set());
 const candidateLoading = ref(false);
+const candidateDeleteLoading = ref(false);
 const candidateFreezeLoading = ref(false);
 const candidateGenerationConfigOpen = ref(false);
 const candidateQuestionCount = ref(20);
@@ -328,9 +330,11 @@ const sourceLoading = ref(false);
 const uploadInput = ref<HTMLInputElement | null>(null);
 const uploadLoading = ref(false);
 const sourceDeleteLoading = ref<string | null>(null);
+const ingestionDeleteLoading = ref(false);
 const ingestionLoading = ref(false);
 const evaluationLoading = ref(false);
 const tuningDatasetLoading = ref(false);
+const tuningDatasetDeleteLoading = ref(false);
 const tuningDatasetError = ref("");
 const catalogError = ref("");
 const sourceNotice = ref("");
@@ -367,7 +371,7 @@ const supportedUploadExtensions = [
 const supportedUploadLabel = supportedUploadExtensions.join(", ");
 const selectedSources = computed(() => sources.value.filter((item) => selectedSourceIds.value.includes(item.source_id)));
 const ingestionReady = computed(() => ingestion.value?.status === "staged" && Boolean(ingestion.value.index_version));
-const busy = computed(() => uploadLoading.value || sourceDeleteLoading.value !== null || ingestionLoading.value || evaluationLoading.value);
+const busy = computed(() => uploadLoading.value || sourceDeleteLoading.value !== null || ingestionDeleteLoading.value || ingestionLoading.value || evaluationLoading.value);
 const evaluationMetrics = computed(() => Object.entries(evaluationResult.value?.summary.key_metrics || {}));
 const displayEvents = computed(() => {
   const visible: RunEvent[] = [];
@@ -636,6 +640,92 @@ async function deleteSource(source: SourceEntry) {
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : "知识源删除失败";
   } finally { sourceDeleteLoading.value = null; }
+}
+
+async function renameSource(source: SourceEntry) {
+  const currentName = source.display_name || source.name;
+  const displayName = window.prompt(`修改“${currentName}”的显示名称`, currentName)?.trim();
+  if (!displayName || displayName === currentName) return;
+  actionError.value = "";
+  sourceNotice.value = "";
+  try {
+    await api(`/api/rag_eval/isolated/sources/${encodeURIComponent(source.source_id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ display_name: displayName }),
+    });
+    await loadCatalog();
+    sourceNotice.value = `已将来源改名为 ${displayName}`;
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : "来源改名失败";
+  }
+}
+
+async function deleteSelectedIngestion() {
+  const run = ingestion.value;
+  if (!run || !terminalStatuses.includes(run.status)) return;
+  if (!window.confirm(`确认删除工作索引“${ingestionDisplayName(run)}”？\n\n这会删除该摄取运行及其 staged 索引；如果仍被候选题、评测或 Gold 引用，服务端会拒绝。`)) return;
+  ingestionDeleteLoading.value = true;
+  actionError.value = "";
+  sourceNotice.value = "";
+  try {
+    await api(`/api/rag_eval/isolated/ingestion-runs/${encodeURIComponent(run.run_id)}`, {
+      method: "DELETE",
+      body: "{}",
+    });
+    stopWatching();
+    ingestion.value = null;
+    selectedIngestionRunId.value = "";
+    candidateRun.value = null;
+    candidateDataset.value = null;
+    candidateAudit.value = null;
+    tuningDatasetRun.value = null;
+    evaluationRun.value = null;
+    evaluationResult.value = null;
+    localStorage.removeItem("ingestion_run_id");
+    localStorage.removeItem("rag_eval_ingestion_run_id");
+    localStorage.removeItem("candidate_run_id");
+    localStorage.removeItem("evaluation_run_id");
+    localStorage.removeItem("tuning_dataset_run_id");
+    await loadIngestionHistory();
+    await loadGoldDatasetStatus();
+    sourceNotice.value = `已删除工作索引 ${run.run_id}`;
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : "工作索引删除失败";
+  } finally { ingestionDeleteLoading.value = false; }
+}
+
+async function deleteCandidateRun() {
+  const run = candidateRun.value;
+  if (!run || !terminalStatuses.includes(run.status)) return;
+  if (!window.confirm(`确认删除候选题运行“${run.run_id}”？已被评测或 Gold 使用时服务端会拒绝。`)) return;
+  candidateDeleteLoading.value = true;
+  candidateActionError.value = "";
+  try {
+    await api(`/api/rag_eval/isolated/candidate-runs/${encodeURIComponent(run.run_id)}`, { method: "DELETE", body: "{}" });
+    candidateRun.value = null;
+    candidateDataset.value = null;
+    candidateAudit.value = null;
+    candidateReviewedIds.value = new Set();
+    localStorage.removeItem("candidate_run_id");
+    candidateMessage.value = "候选题运行已删除";
+  } catch (error) {
+    candidateActionError.value = error instanceof Error ? error.message : "候选题运行删除失败";
+  } finally { candidateDeleteLoading.value = false; }
+}
+
+async function deleteTuningDatasetRun() {
+  const run = tuningDatasetRun.value;
+  if (!run || !terminalStatuses.includes(run.status)) return;
+  if (!window.confirm(`确认删除调参集治理运行“${run.run_id}”？`)) return;
+  tuningDatasetDeleteLoading.value = true;
+  tuningDatasetError.value = "";
+  try {
+    await api(`/api/rag_eval/isolated/tuning-dataset-runs/${encodeURIComponent(run.run_id)}`, { method: "DELETE", body: "{}" });
+    tuningDatasetRun.value = null;
+    localStorage.removeItem("tuning_dataset_run_id");
+  } catch (error) {
+    tuningDatasetError.value = error instanceof Error ? error.message : "调参集治理运行删除失败";
+  } finally { tuningDatasetDeleteLoading.value = false; }
 }
 
 async function loadCatalog() {
@@ -1286,7 +1376,7 @@ async function loadGoldDatasetStatus() {
 
 async function loadIngestionHistory() {
   const history = await api<IngestionHistory>("/api/rag_eval/isolated/ingestion-runs?page=1&page_size=50");
-  ingestionHistory.value = history.items;
+  ingestionHistory.value = history.items.filter((run) => run.status === "staged");
 }
 
 async function selectIngestionRun(runId: string) {
@@ -1609,7 +1699,7 @@ async function cancelEvaluation() {
 async function restoreIngestionRun(preferredId: string | null): Promise<boolean> {
   try {
     const history = await api<IngestionHistory>("/api/rag_eval/isolated/ingestion-runs?page=1&page_size=50");
-    ingestionHistory.value = history.items;
+    ingestionHistory.value = history.items.filter((run) => run.status === "staged");
     const preferredRun = history.items.find((item) => item.run_id === preferredId)
       || history.items.find((item) => ["created", "queued", "running", "cancelling"].includes(item.status))
       || history.items.find((item) => item.status === "staged");
@@ -1799,16 +1889,16 @@ function refreshVisibleRun() {
             <article class="panel source-panel">
               <div class="panel-header"><div class="panel-title"><span class="icon-badge coral"><Database :size="18" /></span><div><p class="eyebrow">SOURCE INPUT</p><h2>选择知识源</h2></div></div><div class="source-panel-actions"><span class="count-label">{{ selectedSources.length }} / {{ sources.length }}</span><input ref="uploadInput" class="visually-hidden" type="file" :accept="supportedUploadExtensions.join(',')" @change="uploadSource" /><button type="button" class="secondary-button upload-button" :disabled="busy" @click="openUploadDialog"><Upload :size="15" />{{ uploadLoading ? '上传中' : '上传知识源' }}</button></div></div>
               <div class="source-capability-note"><strong>多模态解析</strong><span>支持 {{ supportedUploadLabel }}；文本、表格、图片以及 PDF 中的版面、公式、表格和图片会统一解析为可追溯的知识单元。</span></div>
-              <label class="index-selector workspace-index-selector"><span>本次工作索引（全局）</span><select v-model="selectedIngestionRunId" @change="selectIngestionRun(selectedIngestionRunId)"><option v-for="run in ingestionHistory" :key="run.run_id" :value="run.run_id">{{ ingestionDisplayName(run) }}</option></select><small>切换后，候选审核、Gold 冻结与评测都会使用这一套索引；其他页面不能切换。</small></label>
+              <div class="index-selector workspace-index-selector"><span>本次工作索引（全局）</span><div class="index-selector-row"><select v-model="selectedIngestionRunId" @change="selectIngestionRun(selectedIngestionRunId)"><option v-for="run in ingestionHistory" :key="run.run_id" :value="run.run_id">{{ ingestionDisplayName(run) }}</option></select><button v-if="ingestion && terminalStatuses.includes(ingestion.status)" type="button" class="secondary-button danger index-delete-button" :disabled="busy" @click="deleteSelectedIngestion"><Trash2 :size="15" />{{ ingestionDeleteLoading ? '删除中…' : '删除索引' }}</button></div><small>下拉框只显示已生成 staged 索引；运行中的任务仍在下方显示。删除会先检查候选题、评测和 Gold 引用。</small></div>
               <div v-if="sourceLoading && !sources.length" class="empty-line"><LoaderCircle class="spin" :size="17" />加载来源目录</div>
               <div v-else-if="!sources.length" class="empty-line"><FileText :size="17" />暂无可选来源</div>
-              <div v-else class="source-list"><div v-for="source in sources" :key="source.source_id" class="source-row" :class="{ selected: selectedSourceIds.includes(source.source_id) }"><label class="source-select"><input type="checkbox" :checked="selectedSourceIds.includes(source.source_id)" @change="toggleSource(source.source_id)" /><span class="source-check"><Check :size="14" /></span><span class="source-copy"><strong>{{ source.name }}</strong><small>{{ source.source_kind === 'uploaded' ? '用户上传' : '固定来源' }} · {{ source.page_count ? `${source.page_count} 页` : '页数待读取' }} · {{ formatBytes(source.size_bytes) }} · {{ source.content_sha256.slice(0, 12) }}</small></span></label><button v-if="source.source_kind === 'uploaded'" type="button" class="source-delete-button" :disabled="busy || sourceDeleteLoading === source.source_id" :title="`删除 ${source.name}`" :aria-label="`删除 ${source.name}`" @click="deleteSource(source)"><Trash2 :size="15" /></button></div></div>
+              <div v-else class="source-list"><div v-for="source in sources" :key="source.source_id" class="source-row" :class="{ selected: selectedSourceIds.includes(source.source_id) }"><label class="source-select"><input type="checkbox" :checked="selectedSourceIds.includes(source.source_id)" @change="toggleSource(source.source_id)" /><span class="source-check"><Check :size="14" /></span><span class="source-copy"><strong>{{ source.display_name || source.name }}</strong><small>{{ source.source_kind === 'uploaded' ? '用户上传' : '固定来源' }} · {{ source.page_count ? `${source.page_count} 页` : '页数待读取' }} · {{ formatBytes(source.size_bytes) }} · {{ source.content_sha256.slice(0, 12) }}</small></span></label><span class="source-actions"><button type="button" class="source-rename-button" :disabled="busy" @click="renameSource(source)">改名</button><button v-if="source.source_kind === 'uploaded'" type="button" class="source-delete-button" :disabled="busy || sourceDeleteLoading === source.source_id" :title="`删除 ${source.name}`" :aria-label="`删除 ${source.name}`" @click="deleteSource(source)"><Trash2 :size="15" /></button></span></div></div>
               <div class="run-options"><label>运行范围<select v-model="pageLimit"><option value="4">快速联调 · 4 页</option><option value="12">Smoke · 12 页</option><option value="all">全部来源页</option><option value="custom">自定义页码范围</option></select></label><span>{{ pageLimit === 'custom' ? '按来源分别执行物理页范围' : '快速模式按选中来源顺序累计页数' }}；每次创建新的隔离索引</span></div>
               <div v-if="pageLimit === 'custom'" class="custom-range-panel"><div class="custom-range-heading"><strong>按来源设置物理页码</strong><small>页码从 1 开始，首尾包含；本次共 {{ customPageTotal }} 页</small></div><div v-for="source in selectedSources" :key="`range-${source.source_id}`" class="custom-range-row"><span>{{ source.name }}</span><input v-model="pageRanges[source.source_id].start" type="number" min="1" aria-label="开始页" /><span>至</span><input v-model="pageRanges[source.source_id].end" type="number" min="1" aria-label="结束页" /><small>页</small></div></div>
               <div class="panel-footer"><button class="primary-button" :disabled="busy || !selectedSourceIds.length" @click="startIngestion"><Play :size="16" />{{ ingestionReady ? '重新摄取' : '开始摄取' }}</button><button v-if="ingestion && ['created','running','cancelling'].includes(ingestion.status)" class="secondary-button danger" :disabled="ingestion.status === 'cancelling'" @click="cancelIngestion">取消</button></div>
               <div v-if="ingestion" class="run-summary"><div class="summary-line"><span>当前索引</span><strong>{{ ingestionDisplayName(ingestion) }}</strong><span class="status-pill" :class="statusTone(ingestion.status)">{{ statusLabel(ingestion.status) }}</span></div><div class="progress-track"><span :style="{ width: ingestion.status === 'staged' ? '100%' : ingestion.status === 'running' ? '48%' : '0%' }"></span></div><div class="summary-metrics"><span>units <b>{{ ingestion.unit_count ?? '--' }}</b></span><span>vectors <b>{{ ingestion.vector_count ?? '--' }}</b></span><span title="索引版本 ID">版本 <code>{{ ingestion.index_version || '--' }}</code></span></div></div>
             </article>
-              <aside class="panel workspace-guide"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><SlidersHorizontal :size="18" /></span><div><p class="eyebrow">NEXT STEP</p><h2>统一评测流程</h2></div></div></div><div class="guide-body"><div class="guide-state" :class="{ ready: ingestionReady }"><Check :size="17" /><span>{{ ingestionReady ? '索引已就绪' : '等待索引就绪' }}</span></div><p>工作台只负责选择知识源和生成隔离索引。题集、retrieval、Ragas judge、事件和报告统一在评测中心管理。</p><button class="primary-button" :disabled="!ingestionReady" @click="selectNav('evaluation')"><Gauge :size="16" />前往评测中心</button><button class="secondary-button" :disabled="!evaluationRun" @click="evaluationRun && openReport(evaluationRun.run_id)"><FileChartColumn :size="16" />编辑最近报告</button></div></aside>
+              <aside class="panel workspace-guide"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><SlidersHorizontal :size="18" /></span><div><p class="eyebrow">NEXT STEP</p><h2>统一评测流程</h2></div></div></div><div class="guide-body"><div class="guide-state" :class="{ ready: ingestionReady }"><Check :size="17" /><span>{{ ingestionReady ? '索引已就绪' : '等待索引就绪' }}</span></div><p>索引就绪后，先指定数量自动生成评测集，再运行 retrieval、Ragas judge、事件和报告；不要求手工 Gold。</p><button class="primary-button" :disabled="!ingestionReady" @click="selectNav('candidates')"><FileText :size="16" />生成自动评测集</button><button class="secondary-button" :disabled="!ingestionReady" @click="selectNav('evaluation')"><Gauge :size="16" />前往评测中心</button></div></aside>
           </section>
           <section class="panel tuning-dataset-panel" aria-labelledby="tuning-dataset-title">
             <div class="panel-header">
@@ -1819,7 +1909,7 @@ function refreshVisibleRun() {
               <div class="tuning-dataset-copy"><strong>自动淘汰未达门槛的生成题，由 AI 复核的新替补题顶替，循环实测直到整组达标</strong><p>针对当前索引的 Gold 自动生成题做质量闭环：四项 Ragas 指标任一低于最低单题分即视为坏题淘汰。已通过题沿用同索引历史逐题证据，不再重复实测；替补题必须通过证据核验与 AI 审核才会顶替上场。基线优先继承本索引最近一次登记的调参集。全程隔离，不进入正式评测报告、对比分析或 Gold。</p></div>
               <div class="tuning-dataset-facts"><span><small>目标题数</small><b>48</b></span><span><small>最低单题分</small><b>0.20</b></span><span><small>当前索引</small><code>{{ ingestion?.index_version || '--' }}</code></span></div>
               <div v-if="tuningDatasetError" class="review-feedback error"><AlertCircle :size="15" /><span>{{ tuningDatasetError }}</span></div>
-              <div class="tuning-dataset-actions"><button class="primary-button" :disabled="tuningDatasetLoading || tuningDatasetActive || !ingestionReady" @click="startTuningDatasetRun"><Target :size="16" />{{ tuningDatasetActive ? '治理进行中…' : tuningDatasetLoading ? '提交中…' : '开始自动治理' }}</button><button v-if="tuningDatasetActive" class="secondary-button danger" disabled>请等待当前轮完成</button></div>
+              <div class="tuning-dataset-actions"><button class="primary-button" :disabled="tuningDatasetLoading || tuningDatasetActive || !ingestionReady" @click="startTuningDatasetRun"><Target :size="16" />{{ tuningDatasetActive ? '治理进行中…' : tuningDatasetLoading ? '提交中…' : '开始自动治理' }}</button><button v-if="tuningDatasetActive" class="secondary-button danger" disabled>请等待当前轮完成</button><button v-if="tuningDatasetRun && terminalStatuses.includes(tuningDatasetRun.status)" class="secondary-button danger" :disabled="tuningDatasetDeleteLoading" @click="deleteTuningDatasetRun"><Trash2 :size="15" />{{ tuningDatasetDeleteLoading ? '删除中…' : '删除本次治理' }}</button></div>
               <div v-if="tuningDatasetRun" class="tuning-dataset-status">
                 <span>运行 {{ tuningDatasetRun.run_id }}</span>
                 <span v-if="tuningDatasetRun.round">第 {{ tuningDatasetRun.round }} 轮</span>
@@ -1875,7 +1965,7 @@ function refreshVisibleRun() {
               <button v-else class="secondary-button danger" :disabled="candidateRun?.status === 'cancelling'" @click="candidateRun && api(`/api/rag_eval/isolated/candidate-runs/${encodeURIComponent(candidateRun.run_id)}/cancel`, { method: 'POST', body: '{}' }).then(() => refreshRun('candidate', candidateRun!.run_id))">取消生成</button>
             </div>
             <div v-if="candidateRun?.status === 'failed'" class="review-feedback error"><AlertCircle :size="15" /><span>生成失败：{{ candidateRun.error || '请查看候选生成审计产物。' }}。修复模型 API 后，可重新打开配置并提交新任务。</span></div>
-            <div v-if="candidateRun" class="panel-footer"><span class="status-pill" :class="statusTone(candidateRun.status)">{{ statusLabel(candidateRun.status) }}</span><code>{{ candidateRun.run_id }}</code></div>
+              <div v-if="candidateRun" class="panel-footer"><span class="status-pill" :class="statusTone(candidateRun.status)">{{ statusLabel(candidateRun.status) }}</span><code>{{ candidateRun.run_id }}</code><button v-if="terminalStatuses.includes(candidateRun.status)" type="button" class="secondary-button danger" :disabled="candidateDeleteLoading" @click="deleteCandidateRun"><Trash2 :size="15" />{{ candidateDeleteLoading ? '删除中…' : '删除本次运行' }}</button></div>
           </section>
 
           <section v-else class="panel candidate-review-panel">

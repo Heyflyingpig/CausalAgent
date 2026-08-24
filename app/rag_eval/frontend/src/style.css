@@ -116,11 +116,15 @@ h2 { margin-bottom: 0; font-size: 1.05rem; }
 .source-capability-note strong { color: #247469; font-size: .74rem; }
 .source-delete-button { display: inline-grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; border: 1px solid #edc1b7; border-radius: 5px; background: #fff; color: #aa402e; }
 .source-delete-button:hover:not(:disabled) { background: #fff2ef; }
+.source-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.source-rename-button { border: 0; background: transparent; color: #397889; font: inherit; font-size: .75rem; cursor: pointer; }
+.source-rename-button:hover:not(:disabled) { color: #0e7490; text-decoration: underline; }
 .run-options { display: flex; align-items: end; justify-content: space-between; gap: 14px; padding: 15px 21px 0; color: #7a867e; font-size: .72rem; }
 .run-options label { display: grid; gap: 5px; color: #5e6c63; font-weight: 750; }
 .run-options select { min-height: 32px; padding: 0 28px 0 9px; border: 1px solid #ccd6ce; border-radius: 5px; background: #fbfcfb; color: #26332b; font-size: .75rem; }
 .candidate-generation-panel { min-height: 0 !important; }
 .candidate-generation-note { display: grid; gap: 6px; margin: 15px 21px 0; padding: 11px 12px; border-left: 3px solid #1c7065; background: #f0f8f5; color: #66756c; font-size: .73rem; line-height: 1.55; }
+.candidate-advanced-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; color: #71878d; font-size: .72rem; }
 .candidate-generation-note strong { color: #247469; font-size: .75rem; }
 .candidate-generation-note p { margin: 0; }
 .candidate-generation-note ul { display: grid; gap: 3px; margin: 0; padding-left: 17px; }
@@ -271,6 +275,9 @@ textarea:focus { border-color: #1c7065; box-shadow: 0 0 0 3px #dff2ed; }
 .index-selector { display: grid; gap: 6px; color: #315861; font-size: .72rem; font-weight: 750; }
 .index-selector select { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid #b9dce2; border-radius: 7px; background: #f8fcfc; color: #173e47; font: inherit; cursor: pointer; }
 .index-selector select:focus-visible { outline: 3px solid rgba(8, 145, 178, .24); outline-offset: 2px; }
+.index-selector-row { display: flex; align-items: center; gap: 8px; }
+.index-selector-row select { flex: 1; min-width: 0; }
+.index-delete-button { flex: 0 0 auto; min-height: 38px; padding: 0 11px; }
 .bound-index.incompatible { border-left-color: #d97706; background: #fff9ed; color: #7c5a1b; }
 .bound-index.incompatible code, .bound-index.incompatible .bound-check { color: #a45b09; }
 .dataset-body textarea { min-height: 150px; font-family: "SFMono-Regular", Consolas, monospace; font-size: .72rem; }

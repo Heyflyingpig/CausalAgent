@@ -378,6 +378,26 @@ def _run_cancel_response(run_id):
         return _json_response({"success": False, "error": str(exc)}, 404)
 
 
+def _run_delete_response(run_id, delete_method, **kwargs):
+    """统一返回终态运行删除结果，并把引用保护作为冲突响应。"""
+    try:
+        result = getattr(isolated_run_manager, delete_method)(run_id, **kwargs)
+        if result.get("status") == "running":
+            return _json_response({
+                "success": False,
+                "error": result.get("message") or "run is still running",
+                "data": result,
+            }, 409)
+        return _json_response({"success": True, "data": result})
+    except KeyError as exc:
+        return _json_response({"success": False, "error": str(exc)}, 404)
+    except (RuntimeError, ValueError) as exc:
+        return _json_response({"success": False, "error": str(exc)}, 409)
+    except Exception as exc:
+        logging.error("删除隔离运行失败: %s", exc, exc_info=True)
+        return _json_response({"success": False, "error": str(exc)}, 500)
+
+
 def _deprecated_run_response(response, run_id):
     response = make_response(response)
     response.headers["Deprecation"] = "true"
@@ -444,6 +464,26 @@ def _isolated_stream(run_id):
 @rag_eval_bp.route("/isolated/runs/<run_id>", methods=["GET"])
 def api_isolated_run_state(run_id):
     return _run_state_response(run_id)
+
+
+@rag_eval_bp.route("/isolated/runs/<run_id>", methods=["DELETE"])
+def api_delete_isolated_run(run_id):
+    """按运行类型删除终态隔离产物，统一入口保留与旧端点相同的保护。"""
+    try:
+        state = isolated_run_manager.get(run_id)
+        kind = state.get("kind")
+        if kind == "evaluation":
+            payload = request.get_json(silent=True) or {}
+            return _run_delete_response(run_id, "delete_evaluation_run", force=payload.get("force") is True)
+        if kind == "ingestion":
+            return _run_delete_response(run_id, "delete_ingestion_run")
+        if kind in {"rag_query", "candidate_generation", "dataset_governance", "tuning_dataset_governance"}:
+            return _run_delete_response(run_id, "delete_derived_run")
+        raise ValueError("run type does not support deletion")
+    except KeyError as exc:
+        return _json_response({"success": False, "error": str(exc)}, 404)
+    except ValueError as exc:
+        return _json_response({"success": False, "error": str(exc)}, 409)
 
 
 @rag_eval_bp.route("/isolated/runs/<run_id>/result", methods=["GET"])
@@ -584,6 +624,12 @@ def api_isolated_ingestion_state(run_id):
     """读取隔离知识源摄取任务状态。"""
     return _deprecated_run_response(_run_state_response(run_id), run_id)
 
+
+@rag_eval_bp.route("/isolated/ingestion-runs/<run_id>", methods=["DELETE"])
+def api_delete_isolated_ingestion(run_id):
+    """删除没有下游引用的终态摄取运行及其 staged index。"""
+    return _deprecated_run_response(_run_delete_response(run_id, "delete_ingestion_run"), run_id)
+
 @rag_eval_bp.route("/isolated/ingestion-runs/<run_id>/stream", methods=["GET"])
 def api_isolated_ingestion_stream(run_id):
     """订阅隔离知识源摄取事件。"""
@@ -654,6 +700,12 @@ def api_tuning_dataset_governance_state(run_id):
     return _deprecated_run_response(_run_state_response(run_id), run_id)
 
 
+@rag_eval_bp.route("/isolated/tuning-dataset-runs/<run_id>", methods=["DELETE"])
+def api_delete_tuning_dataset_governance(run_id):
+    """删除已结束且未被其他产物引用的调参集治理运行。"""
+    return _deprecated_run_response(_run_delete_response(run_id, "delete_derived_run"), run_id)
+
+
 @rag_eval_bp.route("/isolated/tuning-dataset-runs/<run_id>/stream", methods=["GET"])
 def api_tuning_dataset_governance_stream(run_id):
     return _deprecated_run_response(_run_stream_response(run_id), run_id)
@@ -687,6 +739,12 @@ def api_import_rebound_candidate():
 def api_isolated_candidate_state(run_id):
     """读取候选题生成任务状态。"""
     return _deprecated_run_response(_run_state_response(run_id), run_id)
+
+
+@rag_eval_bp.route("/isolated/candidate-runs/<run_id>", methods=["DELETE"])
+def api_delete_isolated_candidate(run_id):
+    """删除已结束且未被其他产物引用的候选题运行。"""
+    return _deprecated_run_response(_run_delete_response(run_id, "delete_derived_run"), run_id)
 
 
 @rag_eval_bp.route("/isolated/candidate-runs/<run_id>/result", methods=["GET"])
@@ -895,6 +953,12 @@ def api_start_gold_v2_governance():
 def api_gold_v2_governance_state(run_id):
     """读取 Gold 健康治理任务阶段和计数摘要。"""
     return _deprecated_run_response(_run_state_response(run_id), run_id)
+
+
+@rag_eval_bp.route("/gold-v2/governance-runs/<run_id>", methods=["DELETE"])
+def api_delete_gold_v2_governance(run_id):
+    """删除已结束且未被其他产物引用的 Gold 治理运行。"""
+    return _deprecated_run_response(_run_delete_response(run_id, "delete_derived_run"), run_id)
 
 
 @rag_eval_bp.route("/gold-v2/governance-runs/<run_id>/result", methods=["GET"])
