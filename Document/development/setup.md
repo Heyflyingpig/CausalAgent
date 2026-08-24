@@ -24,6 +24,8 @@ docker compose -f docker-compose.yml up -d
 docker compose -f docker-compose.yml run --rm db-bootstrap
 ```
 
+首次启动时，`searxng-init` 会自动兜底生成 `searxng/core-config/settings.yml`（含随机 secret_key），无需手动复制；文件已存在则跳过。需要自定义引擎或格式时，直接编辑该文件。
+
 开发 Compose 使用 `mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`app`、`worker`、`monitor` 和 `checkpoint-cleanup`；固定端口和数据卷属于共享 Docker daemon 资源，多个 worktree 同时运行时必须采用独立 project/端口策略，不能误用 `down -v`。
 
 ## 本地 Python

@@ -27,8 +27,14 @@
 | `worker` | Agent Job worker |
 | `monitor` | 数据库共享快照采集 |
 | `checkpoint-cleanup` | 跨库 checkpoint 删除 |
+| `searxng-init` | 一次性 init，首次启动时兜底生成 `settings.yml` 并注入随机 secret_key，已存在则跳过 |
+| `searxng` | 联网搜索服务（SearXNG），提供 `format=json` + arxiv/crossref/openalex 三引擎 |
 
-`app`、worker、monitor 和 cleanup 依赖 `db-bootstrap` 成功退出；开发拓扑当前不提供自动故障切换。启动命令见 [`setup.md`](setup.md)。
+`app`、worker、monitor 和 cleanup 依赖 `db-bootstrap` 成功退出；`searxng` 依赖 `searxng-init` 成功退出；开发拓扑当前不提供自动故障切换。启动命令见 [`setup.md`](setup.md)。
+
+## 联网搜索（SearXNG）
+
+仓库只提交 `searxng/core-config/settings.yml.example`。`searxng-init` 服务在首次启动时自动兜底：`settings.yml` 缺失则复制 example 并把 `secret_key` 占位符替换为随机 64 位 hex。`searxng` 依赖 `searxng-init` 成功退出后才启动。需要自定义引擎或格式时，直接编辑 `searxng/core-config/settings.yml`。
 
 ## 生产部署
 
