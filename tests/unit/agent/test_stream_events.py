@@ -147,6 +147,21 @@ class StreamEventAdapterTests(unittest.TestCase):
 
             self.assertEqual(events, [])
 
+    def test_web_search_stage_emits_lifecycle_events(self):
+        """web_search 子图作为父图阶段应产生开始/结束事件。"""
+        started = self.adapter.convert(task_start("task-ws", "web_search"))[0]
+        self.assertEqual(started["type"], "node_start")
+        self.assertEqual(started["node_name"], "web_search")
+        self.assertEqual(started["title"], "联网搜索")
+
+        ended = self.adapter.convert({
+            "type": "tasks",
+            "ns": (),
+            "data": {"id": "task-ws", "name": "web_search"},
+        })[0]
+        self.assertEqual(ended["type"], "node_end")
+        self.assertEqual(ended["status"], "completed")
+
     def test_tool_details_expose_names_and_keys_but_not_values_or_results(self):
         """工具事件不得持久化凭据、地址、完整 JSON 或结果正文。"""
         self.adapter.convert(task_start("task-mcp", "mcp"))
