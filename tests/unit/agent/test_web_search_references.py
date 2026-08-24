@@ -19,6 +19,7 @@ for key, value in {
 
 from langchain_core.messages import AIMessage
 
+from Agent.causal_agent.web_search_node import WEB_SEARCH_MAX_RESULTS
 from app.agent.worker.result_presenter import _extract_references, process_final_result
 from app.chat.response_storage import prepare_ai_response_for_storage
 
@@ -45,8 +46,10 @@ def _projected(n):
 
 
 class TestExtractReferences:
-    def test_truncates_to_top_5(self):
-        assert _extract_references(_web_search_result(9)) == _projected(5)
+    def test_caps_at_web_search_max_results(self):
+        assert _extract_references(
+            _web_search_result(WEB_SEARCH_MAX_RESULTS + 3)
+        ) == _projected(WEB_SEARCH_MAX_RESULTS)
 
     def test_returns_fewer_when_less_than_5(self):
         assert _extract_references(_web_search_result(3)) == _projected(3)

@@ -93,6 +93,17 @@ def test_merge_by_engine_top3_empty():
     assert ws._merge_by_engine_top3([]) == []
 
 
+def test_merge_by_engine_top3_caps_at_web_search_max_results():
+    # 即便放宽每引擎 top-N，合并结果仍受 WEB_SEARCH_MAX_RESULTS 封顶，与引用投影一致。
+    results = (
+        [{"title": f"a{i}", "source": "arxiv"} for i in range(10)]
+        + [{"title": f"c{i}", "source": "crossref"} for i in range(10)]
+        + [{"title": f"o{i}", "source": "openalex"} for i in range(10)]
+    )
+    merged = ws._merge_by_engine_top3(results, top_per_engine=10)
+    assert len(merged) == ws.WEB_SEARCH_MAX_RESULTS
+
+
 def test_format_summary_none():
     assert ws.format_web_search_summary_for_prompt(None) == "无可用联网搜索结果。"
 

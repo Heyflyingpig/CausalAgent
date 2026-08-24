@@ -253,12 +253,19 @@ CAUSAL_ARXIV_CATEGORIES = {
 _ENGINE_ORDER = ("arxiv", "crossref", "openalex")
 
 
-def _merge_by_engine_top3(results: List[dict], top_per_engine: int = 3) -> List[dict]:
+WEB_SEARCH_MAX_RESULTS = 9
+
+
+def _merge_by_engine_top3(
+    results: List[dict],
+    top_per_engine: int = 3,
+    max_results: int = WEB_SEARCH_MAX_RESULTS,
+) -> List[dict]:
     """按引擎分组，各引擎内部按 score 降序取 top-N，再按 rank 轮转交错拼接。
 
     score 跨引擎不可比（各引擎尺度不同），故不做跨引擎比较；每轮依次取
     各引擎的第 i 名（arxiv→crossref→openalex），既保证引擎均衡，又让各引擎
-    最相关的结果靠前。
+    最相关的结果靠前。合并结果总量受 max_results 封顶，保证与引用投影一致。
     """
     buckets: dict[str, List[dict]] = {}
     for r in results:
@@ -271,12 +278,12 @@ def _merge_by_engine_top3(results: List[dict], top_per_engine: int = 3) -> List[
             engine_results = buckets.get(engine, [])
             if i < len(engine_results):
                 merged.append(engine_results[i])
-    return merged
+    return merged[:max_results]
 
 
 def format_web_search_summary_for_prompt(
     web_search_result: Optional[dict],
-    max_content_items: int = 5,
+    max_content_items: int = WEB_SEARCH_MAX_RESULTS,
 ) -> str:
     """把 web_search_result 渲染成注入 report / inquiry prompt 的文本。"""
     if not web_search_result:

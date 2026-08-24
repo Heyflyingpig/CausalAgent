@@ -1347,7 +1347,6 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     )
     web_summary = format_web_search_summary_for_prompt(
         state.get("web_search_result", {}),
-        max_content_items=9,
     )
 
     response = await runnable.ainvoke({
@@ -1453,7 +1452,6 @@ async def inquiry_answer_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     )
     web_summary = format_web_search_summary_for_prompt(
         state.get("web_search_result", {}),
-        max_content_items=9,
     )
 
     response = await runnable.ainvoke({

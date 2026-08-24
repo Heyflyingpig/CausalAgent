@@ -7,16 +7,17 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
+from Agent.causal_agent.web_search_node import WEB_SEARCH_MAX_RESULTS
 from app.chat.response_storage import render_summary_for_display
 
 
 def _extract_references(web_search_result: Any) -> list[dict]:
-    """从联网搜索结果投影前 5 条引用（仅 title + url）。"""
+    """从联网搜索结果投影引用（仅 title + url），数量与注入报告的一致。"""
     if not web_search_result or not web_search_result.get("success"):
         return []
     return [
         {"title": c.get("title", ""), "url": c.get("url", "")}
-        for c in web_search_result.get("content", [])[:5]
+        for c in web_search_result.get("content", [])[:WEB_SEARCH_MAX_RESULTS]
     ]
 
 
