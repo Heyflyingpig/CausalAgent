@@ -13,20 +13,30 @@ from Database.migration_version_repair import (
 
 
 class _Cursor:
-    def __init__(self, tables: set[str], revisions: list[str], columns: set[str] = set()) -> None:
+    def __init__(
+        self,
+        tables: set[str],
+        revisions: list[str],
+        columns: set[str] = set(),
+        uppercase_keys: bool = False,
+    ) -> None:
         self.tables = tables
         self.revisions = revisions
         self.columns = columns
+        self.uppercase_keys = uppercase_keys
         self.rows: list[dict[str, str]] = []
         self.updates: list[tuple[str, str]] = []
 
+    def _row(self, key: str, value: str) -> dict[str, str]:
+        return {key.upper() if self.uppercase_keys else key: value}
+
     def execute(self, statement: str, params=None) -> None:
         if "information_schema.tables" in statement:
-            self.rows = [{"table_name": table} for table in self.tables]
+            self.rows = [self._row("table_name", table) for table in self.tables]
         elif "SELECT version_num" in statement:
-            self.rows = [{"version_num": revision} for revision in self.revisions]
+            self.rows = [self._row("version_num", revision) for revision in self.revisions]
         elif "information_schema.columns" in statement:
-            self.rows = [{"column_name": column} for column in self.columns]
+            self.rows = [self._row("column_name", column) for column in self.columns]
         elif statement.startswith("UPDATE alembic_version"):
             new_revision, old_revision = params
             self.updates.append((old_revision, new_revision))
@@ -52,6 +62,19 @@ class _Connection:
 
 
 class MigrationVersionRepairTests(unittest.TestCase):
+    def test_accepts_mysql_connector_metadata_key_case(self) -> None:
+        cursor = _Cursor(
+            {"alembic_version", "analysis_jobs", "file_objects", "user_files", "analysis_job_inputs"},
+            [LEGACY_EXECUTION_RELEASE_REVISION],
+            {"execution_state", "execution_released_at", "execution_release_reason"},
+            uppercase_keys=True,
+        )
+        connection = _Connection(cursor)
+
+        repaired = repair_legacy_revision_ids(connection)
+
+        self.assertEqual(repaired, [f"{LEGACY_EXECUTION_RELEASE_REVISION}->{EXECUTION_RELEASE_REVISION}"])
+
     def test_maps_legacy_agent_execution_revision_after_schema_verification(self) -> None:
         cursor = _Cursor(
             {"alembic_version", "analysis_jobs", "file_objects", "user_files", "analysis_job_inputs"},

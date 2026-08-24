@@ -107,5 +107,9 @@ def _execution_release_columns(cursor: Any) -> bool:
 
 def _value(row: Mapping[str, Any] | tuple[Any, ...], key: str) -> str:
     if isinstance(row, Mapping):
-        return str(row[key])
+        normalized_key = key.casefold()
+        for row_key, value in row.items():
+            if str(row_key).casefold() == normalized_key:
+                return str(value)
+        raise KeyError(key)
     return str(row[0])
