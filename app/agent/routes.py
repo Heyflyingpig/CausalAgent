@@ -59,7 +59,10 @@ def create_analysis_job():
     message = data.get("message")
     session_id = data.get("session_id")
     input_user_file_id = data.get("input_user_file_id")
-    web_search_enabled = bool(data.get("web_search_enabled", False))
+    raw_web_search_enabled = data.get("web_search_enabled", False)
+    if not isinstance(raw_web_search_enabled, bool):
+        return jsonify({"success": False, "error": "web_search_enabled 必须是布尔值"}), 400
+    web_search_enabled = raw_web_search_enabled
     if not isinstance(message, str) or not message.strip():
         return jsonify({"success": False, "error": "消息不能为空"}), 400
     if not session_id:

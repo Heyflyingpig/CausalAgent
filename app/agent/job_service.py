@@ -350,7 +350,8 @@ def create_job(
             input_user_file_id = int(input_user_file_id)
         except (TypeError, ValueError) as exc:
             raise ValueError("input_user_file_id 无效") from exc
-    web_search_enabled = bool(web_search_enabled)
+    if not isinstance(web_search_enabled, bool):
+        raise ValueError("web_search_enabled 必须是布尔值")
     fingerprint = _request_fingerprint(
         session_id, normalized_message, input_user_file_id, web_search_enabled
     )
