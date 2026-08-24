@@ -236,6 +236,12 @@ def load_session_content():
                             except json.JSONDecodeError:
                                 logging.warning(f"无法解析 visualization 附件，Message ID: {row['id']}")
 
+                        elif attachment["attachment_type"] == "web_search_references":
+                            try:
+                                message["references"] = json.loads(attachment["content"])
+                            except json.JSONDecodeError:
+                                logging.warning(f"无法解析 web_search_references 附件，Message ID: {row['id']}")
+
                     if causal_graph_data:
                         message_content = causal_graph_data
 
