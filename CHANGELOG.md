@@ -623,3 +623,10 @@
   - 将已有 worker 进程级 `rag_available` 和空工具列表传入 RAG Planner；知识库未初始化或工具未注册时在 Planner 预检阶段跳过 ToolNode，经 Finalize 继续回到 Agent。
   - 为 RAG 查询失败和非法 ToolMessage JSON 增加明确错误标记，分别保持 `unavailable` 与 `protocol_error` 语义，不改变取消/撤销异常传播和既有重试边界。
   - 补充 RAG 预检、查询错误标记、协议错误分流和权威验证边界文档。
+
+---
+2026.8.24
+- 【联网搜索引用接口边界纠正】
+  - 保留报告终态 `final_result.data.references` 与历史消息 `message.references` 的 `title + url` 引用接口，以及独立附件持久化能力。
+  - 撤回 `preprocess`、`postprocess` 和 `report` 节点与引用功能无关的流式 LLM 配置；公开文字流仍仅用于普通问答和报告追问。
+  - 增加父图 LLM 流式使用范围的回归测试，并补充普通用户 SSE 引用字段契约。

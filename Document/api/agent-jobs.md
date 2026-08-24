@@ -53,6 +53,26 @@ Last-Event-ID: 42
 
 收到 `interrupt` 后，前端应展示公开问题并等待恢复；收到 `final_result`、`error` 或 `canceled` 后连接结束。若 Job 已经进入终态，即使数据库查询时没有新的事件，服务端也会结束连接。
 
+联网搜索成功且存在结果时，报告终态的 `final_result.data` 额外包含最多 5 条引用。引用只公开网页标题和 URL，不返回网页正文、搜索工具内部字段或完整搜索结果：
+
+```json
+{
+  "type": "final_result",
+  "data": {
+    "type": "causal_graph",
+    "summary": "报告正文",
+    "references": [
+      {
+        "title": "网页标题",
+        "url": "https://example.com/page"
+      }
+    ]
+  }
+}
+```
+
+引用随 assistant 消息独立持久化；重新加载会话时通过 `message.references` 返回相同的 `title + url` 数组。后端只提供该字段契约，不要求前端展示引用。报告、预处理和后处理节点不发送文字增量；公开 `text_delta` 仍只来自普通问答和报告追问节点。
+
 ## Resume 与 Cancel
 
 恢复请求示例：

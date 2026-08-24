@@ -45,7 +45,7 @@ def build_graph(
     streaming_llm = llm.model_copy(update={"streaming": True})
     agent_node_with_llm = bind_node(nodes.agent_node, event_node_name="agent", llm=llm)#将普通节点函数绑定llm，这些普通节点函数内部要调用大模型，但 LangGraph 执行节点时主要只传一个参数：state
     fold_node_with_llm = bind_node(nodes.fold_node, event_node_name="fold", llm=llm)
-    preprocess_node_with_llm = bind_node(nodes.preprocess_node, event_node_name="preprocess", llm=streaming_llm)
+    preprocess_node_with_llm = bind_node(nodes.preprocess_node, event_node_name="preprocess", llm=llm)
     mcp_subgraph = build_mcp_subgraph(llm=llm, mcp_tools=mcp_tools)#创建mcp子图
     rag_subgraph = build_rag_subgraph(
         llm=llm,
@@ -59,13 +59,13 @@ def build_graph(
         rag_subgraph=rag_subgraph,
     )
     web_search_subgraph = build_web_search_subgraph(llm=llm)
-    postprocess_node_with_llm = bind_node(nodes.postprocess_node, event_node_name="postprocess", llm=streaming_llm)
+    postprocess_node_with_llm = bind_node(nodes.postprocess_node, event_node_name="postprocess", llm=llm)
     inquiry_answer_node_with_llm = bind_node(
         nodes.inquiry_answer_node,
         event_node_name="inquiry_answer",
         llm=streaming_llm,
     )
-    report_node_with_llm = bind_node(nodes.report_node, event_node_name="report", llm=streaming_llm)
+    report_node_with_llm = bind_node(nodes.report_node, event_node_name="report", llm=llm)
     normal_chat_node_with_llm = bind_node(
         nodes.normal_chat_node,
         event_node_name="normal_chat",
