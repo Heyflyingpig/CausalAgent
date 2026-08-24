@@ -377,6 +377,15 @@ services:
       - causalagent_replica_network
     restart: unless-stopped
 
+  searxng-init:
+    image: python:3.11-slim
+    container_name: causalagent_searxng_init
+    restart: "no"
+    volumes:
+      - ./searxng/core-config:/etc/searxng
+      - ./searxng/init:/init:ro
+    entrypoint: ["sh", "/init/init_settings.sh"]
+
   searxng:
     image: searxng/searxng:latest
     container_name: causalagent_searxng
@@ -389,6 +398,8 @@ services:
     depends_on:
       valkey:
         condition: service_healthy
+      searxng-init:
+        condition: service_completed_successfully
     networks:
       - causalagent_replica_network
 
