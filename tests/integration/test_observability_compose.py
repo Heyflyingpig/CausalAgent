@@ -41,6 +41,7 @@ def test_observability_network_ports_and_password_boundary():
     assert "observability_network" in compose
     assert '"127.0.0.1:3000:3000"' in grafana
     assert "GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set" in grafana
+    assert "GF_USERS_DEFAULT_LANGUAGE: zh-Hans" in grafana
     assert "ports:" not in loki
     assert "ports:" not in alloy
     assert "/var/run/docker.sock:/var/run/docker.sock:ro" in alloy
@@ -120,11 +121,64 @@ def test_loki_and_grafana_provisioning_match_first_phase_contract():
     assert "url: http://loki:3100" in datasource
     assert "/var/lib/grafana/dashboards" in dashboards
     assert dashboard["uid"] == "causalagent-logs"
-    assert dashboard["title"] == "CausalAgent 运行日志"
-    assert {panel["title"] for panel in dashboard["panels"]} >= {
-        "错误总量",
-        "按服务统计错误",
-        "按级别统计错误",
-        "按分类统计错误",
-        "最近错误",
+    assert dashboard["title"] == "CausalAgent 异常日志"
+    assert {panel["title"] for panel in dashboard["panels"]} == {
+        "异常总量",
+        "异常级别趋势",
+        "按服务分布",
+        "按分类分布",
+        "Top 10 事件码",
+        "最近异常日志",
     }
+
+
+def test_grafana_dashboard_only_surfaces_warning_and_above():
+    dashboard_path = PROJECT_ROOT / "observability/grafana/dashboards/causalagent-logs.json"
+    dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+
+    assert dashboard["uid"] == "causalagent-logs"
+    assert dashboard["refresh"] == "30s"
+    assert dashboard["time"] == {"from": "now-1h", "to": "now"}
+
+    variables = {variable["name"]: variable for variable in dashboard["templating"]["list"]}
+    assert set(variables) == {"environment", "service_name", "category", "level"}
+    assert variables["level"]["type"] == "custom"
+    assert variables["level"]["multi"] is True
+    assert variables["level"]["includeAll"] is True
+    assert variables["level"]["allValue"] == "warning|error|critical"
+    assert set(variables["level"]["query"].split(",")) == {
+        "warning",
+        "error",
+        "critical",
+    }
+    for variable_name in ("environment", "service_name", "category"):
+        assert variables[variable_name]["datasource"] == {
+            "type": "loki",
+            "uid": "causalagent-loki",
+        }
+        assert variables[variable_name]["allValue"] == ".+"
+
+    targets = [target for panel in dashboard["panels"] for target in panel["targets"]]
+    expressions = [target["expr"] for target in targets]
+    assert expressions
+    assert all('level=~"${level:regex}"' in expression for expression in expressions)
+    assert not any(re.search(r"\b(?:debug|info)\b", expression) for expression in expressions)
+
+    panels = {panel["title"]: panel for panel in dashboard["panels"]}
+    event_code_expression = panels["Top 10 事件码"]["targets"][0]["expr"]
+    assert "| json" in event_code_expression
+    assert "sum by (event_code)" in event_code_expression
+    assert panels["最近异常日志"]["targets"][0]["maxLines"] == 200
+
+    forbidden_variables = {
+        "event_code",
+        "request_id",
+        "user_id",
+        "session_id",
+        "job_id",
+        "worker_slot",
+        "node",
+        "tool",
+        "instance",
+    }
+    assert forbidden_variables.isdisjoint(variables)

@@ -4,7 +4,7 @@
   },
   "editable": false,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
+  "graphTooltip": 1,
   "links": [],
   "panels": [
     {
@@ -12,11 +12,13 @@
         "type": "loki",
         "uid": "causalagent-loki"
       },
+      "description": "当前时间范围和筛选条件内 WARNING、ERROR、CRITICAL 日志的总数。",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "thresholds"
           },
+          "noValue": "0",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -25,17 +27,18 @@
                 "value": null
               },
               {
-                "color": "red",
+                "color": "orange",
                 "value": 1
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
-        "w": 6,
+        "h": 8,
+        "w": 4,
         "x": 0,
         "y": 0
       },
@@ -54,12 +57,12 @@
         },
         "textMode": "auto"
       },
-      "title": "错误总量",
+      "title": "异常总量",
       "type": "stat",
       "targets": [
         {
-          "expr": "sum(count_over_time({service_name=~\".+\"} | json | level=~\"error|critical\" [$__range]))",
-          "queryType": "range",
+          "expr": "sum(count_over_time({service_name=~\"${service_name:regex}\", environment=~\"${environment:regex}\", level=~\"${level:regex}\", category=~\"${category:regex}\"} [$__range]))",
+          "queryType": "instant",
           "refId": "A"
         }
       ]
@@ -69,45 +72,104 @@
         "type": "loki",
         "uid": "causalagent-loki"
       },
+      "description": "按日志级别展示异常数量变化；CRITICAL 使用深红色，ERROR 使用红色，WARNING 使用橙色。",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
           "mappings": [],
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "warning"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF9830",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#F2495C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "critical"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C4162A",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
-        "w": 6,
-        "x": 6,
+        "w": 20,
+        "x": 4,
         "y": 0
       },
       "id": 2,
       "options": {
-        "displayMode": "gradient",
         "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "orientation": "horizontal",
-        "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "sum"
           ],
-          "fields": "",
-          "values": false
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "showUnfilled": true,
-        "text": {}
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
-      "title": "按服务统计错误",
-      "type": "bargauge",
+      "title": "异常级别趋势",
+      "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (service_name) (count_over_time({service_name=~\".+\"} | json | level=~\"error|critical\" [$__range]))",
+          "expr": "sum by (level) (count_over_time({service_name=~\"${service_name:regex}\", environment=~\"${environment:regex}\", level=~\"${level:regex}\", category=~\"${category:regex}\"} [$__auto]))",
+          "legendFormat": "{{level}}",
           "queryType": "range",
           "refId": "A"
         }
@@ -130,9 +192,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 6,
-        "x": 12,
-        "y": 0
+        "w": 8,
+        "x": 0,
+        "y": 8
       },
       "id": 3,
       "options": {
@@ -152,12 +214,13 @@
         "showUnfilled": true,
         "text": {}
       },
-      "title": "按级别统计错误",
+      "title": "按服务分布",
       "type": "bargauge",
       "targets": [
         {
-          "expr": "sum by (level) (count_over_time({service_name=~\".+\"} | json | level=~\"error|critical\" [$__range]))",
-          "queryType": "range",
+          "expr": "sum by (service_name) (count_over_time({service_name=~\"${service_name:regex}\", environment=~\"${environment:regex}\", level=~\"${level:regex}\", category=~\"${category:regex}\"} [$__range]))",
+          "legendFormat": "{{service_name}}",
+          "queryType": "instant",
           "refId": "A"
         }
       ]
@@ -179,9 +242,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 6,
-        "x": 18,
-        "y": 0
+        "w": 8,
+        "x": 8,
+        "y": 8
       },
       "id": 4,
       "options": {
@@ -201,12 +264,13 @@
         "showUnfilled": true,
         "text": {}
       },
-      "title": "按分类统计错误",
+      "title": "按分类分布",
       "type": "bargauge",
       "targets": [
         {
-          "expr": "sum by (category) (count_over_time({service_name=~\".+\"} | json | level=~\"error|critical\" [$__range]))",
-          "queryType": "range",
+          "expr": "sum by (category) (count_over_time({service_name=~\"${service_name:regex}\", environment=~\"${environment:regex}\", level=~\"${level:regex}\", category=~\"${category:regex}\"} [$__range]))",
+          "legendFormat": "{{category}}",
+          "queryType": "instant",
           "refId": "A"
         }
       ]
@@ -216,6 +280,52 @@
         "type": "loki",
         "uid": "causalagent-loki"
       },
+      "description": "查询阶段解析 JSON event_code，展示当前筛选条件下出现次数最多的十类异常事件。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 8
+      },
+      "id": 5,
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (event_code) (count_over_time({service_name=~\"${service_name:regex}\", environment=~\"${environment:regex}\", level=~\"${level:regex}\", category=~\"${category:regex}\"} | json | event_code != \"\" [$__range])))",
+          "legendFormat": "{{event_code}}",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "title": "Top 10 事件码",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "causalagent-loki"
+      },
+      "description": "显示最近 200 条异常日志。展开日志可查看 request_id、job_id、node、tool 等 JSON 字段；需要继续检索时从面板菜单进入 Explore。",
       "fieldConfig": {
         "defaults": {},
         "overrides": []
@@ -224,26 +334,28 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 8
+        "y": 16
       },
-      "id": 5,
+      "id": 6,
       "options": {
         "deduplication": "none",
         "enableLogDetails": true,
-        "prettifyLogMessage": true,
+        "prettifyLogMessage": false,
         "showCommonLabels": false,
         "showLabels": true,
+        "showTime": true,
         "sortOrder": "Descending",
         "wrapLines": false
       },
       "targets": [
         {
-          "expr": "{service_name=~\".+\"} | json | level=~\"error|critical\"",
+          "expr": "{service_name=~\"${service_name:regex}\", environment=~\"${environment:regex}\", level=~\"${level:regex}\", category=~\"${category:regex}\"} | json | line_format \"{{.event_code}} — {{.message}}\"",
+          "maxLines": 200,
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "title": "最近错误",
+      "title": "最近异常日志",
       "type": "logs"
     }
   ],
@@ -251,19 +363,113 @@
   "schemaVersion": 39,
   "tags": [
     "causalagent",
-    "logs"
+    "logs",
+    "abnormal"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "allValue": ".+",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "causalagent-loki"
+        },
+        "definition": "label_values({service_name=~\".+\"}, environment)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "环境",
+        "multi": true,
+        "name": "environment",
+        "options": [],
+        "query": "label_values({service_name=~\".+\"}, environment)",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".+",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "causalagent-loki"
+        },
+        "definition": "label_values({environment=~\"${environment:regex}\"}, service_name)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "服务",
+        "multi": true,
+        "name": "service_name",
+        "options": [],
+        "query": "label_values({environment=~\"${environment:regex}\"}, service_name)",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".+",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "loki",
+          "uid": "causalagent-loki"
+        },
+        "definition": "label_values({environment=~\"${environment:regex}\", service_name=~\"${service_name:regex}\"}, category)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "分类",
+        "multi": true,
+        "name": "category",
+        "options": [],
+        "query": "label_values({environment=~\"${environment:regex}\", service_name=~\"${service_name:regex}\"}, category)",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": "warning|error|critical",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "hide": 0,
+        "includeAll": true,
+        "label": "级别",
+        "multi": true,
+        "name": "level",
+        "options": [],
+        "query": "warning,error,critical",
+        "skipUrlSync": false,
+        "type": "custom"
+      }
+    ]
   },
   "time": {
-    "from": "now-6h",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "utc",
-  "title": "CausalAgent 运行日志",
+  "title": "CausalAgent 异常日志",
   "uid": "causalagent-logs",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
