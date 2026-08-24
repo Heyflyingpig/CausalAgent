@@ -47,7 +47,8 @@ class CandidateRunTests(unittest.TestCase):
                 "status": "staged",
                 "index_version": index_version,
                 "collection_name": "test_collection",
-                "vector_count": 1,
+                "unit_count": 48,
+                "vector_count": 48,
             }), encoding="utf-8")
 
             candidate = {
@@ -86,8 +87,7 @@ class CandidateRunTests(unittest.TestCase):
                     ingestion_id,
                     index_version,
                     dataset_id="pearl_candidate_mm_test",
-                    max_units=48,
-                    questions_per_unit=1,
+                    question_count=48,
                     max_workers=2,
                 )
                 # 候选生成现已进入持久队列，由 worker 异步执行；这里直接驱动 worker 侧执行。

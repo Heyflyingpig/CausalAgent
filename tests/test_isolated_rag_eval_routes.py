@@ -230,6 +230,30 @@ class IsolatedRagEvalRouteTests(unittest.TestCase):
             "dataset_revision": "revision-1", "sample_count": 1, "content_sha256": "a" * 64,
         })
 
+    def test_generated_candidate_can_start_evaluation_without_gold_reference(self):
+        generated = {
+            "schema_version": "rag_eval_v1",
+            "dataset_id": "candidate-mm-test",
+            "dataset_kind": "generated_candidate",
+            "dataset_revision": "candidate-revision-1",
+            "source_snapshot": {"index_version": "mm-test"},
+            "samples": [{
+                "sample_id": "candidate-1",
+                "question": "自动生成题目",
+                "reference_answer": "自动生成答案",
+                "expected_claims": ["自动生成事实"],
+            }],
+        }
+        started = self.client.post("/api/rag_eval/isolated/evaluation-runs", json={
+            "ingestion_run_id": "ingest-test",
+            "index_version": "mm-test",
+            "dataset_source": "generated_candidate",
+            "eval_dataset": generated,
+        })
+        self.assertEqual(started.status_code, 202)
+        self.assertEqual(self.manager.calls[-1][1][2]["dataset_kind"], "generated_candidate")
+        self.assertEqual(self.manager.calls[-1][1][2]["samples"][0]["sample_id"], "candidate-1")
+
     def test_dataset_ref_rejects_mutually_exclusive_and_gold_source_inputs(self):
         reference = {"dataset_id": "pearl_gold_v2", "dataset_revision": "revision-1"}
         inline = {"schema_version": "rag_eval_v1", "samples": [{"question": "内联题目"}]}

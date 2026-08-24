@@ -115,7 +115,8 @@ class RagEvalWorkerQueueTests(unittest.TestCase):
                 "status": "staged",
                 "index_version": "mm_test",
                 "collection_name": "isolated_mm_test",
-                "vector_count": 1,
+                "unit_count": 48,
+                "vector_count": 48,
                 "source_ids": [],
             }
             with patch("app.rag_eval.isolated_runs.ISOLATED_RUN_ROOT", root), \
@@ -128,6 +129,30 @@ class RagEvalWorkerQueueTests(unittest.TestCase):
             self.assertEqual(state["status"], "queued")
             self.assertEqual(fake_jobs.enqueued[0][1], "candidate_generation")
             thread.assert_not_called()
+
+    def test_candidate_creation_rejects_request_over_staged_unit_capacity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_jobs = _FakeJobService()
+            manager = IsolatedRunManager()
+            ingestion = {
+                "run_id": "ingest_20260813_000000_abcdef1234",
+                "kind": "ingestion",
+                "status": "staged",
+                "index_version": "mm_test",
+                "collection_name": "isolated_mm_test",
+                "unit_count": 15,
+                "vector_count": 15,
+                "source_ids": [],
+            }
+            with patch("app.rag_eval.isolated_runs.ISOLATED_RUN_ROOT", root), \
+                    patch.object(manager, "_validate_staged_index"), \
+                    patch("app.rag_eval.job_service.enqueue_job", fake_jobs.enqueue_job):
+                manager._runs[ingestion["run_id"]] = ingestion
+                with self.assertRaisesRegex(ValueError, "exceeds staged index capacity"):
+                    manager.start_candidate_generation(ingestion["run_id"], "mm_test", question_count=16)
+
+            self.assertEqual(fake_jobs.enqueued, [])
 
     def test_rag_query_creation_queues_without_starting_web_thread(self):
         with tempfile.TemporaryDirectory() as temporary:

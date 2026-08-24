@@ -1148,15 +1148,25 @@ class IsolatedRunManager:
         index_version: str,
         *,
         dataset_id: str | None = None,
-        max_units: int = 48,
-        questions_per_unit: int = 1,
+        question_count: int | None = None,
         max_workers: int = 1,
+        max_units: int | None = None,
+        questions_per_unit: int = 1,
     ) -> Dict[str, Any]:
-        """在 staged index 上启动候选题生成，结果只落在本次隔离 run。"""
-        if isinstance(max_units, bool) or not isinstance(max_units, int) or not 1 <= max_units <= 128:
-            raise ValueError("max_units must be an integer from 1 to 128")
-        if isinstance(questions_per_unit, bool) or not isinstance(questions_per_unit, int) or not 1 <= questions_per_unit <= 3:
-            raise ValueError("questions_per_unit must be an integer from 1 to 3")
+        """在 staged index 上按指定题数启动候选评测集生成。"""
+        if question_count is None:
+            max_units = 48 if max_units is None else max_units
+            if isinstance(max_units, bool) or not isinstance(max_units, int) or not 1 <= max_units <= 128:
+                raise ValueError("max_units must be an integer from 1 to 128")
+            if isinstance(questions_per_unit, bool) or not isinstance(questions_per_unit, int) or not 1 <= questions_per_unit <= 3:
+                raise ValueError("questions_per_unit must be an integer from 1 to 3")
+            requested_count = max_units * questions_per_unit
+        else:
+            if isinstance(question_count, bool) or not isinstance(question_count, int) or not 1 <= question_count <= 128:
+                raise ValueError("question_count must be an integer from 1 to 128")
+            max_units = question_count
+            questions_per_unit = 1
+            requested_count = question_count
         if isinstance(max_workers, bool) or not isinstance(max_workers, int) or not 1 <= max_workers <= 4:
             raise ValueError("max_workers must be an integer from 1 to 4")
         ingestion = self._load(ingestion_run_id)
@@ -1166,6 +1176,12 @@ class IsolatedRunManager:
             raise ValueError("index_version does not belong to ingestion run")
         index_dir = _run_dir(ingestion_run_id) / "indexes" / index_version
         self._validate_staged_index(index_dir, ingestion)
+        staged_unit_count = int(ingestion.get("unit_count") or 0)
+        if max_units > staged_unit_count:
+            raise ValueError(
+                f"question_count={requested_count} exceeds staged index capacity of {staged_unit_count} questions "
+                "with one question per unit; generate a larger index before requesting more"
+            )
 
         run_id = _new_run_id("candidate")
         run_dir = _run_dir(run_id)
@@ -1187,8 +1203,12 @@ class IsolatedRunManager:
             "source_display_names": list(source_display_names),
             "source_label": ingestion.get("source_label") or "、".join(str(item) for item in source_display_names),
             "dataset_id": dataset_id or "",
+            "question_count": requested_count,
             "max_units": max_units,
             "questions_per_unit": questions_per_unit,
+            "staged_unit_count": staged_unit_count,
+            "requested_candidate_count": requested_count,
+            "candidate_capacity": staged_unit_count,
             "max_workers": max_workers,
             "candidate_artifact_name": "candidate.json",
             "audit_artifact_name": "candidate.json.audit.json",
@@ -1201,8 +1221,7 @@ class IsolatedRunManager:
             _write_json(run_dir / "run.json", state)
         self._emit(run_id, "run_created", "创建候选题生成任务", {
             "index_version": index_version,
-            "max_units": max_units,
-            "questions_per_unit": questions_per_unit,
+            "question_count": requested_count,
             "max_workers": max_workers,
         })
         self._enqueue_persistent_run(run_id, "candidate_generation")

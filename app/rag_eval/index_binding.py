@@ -137,7 +137,12 @@ class IndexBindingGate:
         elif kind == "gold_regression":
             expected = {"index_version": identity.index_version, "manifest_sha256": identity.manifest_sha256}
             try:
-                validate_frozen_gold_bundle(canonical, index_dir=identity.index_dir, expected_snapshot=expected)
+                validate_frozen_gold_bundle(
+                    canonical,
+                    index_dir=identity.index_dir,
+                    expected_snapshot=expected,
+                    require_fixed_binding=True,
+                )
             except (ValueError, FileNotFoundError) as exc:
                 self._mismatch(str(exc))
         return canonical

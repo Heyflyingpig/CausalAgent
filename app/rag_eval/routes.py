@@ -598,16 +598,22 @@ def api_cancel_isolated_ingestion(run_id):
 
 @rag_eval_bp.route("/isolated/candidate-runs", methods=["POST"])
 def api_start_isolated_candidate_generation():
-    """在已完成的 staged index 上启动候选题生成。"""
+    """在已完成的 staged index 上按用户指定数量生成独立评测集。"""
     try:
         payload = request.get_json(silent=True) or {}
-        integer_fields = ("max_units", "questions_per_unit", "max_workers")
+        integer_fields = ("question_count", "max_workers")
         values = {}
         for field in integer_fields:
-            value = payload.get(field, {"max_units": 48, "questions_per_unit": 1, "max_workers": 1}[field])
+            value = payload.get(field, {"question_count": 48, "max_workers": 1}[field])
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"{field} must be an integer")
             values[field] = value
+        if "question_count" not in payload and ("max_units" in payload or "questions_per_unit" in payload):
+            max_units = payload.get("max_units", 48)
+            questions_per_unit = payload.get("questions_per_unit", 1)
+            if any(isinstance(value, bool) or not isinstance(value, int) for value in (max_units, questions_per_unit)):
+                raise ValueError("max_units and questions_per_unit must be integers")
+            values = {"max_units": max_units, "questions_per_unit": questions_per_unit, "max_workers": values["max_workers"]}
         result = isolated_run_manager.start_candidate_generation(
             payload.get("ingestion_run_id", ""),
             payload.get("index_version", ""),
@@ -784,14 +790,24 @@ def api_gold_v2_status():
     }
     candidate_bindings.discard("")
     bound_index_version = next(iter(candidate_bindings)) if len(candidate_bindings) == 1 else ""
+    fixed_sample_count = sum(1 for sample in dataset["samples"] if not (sample.get("source") or {}).get("generator"))
+    generated_sample_count = len(dataset["samples"]) - fixed_sample_count
+    review_status = str((dataset.get("review") or {}).get("status") or "")
     payload = {
         "exists": True,
         "dataset_id": dataset["dataset_id"],
         "dataset_revision": dataset.get("dataset_revision", ""),
         "sample_count": len(dataset["samples"]),
+        "fixed_sample_count": fixed_sample_count,
+        "generated_sample_count": generated_sample_count,
+        "freeze_status": "frozen" if review_status == "frozen" and len(dataset["samples"]) == 72 else "invalid",
         "bound_index_version": bound_index_version,
         "compatibility": "unselected",
         "compatibility_message": "请选择 staged index 后检查该 Gold 题集是否可用于严格检索评测。",
+        "index_status": "unselected",
+        "checked_sample_count": 0,
+        "checked_fixed_sample_count": 0,
+        "checked_generated_sample_count": 0,
     }
     try:
         from Agent.knowledge_base.rag.operation_datasets.benchmark_v2 import (
@@ -814,22 +830,33 @@ def api_gold_v2_status():
 
         try:
             identity = isolated_run_manager.resolve_staged_index(ingestion_run_id, index_version)
-            validate_frozen_gold_bundle(
+            validation = validate_frozen_gold_bundle(
                 dataset,
                 index_dir=identity.index_dir,
                 expected_snapshot={
                     "index_version": identity.index_version,
                     "manifest_sha256": identity.manifest_sha256,
                 },
+                require_fixed_binding=True,
             )
             payload.update({
                 "compatibility": "compatible",
                 "compatibility_message": "Gold locator 已绑定并验证存在于当前索引，可运行严格检索评测。",
+                "index_status": "local_available",
+                "checked_sample_count": validation["checked_sample_count"],
+                "checked_fixed_sample_count": validation["checked_fixed_sample_count"],
+                "checked_generated_sample_count": validation["checked_generated_sample_count"],
             })
         except (IndexBindingError, ValueError, FileNotFoundError) as exc:
+            message = str(exc)
+            index_status = "missing" if any(
+                marker in message
+                for marker in ("unavailable", "incomplete", "does not belong", "not staged")
+            ) else "incompatible"
             payload.update({
                 "compatibility": "rebind_required",
-                "compatibility_message": str(exc),
+                "compatibility_message": message,
+                "index_status": index_status,
             })
     return _json_response({"success": True, "data": payload})
 

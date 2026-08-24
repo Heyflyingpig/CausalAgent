@@ -177,7 +177,7 @@ def validate_candidate_gold_binding(candidate: dict[str, Any], *, index_dir: Pat
 
 def validate_frozen_gold_bundle(
     dataset: dict[str, Any], *, index_dir: Path, expected_snapshot: dict[str, Any] | None = None,
-    require_generated_candidate: bool = False,
+    require_generated_candidate: bool = False, require_fixed_binding: bool = False,
 ) -> dict[str, Any]:
     """以 units.jsonl 为真相校验候选题和冻结 Gold 的 locator。"""
     by_unit_id, snapshot = _load_index_units(index_dir)
@@ -190,32 +190,44 @@ def validate_frozen_gold_bundle(
         if expected_snapshot.get("manifest_sha256") and source_snapshot.get("manifest_sha256") != expected_snapshot["manifest_sha256"]:
             raise ValueError("candidate source_snapshot manifest_sha256 does not match target staged index")
     checked = 0
-    generated_samples = 0
+    checked_samples = 0
+    checked_fixed_samples = 0
+    checked_generated_samples = 0
     for sample in dataset.get("samples") or []:
         sample_id = str(sample.get("sample_id") or "candidate")
         source = dict(sample.get("source") or {})
         generated = require_generated_candidate or bool(source.get("generator"))
         if not generated:
-            continue
-        generated_samples += 1
-        binding = dict(source.get("index_binding") or {})
-        if not require_generated_candidate and not str(binding.get("index_version") or "").strip():
-            raise ValueError(f"{sample_id}: frozen candidate Gold index_binding.index_version is required")
-        for field, expected in (("index_version", index_version), ("manifest_sha256", expected_snapshot.get("manifest_sha256"))):
-            actual = binding.get(field)
-            if expected not in (None, "") and actual not in (None, "") and actual != expected:
-                raise ValueError(f"{sample_id}: frozen candidate Gold {field} does not match evaluation index")
+            if not require_fixed_binding:
+                continue
+            checked_fixed_samples += 1
+        else:
+            checked_generated_samples += 1
+            binding = dict(source.get("index_binding") or {})
+            if not require_generated_candidate and not str(binding.get("index_version") or "").strip():
+                raise ValueError(f"{sample_id}: frozen candidate Gold index_binding.index_version is required")
+            for field, expected in (("index_version", index_version), ("manifest_sha256", expected_snapshot.get("manifest_sha256"))):
+                actual = binding.get(field)
+                if expected not in (None, "") and actual not in (None, "") and actual != expected:
+                    raise ValueError(f"{sample_id}: frozen candidate Gold {field} does not match evaluation index")
         evidence = sample.get("gold_evidence") or []
         if not evidence:
             raise ValueError(f"{sample_id}: gold_evidence is required")
         for locator in evidence:
             if not isinstance(locator, dict):
                 raise ValueError(f"{sample_id}: gold_evidence locator is invalid")
+            if not generated and require_fixed_binding:
+                missing_fields = [
+                    field for field in ("unit_id", "document_id", "page_number", "modality", "content_kind", "bound_index_version")
+                    if locator.get(field) in (None, "")
+                ]
+                if missing_fields:
+                    raise ValueError(f"{sample_id}: fixed Gold locator is missing {', '.join(missing_fields)}")
             unit_id = str(locator.get("unit_id") or "")
             record = by_unit_id.get(unit_id)
             if record is None:
                 raise ValueError(f"{sample_id}: gold locator unit_id is unavailable in target index")
-            if require_generated_candidate:
+            if require_generated_candidate or (not generated and require_fixed_binding):
                 _validate_locator(locator, record=record, index_version=index_version, sample_id=sample_id)
             else:
                 metadata = dict(record.get("metadata") or {})
@@ -224,10 +236,15 @@ def validate_frozen_gold_bundle(
                     if locator.get(field) not in (None, "") and locator.get(field) != actual:
                         raise ValueError(f"{sample_id}: frozen Gold locator {field} does not match evaluation index")
             checked += 1
-    result = {"index_version": index_version, "checked_locator_count": checked}
-    if not require_generated_candidate:
-        result["checked_candidate_sample_count"] = generated_samples
-    return result
+        checked_samples += 1
+    return {
+        "index_version": index_version,
+        "checked_locator_count": checked,
+        "checked_sample_count": checked_samples,
+        "checked_fixed_sample_count": checked_fixed_samples,
+        "checked_generated_sample_count": checked_generated_samples,
+        "checked_candidate_sample_count": checked_generated_samples,
+    }
 
 
 def rebind_candidate_dataset_to_index(
@@ -313,7 +330,11 @@ def write_reapproval_manifest(*, candidate_path: Path, output_path: Path) -> dic
 
 def validate_frozen_gold_binding(dataset_path: Path, *, index_dir: Path) -> dict[str, Any]:
     """拒绝在非绑定索引上运行含候选题的冻结 Gold，避免产生伪低分。"""
-    return validate_frozen_gold_bundle(load_eval_dataset_bundle(dataset_path), index_dir=index_dir)
+    return validate_frozen_gold_bundle(
+        load_eval_dataset_bundle(dataset_path),
+        index_dir=index_dir,
+        require_fixed_binding=True,
+    )
 
 
 def _load_review_manifest(path: Path, candidate: dict[str, Any], candidate_path: Path) -> tuple[str, set[str]]:

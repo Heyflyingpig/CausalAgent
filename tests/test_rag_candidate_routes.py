@@ -183,13 +183,13 @@ class RagCandidateRouteTests(unittest.TestCase):
                         "ingestion_run_id": "ingest-1",
                         "index_version": "mm-test",
                         "dataset_id": "candidate-v1",
-                        "max_units": 48,
-                        "questions_per_unit": 1,
+                        "question_count": 48,
                         "max_workers": 2,
                     },
                 )
                 self.assertEqual(created.status_code, 202)
                 self.assertTrue(created.json["success"])
+                self.assertEqual(created.json["data"]["kwargs"]["question_count"], 48)
                 self.assertEqual(created.json["data"]["kwargs"]["max_workers"], 2)
 
                 run_id = created.json["data"]["run_id"]
