@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterable
 from flask import g, jsonify, make_response, request
 
 from app.admin.audit_service import record_admin_audit_event
-from app.request_context import get_request_id
+from app.request_context import get_request_id, log_request_failure
 
 
 LOGGER = logging.getLogger(__name__)
@@ -87,13 +87,18 @@ def admin_api_endpoint(view_func):
         try:
             return view_func(*args, **kwargs)
         except AdminApiError as exc:
+            if exc.status >= 500:
+                log_request_failure(
+                    LOGGER,
+                    status_code=exc.status,
+                    reason_code="unavailable",
+                )
             return api_error(exc)
         except Exception as exc:
-            LOGGER.error(
-                "管理员 API 未处理异常 [%s]: %s",
-                request.path,
-                exc,
-                exc_info=True,
+            log_request_failure(
+                LOGGER,
+                reason_code="unexpected_error",
+                exc_info=(type(exc), exc, exc.__traceback__),
             )
             return api_error(AdminApiError(
                 code="internal_error",

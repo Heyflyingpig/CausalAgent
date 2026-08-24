@@ -15,6 +15,8 @@ from app.admin.audit_service import (
 )
 from app.db import get_read_connection, get_write_connection
 from config.settings import settings
+from observability.logging_runtime import log_event
+from observability.noise_control import FailureTransitionTracker
 
 
 LOGGER = logging.getLogger(__name__)
@@ -82,6 +84,7 @@ _cache_lock = threading.Lock()
 _cached_payload: dict[str, Any] | None = None
 _cache_expires_at = 0.0
 _last_good_payload: dict[str, Any] | None = None
+_CONFIG_FAILURES = FailureTransitionTracker()
 
 
 class MonitorSettingsValidationError(ValueError):
@@ -214,7 +217,17 @@ def _fallback_payload(exc: Exception) -> dict[str, Any]:
         }
     payload["state"] = "degraded"
     payload["warning"] = "在线配置读取失败，当前继续使用最后有效值或环境默认值"
-    LOGGER.warning("读取数据库监控在线配置失败: %s", exc, exc_info=True)
+    decision = _CONFIG_FAILURES.record_failure("online_settings", type(exc).__name__)
+    if decision.emit:
+        log_event(
+            LOGGER,
+            "monitor.config.degraded",
+            details={
+                "reason_code": "config_read_failed",
+                "suppressed_count": decision.suppressed_count,
+            },
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
     return payload
 
 
@@ -232,6 +245,16 @@ def get_monitor_settings(*, force_refresh: bool = False) -> dict[str, Any]:
         try:
             payload = _build_payload(_read_settings_row())
             _last_good_payload = deepcopy(payload)
+            recovery = _CONFIG_FAILURES.record_success("online_settings")
+            if recovery is not None:
+                log_event(
+                    LOGGER,
+                    "monitor.config.recovered",
+                    details={
+                        "downtime_ms": recovery.downtime_ms,
+                        "failure_count": recovery.failure_count,
+                    },
+                )
         except Exception as exc:
             payload = _fallback_payload(exc)
         _cached_payload = deepcopy(payload)

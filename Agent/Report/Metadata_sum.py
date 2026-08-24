@@ -148,13 +148,10 @@ def replace_placeholders(text: str, visualization_mapping: dict) -> str:
     Returns:
         替换后的文本
     """
-    import logging
-
     if not text or not visualization_mapping:
         return text
 
     result = text
-    replaced_count = 0
 
     # 遍历映射，逐个替换
     for placeholder, base64_str in visualization_mapping.items():
@@ -164,7 +161,5 @@ def replace_placeholders(text: str, visualization_mapping: dict) -> str:
 
             # 替换占位符
             result = result.replace(placeholder, html_img)
-            replaced_count += 1
 
-    logging.info(f"成功替换了 {replaced_count}/{len(visualization_mapping)} 个占位符")
     return result

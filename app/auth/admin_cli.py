@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 
 import mysql.connector
 
@@ -54,7 +53,6 @@ def promote_user_to_admin(username: str) -> tuple[bool, str]:
             conn.commit()
             return True, f"用户 '{normalized_username}' 已提升为管理员。"
     except mysql.connector.Error:
-        logging.error("提升管理员失败：数据库操作未完成。")
         return False, "数据库操作失败，未提升管理员。"
 
 

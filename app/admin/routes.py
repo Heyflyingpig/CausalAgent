@@ -36,6 +36,7 @@ from app.admin.audit_service import (
     list_monitor_setting_events,
     record_admin_audit_event,
 )
+from app.request_context import log_request_failure
 from app.admin.business_service import (
     download_file,
     get_attachment_content,
@@ -80,6 +81,9 @@ from app.request_context import get_request_id
 from config.settings import settings
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 admin_page_bp = Blueprint("admin_page", __name__, url_prefix="/admin")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -97,7 +101,11 @@ def _serve_admin_index():
         return redirect(f"{settings.ADMIN_VITE_DEV_SERVER_URL}{request.path}")
     dist_dir = _admin_dist_dir()
     if not (dist_dir / "index.html").is_file():
-        logging.error("管理员 Vue 构建产物不存在: %s", dist_dir)
+        log_request_failure(
+            LOGGER,
+            status_code=503,
+            reason_code="unavailable",
+        )
         return jsonify({
             "success": False,
             "error": "管理员前端尚未构建",
@@ -157,8 +165,8 @@ def db_health():
     """返回仅管理员可读的数据库健康状态。"""
     try:
         return jsonify({"success": True, "data": get_db_health()})
-    except Exception as exc:
-        logging.error("读取数据库健康状态失败: %s", exc, exc_info=True)
+    except Exception:
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": "读取数据库健康状态失败"}), 500
 
 
@@ -183,8 +191,8 @@ def db_refresh():
     try:
         requested = request_snapshot_refresh(DEFAULT_REFRESH_GROUPS)
         return jsonify({"success": True, "data": requested}), 202
-    except Exception as exc:
-        logging.error("登记数据库看板刷新请求失败: %s", exc, exc_info=True)
+    except Exception:
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": "登记数据库看板刷新请求失败"}), 500
 
 
@@ -205,8 +213,8 @@ def db_integrity_run():
     try:
         requested = request_snapshot_refresh(("integrity",))
         return jsonify({"success": True, "data": requested}), 202
-    except Exception as exc:
-        logging.error("登记数据库完整性审计请求失败: %s", exc, exc_info=True)
+    except Exception:
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": "登记数据库完整性审计请求失败"}), 500
 
 
@@ -226,8 +234,8 @@ def db_slow_queries():
         }), 400
     try:
         return jsonify({"success": True, "data": get_sql_performance_snapshot(limit=limit)})
-    except Exception as exc:
-        logging.error("读取慢查询摘要失败: %s", exc, exc_info=True)
+    except Exception:
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": "读取慢查询摘要失败"}), 500
 
 
@@ -253,8 +261,8 @@ def job_workers():
                 )
             },
         })
-    except Exception as exc:
-        logging.error("读取 worker 任务状态失败: %s", exc, exc_info=True)
+    except Exception:
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": "读取 worker 任务状态失败"}), 500
 
 
@@ -337,8 +345,8 @@ def db_settings_update():
             status=409,
             current=exc.current,
         )
-    except Exception as exc:
-        logging.error("保存数据库监控配置失败: %s", exc, exc_info=True)
+    except Exception:
+        log_request_failure(LOGGER)
         _record_failed_setting_write(
             action="db_monitor_settings.update",
             submitted=body.get("overrides"),
@@ -377,8 +385,8 @@ def db_settings_reset():
             status=409,
             current=exc.current,
         )
-    except Exception as exc:
-        logging.error("重置数据库监控配置失败: %s", exc, exc_info=True)
+    except Exception:
+        log_request_failure(LOGGER)
         _record_failed_setting_write(
             action="db_monitor_settings.reset",
             submitted=None,
@@ -426,8 +434,8 @@ def db_settings_history():
                 before_id=before_id,
             ),
         })
-    except Exception as exc:
-        logging.error("读取数据库监控配置历史失败: %s", exc, exc_info=True)
+    except Exception:
+        log_request_failure(LOGGER)
         return _settings_error(
             message="读取数据库监控配置历史失败",
             code="settings_history_failed",

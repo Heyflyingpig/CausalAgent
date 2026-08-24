@@ -39,6 +39,7 @@ AGENTS.md 只写“修改时必须怎么做”的执行约束，不复制完整�
 - app/agent/AGENTS.md：Job、幂等、SSE 脱敏、checkpoint 和 worker。
 - Agent/AGENTS.md：LangGraph、结构化输出、MCP、RAG 和因果工具。
 - admin-frontend/AGENTS.md：TypeScript、管理员 API、构建和浏览器验证。
+- observability/AGENTS.md：共享日志运行时、事件目录、降噪、脱敏和采集拓扑。
 
 ## 跨模块不可省略的约束
 
@@ -52,7 +53,7 @@ AGENTS.md 只写“修改时必须怎么做”的执行约束，不复制完整�
 ## 验证义务
 
 - 任何代码改动都必须运行与风险直接相关的测试；依赖 MySQL/PostgreSQL、主从、Docker、浏览器或真实模型的证据必须分别说明，不能用 unit 测试冒充。
-- 文档改动至少必须检查相对链接指向现存文件、顶部职责声明、失效路径引用、git diff --check、日志 rename 纯度和 git diff -- README.md 为空。
+- 文档改动至少必须检查相对链接指向现存文件、顶部职责声明、失效路径引用、git diff --check 和日志 rename 纯度；未明确要求修改根 README 时，另须确认 `git diff -- README.md` 为空；明确要求时则检查 README 命令、链接和目录导航。
 - 迁移、数据库、管理员 E2E 和 worker 变更的具体命令以 Document/development/testing.md 和局部 AGENTS.md 为准。
 - 如果环境限制导致某项验证未执行，最终答复必须明确未执行内容、原因和残余风险。
 

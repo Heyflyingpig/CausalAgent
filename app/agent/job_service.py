@@ -7,7 +7,6 @@ from enum import Enum
 import hashlib
 import hmac
 import json
-import logging
 import math
 from typing import Any
 from uuid import UUID, uuid4
@@ -19,7 +18,13 @@ from app.chat.services import (
     save_assistant_for_job_in_transaction,
     save_user_input_for_job_in_transaction,
 )
-from app.db import get_read_connection, get_read_connection_with_source, get_write_connection
+from app.db import (
+    get_read_connection,
+    get_read_connection_with_source,
+    get_write_connection,
+    record_database_failure,
+)
+from app.request_context import REQUEST_ID_PATTERN
 from config.settings import settings
 
 
@@ -71,6 +76,14 @@ class JobStateConflictError(ValueError):
         self.job = job
 
 
+class OwnershipDeniedError(PermissionError):
+    """表示资源确实存在，但归属于其他用户。"""
+
+    def __init__(self, resource_type: str, message: str):
+        super().__init__(message)
+        self.resource_type = resource_type
+
+
 class _CheckpointRecoveryBlocked(RuntimeError):
     """PostgreSQL checkpoint 不可读时阻止本轮 stale recovery。"""
 
@@ -87,6 +100,13 @@ def normalize_idempotency_key(value: str | None) -> str:
     if parsed.version != 4 or str(parsed) != normalized.lower():
         raise InvalidIdempotencyKeyError("Idempotency-Key 必须是标准 UUID v4")
     return str(parsed)
+
+
+def _validate_request_id(value: str) -> str:
+    """校验必须落库的原始创建请求 ID，避免绕过 HTTP 入口写入越界值。"""
+    if not isinstance(value, str) or REQUEST_ID_PATTERN.fullmatch(value) is None:
+        raise ValueError("request_id 必须符合 [A-Za-z0-9._:-]{1,64}")
+    return value
 
 
 def _validate_input_text(value: Any) -> str:
@@ -298,7 +318,12 @@ def get_job_by_idempotency_key(user_id: int, idempotency_key: str) -> dict[str, 
         return _row_to_job(cursor.fetchone())
 
 
-def get_job_for_user(job_id: str, user_id: int) -> dict[str, Any] | None:
+def get_job_for_user(
+    job_id: str,
+    user_id: int,
+    *,
+    detect_ownership_denial: bool = False,
+) -> dict[str, Any] | None:
     """按 Job ID 和用户归属强一致读取 Job。"""
     with get_read_connection(consistency="strong") as connection:
         cursor = connection.cursor(dictionary=True)
@@ -306,7 +331,17 @@ def get_job_for_user(job_id: str, user_id: int) -> dict[str, Any] | None:
             "SELECT * FROM analysis_jobs WHERE job_id = %s AND user_id = %s",
             (job_id, user_id),
         )
-        return _row_to_job(cursor.fetchone())
+        job = _row_to_job(cursor.fetchone())
+        if job is not None or not detect_ownership_denial:
+            return job
+        cursor.execute(
+            "SELECT user_id FROM analysis_jobs WHERE job_id = %s",
+            (job_id,),
+        )
+        owner = cursor.fetchone()
+        if owner and int(owner["user_id"]) != int(user_id):
+            raise OwnershipDeniedError("job", "任务不存在或无权访问")
+        return None
 
 
 def _load_file_snapshot(cursor, user_id: int, user_file_id: int | None) -> dict[str, Any] | None:
@@ -328,6 +363,13 @@ def _load_file_snapshot(cursor, user_id: int, user_file_id: int | None) -> dict[
     )
     snapshot = cursor.fetchone()
     if not snapshot:
+        cursor.execute(
+            "SELECT user_id FROM user_files WHERE id = %s",
+            (user_file_id,),
+        )
+        owner = cursor.fetchone()
+        if owner and int(owner["user_id"]) != int(user_id):
+            raise OwnershipDeniedError("file", "文件不存在或不属于当前用户")
         raise PermissionError("文件不存在或不属于当前用户")
     return snapshot
 
@@ -338,10 +380,13 @@ def create_job(
     message: str,
     idempotency_key: str,
     input_user_file_id: int | None = None,
+    *,
+    request_id: str,
 ) -> tuple[dict[str, Any], bool]:
     """在一个 MySQL 事务中创建或重放带冻结文件输入的 Job。"""
     normalized_message = _validate_input_text(message)
     idempotency_key = normalize_idempotency_key(idempotency_key)
+    request_id = _validate_request_id(request_id)
     if input_user_file_id is not None:
         try:
             input_user_file_id = int(input_user_file_id)
@@ -388,7 +433,15 @@ def create_job(
             "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
             (session_id, user_id),
         )
-        if not cursor.fetchone():
+        session_row = cursor.fetchone()
+        if not session_row:
+            cursor.execute(
+                "SELECT user_id FROM sessions WHERE id = %s",
+                (session_id,),
+            )
+            owner = cursor.fetchone()
+            if owner and int(owner["user_id"]) != int(user_id):
+                raise OwnershipDeniedError("session", "会话不存在或不属于当前用户")
             raise PermissionError("会话不存在或不属于当前用户")
 
         snapshot = _load_file_snapshot(cursor, user_id, input_user_file_id)
@@ -401,12 +454,12 @@ def create_job(
         cursor.execute(
             """
             INSERT INTO analysis_jobs (
-                job_id, user_id, session_id, message,
+                job_id, user_id, session_id, request_id, message,
                 input_user_file_id, input_object_id, input_file_hash, input_filename,
                 status, max_attempts, active_session_key,
                 idempotency_key, request_fingerprint
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 'queued', %s, %s, %s, %s
             )
             """,
@@ -414,6 +467,7 @@ def create_job(
                 job_id,
                 user_id,
                 session_id,
+                request_id,
                 normalized_message,
                 snapshot_values["input_user_file_id"],
                 snapshot_values["input_object_id"],
@@ -468,6 +522,7 @@ def create_job(
             active = get_active_job(user_id, session_id)
             if active:
                 raise ActiveJobConflictError(active) from exc
+        record_database_failure(exc, operation="job_create_write")
         raise
     except Exception:
         connection.rollback()
@@ -590,16 +645,18 @@ def _lock_job_then_session(
 ) -> dict[str, Any] | None:
     """按统一的 ``analysis_jobs -> sessions`` 顺序锁定用户 Job。"""
     cursor.execute(
-        """
-        SELECT *
-        FROM analysis_jobs
-        WHERE job_id = %s AND user_id = %s
-        FOR UPDATE
-        """,
+        "SELECT * FROM analysis_jobs WHERE job_id = %s AND user_id = %s FOR UPDATE",
         (job_id, user_id),
     )
     job = _row_to_job(cursor.fetchone())
     if not job:
+        cursor.execute(
+            "SELECT user_id FROM analysis_jobs WHERE job_id = %s",
+            (job_id,),
+        )
+        owner = cursor.fetchone()
+        if owner and int(owner["user_id"]) != int(user_id):
+            raise OwnershipDeniedError("job", "任务不存在或无权访问")
         return None
     cursor.execute(
         "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
@@ -1317,7 +1374,6 @@ def fail_job(
     事务中写失败；这里先锁住 Job 行，锁获胜者才允许写入 failed。若锁住时
     已经是 canceled，调用方必须进入撤销清理路径，不能再生成 error 事件。
     """
-    logging.error("analysis job %s failed", job_id)
     payload = {"type": "error", "message": message}
     with get_write_connection() as connection:
         try:
@@ -1668,7 +1724,6 @@ def get_worker_snapshot_report() -> dict[str, Any]:
             "warning": warning,
         }
     except Exception:
-        logging.warning("读取 worker/job 看板快照失败", exc_info=True)
         return {
             "jobs": [],
             "summary": {

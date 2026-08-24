@@ -1,5 +1,4 @@
 import json
-import logging
 from typing import Dict, List, Literal
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -81,7 +80,6 @@ async def get_rag_questions(
 
     结构化输出失败时直接抛出异常，由 LangGraph 节点级容错统一降级。
     """
-    logging.info("正在启动 RAG 问题生成任务...")
     rag_prompt = ChatPromptTemplate.from_messages(
         [
             (
@@ -137,7 +135,6 @@ async def get_rag_questions(
         ]
     )
 
-    logging.info("正在调用LLM生成结构化RAG查询问题...")
     bundle = await ainvoke_structured(
         llm=llm,
         schema=RagQuestionBundle,
@@ -154,5 +151,4 @@ async def get_rag_questions(
     )
 
     questions = normalize_rag_question_output(bundle, max_questions=max_questions)
-    logging.info(f"LLM生成的RAG问题列表: {questions}")
     return questions

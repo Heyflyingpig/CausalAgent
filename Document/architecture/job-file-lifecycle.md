@@ -9,7 +9,7 @@
 | 实体 | 存储 | 作用 |
 | --- | --- | --- |
 | Session | MySQL `sessions` | 用户可见的会话容器，`id` 是 UUID 字符串；业务访问仍按 `session_id` 授权 |
-| Job | MySQL `analysis_jobs` | 长任务队列、状态、lease、重试、冻结文件快照和终态摘要 |
+| Job | MySQL `analysis_jobs` | 长任务队列、状态、lease、重试、冻结文件快照、终态摘要和创建请求关联 |
 | Job 输入 | MySQL `analysis_job_inputs` | initial/resume 输入账本、顺序、问题 ID、幂等键和对应聊天消息 |
 | Job 事件 | MySQL `analysis_job_events` | SSE 时间线、生命周期事件和内部执行摘要 |
 | 文件对象 | MySQL `file_objects` | 按用户和 SHA-256 去重的不可变 BLOB |
@@ -17,7 +17,7 @@
 | checkpoint | PostgreSQL 官方 LangGraph 表 | Job 的恢复状态；`thread_id` 是 `analysis_jobs.job_id` |
 | cleanup outbox | MySQL `checkpoint_cleanup_outbox` | 跨库删除请求的可靠账本，按 `thread_id` 唯一 |
 
-新建会话时，`POST /api/new_chat` 先在 MySQL 主库插入 `sessions` 记录再返回 ID。创建 Job、保存聊天、修改标题和上传文件都要求会话或用户文件真实存在且属于当前用户，不会根据未知 ID 自动重建对象。
+新建会话时，`POST /api/new_chat` 先在 MySQL 主库插入 `sessions` 记录再返回 ID。创建 Job、保存聊天、修改标题和上传文件都要求会话或用户文件真实存在且属于当前用户，不会根据未知 ID 自动重建对象。Job 创建时保存入口确定的原始 `X-Request-ID` 到 `analysis_jobs.request_id`；历史行可为 `NULL`，幂等重放不覆盖首次值。
 
 ## 文件库与冻结输入
 

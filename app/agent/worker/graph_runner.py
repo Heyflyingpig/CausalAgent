@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import HumanMessage
@@ -175,7 +174,6 @@ async def ai_call_stream(
     runtime_value = current_input.get("runtime_value")
     if input_type not in {"initial", "resume"}:
         raise RuntimeError("Job 输入类型无效")
-    logging.info("[流式] 处理用户 %s 的消息，会话ID: %s, Job=%s", username, session_id, job_id)
     config = _graph_config(
         user_id=user_id,
         session_id=session_id,
@@ -190,7 +188,6 @@ async def ai_call_stream(
     if interrupts:
         if input_type != "resume":
             raise RuntimeError("checkpoint 存在 pending interrupt，但当前输入不是 resume")
-        logging.info("[流式] 检测到 Job %s 处于中断状态", job_id)
         input_data: Any = Command(resume=runtime_value)
     elif claim_kind == "stale_recovery":
         if has_checkpoint:
@@ -280,7 +277,6 @@ async def ai_call_stream(
                 "question_id": _interrupt_id(interrupt_obj),
                 "attempt": job_attempt,
             }
-            logging.info("[SSE] 图已暂停，等待用户输入")
             return
 
         if execution_guard is not None:
@@ -293,13 +289,11 @@ async def ai_call_stream(
             "data": final_result,
             "attempt": job_attempt,
         }
-        logging.info("[SSE] 发送最终结果")
     except JobExecutionRevoked:
         raise
     except Exception as exc:
         if execution_guard is not None:
             await execution_guard.check_after_call()
-        logging.error("[流式] 执行 LangGraph Agent 时发生错误: %s", exc, exc_info=True)
         yield {
             "type": "error",
             "message": sanitize_public_error(exc),

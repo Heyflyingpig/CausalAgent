@@ -4,7 +4,6 @@ import csv
 import importlib
 import importlib.metadata
 import io
-import logging
 
 # CDMIR: OLC algorithm 
 # 使用延迟导入 + 优雅降级，避免未安装时启动报错
@@ -14,8 +13,6 @@ try:
     _CDMIR_AVAILABLE = True
 except ImportError:
     olc = None  # 占位，防止后续代码引用报错
-
-logger = logging.getLogger(__name__)
 
 DIRECT_LINGAM_SCHEMA_VERSION = "causal_discovery_v1"
 DIRECT_LINGAM_ALGORITHM = "direct_lingam"
@@ -304,7 +301,6 @@ def run_direct_lingam_analysis(csv_data_string: str) -> dict:
     try:
         lingam_module = _load_direct_lingam_module()
     except ImportError:
-        logger.warning("DirectLiNGAM 依赖不可用。", exc_info=True)
         return _direct_lingam_failure(
             "DependencyUnavailableError",
             "DirectLiNGAM 不可用：causal-learn 内置 LiNGAM module 无法加载。",
@@ -321,7 +317,6 @@ def run_direct_lingam_analysis(csv_data_string: str) -> dict:
         model = direct_lingam_class(measure=DIRECT_LINGAM_MEASURE)
         model.fit(data)
     except Exception:
-        logger.error("DirectLiNGAM 拟合失败。", exc_info=True)
         return _direct_lingam_failure(
             "AlgorithmExecutionError",
             "DirectLiNGAM 执行失败，请检查数据是否满足算法假设。",
@@ -330,7 +325,6 @@ def run_direct_lingam_analysis(csv_data_string: str) -> dict:
     try:
         return _direct_lingam_success(data, node_names, model, lingam_module)
     except Exception:
-        logger.error("DirectLiNGAM 结果校验失败。", exc_info=True)
         return _direct_lingam_failure(
             "ResultValidationError",
             "DirectLiNGAM 返回了无法解析的结果。",
@@ -386,22 +380,17 @@ def run_pc_analysis(csv_data_string: str) -> dict:
     """
     try:
         pc, fisherz = _load_pc_dependencies()
-        logger.info("开始从字符串加载数据...")
         string_io = io.StringIO(csv_data_string)
         df = pd.read_csv(string_io)
         
         if df.empty or len(df.columns) < 2:
             msg = "错误：CSV数据为空或列数少于2，无法进行因果分析。"
-            logger.error(msg)
             return {"success": False, "message": msg}
-        
-        logger.info(f"数据加载成功，包含 {len(df)} 行和 {len(df.columns)} 列。")
+
         data = df.to_numpy()
         node_names = df.columns.tolist()
 
-        logger.info("正在运行PC算法...")
         cg = pc(data=data, alpha=0.05, indep_test=fisherz, node_names=node_names)
-        logger.info("PC算法完成。")
 
         # 提取结果
         edges = cg.G.get_graph_edges()
@@ -410,8 +399,6 @@ def run_pc_analysis(csv_data_string: str) -> dict:
         nodes_for_vis = [{'id': name, 'label': name} for name in node_names]
         edges_for_vis = _format_edges(edges)
         
-        logger.info(f"格式化后的边: {edges_for_vis}")
-
         return {
             "success": True,
             "message": "因果分析成功完成。",
@@ -428,7 +415,6 @@ def run_pc_analysis(csv_data_string: str) -> dict:
 
     except Exception as e:
         error_message = f"执行因果分析时发生错误: {e}"
-        logger.error(error_message, exc_info=True)
         return {"success": False, "message": error_message}
 
 
@@ -516,35 +502,28 @@ def run_olc_analysis(csv_data_string: str, alpha: float = 0.05, beta: float = 0.
     # 检查 CDMIR 是否可用
     if not _CDMIR_AVAILABLE:
         msg = "OLC 算法不可用：CDMIR 库未安装。请运行 'pip install git+https://github.com/DMIRLAB-Group/CDMIR.git' 安装。"
-        logger.warning(msg)
         return {"success": False, "message": msg, "algorithm": "olc"}
 
     try:
-        logger.info("OLC: 开始从字符串加载数据...")
         string_io = io.StringIO(csv_data_string)
         df = pd.read_csv(string_io)
 
         if df.empty or len(df.columns) < 2:
             msg = "错误：CSV数据为空或列数少于2，无法进行因果分析。"
-            logger.error(msg)
             return {"success": False, "message": msg}
-
-        logger.info(f"OLC: 数据加载成功，包含 {len(df)} 行和 {len(df.columns)} 列。")
 
         # OLC 需要 numpy 数组作为输入
         data = df.to_numpy()
         observed_node_names = df.columns.tolist()
         n_observed = len(observed_node_names)
 
-        logger.info("OLC: 正在运行 OLC 算法...")
         # OLC 返回两个矩阵：邻接矩阵和系数矩阵
         adjacency_matrix, coefficient_matrix = olc(
             data=data,
             alpha=alpha,
             beta=beta,
-            verbose=True
+            verbose=False
         )
-        logger.info("OLC: 算法完成。")
 
         # 检测是否发现了潜变量
         # OLC 输出的矩阵维度 = n_observed + n_latent
@@ -556,8 +535,6 @@ def run_olc_analysis(csv_data_string: str, alpha: float = 0.05, beta: float = 0.
         for i in range(n_latent):
             latent_name = f"L{i+1}"  # 潜变量命名为 L1, L2, ...
             all_node_names.append(latent_name)
-
-        logger.info(f"OLC: 检测到 {n_latent} 个潜变量")
 
         # 准备前端需要的数据格式
         nodes_for_vis = []
@@ -573,8 +550,6 @@ def run_olc_analysis(csv_data_string: str, alpha: float = 0.05, beta: float = 0.
 
         # 转换边格式
         edges_for_vis = _format_olc_edges(adjacency_matrix, coefficient_matrix, all_node_names)
-
-        logger.info(f"OLC: 格式化后的边数量: {len(edges_for_vis)}")
 
         return {
             "success": True,
@@ -596,12 +571,9 @@ def run_olc_analysis(csv_data_string: str, alpha: float = 0.05, beta: float = 0.
 
     except Exception as e:
         error_message = f"OLC: 执行因果分析时发生错误: {e}"
-        logger.error(error_message, exc_info=True)
         return {"success": False, "message": error_message}
 # 用于独立测试
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
     # 指定要测试的CSV文件路径（相对于项目根目录）
     test_csv_path = '杂项/test/1.csv'
     
@@ -622,6 +594,6 @@ if __name__ == '__main__':
         print(json.dumps(results, indent=2, ensure_ascii=False))
 
     except FileNotFoundError:
-        logger.error(f"测试失败：找不到文件 '{test_csv_path}'。请确保文件路径是相对于您运行脚本的目录。")
-    except Exception as e:
-        logger.error(f"测试过程中发生未知错误: {e}", exc_info=True)
+        print("测试失败：找不到测试 CSV 文件。")
+    except Exception:
+        print("测试过程中发生未知错误。")

@@ -6,13 +6,19 @@
 
 ## Worker 启动与 slot
 
-`python -m app.agent.worker` 进入 `app/agent/worker/__main__.py`，再调用 bootstrap。启动顺序是数据库就绪检查、PostgreSQL checkpoint 检查、创建显式进程 runtime，然后按 `JOB_WORKERS` 启动 slot。每个 slot 持有一组独立运行依赖：
+`python -m app.agent.worker` 进入 `app/agent/worker/__main__.py`，先配置共享 JSON stderr 日志，再调用 bootstrap。启动顺序是数据库就绪检查、PostgreSQL checkpoint 检查、创建显式进程 runtime，然后按 `JOB_WORKERS` 启动 slot。每个 slot 持有一组独立运行依赖：
 
 1. MCP server process 与一个通过 `MultiServerMCPClient.session("causal")` 建立的持久 `ClientSession`。
 2. 由该 session 加载的 LangChain tools。
 3. 当前配置下的 LLM、RAG 可用性和编译后的 Agent graph。
 
 `runtime.py` 通过 `ProcessRuntime` 和 `SlotRuntime` 显式传递这些对象；执行函数不能从 `app.agent.core` 读取全局 graph 或 LLM。这样可以把真实并发单元限定为 slot，并让 MCP session 与 graph 的生命周期一致。
+
+slot 就绪后记录 `worker.slot.ready`；初始化或运行失败在 slot 边界记录 `worker.slot.failed`，同时保持原有非零退出。`run_job()` 从已领取的 Job 行绑定首次创建时保存的 `request_id`、已验证的 `user_id/session_id/job_id` 和进程内 slot 序号，结束时无条件恢复上下文。真实 lease 所用的 `hostname:slot` 仍只保存在业务字段中，不作为日志 `worker_slot`。
+
+MCP server 是 worker 内的 stdio 子进程。MCP client 将子进程 stderr 绑定到 worker stderr，因果分析协议仍只使用 stdout；MCP 应用日志由共享运行时输出为单行 JSON，不创建本地日志文件。
+
+调用 MCP 前，父进程会先删除模型提交的 `user_id/session_id/job_id/input_user_file_id/input_object_id/request_id/worker_slot/csv_data`，再从 Agent State 注入前五项、从当前日志上下文注入后两项。工具 schema 声明必填的可信参数没有权威值时，在进入 transport 前失败关闭，绝不回退到模型同名参数。MCP 子进程把这些内部参数只用于日志上下文，固定 `node=mcp_tool_node` 并绑定实际工具名；子进程记录工具业务成功/失败，父进程只在 transport 重试耗尽时记录一次，避免重复。
 
 ## 父图与工具阶段
 
@@ -24,13 +30,17 @@ RAG 查询任务捕获普通查询、连接和目录异常时返回 `success=Fal
 
 结构化输出统一通过 `Agent/llm_structured_output.py` 的同步/异步入口调用，固定使用普通 `function_calling`。结构化请求会关闭 thinking；MCP planner 仍使用原生 Tool Calls，并对关闭 thinking 的 LLM 副本设置 `tool_choice="required"`，确保 planner 必须选择一个已加载工具。`agent` 和 `fold` 的条件路由只读取显式 State 字段 `route_decision`、`fold_decision`，不使用展示消息猜测控制流。
 
-RAG 启动时只检查知识库目录是否可用，不在 worker 启动阶段完整加载向量库；知识库缺失时记录 warning 并以无知识库模式继续。DirectLiNGAM 作为 `causal_direct_lingam` MCP 工具提供连续数值 CSV 分析，输出的系数矩阵约定为 `target_to_source`，报告需要保留线性、非高斯、误差独立、DAG 和无潜在混杂等假设。
+`bind_node`、`bind_runnable_node` 和 `bind_subgraph_node` 在统一包装层绑定 `node`；ToolNode 只从最后一条 AIMessage 中第一个已校验 tool call 绑定 `tool`。普通 attempt 失败继续由 LangGraph RetryPolicy 处理，不产生运行异常日志；`guarded_error_handler` 只在重试耗尽并进入 fallback 时记录一次 `job.node.timeout` 或 `job.node.degraded`。取消和 `JobExecutionRevoked` 继续绕过 retry/fallback。
+
+RAG 启动时只检查知识库目录是否可用，不在 worker 启动阶段完整加载向量库；知识库缺失时每个 worker 进程记录一次 `rag.startup.unavailable` 并以无知识库模式继续。最终 `rag_status != available` 时只在父图适配/finalize 边界为受影响 Job 记录一次 `rag.enrichment.degraded`，只包含状态、原因码、问题数和证据数，不记录问题或证据正文。DirectLiNGAM 作为 `causal_direct_lingam` MCP 工具提供连续数值 CSV 分析，输出的系数矩阵约定为 `target_to_source`，报告需要保留线性、非高斯、误差独立、DAG 和无潜在混杂等假设。
 
 ## 事件流与脱敏
 
 worker 使用 LangGraph v2 的 `updates`、`messages`、`custom` 和 `tasks` 流，将内部执行事件转换为 `analysis_job_events`。根图 `tasks` 构成用户时间线，子图工具事件折叠为 `mcp` 或 `rag` 阶段。普通用户 SSE 只允许 `normal_chat` 和 `inquiry_answer` 的公开文字进入 `text_delta`；原始 prompt、ToolMessage、完整工具结果、图状态、内部 attempt 和隐藏推理都不能进入普通用户协议。
 
 事件写入由 Job 的 `lease_epoch`、worker、attempt、`execution_state=leased` 和稳定 `event_key` 共同保护。终态事件与 assistant 消息、Job 状态在同一个 MySQL 事务中落盘；旧 worker 失去 lease 或收到取消撤销后不能覆盖新执行结果。`JobExecutionGuard` 通过 LangGraph invocation runtime context 传递到父图、子图、ToolNode 包装器和 parser；节点开始、调用返回、异常处理、路由和事件持久化前均检查执行资格。`JobExecutionRevoked` 和 `asyncio.CancelledError` 是内部控制流，不进入 RetryPolicy、RAG 降级或公开 error 事件，必须继续向 worker 传播；普通 RAG 故障则在子图内收口并回到 Agent。前端断线恢复使用 Event ID 读取 MySQL 事件，不依赖 worker 内存。
+
+运行日志和用户事件是两条独立通道：日志只写 stderr，不混入 `analysis_job_events`。`OrderedEventWriter` 在 `terminal_seen` 之外暴露只读 `terminal_type`，取值为 `final_result/interrupt/error/None`；worker 据此把完成、等待用户输入和失败分别映射为 `worker.job.finished/interrupted/failed`。fencing、用户取消和进程退出记录 INFO 级 `worker.job.revoked`，多个 cleanup phase 失败先聚合为一个 `worker.job.cleanup_failed`，不改变既有撤销、draining 或租约回收语义。
 
 普通异常的失败收敛会先在 Job 行锁内确认 worker、attempt、lease epoch 和 `leased` 状态；若锁住时发现业务取消，返回 `CANCELED_FENCED`，不再补写普通 `error` 事件。`OrderedEventWriter.abort()` 会丢弃未刷新的文字、结束排队 Future，并向调用方暴露消费协程的非预期异常；只有终态写入被接受后才设置 `terminal_seen`。worker 只有在 graph stream、EventWriter 和 heartbeat monitor 都完成 cleanup 后，才可以把 canceled/draining 执行占用标记为 `worker_confirmed`；cleanup 失败时保留 draining，交由租约回收路径处理。
 
@@ -43,3 +53,4 @@ worker 使用 LangGraph v2 的 `updates`、`messages`、`custom` 和 `tasks` 流
 - 修改 worker 初始化时，必须同时检查 `runtime.py`、`bootstrap.py`、Docker Compose 的 worker 入口和 slot 资源占用。
 - 修改结构化输出或 MCP planner 时，必须分别验证普通 function calling、thinking 配置和原生 Tool Calls。
 - 修改 RAG 或因果工具时，必须分别验证“知识库缺失可启动”和工具输入/输出契约。
+- 修改运行日志上下文时，必须覆盖连续 Job、两个 slot、`create_task`、`asyncio.to_thread()` 和 MCP 伪造可信参数；任何用户输入、提示词、模型结果、ToolMessage、CSV 或原始异常文本都不得出现在 stderr。

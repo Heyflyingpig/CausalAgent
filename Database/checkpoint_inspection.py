@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import logging
 import math
 from typing import Any, Iterator
 
@@ -18,7 +17,6 @@ from psycopg.rows import dict_row
 from config.checkpoint_settings import CheckpointPostgresConfig
 
 
-LOGGER = logging.getLogger(__name__)
 CHECKPOINT_SOURCE_ALIAS = "checkpoint-postgres"
 EXPECTED_TABLE_COLUMNS = {
     "checkpoint_migrations": {"v"},
@@ -237,11 +235,7 @@ def inspect_checkpoint_quick(*, timeout_ms: int) -> list[dict[str, Any]]:
                     ),
                 )
         return [connection_check, schema_check, migration_check]
-    except Exception as exc:
-        LOGGER.warning(
-            "PostgreSQL checkpoint quick 检查失败: %s",
-            type(exc).__name__,
-        )
+    except Exception:
         return _unknown_quick_checks()
 
 
@@ -296,10 +290,6 @@ def list_job_checkpoint_summaries(
                 )
                 legacy_row = cursor.fetchone() or {}
     except Exception as exc:
-        LOGGER.warning(
-            "PostgreSQL checkpoint 任务摘要读取失败: %s",
-            type(exc).__name__,
-        )
         raise CheckpointPostgresUnavailable(
             "PostgreSQL checkpoint 只读服务不可用"
         ) from exc

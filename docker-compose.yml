@@ -81,6 +81,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: causalagent_app
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "web"
+      causalagent_environment: "development"
     environment:
       - MYSQL_HOST=mysql-primary
       - MYSQL_WRITE_HOST=mysql-primary
@@ -165,6 +169,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: causalagent_worker
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "worker"
+      causalagent_environment: "development"
     command: python -m app.agent.worker
     environment:
       - MYSQL_HOST=mysql-primary
@@ -230,6 +238,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: causalagent_db_bootstrap
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "maintenance"
+      causalagent_environment: "development"
     command: python -m Database.bootstrap
     environment:
       - MYSQL_HOST=mysql-primary
@@ -264,6 +276,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: causalagent_checkpoint_cleanup
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "maintenance"
+      causalagent_environment: "development"
     command: python -m Database.checkpoint_cleanup_worker
     environment:
       - MYSQL_HOST=mysql-primary
@@ -311,6 +327,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: causalagent_monitor
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "monitor"
+      causalagent_environment: "development"
     command: python -m Database.monitor_worker
     environment:
       - MYSQL_HOST=mysql-primary
@@ -373,8 +393,68 @@ services:
       - causalagent_replica_network
     restart: unless-stopped
 
+  loki:
+    image: grafana/loki:3.7.4
+    container_name: causalagent_loki
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    networks:
+      - observability_network
+    cpus: "1.0"
+    mem_limit: 1g
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.18.0
+    container_name: causalagent_alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - --disable-reporting
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_positions:/var/lib/alloy/data
+    networks:
+      - observability_network
+    depends_on:
+      loki:
+        condition: service_started
+    cpus: "0.5"
+    mem_limit: 256m
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.1.1
+    container_name: causalagent_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_DEFAULT_LANGUAGE: zh-Hans
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - observability_network
+    depends_on:
+      loki:
+        condition: service_started
+    cpus: "0.5"
+    mem_limit: 512m
+    restart: unless-stopped
+
 networks:
   causalagent_replica_network:
+    driver: bridge
+  observability_network:
     driver: bridge
 
 volumes:
@@ -383,4 +463,10 @@ volumes:
   mysql_replica_data:
     driver: local
   postgres_checkpoint_data:
+    driver: local
+  loki_data:
+    driver: local
+  grafana_data:
+    driver: local
+  alloy_positions:
     driver: local

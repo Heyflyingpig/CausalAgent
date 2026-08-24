@@ -1,7 +1,7 @@
 import io
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from flask import Flask
 
@@ -171,6 +171,7 @@ class AdminBusinessApiTests(unittest.TestCase):
                 "app.admin.contracts.record_admin_audit_event",
                 return_value=False,
             ),
+            patch("app.admin.contracts.log_request_failure") as request_failure,
             app.test_client() as client,
         ):
             response = client.get("/api/admin/business/users/3")
@@ -179,6 +180,11 @@ class AdminBusinessApiTests(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["code"], "audit_unavailable")
         self.assertNotIn("alice", response.get_data(as_text=True))
+        request_failure.assert_called_once_with(
+            ANY,
+            status_code=503,
+            reason_code="unavailable",
+        )
 
     def test_missing_sensitive_record_is_audited_without_content(self):
         """404 目标也要记录拒绝结果，但审计载荷不能包含正文。"""

@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Any
+import time
+from typing import Any, Callable
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 AGENT_DIR = os.path.dirname(CURRENT_DIR)
@@ -14,24 +15,42 @@ for path in (PROJECT_ROOT, AGENT_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from mcp.server.fastmcp import FastMCP
-
-from Agent.causal.causalachieve import (
-    run_direct_lingam_analysis,
-    run_olc_analysis,
-    run_pc_analysis,
+from observability.logging_runtime import (
+    configure_logging,
+    current_environment,
+    log_context,
+    log_event,
 )
-from Database.agent_connect import require_frozen_file_for_job
+LOGGER = logging.getLogger(__name__)
 
+if __name__ == "__main__":
+    configure_logging("mcp", current_environment(), logging.INFO)
 
-log_file_path = os.path.join(CURRENT_DIR, "mcp_server.log")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(log_file_path, encoding="utf-8")],
-)
+try:
+    from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("causal-analyzer")
+    from Agent.causal.causalachieve import (
+        run_direct_lingam_analysis,
+        run_olc_analysis,
+        run_pc_analysis,
+    )
+    from Database.agent_connect import require_frozen_file_for_job
+
+    mcp = FastMCP("causal-analyzer")
+except Exception as exc:
+    if __name__ == "__main__":
+        log_event(
+            LOGGER,
+            "mcp.startup.failed",
+            details={
+                "phase": "module_initialization",
+                "dependency": "mcp_runtime",
+                "reason_code": "initialization_failed",
+            },
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        raise SystemExit(1) from None
+    raise
 
 
 def _load_csv(
@@ -59,12 +78,97 @@ def _error_result(message: str, error_type: str) -> dict[str, Any]:
     }
 
 
+async def _execute_tool(
+    tool_name: str,
+    runner: Callable[[str], dict],
+    *,
+    user_id: int,
+    session_id: str | None,
+    job_id: str,
+    input_user_file_id: int,
+    input_object_id: int,
+    request_id: str | None,
+    worker_slot: int | None,
+) -> dict:
+    """在 MCP 子进程内绑定可信上下文，并只记录大小、耗时和结果类别。"""
+    started_at = time.perf_counter()
+    input_bytes = 0
+    with log_context(
+        request_id=request_id,
+        user_id=user_id,
+        session_id=session_id,
+        job_id=job_id,
+        worker_slot=worker_slot,
+        node="mcp_tool_node",
+        tool=tool_name,
+    ):
+        try:
+            csv_data = _load_csv(
+                user_id,
+                job_id,
+                input_user_file_id,
+                input_object_id,
+            )
+            input_bytes = len(csv_data.encode("utf-8"))
+            result = runner(csv_data)
+        except FileNotFoundError:
+            log_event(
+                LOGGER,
+                "mcp.tool.failed",
+                details={
+                    "duration_ms": int((time.perf_counter() - started_at) * 1000),
+                    "input_bytes": input_bytes,
+                    "reason_code": "unavailable",
+                },
+            )
+            return _error_result("任务文件不可用", "FrozenFileNotFound")
+        except Exception:
+            log_event(
+                LOGGER,
+                "mcp.tool.failed",
+                details={
+                    "duration_ms": int((time.perf_counter() - started_at) * 1000),
+                    "input_bytes": input_bytes,
+                    "reason_code": "tool_error",
+                },
+                exc_info=True,
+            )
+            return _error_result("执行分析时发生内部错误", "AnalysisError")
+
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        if isinstance(result, dict) and result.get("success") is False:
+            log_event(
+                LOGGER,
+                "mcp.tool.failed",
+                details={
+                    "duration_ms": duration_ms,
+                    "input_bytes": input_bytes,
+                    "reason_code": "invalid_result",
+                },
+            )
+        else:
+            result_kind = "structured_result" if isinstance(result, dict) else "other_result"
+            log_event(
+                LOGGER,
+                "mcp.tool.finished",
+                details={
+                    "duration_ms": duration_ms,
+                    "input_bytes": input_bytes,
+                    "result_kind": result_kind,
+                },
+            )
+        return result
+
+
 @mcp.tool()
 async def causal_pc(
     user_id: int,
     job_id: str,
     input_user_file_id: int,
     input_object_id: int,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    worker_slot: int | None = None,
 ) -> dict:
     """
     使用PC算法对CSV数据执行因果发现分析。
@@ -95,15 +199,17 @@ async def causal_pc(
         一个包含分析结果的结构化字典，包括因果图结构和边的方向信息。
     """
 
-    try:
-        csv_data = _load_csv(user_id, job_id, input_user_file_id, input_object_id)
-        logging.info("工具 causal_pc 读取文件字节数=%s", len(csv_data.encode("utf-8")))
-        return run_pc_analysis(csv_data)
-    except FileNotFoundError:
-        return _error_result("任务文件不可用", "FrozenFileNotFound")
-    except Exception:
-        logging.error("causal_pc 执行失败", exc_info=True)
-        return _error_result("执行分析时发生内部错误", "AnalysisError")
+    return await _execute_tool(
+        "causal_pc",
+        run_pc_analysis,
+        user_id=user_id,
+        session_id=session_id,
+        job_id=job_id,
+        input_user_file_id=input_user_file_id,
+        input_object_id=input_object_id,
+        request_id=request_id,
+        worker_slot=worker_slot,
+    )
 
 
 @mcp.tool()
@@ -112,6 +218,9 @@ async def causal_olc(
     job_id: str,
     input_user_file_id: int,
     input_object_id: int,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    worker_slot: int | None = None,
 ) -> dict:
     """
     使用OLC算法对CSV数据执行因果发现分析，专门处理存在隐藏混杂因素的场景。
@@ -140,15 +249,17 @@ async def causal_olc(
     Returns:
         一个包含分析结果的结构化字典，包括因果图结构和潜在混杂因素信息。
     """
-    try:
-        csv_data = _load_csv(user_id, job_id, input_user_file_id, input_object_id)
-        logging.info("工具 causal_olc 读取文件字节数=%s", len(csv_data.encode("utf-8")))
-        return run_olc_analysis(csv_data)
-    except FileNotFoundError:
-        return _error_result("任务文件不可用", "FrozenFileNotFound")
-    except Exception:
-        logging.error("causal_olc 执行失败", exc_info=True)
-        return _error_result("执行分析时发生内部错误", "AnalysisError")
+    return await _execute_tool(
+        "causal_olc",
+        run_olc_analysis,
+        user_id=user_id,
+        session_id=session_id,
+        job_id=job_id,
+        input_user_file_id=input_user_file_id,
+        input_object_id=input_object_id,
+        request_id=request_id,
+        worker_slot=worker_slot,
+    )
 
 
 @mcp.tool()
@@ -157,6 +268,9 @@ async def causal_direct_lingam(
     job_id: str,
     input_user_file_id: int,
     input_object_id: int,
+    request_id: str | None = None,
+    session_id: str | None = None,
+    worker_slot: int | None = None,
 ) -> dict:
     """使用 DirectLiNGAM 对连续数值 CSV 数据执行因果发现分析。
 
@@ -169,25 +283,41 @@ async def causal_direct_lingam(
         input_user_file_id: Job 创建时冻结的逻辑文件 ID。
         input_object_id: Job 创建时冻结的不可变文件对象 ID。
     """
-    try:
-        csv_data = _load_csv(user_id, job_id, input_user_file_id, input_object_id)
-        logging.info(
-            "工具 causal_direct_lingam 读取文件字节数=%s",
-            len(csv_data.encode("utf-8")),
-        )
-        return run_direct_lingam_analysis(csv_data)
-    except FileNotFoundError:
-        return _error_result("任务文件不可用", "FrozenFileNotFound")
-    except Exception:
-        logging.error("causal_direct_lingam 执行失败", exc_info=True)
-        return _error_result("执行 DirectLiNGAM 分析时发生内部错误", "AnalysisError")
+    return await _execute_tool(
+        "causal_direct_lingam",
+        run_direct_lingam_analysis,
+        user_id=user_id,
+        session_id=session_id,
+        job_id=job_id,
+        input_user_file_id=input_user_file_id,
+        input_object_id=input_object_id,
+        request_id=request_id,
+        worker_slot=worker_slot,
+    )
 
 
-if __name__ == "__main__":
-    logging.info("MCP 因果分析服务器启动")
+def main() -> None:
+    """启动 stdio MCP server；应用日志只写 stderr，stdout 留给协议。"""
+    configure_logging("mcp", current_environment(), logging.INFO)
+    log_event(
+        LOGGER,
+        "mcp.startup.ready",
+    )
     try:
         mcp.run(transport="stdio")
     except Exception:
-        logging.error("MCP 服务器运行时出现致命错误", exc_info=True)
-    finally:
-        logging.info("MCP 服务器关闭")
+        log_event(
+            LOGGER,
+            "mcp.startup.failed",
+            details={
+                "phase": "stdio_transport",
+                "dependency": "mcp_runtime",
+                "reason_code": "runtime_failed",
+            },
+            exc_info=True,
+        )
+        raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    main()

@@ -5,8 +5,13 @@ from flask import Blueprint, request, jsonify, session
 from app.auth.authorization import DEFAULT_ADMIN_PAGE, safe_admin_return_target
 from app.auth.csrf import ensure_csrf_token
 from app.auth.session_guard import get_current_session_user
+from app.request_context import bind_request_log_context
+from observability.logging_runtime import log_event
 import bcrypt
 import logging
+
+
+LOGGER = logging.getLogger(__name__)
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/api')
 LAST_LOGIN_RECORD_FAILED_WARNING = 'last_login_record_failed'
@@ -69,14 +74,16 @@ def handle_login():
         return jsonify({'success': False, 'error': '用户名不存在'}), 401 # 401 Unauthorized
 
     if not user_data['is_active']:
-        logging.warning("已禁用用户尝试登录: %s", username)
+        log_event(
+            LOGGER,
+            "security.login.disabled_account",
+        )
         return jsonify({'success': False, 'error': '账号已被禁用'}), 403
 
     # 使用 bcrypt 验证密码
     # bcrypt.checkpw() 会自动从存储的哈希中提取盐值进行验证
     stored_hashed_password = user_data["password_hash"].encode('utf-8')
     if bcrypt.checkpw(plain_password.encode('utf-8'), stored_hashed_password):
-        logging.info(f"用户登录成功: {username}")
         last_login_recorded = record_successful_login(user_data['id'])
         
         #  核心修改：在 Session 中存储用户信息 
@@ -84,6 +91,7 @@ def handle_login():
         session['user_id'] = user_data['id']
         session['username'] = user_data['username']
         session['auth_version'] = int(user_data.get('auth_version') or 1)
+        bind_request_log_context(user_id=user_data["id"])
         csrf_token = ensure_csrf_token()
         # Session 会自动通过浏览器 cookie 维护状态，不再需要文件
         
@@ -103,17 +111,12 @@ def handle_login():
             response_payload['redirect_to'] = redirect_to
         return jsonify(response_payload)
     else:
-        logging.warning(f"用户登录失败（密码错误）: {username}")
         return jsonify({'success': False, 'error': '密码错误'}), 401 # 401 Unauthorized
 
 # 登出
 @auth_bp.route('/logout', methods=['POST'])
 def handle_logout():
     """清空当前浏览器对应的后端登录会话。"""
-    # 从会话中获取用户名用于日志记录
-    username = session.get('username', '未知用户')
-    logging.info(f"用户 {username} 请求退出登录")
-
     #  核心修改：清除会话 
     session.clear()
 
@@ -127,7 +130,6 @@ def check_auth():
     current_user = get_current_session_user()
     if current_user:
         username = current_user['username']
-        logging.debug(f"检查认证状态：用户 '{username}' (通过会话) 已登录")
         return jsonify({
             'isLoggedIn': True,
             'username': username,
@@ -135,5 +137,4 @@ def check_auth():
             'csrf_token': ensure_csrf_token(),
         })
     else:
-        logging.debug("检查认证状态：无有效会话")
         return jsonify({'isLoggedIn': False})

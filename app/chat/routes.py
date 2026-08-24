@@ -1,15 +1,22 @@
 '''
 app.chat.routes - 聊天路由
 '''
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify
 from app.auth.session_guard import get_current_session_user
 import logging
 import json
 from app.chat.response_storage import render_summary_for_display
 from app.chat.execution_phases import assemble_execution_phases
 from app.agent.checkpoint_cleanup import enqueue_checkpoint_cleanup_many
+from app.db import record_database_failure
+from app.request_context import (
+    bind_request_log_context,
+    log_authorization_denied,
+    log_request_failure,
+)
 
 chat_bp = Blueprint('chat', __name__, url_prefix='/api')
+LOGGER = logging.getLogger(__name__)
 import uuid
 
 # 新对话
@@ -24,7 +31,6 @@ def new_chat():
         return jsonify({'success': False, 'error': '用户未登录或会话已过期'}), 401
     
     user_id = current_user['id']
-    username = current_user['username']
     new_session_id = str(uuid.uuid4())
 
     try:
@@ -40,16 +46,11 @@ def new_chat():
             )
             conn.commit()
     except mysql.connector.Error as exc:
-        logging.error(
-            "用户 %s (ID: %s) 创建会话 %s 时数据库出错: %s",
-            username,
-            user_id,
-            new_session_id,
-            exc,
-        )
+        record_database_failure(exc, operation="session_create_write")
+        log_request_failure(LOGGER, reason_code="database_unavailable")
         return jsonify({'success': False, 'error': '创建新对话失败'}), 500
 
-    logging.info(f"用户 {username} (ID: {user_id}) 创建新会话: {new_session_id}")
+    bind_request_log_context(session_id=new_session_id)
     return jsonify({'success': True, 'new_session_id': new_session_id})
 
 # 会话管理接口,获取会话
@@ -63,8 +64,6 @@ def get_sessions():
         return jsonify({"error": "用户未登录或会话已过期"}), 401
     
     user_id = current_user['id']
-    logging.info(f"用户 {user_id} 请求会话列表 (新版逻辑)")
-
     try:
         with get_read_connection(consistency="eventual") as conn:
             cursor = conn.cursor(dictionary=True)
@@ -78,7 +77,6 @@ def get_sessions():
             session_rows = cursor.fetchall()
 
         if not session_rows:
-            logging.info(f"用户 {user_id} 没有会话记录")
             return jsonify([])
 
         # 格式化以适应前端期望的 (id, {preview, last_time}) 结构
@@ -94,10 +92,10 @@ def get_sessions():
         ]
 
     except mysql.connector.Error as e:
-        logging.error(f"为用户 {user_id} 读取会话列表时数据库出错: {e}")
+        record_database_failure(e, operation="session_list_query")
+        log_request_failure(LOGGER, reason_code="database_unavailable")
         return jsonify({"error": f"读取历史记录时出错: {e}"}), 500
-    
-    logging.info(f"为用户 {user_id} 返回 {len(session_list_for_frontend)} 个会话")
+
     return jsonify(session_list_for_frontend)
 
 # 加载特定会话内容 
@@ -111,14 +109,10 @@ def load_session_content():
         return jsonify({"success": False, "error": "用户未登录或会话已过期"}), 401
     
     user_id = current_user['id']
-    username = current_user['username']
-
     session_id = request.args.get('session')
 
     if not session_id:
         return jsonify({"success": False, "error": "缺少 session ID"}), 400
-
-    logging.info(f"用户 {username} (ID: {user_id}) 请求加载会话: {session_id}")
 
     messages = []
     try:
@@ -133,9 +127,20 @@ def load_session_content():
             session_exists = cursor.fetchone()
 
             if not session_exists:
+                cursor.execute(
+                    "SELECT user_id FROM sessions WHERE id = %s",
+                    (session_id,),
+                )
+                owner = cursor.fetchone()
                 conn.rollback()
-                logging.info(f"用户 {user_id} 请求了不存在或无权访问的会话 {session_id}")
+                if owner and int(owner["user_id"]) != int(user_id):
+                    log_authorization_denied(
+                        LOGGER,
+                        resource_type="session",
+                        action="load_session",
+                    )
                 return jsonify({"success": False, "error": "会话不存在或无权访问"}), 404
+            bind_request_log_context(session_id=session_id)
 
             cursor.execute("""
                 SELECT
@@ -228,13 +233,13 @@ def load_session_content():
                             try:
                                 causal_graph_data = json.loads(attachment["content"])
                             except json.JSONDecodeError:
-                                logging.warning(f"无法解析 causal_graph 附件，Message ID: {row['id']}")
+                                pass
 
                         elif attachment["attachment_type"] == "visualization":
                             try:
                                 visualization_mapping = json.loads(attachment["content"])
                             except json.JSONDecodeError:
-                                logging.warning(f"无法解析 visualization 附件，Message ID: {row['id']}")
+                                pass
 
                     if causal_graph_data:
                         message_content = causal_graph_data
@@ -259,14 +264,14 @@ def load_session_content():
 
             conn.commit()
 
-        logging.info(f"用户 {username} 成功加载会话 {session_id} ({len(messages)} 条消息)")
         return jsonify({"success": True, "messages": messages})
 
     except mysql.connector.Error as e:
-        logging.error(f"加载会话 {session_id} (用户 {username}) 时数据库出错: {e}")
+        record_database_failure(e, operation="session_history_query")
+        log_request_failure(LOGGER, reason_code="database_unavailable")
         return jsonify({"success": False, "error": f"加载会话时出错: {e}"}), 500
     except Exception as e:
-        logging.error(f"加载会话 {session_id} (用户 {username}) 时发生未知错误: {e}")
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": f"加载会话时出错: {e}"}), 500
 
 ## 更改会话
@@ -293,14 +298,27 @@ def change_session():
     try:
         with get_write_connection() as conn:
             # 增加 user_id 条件以确保安全，并锁定已存在的 session。
-            cursor = conn.cursor()
+            cursor = conn.cursor(dictionary=True)
             cursor.execute(
                 "SELECT id FROM sessions WHERE id = %s AND user_id = %s FOR UPDATE",
                 (session_id, user_id),
             )
-            if not cursor.fetchone():
+            session_row = cursor.fetchone()
+            if not session_row:
+                cursor.execute(
+                    "SELECT user_id FROM sessions WHERE id = %s",
+                    (session_id,),
+                )
+                owner = cursor.fetchone()
                 conn.rollback()
+                if owner and int(owner["user_id"]) != int(user_id):
+                    log_authorization_denied(
+                        LOGGER,
+                        resource_type="session",
+                        action="change_session",
+                    )
                 return jsonify({"success": False, "error": "会话不存在或无权访问"}), 404
+            bind_request_log_context(session_id=session_id)
 
             cursor.execute(
                 "UPDATE sessions SET title = %s WHERE id = %s AND user_id = %s",
@@ -308,10 +326,10 @@ def change_session():
             )
             conn.commit()
             
-        logging.info(f"用户 {user_id} 成功将会话 {session_id} 的标题更新为 '{title}'")
         return jsonify({"success": True, "message": "会话标题已更新"})
-    except mysql.connector.Error as e:
-        logging.error(f"更新会话标题时数据库出错 (用户ID: {user_id}, 会话ID: {session_id}): {e}")
+    except mysql.connector.Error as exc:
+        record_database_failure(exc, operation="session_title_write")
+        log_request_failure(LOGGER, reason_code="database_unavailable")
         return jsonify({"success": False, "error": "更新会话标题时数据库出错"}), 500
 
 ## 删除会话
@@ -359,9 +377,20 @@ def delete_session():
             session_exists = cursor.fetchone()
 
             if not session_exists:
+                cursor.execute(
+                    "SELECT user_id FROM sessions WHERE id = %s",
+                    (session_id,),
+                )
+                owner = cursor.fetchone()
                 conn.rollback()
-                logging.info(f"用户 {user_id} 请求删除不存在或无权访问的会话 {session_id}")
+                if owner and int(owner["user_id"]) != int(user_id):
+                    log_authorization_denied(
+                        LOGGER,
+                        resource_type="session",
+                        action="delete_session",
+                    )
                 return jsonify({"success": False, "error": "会话不存在或无权访问"}), 404
+            bind_request_log_context(session_id=session_id)
 
             if any(
                 row["status"] in {"queued", "running", "waiting_input"}
@@ -369,7 +398,6 @@ def delete_session():
                 for row in session_jobs
             ):
                 conn.rollback()
-                logging.info(f"用户 {user_id} 尝试删除仍有 active job 的会话 {session_id}")
                 return jsonify({"success": False, "error": "当前会话仍有活动或 draining 任务，请等待执行占用释放后再删除"}), 409
 
             try:
@@ -387,21 +415,15 @@ def delete_session():
                     WHERE cm.session_id = %s AND cm.user_id = %s
                 """
                 cursor.execute(sql_delete_attachments, (session_id, user_id))
-                deleted_attachments = cursor.rowcount
-                logging.info(f"为会话 {session_id} 删除了 {deleted_attachments} 个附件")
 
                 # 3. 删除该会话的所有聊天记录
                 cursor.execute("DELETE FROM chat_messages WHERE session_id = %s AND user_id = %s", (session_id, user_id))
-                deleted_messages = cursor.rowcount
-                logging.info(f"为会话 {session_id} 删除了 {deleted_messages} 条聊天记录")
 
                 # 4. 删除会话本身（如果存在）
                 if session_exists:
                     cursor.execute("DELETE FROM sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
-                    logging.info(f"删除了会话记录 {session_id}")
 
                 conn.commit()
-                logging.info(f"用户 {user_id} 成功删除了会话 {session_id} 及其所有数据")
                 return jsonify({
                     "success": True,
                     "message": "会话已删除，checkpoint 正在后台清理",
@@ -411,9 +433,10 @@ def delete_session():
                 conn.rollback()
                 raise
 
-    except mysql.connector.Error as e:
-        logging.error(f"删除会话 {session_id} (用户 {user_id}) 时数据库出错: {e}")
+    except mysql.connector.Error as exc:
+        record_database_failure(exc, operation="session_delete_write")
+        log_request_failure(LOGGER, reason_code="database_unavailable")
         return jsonify({"success": False, "error": "删除会话时数据库出错"}), 500
-    except Exception as e:
-        logging.error(f"删除会话 {session_id} (用户 {user_id}) 时发生未知错误: {e}")
+    except Exception:
+        log_request_failure(LOGGER)
         return jsonify({"success": False, "error": "删除会话时发生未知错误"}), 500

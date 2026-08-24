@@ -47,6 +47,8 @@ class JobExecutionGuard:
     lease_epoch: int
     revoked: bool = False
     authority_unknown: bool = False
+    last_status: str | None = None
+    last_execution_state: str | None = None
 
     def install(self):
         """把守卫放入当前异步上下文，供子图和错误处理路径读取。"""
@@ -57,9 +59,18 @@ class JobExecutionGuard:
         """恢复调用前的异步上下文。"""
         _current_guard.reset(token)
 
-    def mark_revoked(self) -> None:
+    def mark_revoked(
+        self,
+        *,
+        status: str | None = None,
+        execution_state: str | None = None,
+    ) -> None:
         """标记后续所有节点和持久化均不得继续。"""
         self.revoked = True
+        if status is not None:
+            self.last_status = str(status)
+        if execution_state is not None:
+            self.last_execution_state = str(execution_state)
 
     async def ensure_active(self) -> None:
         """在节点开始前从 MySQL 主库确认当前租约仍有效。"""
@@ -77,6 +88,8 @@ class JobExecutionGuard:
             self.authority_unknown = True
             self.revoked = True
             raise ExecutionAuthorityUnknown("execution authority unknown") from exc
+        self.last_status = str(authority.get("status") or "unknown")
+        self.last_execution_state = str(authority.get("execution_state") or "unknown")
         if not authority.get("active"):
             self.revoked = True
             raise JobExecutionRevoked("Job execution revoked")

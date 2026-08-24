@@ -1,0 +1,808 @@
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/><title>管理员第二阶段（日志分类）</title><meta name="data-notion-page-icon" content="⛷️"/><link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20100%20100%22%3E%3Ctext%20y%3D%22.9em%22%20font-size%3D%2290%22%3E%E2%9B%B7%EF%B8%8F%3C%2Ftext%3E%3C%2Fsvg%3E"/><style>
+/* cspell:disable-file */
+/* webkit printing magic: print all background colors */
+html {
+	-webkit-print-color-adjust: exact;
+}
+* {
+	box-sizing: border-box;
+	-webkit-print-color-adjust: exact;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+}
+@media only screen {
+	body {
+		margin: 2em auto;
+		max-width: 900px;
+		color: rgb(55, 53, 47);
+	}
+}
+
+body {
+	line-height: 1.5;
+	white-space: pre-wrap;
+}
+
+a,
+a.visited {
+	color: inherit;
+	text-decoration: underline;
+}
+
+.pdf-relative-link-path {
+	font-size: 80%;
+	color: #444;
+}
+
+h1,
+h2,
+h3 {
+	letter-spacing: -0.01em;
+	line-height: 1.2;
+	font-weight: 600;
+	margin-bottom: 0;
+}
+
+/* Override strong tags inside headings to maintain consistent weight */
+h1 strong,
+h2 strong,
+h3 strong {
+	font-weight: 600;
+}
+
+.page-title {
+	font-size: 2.5rem;
+	font-weight: 700;
+	margin-top: 0;
+	margin-bottom: 0.75em;
+}
+
+h1 {
+	font-size: 1.875rem;
+	margin-top: 1.875rem;
+}
+
+h2 {
+	font-size: 1.5rem;
+	margin-top: 1.5rem;
+}
+
+h3 {
+	font-size: 1.25rem;
+	margin-top: 1.25rem;
+}
+
+.source {
+	border: 1px solid #ddd;
+	border-radius: 3px;
+	padding: 1.5em;
+	word-break: break-all;
+}
+
+.callout {
+	border-radius: 10px;
+	padding: 1rem;
+}
+
+/* For default-background callouts, render the border outline. */
+.callout.block-color-default_background {
+	border: 1px solid rgba(55, 53, 47, 0.09);
+}
+
+figure {
+	margin: 1.25em 0;
+	page-break-inside: avoid;
+}
+
+/*
+ * Toggles and callouts hold arbitrary content, so they can easily be taller
+ * than a page. They must stay breakable: avoiding breaks inside them makes
+ * Chromium push the whole block onto the next page, which leaves the previous
+ * page mostly empty before every long toggle.
+ */
+details,
+aside {
+	margin: 1.25em 0;
+}
+
+/* Keep a toggle's title on the same page as the start of its content. */
+summary {
+	page-break-after: avoid;
+	break-after: avoid;
+}
+
+/*
+ * Toggle headings render as <h1/h2/h3 style="display:inline-block"> inside
+ * <summary>. Without this reset, the heading's margin-top pushes it below the
+ * ::marker (▼), so the triangle and the title appear on separate lines.
+ */
+summary h1,
+summary h2,
+summary h3,
+summary h4 {
+	margin-top: 0;
+}
+
+figcaption {
+	opacity: 0.5;
+	font-size: 85%;
+	margin-top: 0.5em;
+}
+
+mark {
+	background-color: transparent;
+}
+
+.indented {
+	padding-left: 1.5em;
+}
+
+hr {
+	background: transparent;
+	display: block;
+	width: 100%;
+	height: 1px;
+	visibility: visible;
+	border: none;
+	border-bottom: 1px solid rgba(55, 53, 47, 0.09);
+}
+
+img {
+	max-width: 100%;
+}
+
+@media only print {
+	img {
+		max-height: 100vh;
+		object-fit: contain;
+	}
+
+	table.collection-content {
+		width: 100%;
+		table-layout: fixed;
+	}
+
+	table.collection-content th,
+	table.collection-content td {
+		overflow-wrap: anywhere;
+	}
+
+	table.collection-content td > .user,
+	table.collection-content td > time {
+		white-space: pre-wrap;
+	}
+}
+
+@page {
+	margin: 1in;
+}
+
+.collection-content-wrapper {
+	overflow-x: auto;
+}
+
+@media only print {
+	.collection-content-wrapper {
+		overflow-x: visible;
+	}
+}
+
+.collection-content {
+	font-size: 0.875rem;
+}
+
+.collection-content td {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.column-list {
+	display: flex;
+	gap: 46px;
+}
+
+.column {
+	min-width: 0;
+	overflow: hidden;
+}
+
+.column > *:first-child {
+	margin-top: 0;
+}
+
+.table_of_contents-item {
+	display: block;
+	font-size: 0.875rem;
+	line-height: 1.3;
+	padding-inline: 0.125rem;
+	padding-block: 0.375rem;
+}
+
+.table_of_contents-indent-1 {
+	margin-left: 1.5rem;
+}
+
+.table_of_contents-indent-2 {
+	margin-left: 3rem;
+}
+
+.table_of_contents-indent-3 {
+	margin-left: 4.5rem;
+}
+
+.table_of_contents-link {
+	text-decoration: none;
+	opacity: 0.7;
+	border-bottom: 1px solid rgba(55, 53, 47, 0.18);
+}
+
+table,
+th,
+td {
+	border: 1px solid rgba(55, 53, 47, 0.09);
+}
+
+table {
+	border-collapse: collapse;
+	border-left: none;
+	border-right: none;
+}
+
+th,
+td {
+	font-weight: normal;
+	padding: 0.25em 0.5em;
+	line-height: 1.5;
+	min-height: 1.5em;
+	text-align: left;
+}
+
+th {
+	color: rgba(55, 53, 47, 0.6);
+}
+
+ol,
+ul {
+	margin: 0;
+	margin-block-start: 0.6em;
+	margin-block-end: 0.6em;
+}
+
+li > ol:first-child,
+li > ul:first-child {
+	margin-block-start: 0.6em;
+}
+
+ul > li {
+	list-style: disc;
+}
+
+ul.to-do-list {
+	padding-inline-start: 0;
+}
+
+ul.to-do-list > li {
+	list-style: none;
+}
+
+.to-do-children-checked {
+	text-decoration: line-through;
+	opacity: 0.375;
+}
+
+ul.toggle > li {
+	list-style: none;
+}
+
+ul {
+	padding-inline-start: 1.7em;
+}
+
+ul > li {
+	padding-left: 0.1em;
+}
+
+ol {
+	padding-inline-start: 1.6em;
+}
+
+ol.numbered-list.numbered-list-digits-2 {
+	padding-inline-start: 2em;
+}
+
+ol.numbered-list.numbered-list-digits-3plus {
+	padding-inline-start: 2.4em;
+}
+
+ol > li {
+	padding-left: 0.2em;
+}
+
+.mono ol {
+	padding-inline-start: 2em;
+}
+
+.mono ol > li {
+	text-indent: -0.4em;
+}
+
+.toggle {
+	padding-inline-start: 0em;
+	list-style-type: none;
+}
+
+/* Indent toggle children */
+.toggle > li > details {
+	padding-left: 1.7em;
+}
+
+.toggle > li > details > summary {
+	margin-left: -1.1em;
+}
+
+.selected-value {
+	display: inline-block;
+	padding: 0 0.5em;
+	background: rgba(206, 205, 202, 0.5);
+	border-radius: 3px;
+	margin-right: 0.5em;
+	margin-top: 0.3em;
+	margin-bottom: 0.3em;
+	white-space: nowrap;
+}
+
+.collection-title {
+	display: inline-block;
+	margin-right: 1em;
+}
+
+.page-description {
+	margin-bottom: 2em;
+}
+
+.simple-table {
+	margin-top: 1em;
+	font-size: 0.875rem;
+	empty-cells: show;
+}
+.simple-table td {
+	height: 29px;
+	min-width: 120px;
+}
+
+.simple-table th {
+	height: 29px;
+	min-width: 120px;
+}
+
+.simple-table-header-color {
+	background: rgb(247, 246, 243);
+	color: black;
+}
+.simple-table-header {
+	font-weight: 500;
+}
+
+time {
+	opacity: 0.5;
+}
+
+.icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	max-width: 1.2em;
+	max-height: 1.2em;
+	text-decoration: none;
+	vertical-align: text-bottom;
+	margin-right: 0.5em;
+}
+
+/*
+ * Render emoji icons using a ::before pseudo-element to keep the glyph
+ * out of the DOM textContent traversal. This avoids double-rendering icons
+ * in callouts and page titles.
+ * NOTE(slim/html-export-pseudo-icons): I can't tagref this because it will
+ * flag as a duplicate tag after codegen.
+ */
+.icon[data-emoji]::before {
+	content: attr(data-emoji);
+}
+
+img.icon {
+	border-radius: 3px;
+}
+
+.callout img.notion-static-icon {
+	width: 1em;
+	height: 1em;
+}
+
+.callout p {
+	margin: 0;
+}
+
+.callout h1,
+.callout h2,
+.callout h3 {
+	margin: 0 0 0.6rem;
+}
+
+.user-icon {
+	width: 1.5em;
+	height: 1.5em;
+	border-radius: 100%;
+	margin-right: 0.5rem;
+}
+
+.user-icon-inner {
+	font-size: 0.8em;
+}
+
+.text-icon {
+	border: 1px solid #000;
+	text-align: center;
+}
+
+.page-cover-image {
+	display: block;
+	object-fit: cover;
+	width: 100%;
+	max-height: 30vh;
+}
+
+.page-header-icon {
+	font-size: 3rem;
+	margin-bottom: 1rem;
+}
+
+.page-header-icon-with-cover {
+	margin-top: -0.72em;
+	margin-left: 0.07em;
+}
+
+.page-header-icon img {
+	border-radius: 3px;
+}
+
+.link-to-page {
+	margin: 1em 0;
+	padding: 0;
+	border: none;
+	font-weight: 500;
+}
+
+p > .user {
+	opacity: 0.5;
+}
+
+td > .user,
+td > time {
+	white-space: nowrap;
+}
+
+input[type="checkbox"] {
+	margin-right: 0.4em;
+	vertical-align: middle;
+}
+
+p {
+	margin-top: 0.5em;
+	margin-bottom: 0.5em;
+}
+
+.image {
+	border: none;
+	margin: 1.5em 0;
+	padding: 0;
+	border-radius: 0;
+	text-align: center;
+}
+
+.code,
+code {
+	background: rgba(135, 131, 120, 0.15);
+	border-radius: 3px;
+	padding: 0.2em 0.4em;
+	border-radius: 3px;
+	font-size: 85%;
+	tab-size: 2;
+}
+
+code {
+	color: #eb5757;
+}
+
+.code {
+	padding: 1.5em 1em;
+}
+
+.code-wrap {
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+
+.code > code {
+	background: none;
+	padding: 0;
+	font-size: 100%;
+	color: inherit;
+}
+
+blockquote {
+	font-size: 1em;
+	margin: 1em 0;
+	padding-left: 1em;
+	border-left: 3px solid rgb(55, 53, 47);
+}
+
+blockquote.quote-large {
+	font-size: 1.25em;
+}
+
+.bookmark {
+	text-decoration: none;
+	max-height: 8em;
+	padding: 0;
+	display: flex;
+	width: 100%;
+	align-items: stretch;
+}
+
+.bookmark-title {
+	font-size: 0.85em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	height: 1.75em;
+	white-space: nowrap;
+}
+
+.bookmark-text {
+	display: flex;
+	flex-direction: column;
+}
+
+.bookmark-info {
+	flex: 4 1 180px;
+	padding: 12px 14px 14px;
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+}
+
+.bookmark-image {
+	width: 33%;
+	flex: 1 1 180px;
+	display: block;
+	position: relative;
+	object-fit: cover;
+	border-radius: 1px;
+}
+
+.bookmark-description {
+	color: rgba(55, 53, 47, 0.6);
+	font-size: 0.75em;
+	overflow: hidden;
+	max-height: 4.5em;
+	word-break: break-word;
+}
+
+.bookmark-href {
+	font-size: 0.75em;
+	margin-top: 0.25em;
+}
+
+.tab {
+	margin: 1.25em 0;
+	padding-inline: 1rem;
+	border: 1px solid rgba(55, 53, 47, 0.09);
+}
+
+.sans { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol"; }
+.code { font-family: "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace; }
+.serif { font-family: Lyon-Text, Georgia, ui-serif, serif; }
+.mono { font-family: iawriter-mono, Nitti, Menlo, Courier, monospace; }
+.pdf .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK JP'; }
+.pdf:lang(zh-CN) .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK SC'; }
+.pdf:lang(zh-TW) .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK TC'; }
+.pdf:lang(ko-KR) .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", "Noto Sans Arabic", "Noto Sans Hebrew", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol", 'Twemoji', 'Noto Color Emoji', 'Noto Sans CJK KR'; }
+.pdf .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK JP'; }
+.pdf:lang(zh-CN) .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK SC'; }
+.pdf:lang(zh-TW) .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK TC'; }
+.pdf:lang(ko-KR) .code { font-family: Source Code Pro, "SFMono-Regular", Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK KR'; }
+.pdf .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK JP'; }
+.pdf:lang(zh-CN) .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK SC'; }
+.pdf:lang(zh-TW) .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK TC'; }
+.pdf:lang(ko-KR) .serif { font-family: PT Serif, Lyon-Text, Georgia, ui-serif, serif, 'Twemoji', 'Noto Color Emoji', 'Noto Serif CJK KR'; }
+.pdf .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK JP'; }
+.pdf:lang(zh-CN) .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK SC'; }
+.pdf:lang(zh-TW) .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK TC'; }
+.pdf:lang(ko-KR) .mono { font-family: PT Mono, iawriter-mono, Nitti, Menlo, Courier, monospace, 'Twemoji', 'Noto Color Emoji', 'Noto Sans Mono CJK KR'; }
+.highlight-default {
+	color: rgba(44, 44, 43, 1);
+}
+.highlight-gray {
+	color: rgba(125, 122, 117, 1);
+	fill: rgba(125, 122, 117, 1);
+}
+.highlight-brown {
+	color: rgba(159, 118, 90, 1);
+	fill: rgba(159, 118, 90, 1);
+}
+.highlight-orange {
+	color: rgba(210, 123, 45, 1);
+	fill: rgba(210, 123, 45, 1);
+}
+.highlight-yellow {
+	color: rgba(203, 148, 52, 1);
+	fill: rgba(203, 148, 52, 1);
+}
+.highlight-teal {
+	color: rgba(80, 148, 110, 1);
+	fill: rgba(80, 148, 110, 1);
+}
+.highlight-blue {
+	color: rgba(56, 125, 201, 1);
+	fill: rgba(56, 125, 201, 1);
+}
+.highlight-purple {
+	color: rgba(154, 107, 180, 1);
+	fill: rgba(154, 107, 180, 1);
+}
+.highlight-pink {
+	color: rgba(193, 76, 138, 1);
+	fill: rgba(193, 76, 138, 1);
+}
+.highlight-red {
+	color: rgba(207, 81, 72, 1);
+	fill: rgba(207, 81, 72, 1);
+}
+.highlight-default_background {
+	color: rgba(44, 44, 43, 1);
+}
+.highlight-gray_background {
+	background: rgba(42, 28, 0, 0.07);
+}
+.highlight-brown_background {
+	background: rgba(139, 46, 0, 0.086);
+}
+.highlight-orange_background {
+	background: rgba(224, 101, 1, 0.129);
+}
+.highlight-yellow_background {
+	background: rgba(211, 168, 0, 0.137);
+}
+.highlight-teal_background {
+	background: rgba(0, 100, 45, 0.09);
+}
+.highlight-blue_background {
+	background: rgba(0, 124, 215, 0.094);
+}
+.highlight-purple_background {
+	background: rgba(102, 0, 178, 0.078);
+}
+.highlight-pink_background {
+	background: rgba(197, 0, 93, 0.086);
+}
+.highlight-red_background {
+	background: rgba(223, 22, 0, 0.094);
+}
+.block-color-default {
+	color: inherit;
+	fill: inherit;
+}
+.block-color-gray {
+	color: rgba(125, 122, 117, 1);
+	fill: rgba(125, 122, 117, 1);
+}
+.block-color-brown {
+	color: rgba(159, 118, 90, 1);
+	fill: rgba(159, 118, 90, 1);
+}
+.block-color-orange {
+	color: rgba(210, 123, 45, 1);
+	fill: rgba(210, 123, 45, 1);
+}
+.block-color-yellow {
+	color: rgba(203, 148, 52, 1);
+	fill: rgba(203, 148, 52, 1);
+}
+.block-color-teal {
+	color: rgba(80, 148, 110, 1);
+	fill: rgba(80, 148, 110, 1);
+}
+.block-color-blue {
+	color: rgba(56, 125, 201, 1);
+	fill: rgba(56, 125, 201, 1);
+}
+.block-color-purple {
+	color: rgba(154, 107, 180, 1);
+	fill: rgba(154, 107, 180, 1);
+}
+.block-color-pink {
+	color: rgba(193, 76, 138, 1);
+	fill: rgba(193, 76, 138, 1);
+}
+.block-color-red {
+	color: rgba(207, 81, 72, 1);
+	fill: rgba(207, 81, 72, 1);
+}
+.block-color-default_background {
+	color: inherit;
+	fill: inherit;
+}
+.block-color-gray_background {
+	background: rgba(240, 239, 237, 1);
+}
+.block-color-brown_background {
+	background: rgba(245, 237, 233, 1);
+}
+.block-color-orange_background {
+	background: rgba(251, 235, 222, 1);
+}
+.block-color-yellow_background {
+	background: rgba(249, 243, 220, 1);
+}
+.block-color-teal_background {
+	background: rgba(232, 241, 236, 1);
+}
+.block-color-blue_background {
+	background: rgba(229, 242, 252, 1);
+}
+.block-color-purple_background {
+	background: rgba(243, 235, 249, 1);
+}
+.block-color-pink_background {
+	background: rgba(250, 233, 241, 1);
+}
+.block-color-red_background {
+	background: rgba(252, 233, 231, 1);
+}
+.select-value-color-default { background-color: rgba(42, 28, 0, 0.07); }
+.select-value-color-gray { background-color: rgba(28, 19, 1, 0.11); }
+.select-value-color-brown { background-color: rgba(127, 51, 0, 0.156); }
+.select-value-color-orange { background-color: rgba(196, 88, 0, 0.203); }
+.select-value-color-yellow { background-color: rgba(209, 156, 0, 0.282); }
+.select-value-color-green { background-color: rgba(0, 96, 38, 0.156); }
+.select-value-color-blue { background-color: rgba(0, 118, 217, 0.203); }
+.select-value-color-purple { background-color: rgba(92, 0, 163, 0.141); }
+.select-value-color-pink { background-color: rgba(183, 0, 78, 0.152); }
+.select-value-color-red { background-color: rgba(206, 24, 0, 0.164); }
+
+.checkbox {
+	display: inline-flex;
+	vertical-align: text-bottom;
+	width: 16;
+	height: 16;
+	background-size: 16px;
+	margin-left: 2px;
+	margin-right: 5px;
+}
+
+.checkbox-on {
+	background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Crect%20width%3D%2216%22%20height%3D%2216%22%20fill%3D%22%2358A9D7%22%2F%3E%0A%3Cpath%20d%3D%22M6.71429%2012.2852L14%204.9995L12.7143%203.71436L6.71429%209.71378L3.28571%206.2831L2%207.57092L6.71429%2012.2852Z%22%20fill%3D%22white%22%2F%3E%0A%3C%2Fsvg%3E");
+}
+
+.checkbox-off {
+	background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg%20width%3D%2216%22%20height%3D%2216%22%20viewBox%3D%220%200%2016%2016%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Crect%20x%3D%220.75%22%20y%3D%220.75%22%20width%3D%2214.5%22%20height%3D%2214.5%22%20fill%3D%22white%22%20stroke%3D%22%2336352F%22%20stroke-width%3D%221.5%22%2F%3E%0A%3C%2Fsvg%3E");
+}
+</style><style>@import url('https://cdn.jsdelivr.net/npm/katex@0.16.25/dist/katex-swap.min.css')</style></head><body><article id="3bf95ad3-1f20-807d-b4a5-da6ee89d05c9" class="page sans" data-notion-page-icon="⛷️"><header><div class="page-header-icon undefined"><span class="icon" data-emoji="⛷️"></span></div><h1 class="page-title" dir="auto">管理员第二阶段（日志分类）</h1><p class="page-description" dir="auto"></p></header><div class="page-body"><script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" integrity="sha512-7Z9J3l1+EYfeaPKcGXu3MS/7T+w19WtKQY/n+xzmw4hZhJ9tyYmcUS+4QqAlzhicE5LAfMQSF3iFTK9bQdTxXg==" crossorigin="anonymous" referrerPolicy="no-referrer"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" integrity="sha512-tN7Ec6zAFaVSG3TpNAKtk4DOHNpSwKHxxrsiw4GHKESGPs5njn/0sMCUMl2svV4wo4BK/rCP7juYz+zx+l6oeQ==" crossorigin="anonymous" referrerPolicy="no-referrer"/><pre id="18cfff99-95e4-4d37-b341-662230d902bb" class="code code-wrap" data-notion-code-syntax="mermaid"><code class="language-mermaid" style="white-space:pre-wrap;word-break:break-all">flowchart TB
+  subgraph P[&quot;日志生产者&quot;]
+    A[&quot;Flask Web&quot;] --&gt; J[&quot;结构化 JSON stderr&quot;]
+    W[&quot;Python Worker&quot;] --&gt; J
+    M[&quot;Monitor&quot;] --&gt; J
+    C[&quot;MCP 子进程&quot;] --&gt; J
+  end
+  J --&gt; B[&quot;Grafana Alloy&lt;br&gt;采集、解析、加标签&quot;]
+  B --&gt; L[&quot;Grafana Loki&lt;br&gt;日志存储与 LogQL 检索&quot;]
+  L --&gt; G[&quot;Grafana Logs Drilldown / Explore&lt;br&gt;工程排障主界面&quot;]
+  L --&gt; F[&quot;Flask 管理 API&lt;br&gt;受控 LogQL 查询&quot;]
+  F --&gt; V[&quot;Vue 管理端&lt;br&gt;统计、搜索、详情&quot;]
+  F --&gt; D[&quot;MySQL admin_audit_events&lt;br&gt;敏感查询访问审计&quot;]</code></pre><p id="3bf95ad3-1f20-80e5-b5b9-cc77d3ec9d27" class="" dir="auto">
+</p><h1 id="3bf95ad3-1f20-806e-9fbb-ecdd5eec9aba" class="" dir="auto"><strong>CausalChat 阶段二：日志分类与 Debug 定位（三阶段实施计划）</strong></h1><aside class="block-color-blue_background callout" data-notion-callout="" data-notion-callout-icon="📌" data-notion-callout-background="blue_background" style="white-space:pre-wrap;display:flex" id="2e21e477-f751-41ac-ad00-43abd8891bf8" dir="ltr"><div style="font-size:1.5em"><span class="icon" data-emoji="📌"></span></div><div style="width:100%"><p id="c85b290d-854f-4f9a-ba05-0553782373ae" class="" dir="auto"><strong>修订日期：</strong>2026-08-17</p><p id="84f537a0-b668-49ae-b009-5fc670735f72" class="" dir="auto"><strong>计划状态：</strong>待实施</p><p id="0db0b7ee-2b66-43ca-93b7-e6e0d2f6bb3d" class="" dir="auto"><strong>修订依据：</strong>页面顶部架构图与两条评审评论。</p><p id="44a17003-9986-4de4-93c8-c99fcc53bbcc" class="" dir="auto"><strong>核心调整：</strong>本阶段以“采集、分类、搜索、定位问题来源”为目标，不建设日志工单或处置系统。Grafana 是工程排障主界面，管理员后台只展示必要统计并提供受控搜索。</p></div></aside><nav id="81fd1410-0eed-4661-b633-77b0be9ce99e" class="table_of_contents" data-notion-toc="" dir="ltr"><div class="table_of_contents-item table_of_contents-indent-0"><a class="table_of_contents-link" href="#3bf95ad3-1f20-806e-9fbb-ecdd5eec9aba"><strong>CausalChat 阶段二：日志分类与 Debug 定位（三阶段实施计划）</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8055-bf51-c7b8414ea23b"><strong>一、结论与三阶段顺序</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80d0-a30a-e7ad6b1d685f"><strong>二、确定的技术栈与职责边界</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80a1-b177-ec0089ccd66e"><strong>关键架构决定</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#460d7194-93b0-47a7-9e9f-046b69fdcb48"><strong>三、统一日志契约与分类计划</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8056-a5f3-db6cbfe403ec"><strong>3.1 必要字段</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80ed-8d9a-ccb9359ca5c0"><strong>3.2 分类口径</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80f7-8746-d4731bde1b6f"><strong>3.3 隐私与安全边界</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8010-beb3-c31dc762f1f5"><strong>四、第一阶段：观测底座与日志契约</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8054-aee7-e7d4edc4895f"><strong>目标</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-803d-9698-d11e53546c99"><strong>实施任务</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80b9-91f2-f3f56d4d415a"><strong>交付物</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-808d-a5b5-c199db0666ba"><strong>验收门槛</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8027-96f5-dfcec65e77e2"><strong>五、第二阶段：逐模块布点与上下文贯通</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80c6-8d66-c958e9bb2bfa"><strong>目标</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80ff-b7f3-e8e2376f6a0a"><strong>实施方法</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8013-8fec-d894a1ff1999"><strong>实施任务</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80f1-b928-d621d75a07a5"><strong>优先布点顺序</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8047-b2e4-e8f5dc0799fd"><strong>交付物</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8011-867f-f4357932fec3"><strong>验收门槛</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#3bf95ad3-1f20-808a-a655-e9eab2b5cc1d"><strong>六、第三阶段：验证与管理员后台接入</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80c0-a358-f6b497cf5762"><strong>目标</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8011-a2b4-c2fba9beb224"><strong>A. Grafana 正确性验证</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80d1-83fe-e043c89fbc6d"><strong>B. Flask 受控查询 API</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8079-a105-f6be239bb035"><strong>C. Vue 管理端日志页</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8031-aab1-f89527806f11"><strong>交付物</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-805f-a8ca-d83523cc0d72"><strong>验收门槛</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80a7-805b-ca72768a321d"><strong>七、本阶段明确不做</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8014-9ff2-c065e183b2b5"><strong>八、依赖、风险与停止条件</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80c0-9f84-f7e678549b93"><strong>实施前依赖</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8093-b814-c58f916624b3"><strong>主要风险与缓解</strong></a></div><div class="table_of_contents-item table_of_contents-indent-2"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80cb-a499-eba136e1ac7f"><strong>停止条件</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#3bf95ad3-1f20-80f9-b8dd-c5c3e64f9d71"><strong>九、阶段二总体验收标准</strong></a></div><div class="table_of_contents-item table_of_contents-indent-1"><a class="table_of_contents-link" href="#3bf95ad3-1f20-8043-a025-f8b8a18eb499"><strong>十、技术参考</strong></a></div></nav><h2 id="3bf95ad3-1f20-8055-bf51-c7b8414ea23b" class="" dir="auto"><strong>一、结论与三阶段顺序</strong></h2><p id="7f42c1d9-c263-4248-a966-fc1bd7e54faa" class="" dir="auto">阶段二拆成三个可独立验收的阶段：</p><table id="0de91e36-a6df-4570-8982-94ca962c6814" class="simple-table" dir="ltr"><thead class="simple-table-header"><tr id="c6bbc38c-9187-4037-8b63-488484da6e1b" dir="ltr"><th id="Y:OM" class="simple-table-header-color simple-table-header">阶段</th><th id="T{F[" class="simple-table-header-color simple-table-header">核心目标</th><th id="cCez" class="simple-table-header-color simple-table-header">主要交付</th><th id="UkCf" class="simple-table-header-color simple-table-header">完成标志</th></tr></thead><tbody><tr id="20e13458-0eab-4c43-b7e0-82d75268215e" dir="ltr"><td id="Y:OM" class="">第一阶段：观测底座与日志契约</td><td id="T{F[" class="">先理解并引入 Grafana 日志链路，统一日志分类和字段</td><td id="cCez" class="">Alloy、Loki、Grafana；JSON 日志契约；分类与隐私规则</td><td id="UkCf" class="">测试日志可从容器进入 Loki，并能在 Grafana 检索</td></tr><tr id="9ed562aa-b668-4d02-93b2-a6135b9a9658" dir="ltr"><td id="Y:OM" class="">第二阶段：逐模块布点与上下文贯通</td><td id="T{F[" class="">人工判断哪里真正需要 logger，并补齐跨进程关联</td><td id="cCez" class="">布点清单；Web/Worker/Monitor/MCP 日志；request/job/node/tool 关联</td><td id="UkCf" class="">受控故障能准确指出服务、模块和调用上下文，正常业务不制造噪声</td></tr><tr id="d6c065c2-f93e-466f-9c24-22e28ecb4f5a" dir="ltr"><td id="Y:OM" class="">第三阶段：验证与管理员后台接入</td><td id="T{F[" class="">先在 Grafana 验证正确性，再把必要能力接入管理员系统</td><td id="cCez" class="">验证矩阵；Grafana 排障视图；Flask 受控查询；Vue 日志统计与搜索</td><td id="UkCf" class="">同一日志在 Grafana、API、Vue 三处结果一致，管理员可定位问题来源</td></tr></tbody></table><p id="58444c23-89bd-42e0-a212-e1bf4f12f5fb" class="" dir="auto">依赖关系：</p><pre id="63fe59a2-5157-43d3-84fd-683e50a6753a" class="code code-wrap"><code style="white-space:pre-wrap;word-break:break-all">阶段一：先让日志链路可用并冻结契约
+  → 阶段二：再决定并补齐 logger 布点
+    → 阶段三：验证日志正确后接入管理员系统</code></pre><hr id="3bf95ad3-1f20-805c-bf3c-d05ae8a3050b" dir="auto"/><h2 id="3bf95ad3-1f20-80d0-a30a-e7ad6b1d685f" class="" dir="auto"><strong>二、确定的技术栈与职责边界</strong></h2><table id="3e9ddf0b-39c7-4043-918f-12fe316db923" class="simple-table" dir="ltr"><thead class="simple-table-header"><tr id="7234d6fa-57a3-4b50-9d04-3d9f13030e5d" dir="ltr"><th id="jQD{" class="simple-table-header-color simple-table-header">层级</th><th id="JBUr" class="simple-table-header-color simple-table-header">技术</th><th id="nC`g" class="simple-table-header-color simple-table-header">本项目职责</th></tr></thead><tbody><tr id="a852b748-a080-4b63-867a-42c2b1588a45" dir="ltr"><td id="jQD{" class="">日志生产</td><td id="JBUr" class="">Python <code>logging</code>  • JSON Formatter + <code>contextvars</code></td><td id="nC`g" class="">Flask、worker、monitor、Agent/RAG 与 MCP 输出单行结构化 JSON 到 stderr；自动注入关联上下文</td></tr><tr id="1950c899-a81b-4b30-889d-cd56d19cf5e6" dir="ltr"><td id="jQD{" class="">采集与处理</td><td id="JBUr" class="">Grafana Alloy</td><td id="nC`g" class="">发现 Docker 容器、采集 stdout/stderr、解析 JSON、丢弃无用字段、补充低基数标签并批量发送</td></tr><tr id="4fd57f56-be57-4a37-aee2-009e7a3862b2" dir="ltr"><td id="jQD{" class="">存储与查询</td><td id="JBUr" class="">Grafana Loki + LogQL</td><td id="nC`g" class="">保存日志流、按时间与标签检索、对 JSON 字段筛选并生成统计；不把运行日志复制进 MySQL</td></tr><tr id="c26229e4-6be9-47e2-a839-73ff65a33f19" dir="ltr"><td id="jQD{" class="">工程排障</td><td id="JBUr" class="">Grafana Logs Drilldown / Explore</td><td id="nC`g" class="">开发和运维进行深度搜索、模式分析、上下文查看与 Debug；这是完整日志界面</td></tr><tr id="ffb11964-5440-486a-9d95-3d471e063646" dir="ltr"><td id="jQD{" class="">管理端查询</td><td id="JBUr" class="">现有 Flask 管理 API</td><td id="nC`g" class="">把固定筛选参数转换为白名单 LogQL；限制时间范围、结果数、超时和并发；浏览器不得提交任意 LogQL</td></tr><tr id="939840e2-0fbe-4566-8c55-bf01e3606a09" dir="ltr"><td id="jQD{" class="">管理端展示</td><td id="JBUr" class="">现有 Vue 3 + TypeScript + Element Plus + Vite</td><td id="nC`g" class="">展示错误趋势、来源分布、最近异常、条件搜索和去敏详情，并提供“在 Grafana 中打开”入口</td></tr><tr id="2313f598-fc69-43f1-8f29-f52727026b25" dir="ltr"><td id="jQD{" class="">权限与审计</td><td id="JBUr" class="">现有 MySQL <code>admin_audit_events</code></td><td id="nC`g" class="">继续记录管理员读取敏感日志详情和导出行为；不承担日志主存储</td></tr></tbody></table><h3 id="3bf95ad3-1f20-80a1-b177-ec0089ccd66e" class="" dir="auto"><strong>关键架构决定</strong></h3><ol type="1" id="3bf95ad3-1f20-805b-b15e-f117ee1212c5" class="numbered-list" start="1" dir="auto"><li><strong>采用 Alloy + Loki + Grafana，不新建 </strong><code><strong>operational_log_*</strong></code><strong> MySQL 表。</strong>当前目标是可搜索和可定位，不是工单处置；双写 MySQL 会增加故障递归、迁移、容量与一致性成本。</li></ol><ol type="1" id="3bf95ad3-1f20-801f-b08c-f91058825824" class="numbered-list" start="2" dir="auto"><li><strong>Grafana 是深度 Debug 主界面，管理员后台是轻量入口。</strong>后台不复制 Grafana 的全部能力，只提供产品需要的统计、筛选、搜索和详情。</li></ol><ol type="1" id="3bf95ad3-1f20-802c-9bcc-fba5db87bb32" class="numbered-list" start="3" dir="auto"><li><strong>只允许后端生成 LogQL。</strong>Vue 只传递时间、级别、服务、分类、事件码、关键词、request ID、job ID 等白名单参数。</li></ol><ol type="1" id="3bf95ad3-1f20-8015-8d4f-f969cfc42a0d" class="numbered-list" start="4" dir="auto"><li><strong>高基数字段不做 Loki 标签。</strong><code>request_id</code>、<code>job_id</code>、<code>user_id</code>、<code>session_id</code>、node、tool、异常指纹保留为 JSON 字段；标签仅使用 <code>environment</code>、<code>service</code>、<code>level</code>、<code>category</code> 等低基数字段。</li></ol><ol type="1" id="3bf95ad3-1f20-801f-a13f-fd97063334cb" class="numbered-list" start="5" dir="auto"><li><strong>版本使用经过验证的固定版本。</strong>Compose 与镜像不得使用 <code>latest</code>；Grafana、Loki、Alloy 在隔离环境验证兼容后再固定版本号。</li></ol><hr id="3bf95ad3-1f20-8024-b516-ee93dc471810" dir="auto"/><h2 id="460d7194-93b0-47a7-9e9f-046b69fdcb48" class="" dir="auto"><strong>三、统一日志契约与分类计划</strong></h2><h3 id="3bf95ad3-1f20-8056-a5f3-db6cbfe403ec" class="" dir="auto"><strong>3.1 必要字段</strong></h3><p id="3bf95ad3-1f20-80b3-b418-fc7e9b76dd7b" class="" dir="auto">每条结构化日志至少包含：</p><ul id="3bf95ad3-1f20-802a-a801-f3afa01639ba" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><code>timestamp</code>：UTC、RFC3339 格式。</li></ul><ul id="3bf95ad3-1f20-801a-a0a6-cffa10616d4f" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><code>level</code>：<code>debug/info/warning/error/critical</code>。</li></ul><ul id="3bf95ad3-1f20-801f-a288-fc10afb1a246" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><code>service</code>：<code>web/worker/monitor/mcp/maintenance</code>。</li></ul><ul id="3bf95ad3-1f20-80c7-9686-f0be7c24cb29" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><code>environment</code>、<code>instance</code>、<code>logger</code>、<code>module</code>、<code>function</code>。</li></ul><ul id="3bf95ad3-1f20-804b-bdb6-e446508090e8" class="bulleted-list" dir="auto"><li style="list-style-type:disc">稳定 <code>event_code</code>，例如 <code>db.replica_fallback</code>、<code>job.node_timeout</code>、<code>mcp.tool_failed</code>。</li></ul><ul id="3bf95ad3-1f20-80f1-bd15-c04b97f3391a" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><code>category</code>：<code>system/job/security/dependency</code>。</li></ul><ul id="3bf95ad3-1f20-802e-8520-c95f256fa7f4" class="bulleted-list" dir="auto"><li style="list-style-type:disc">去敏后的 <code>message</code>、可空 <code>exception_type</code> 与有界堆栈。</li></ul><ul id="3bf95ad3-1f20-80c1-bd2c-da171f4d8af2" class="bulleted-list" dir="auto"><li style="list-style-type:disc">可空 <code>request_id</code>、<code>user_id</code>、<code>session_id</code>、<code>job_id</code>、<code>worker_slot</code>、<code>node</code>、<code>tool</code>。</li></ul><ul id="3bf95ad3-1f20-8012-9ab3-d5aef605bfc0" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><code>details</code> 仅允许白名单键，并设置序列化大小上限；超限写入 <code>truncated=true</code>。</li></ul><h3 id="3bf95ad3-1f20-80ed-8d9a-ccb9359ca5c0" class="" dir="auto"><strong>3.2 分类口径</strong></h3><table id="823fcd7f-0a1c-4969-acb3-7eee4ae35687" class="simple-table" dir="ltr"><thead class="simple-table-header"><tr id="2f950d48-b44c-48a2-99b5-ef19f40c0d4b" dir="ltr"><th id="mDqo" class="simple-table-header-color simple-table-header">分类</th><th id="g[TB" class="simple-table-header-color simple-table-header">记录场景</th><th id="K;p&lt;" class="simple-table-header-color simple-table-header">不应记录为异常的场景</th></tr></thead><tbody><tr id="26845b8a-893e-4439-8e0c-cbeacf5b306c" dir="ltr"><td id="mDqo" class=""><code>system</code></td><td id="g[TB" class="">数据库连接失败、副本回退、连接池耗尽、进程启动失败、监控采集失败</td><td id="K;p&lt;" class="">正常启动信息、周期性健康检查成功</td></tr><tr id="20f01c61-8d28-49db-bda2-85473c8f71db" dir="ltr"><td id="mDqo" class=""><code>job</code></td><td id="g[TB" class="">任务失败、节点超时、重试耗尽、路由或工具降级、结果质量下降</td><td id="K;p&lt;" class="">正常进度、正常完成、用户取消、算法正常发现环路</td></tr><tr id="8f312e63-b389-40e4-befd-750090ef9604" dir="ltr"><td id="mDqo" class=""><code>security</code></td><td id="g[TB" class="">禁用账号登录、达到阈值的连续失败、越权、CSRF 或重新认证异常</td><td id="K;p&lt;" class="">单次会话过期、普通用户误入管理员地址、普通表单校验</td></tr><tr id="68ab69ff-3bc1-4087-b91e-f2ccf4af73ad" dir="ltr"><td id="mDqo" class=""><code>dependency</code></td><td id="g[TB" class="">LLM、RAG、MCP、外部模型或文件依赖不可用、超时或返回无效结果</td><td id="K;p&lt;" class="">有明确产品兜底且对结果无影响的预期空结果</td></tr></tbody></table><h3 id="3bf95ad3-1f20-80f7-8746-d4731bde1b6f" class="" dir="auto"><strong>3.3 隐私与安全边界</strong></h3><ul id="3bf95ad3-1f20-80ba-a595-fafce703bb56" class="bulleted-list" dir="auto"><li style="list-style-type:disc">禁止记录密码、Cookie、Session/CSRF Token、API Key、数据库口令和完整连接 URL。</li></ul><ul id="3bf95ad3-1f20-8032-a0e2-e11e2b21ead0" class="bulleted-list" dir="auto"><li style="list-style-type:disc">禁止记录完整用户提示词、完整 LLM 输出、文件正文、CSV 内容、SQL 参数值和异常局部变量。</li></ul><ul id="3bf95ad3-1f20-8067-a62c-dcbd94595a42" class="bulleted-list" dir="auto"><li style="list-style-type:disc">只保留稳定内部 ID、长度、shape、错误码和去敏摘要；堆栈仅保留有限代码帧。</li></ul><ul id="3bf95ad3-1f20-804d-8176-ffb350706b06" class="bulleted-list" dir="auto"><li style="list-style-type:disc">JSON 格式化失败或 Loki 不可用时，业务仍输出一条最小去敏 stderr 证据，不递归记录日志系统自身错误。</li></ul><ul id="3bf95ad3-1f20-801e-8941-dcc2b9fe1828" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Alloy 访问 Docker 日志的权限必须隔离；生产环境评估只读 socket proxy 或受限文件采集，不能把 Docker 管理能力暴露给应用网络。</li></ul><hr id="3bf95ad3-1f20-80a8-9df0-c88e091a0abf" dir="auto"/><h2 id="3bf95ad3-1f20-8010-beb3-c31dc762f1f5" class="" dir="auto"><strong>四、第一阶段：观测底座与日志契约</strong></h2><h3 id="3bf95ad3-1f20-8054-aee7-e7d4edc4895f" class="" dir="auto"><strong>目标</strong></h3><p id="3bf95ad3-1f20-8046-95ac-cb014b9d67fd" class="" dir="auto">先把 Grafana 日志系统跑通，并冻结日志字段、标签、分类、保留和隐私规则；暂不大规模修改业务 logger，也不接管理员页面。</p><h3 id="3bf95ad3-1f20-803d-9698-d11e53546c99" class="" dir="auto"><strong>实施任务</strong></h3><ul id="3bf95ad3-1f20-80a6-bcd4-df017bc370bb" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">在开发/隔离 Compose 中加入 Loki、Grafana、Alloy，并建立独立网络、持久卷、健康检查和资源上限。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80fc-8332-d65604a27e0f" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">配置 Alloy 容器发现与日志读取，解析 Docker 包装字段和应用 JSON，补充 <code>environment/service/level/category</code> 标签。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-809f-8837-e0f7bab6e88f" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">配置 Loki 单节点开发模式、查询限制、摄入限制和初始保留周期；保留期必须可配置且基于实测日志量调整。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-803e-a272-d2f14f476a85" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">在 Grafana 配置 Loki 数据源，建立基础 Logs Drilldown/Explore 入口和最小看板：错误总量、按服务/级别/分类分布、最近错误。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80be-8969-c002e6fa5a53" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">编写共享 JSON 日志格式器、上下文 Filter/Adapter、集中脱敏器和大小限制；先用独立测试脚本验证。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80a2-a529-ebb0bc942c90" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">冻结日志字段字典、事件码命名规范、级别判定规则和“应记录/不应记录”示例。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-805e-b7b5-db200c5cd3c6" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">盘点现有日志：来源、格式、敏感字段、重复率、每分钟峰值和磁盘/保留预算。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80af-9014-d39cfe4b29a8" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">验证 <code>analysis_jobs</code> 是否已有原始 <code>request_id</code>；若缺失，仅追加这一项最小 Alembic 变更，用于 HTTP → job → worker 关联。</span><div class="indented"></div></li></ul><h3 id="3bf95ad3-1f20-80b9-91f2-f3f56d4d415a" class="" dir="auto"><strong>交付物</strong></h3><ul id="3bf95ad3-1f20-8003-9739-e98b61fee9f9" class="bulleted-list" dir="auto"><li style="list-style-type:disc">可启动的 Alloy + Loki + Grafana 开发栈与固定版本配置。</li></ul><ul id="3bf95ad3-1f20-805e-b290-d614682f2980" class="bulleted-list" dir="auto"><li style="list-style-type:disc">统一日志契约、分类表、事件码规范、标签策略和隐私规则。</li></ul><ul id="3bf95ad3-1f20-8051-8088-d62c996686b7" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Grafana 最小排障视图与一组可重复发送的测试日志。</li></ul><ul id="3bf95ad3-1f20-805a-877d-d7f9b44d0e91" class="bulleted-list" dir="auto"><li style="list-style-type:disc">现有日志盘点报告和阶段二 logger 布点模板。</li></ul><h3 id="3bf95ad3-1f20-808d-a5b5-c199db0666ba" class="" dir="auto"><strong>验收门槛</strong></h3><ul id="3bf95ad3-1f20-80d2-8e7a-cf0a81e2d86d" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Web、worker、monitor、MCP 四类测试日志都能被 Alloy 采集并在 Loki 检索。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-809e-a0f2-d181b5d12474" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Grafana 可按服务、级别、分类筛选，并能解析 request/job 等 JSON 字段。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80f7-95ba-c928d6c07275" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Alloy 或 Loki 重启后不会造成采集位置明显回退或日志风暴；失败状态可观察。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8059-8743-c25ca1bb64d2" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked"><code>request_id</code>、<code>job_id</code> 等高基数字段没有成为 Loki 标签。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80ba-9b20-dce85e4d57db" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">脱敏测试确认秘密、提示词、LLM 输出、文件正文和 SQL 参数不会进入日志。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8098-878a-e3878ae693a9" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">正常业务 INFO 与 WARNING/ERROR 的边界已有评审结论，尚未确认的事件码不进入批量布点。</span><div class="indented"></div></li></ul><hr id="9f08ac0f-4858-4d1c-8efc-337f4340d039" dir="auto"/><h2 id="3bf95ad3-1f20-8027-96f5-dfcec65e77e2" class="" dir="auto"><strong>五、第二阶段：逐模块布点与上下文贯通</strong></h2><h3 id="3bf95ad3-1f20-80c6-8d66-c958e9bb2bfa" class="" dir="auto"><strong>目标</strong></h3><p id="3bf95ad3-1f20-801e-ab60-fbc447f9c0d3" class="" dir="auto">按模块人工判断“为什么需要这条日志”，把 logger 放在真正有诊断价值的边界；Codex 可用于扫描、提出候选和检查遗漏，但最终级别、字段和布点由开发者评审确认。</p><h3 id="3bf95ad3-1f20-80ff-b7f3-e8e2376f6a0a" class="" dir="auto"><strong>实施方法</strong></h3><p id="3bf95ad3-1f20-805f-a516-ee58061e51ae" class="" dir="auto">每个候选日志点先填写一行布点清单：</p><table id="e62ecdf3-9861-41e9-86d4-efb175aa590e" class="simple-table" dir="ltr"><thead class="simple-table-header"><tr id="b538f560-5519-430e-a9bc-c8286604e2ef" dir="ltr"><th id="zEMZ" class="simple-table-header-color simple-table-header">模块/位置</th><th id=":=\`" class="simple-table-header-color simple-table-header">失败或降级事实</th><th id="eIAl" class="simple-table-header-color simple-table-header">事件码/级别/分类</th><th id="sYgA" class="simple-table-header-color simple-table-header">必要字段</th><th id="ugb;" class="simple-table-header-color simple-table-header">为何能帮助 Debug</th><th id="IxwO" class="simple-table-header-color simple-table-header">为何不会制造噪声</th></tr></thead><tbody><tr id="4454360e-536c-4dda-81d4-f5bbe91bee56" dir="ltr"><td id="zEMZ" class="">示例：worker 节点超时边界</td><td id=":=\`" class="">节点在限定时间内未完成</td><td id="eIAl" class=""><code>job.node_timeout / error / job</code></td><td id="sYgA" class="">job、worker、node、elapsed</td><td id="ugb;" class="">可定位具体任务与图节点</td><td id="IxwO" class="">只在最终超时或重试耗尽时记录</td></tr></tbody></table><h3 id="3bf95ad3-1f20-8013-8fec-d894a1ff1999" class="" dir="auto"><strong>实施任务</strong></h3><ul id="3bf95ad3-1f20-80e1-b880-dd2ea0f32235" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Web：接入未处理异常、数据库/事务失败、明确基础设施降级和达到规则阈值的安全事件。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80e5-b914-c55be42044cc" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Worker/Agent：接入 job 失败、节点超时、重试耗尽、工具/路由降级、结果质量下降和 worker/MCP 初始化失败。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-806a-92e7-e19a1a884c61" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Monitor：接入采集失败、快照写入失败、命名锁异常和配置降级；预期 <code>unknown</code> 不自动升级为 ERROR。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80c1-9a62-cb51253bfe59" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">MCP：改为单行 JSON stderr；工具结构化错误由父 worker 补齐 job/tool 上下文，管理端不扫描 <code>mcp_server.log</code>。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80c1-96a3-ee1a2b5db082" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">使用 <code>contextvars</code> 贯通 Flask request → job 创建 → worker 领取 → LangGraph node → MCP tool；在 <code>finally</code> 中可靠清理。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8006-9553-f4c32fd308c0" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">验证 asyncio task 与 <code>asyncio.to_thread()</code> 的上下文传播；不依赖未经测试的默认行为。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-805e-8913-fe062df8a050" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">逐项删除或改写现有敏感日志、重复日志和把正常业务结果记录为 WARNING 的日志。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80b7-8df8-cda7851be95f" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">为每个事件码增加受控故障测试；抽样核对源代码位置、JSON 字段、Alloy 解析结果与 Loki 内容。</span><div class="indented"></div></li></ul><h3 id="3bf95ad3-1f20-80f1-b928-d621d75a07a5" class="" dir="auto"><strong>优先布点顺序</strong></h3><ol type="1" id="3bf95ad3-1f20-80c8-8a4d-c0c07d2cba97" class="numbered-list" start="1" dir="auto"><li>会导致请求或任务失败的最终边界。</li></ol><ol type="1" id="3bf95ad3-1f20-809c-a232-f3bde67434a0" class="numbered-list" start="2" dir="auto"><li>会改变结果质量或触发降级的边界。</li></ol><ol type="1" id="3bf95ad3-1f20-8004-9a41-ecca413db76c" class="numbered-list" start="3" dir="auto"><li>无法仅靠返回值定位的跨进程边界。</li></ol><ol type="1" id="3bf95ad3-1f20-80d0-91b1-e0fd5608e9f7" class="numbered-list" start="4" dir="auto"><li>安全规则达到明确阈值的边界。</li></ol><ol type="1" id="3bf95ad3-1f20-807b-b3bf-e5f0e92a5ec6" class="numbered-list" start="5" dir="auto"><li>普通成功路径仅保留少量必要 INFO，不做逐函数日志。</li></ol><h3 id="3bf95ad3-1f20-8047-b2e4-e8f5dc0799fd" class="" dir="auto"><strong>交付物</strong></h3><ul id="3bf95ad3-1f20-8067-9d0f-eb39407be407" class="bulleted-list" dir="auto"><li style="list-style-type:disc">经人工确认的 logger 布点矩阵。</li></ul><ul id="3bf95ad3-1f20-807c-b641-da4e00041cd6" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Web、worker、monitor、Agent/RAG、MCP 的结构化日志实现。</li></ul><ul id="3bf95ad3-1f20-80f2-a6ee-e67cb3d5e942" class="bulleted-list" dir="auto"><li style="list-style-type:disc">request/job/worker/node/tool 关联链路与自动化测试。</li></ul><ul id="3bf95ad3-1f20-80f9-a3a6-e6abfc36dd98" class="bulleted-list" dir="auto"><li style="list-style-type:disc">敏感日志整改清单与噪声基线。</li></ul><h3 id="3bf95ad3-1f20-8011-867f-f4357932fec3" class="" dir="auto"><strong>验收门槛</strong></h3><ul id="3bf95ad3-1f20-804c-8595-e80c5ef331af" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">受控触发 Web 500、worker 失败、节点超时、RAG 降级、monitor 失败和 MCP 工具错误时，均出现唯一、可解释的事件码。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8024-97d1-c513942537c3" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">从 request ID 或 job ID 可以定位到对应 worker、node 与 tool 日志。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8002-9994-c910697ecc19" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">两个并发请求、两个 worker slot 和连续任务之间不会串上下文。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8034-bd7c-df0f0bd81dd4" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">数据库、Alloy 或 Loki 不可用时不递归、不死锁、不无限重试，原业务失败语义不被改变。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-800f-929d-c534154e322a" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">正常登录、聊天、上传、任务执行和算法正常结果不会产生 WARNING/ERROR 噪声。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-805d-b38c-fa2419603950" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">抽样日志不包含秘密、完整提示词、完整 LLM 输出、文件正文或 SQL 参数。</span><div class="indented"></div></li></ul><hr id="3bf95ad3-1f20-80b9-8a0d-e7ddabf9f74d" dir="auto"/><h2 id="3bf95ad3-1f20-808a-a655-e9eab2b5cc1d" class="" dir="auto"><strong>六、第三阶段：验证与管理员后台接入</strong></h2><h3 id="3bf95ad3-1f20-80c0-a358-f6b497cf5762" class="" dir="auto"><strong>目标</strong></h3><p id="3bf95ad3-1f20-8097-bde1-ecf5919a42d0" class="" dir="auto">先用 Grafana 验证日志是否真实、完整、可检索，再把产品真正需要的统计与搜索接入现有管理员系统；不把 Grafana 重做一遍。</p><h3 id="3bf95ad3-1f20-8011-a2b4-c2fba9beb224" class="" dir="auto"><strong>A. Grafana 正确性验证</strong></h3><ul id="3bf95ad3-1f20-809c-adf3-ec56fb2e699a" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">为 Web、worker、monitor、RAG、MCP、数据库降级分别定义可控故障场景和期望事件码。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80f2-a136-f3002f710c09" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">在 Grafana 中核对时间、服务、级别、分类、模块、request/job/node/tool 与源代码事实一致。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80a3-a868-e7a890c2aea1" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">验证同一故障的重复日志数量、异常模式和检索耗时；调整事件码与布点，直到能稳定定位问题来源。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80e4-aaae-e94bad59462a" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">建立最小工程视图：错误趋势、服务分布、事件码排行、最近错误，以及按 request/job 下钻。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80d6-b027-c63e20eb24b5" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">记录 Grafana 的标准查询示例和排障步骤，避免依赖个人记忆。</span><div class="indented"></div></li></ul><h3 id="3bf95ad3-1f20-80d1-83fe-e043c89fbc6d" class="" dir="auto"><strong>B. Flask 受控查询 API</strong></h3><p id="3bf95ad3-1f20-80dd-952e-ce9cf5c61f70" class="" dir="auto">建议提供三个只读端点：</p><ul id="3bf95ad3-1f20-8031-9e2e-e6089154503c" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><code>GET /api/admin/logs/summary</code>：指定时间范围内按级别、服务、分类和事件码统计。</li></ul><ul id="3bf95ad3-1f20-80f9-90b2-cf68bce937af" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><code>GET /api/admin/logs/search</code>：按白名单筛选条件分页查询日志摘要。</li></ul><ul id="3bf95ad3-1f20-801d-a295-f6af4148b999" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><code>GET /api/admin/logs/fields</code>：返回允许的服务、级别、分类和事件码选项。</li></ul><p id="3bf95ad3-1f20-80a8-8c3a-ec1067e6cc86" class="" dir="auto">接口约束：</p><ul id="3bf95ad3-1f20-80aa-a337-f7e7cd256ee2" class="bulleted-list" dir="auto"><li style="list-style-type:disc">后端生成固定 LogQL 模板；禁止浏览器传入完整 LogQL。</li></ul><ul id="3bf95ad3-1f20-8012-b375-ffd1cf5497b2" class="bulleted-list" dir="auto"><li style="list-style-type:disc">时间范围使用白名单，默认 1 小时，第一版最大 24 小时；更长调查跳转 Grafana。</li></ul><ul id="3bf95ad3-1f20-80dc-912c-dce1eda7beea" class="bulleted-list" dir="auto"><li style="list-style-type:disc">单页默认 50、硬上限 200；设置 Loki 查询超时、响应大小和并发上限。</li></ul><ul id="3bf95ad3-1f20-8059-a657-ef698f2bcd0b" class="bulleted-list" dir="auto"><li style="list-style-type:disc">列表返回去敏摘要；完整 JSON/堆栈仅在明确点击后按上限返回。</li></ul><ul id="3bf95ad3-1f20-8087-ae13-f35d19153d17" class="bulleted-list" dir="auto"><li style="list-style-type:disc">未登录返回 <code>401</code>，非管理员返回 <code>403</code>；敏感详情与导出写入 <code>admin_audit_events</code>。</li></ul><ul id="3bf95ad3-1f20-801f-83ae-e7080ab74b7d" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Loki 不可用时返回明确降级状态，不回退扫描 Docker 文件或 MySQL。</li></ul><h3 id="3bf95ad3-1f20-8079-a105-f6be239bb035" class="" dir="auto"><strong>C. Vue 管理端日志页</strong></h3><p id="3bf95ad3-1f20-8028-8e00-d433cc229267" class="" dir="auto">新增 <code>/admin/logs</code>，只包含：</p><ul id="3bf95ad3-1f20-80fe-a0e8-f90691a23dfc" class="bulleted-list" dir="auto"><li style="list-style-type:disc">错误数量趋势、按服务/级别/分类分布、最近高严重度日志。</li></ul><ul id="3bf95ad3-1f20-8091-858a-e85c99e883fe" class="bulleted-list" dir="auto"><li style="list-style-type:disc">时间范围、服务、级别、分类、事件码、关键词、request ID、job ID 筛选。</li></ul><ul id="3bf95ad3-1f20-8043-b17d-e807fad4b445" class="bulleted-list" dir="auto"><li style="list-style-type:disc">日志摘要表和去敏详情抽屉。</li></ul><ul id="3bf95ad3-1f20-80c5-9235-f1e4ee96672c" class="bulleted-list" dir="auto"><li style="list-style-type:disc">加载态、空态、超时、Loki 不可用、权限失效和结果截断提示。</li></ul><ul id="3bf95ad3-1f20-8082-a914-f7a3f07d3b9f" class="bulleted-list" dir="auto"><li style="list-style-type:disc">“在 Grafana 中打开”链接，把当前筛选条件带到 Grafana 深度排障界面。</li></ul><p id="3bf95ad3-1f20-80b5-9168-d69345d46d86" class="" dir="auto">第一版不做自定义 SSE；页面使用手动刷新或有上限的短周期轮询。实时追踪继续使用 Grafana，避免占用 Flask/Gunicorn 长连接。</p><h3 id="3bf95ad3-1f20-8031-aab1-f89527806f11" class="" dir="auto"><strong>交付物</strong></h3><ul id="3bf95ad3-1f20-80f8-b9b4-c20d50f2b2e7" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Grafana 验证矩阵、标准排障查询和最小看板。</li></ul><ul id="3bf95ad3-1f20-804b-a57e-c90b3759ea53" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Flask 受控日志统计/搜索 API 与权限、限流、超时、审计测试。</li></ul><ul id="3bf95ad3-1f20-809a-a6e1-fea60fa97c8c" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Vue 日志统计与搜索页面及生产构建产物。</li></ul><ul id="3bf95ad3-1f20-8049-bc95-da194e7156fc" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Grafana/API/Vue 三方一致性验证报告。</li></ul><h3 id="3bf95ad3-1f20-805f-a8ca-d83523cc0d72" class="" dir="auto"><strong>验收门槛</strong></h3><ul id="3bf95ad3-1f20-806f-a478-d868ab6db9c2" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">同一已知日志在 Grafana、Flask API、Vue 页面中的时间、级别、来源、事件码和关联 ID 一致。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80bd-9dd1-cab388a0ca5e" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">管理员可在三步内从统计异常定位到具体服务、模块和 request/job。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8055-a1ed-d782c901d9f2" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">搜索、分页、时间范围与结果截断准确，不出现漏页、重复或无界查询。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8088-9a3e-c4d1b76793d2" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">普通用户无法访问页面或 API；浏览器无法构造任意 LogQL。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8016-843a-f6d9e3f2f97e" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Loki 查询慢、超时或不可用不会拖垮普通用户请求，并有明确错误态。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80c3-b426-dc7bab34c48b" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Vue <code>typecheck</code>、单元测试、Mock E2E、生产构建和隔离环境核心 E2E 通过。</span><div class="indented"></div></li></ul><hr id="3bf95ad3-1f20-8011-82ee-e086dd995e5a" dir="auto"/><h2 id="3bf95ad3-1f20-80a7-805b-ca72768a321d" class="" dir="auto"><strong>七、本阶段明确不做</strong></h2><ul id="3bf95ad3-1f20-8097-9ffd-d55d3c3c1f13" class="bulleted-list" dir="auto"><li style="list-style-type:disc">不做 incident 的确认、分派、解决、重开、静默、备注或调查保留。</li></ul><ul id="3bf95ad3-1f20-8051-9ddf-efcf0afcb0b9" class="bulleted-list" dir="auto"><li style="list-style-type:disc">不做日志工单、负责人体系、批量处置或告警值班系统。</li></ul><ul id="3bf95ad3-1f20-80b5-999f-c82a8b22a332" class="bulleted-list" dir="auto"><li style="list-style-type:disc">不在管理员后台开放任意 LogQL、SQL、Loki 删除、保留期修改或宿主机文件读取。</li></ul><ul id="3bf95ad3-1f20-801b-bf8f-c30bb5965d0d" class="bulleted-list" dir="auto"><li style="list-style-type:disc">不新建 MySQL 运行日志、异常聚合或处置动作表。</li></ul><ul id="3bf95ad3-1f20-808f-9f1d-db4d1bd05900" class="bulleted-list" dir="auto"><li style="list-style-type:disc">不把 <code>analysis_job_events</code>、<code>admin_audit_events</code> 与运行日志混成一个数据源。</li></ul><ul id="3bf95ad3-1f20-80b1-b20b-fa088edaab44" class="bulleted-list" dir="auto"><li style="list-style-type:disc">不在第一版加入 Kafka、消息中间件、完整 OpenTelemetry trace 或自研实时 SSE。</li></ul><ul id="3bf95ad3-1f20-80ab-a7e0-f144d80afc20" class="bulleted-list" dir="auto"><li style="list-style-type:disc">日志告警、自动通知和复杂长期留存作为后续独立阶段，只有实际需求和容量数据支持时再启动。</li></ul><hr id="f96dd119-7380-4a74-92de-5af2c3076b97" dir="auto"/><h2 id="3bf95ad3-1f20-8014-9ff2-c065e183b2b5" class="" dir="auto"><strong>八、依赖、风险与停止条件</strong></h2><h3 id="3bf95ad3-1f20-80c0-9f84-f7e678549b93" class="" dir="auto"><strong>实施前依赖</strong></h3><ul id="3bf95ad3-1f20-80af-8b0f-c910678a03e1" class="bulleted-list" dir="auto"><li style="list-style-type:disc">阶段一管理员鉴权、Vue 管理端、Flask API 与 <code>X-Request-ID</code> 保持可用。</li></ul><ul id="3bf95ad3-1f20-80c9-95d4-d51f3ead4024" class="bulleted-list" dir="auto"><li style="list-style-type:disc">确认部署环境允许运行 Grafana、Loki、Alloy，并明确持久卷、端口和访问控制。</li></ul><ul id="3bf95ad3-1f20-8085-8c6c-dc0d8847d386" class="bulleted-list" dir="auto"><li style="list-style-type:disc">只读盘点真实日志量、峰值速率、可接受保留天数和可用磁盘。</li></ul><h3 id="3bf95ad3-1f20-8093-b814-c58f916624b3" class="" dir="auto"><strong>主要风险与缓解</strong></h3><ul id="3bf95ad3-1f20-806d-9e3e-cdfd25f49c60" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><strong>Loki 标签基数失控：</strong>仅使用低基数标签，高基数 ID 留在 JSON 字段；上线前检查 stream 数量。</li></ul><ul id="3bf95ad3-1f20-8080-bc48-f280dff6beca" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><strong>Docker 日志权限过大：</strong>隔离 Alloy，限制网络与宿主权限；生产优先评估受限 socket proxy 或只读日志文件方案。</li></ul><ul id="3bf95ad3-1f20-80d4-bbb9-e167e29f5f50" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><strong>日志泄密：</strong>集中脱敏、字段白名单、大小上限、固定测试语料和抽样审查共同兜底。</li></ul><ul id="3bf95ad3-1f20-8021-8888-fb4ac343f386" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><strong>logger 布点过多：</strong>所有新增 WARNING/ERROR 必须在布点矩阵说明 Debug 价值和降噪条件。</li></ul><ul id="3bf95ad3-1f20-8086-96ef-e5584677fbfc" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><strong>管理员查询拖垮 Loki：</strong>固定查询模板、短时间窗、结果上限、超时、并发限制和 Grafana 深度查询分流。</li></ul><h3 id="3bf95ad3-1f20-80cb-a499-eba136e1ac7f" class="" dir="auto"><strong>停止条件</strong></h3><ul id="3bf95ad3-1f20-80a4-90c3-d8d9bf2d14cd" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Alloy/Loki/Grafana 基础链路不稳定，或版本兼容性未验证。</li></ul><ul id="3bf95ad3-1f20-8061-819a-ec37b32f1984" class="bulleted-list" dir="auto"><li style="list-style-type:disc">真实日志量、磁盘预算或保留周期仍未知，却准备进入生产。</li></ul><ul id="3bf95ad3-1f20-80da-aa6e-e59748d677b1" class="bulleted-list" dir="auto"><li style="list-style-type:disc">脱敏测试未通过，或仍可能输出完整提示词、LLM 结果、文件正文和秘密。</li></ul><ul id="3bf95ad3-1f20-80e6-b4cf-ef32c438a09a" class="bulleted-list" dir="auto"><li style="list-style-type:disc">request/job 上下文无法可靠传播，却准备宣称可全链路定位。</li></ul><ul id="3bf95ad3-1f20-8023-8294-f4e4a7fac307" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Grafana 中的日志与源代码事实对不上，却准备接入管理员后台。</li></ul><ul id="3bf95ad3-1f20-80e4-a44b-fefb39c47919" class="bulleted-list" dir="auto"><li style="list-style-type:disc">Flask 只能接受任意 LogQL，或无法限制时间、结果量、超时与并发。</li></ul><hr id="3bf95ad3-1f20-804e-88e6-cd03dbf5af76" dir="auto"/><h2 id="3bf95ad3-1f20-80f9-b8dd-c5c3e64f9d71" class="" dir="auto"><strong>九、阶段二总体验收标准</strong></h2><ul id="3bf95ad3-1f20-805d-aba5-c85879d33445" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Alloy、Loki、Grafana 的职责与配置已固定，日志链路在重启和故障场景下行为已知。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8052-b9d9-d31aaf6e14cb" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">日志契约、分类、事件码、标签和隐私规则已冻结并有自动化测试。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8081-b588-e6d406bafea0" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Web、worker、monitor、Agent/RAG、MCP 的关键故障可被检索，正常业务不会制造异常噪声。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8088-8ac0-e16cf4a2e763" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">request ID 和 job ID 可以关联到 worker、node 和 tool。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80f0-a741-d3f5388e6a2d" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">Grafana 能完成深度排障；管理员后台能完成必要统计、搜索、详情与跳转。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-8045-aa3c-ffe9309ba88d" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">管理员查询受权限、白名单、时间窗、结果量、超时、并发和审计保护。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80ba-9cfc-f5558ae4f989" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">不引入日志处置系统、MySQL 运行日志双写或不必要的实时链路。</span><div class="indented"></div></li></ul><ul id="3bf95ad3-1f20-80d3-9032-d8089c055dd0" class="to-do-list" dir="auto"><li><input type="checkbox" class="checkbox checkbox-off" disabled=""/> <span class="to-do-children-unchecked">README、AGENTS、Compose、环境示例、隐私说明、运维手册和管理员前端构建产物与实现一致。</span><div class="indented"></div></li></ul><h2 id="3bf95ad3-1f20-8043-a025-f8b8a18eb499" class="" dir="auto"><strong>十、技术参考</strong></h2><ul id="3bf95ad3-1f20-808d-993f-c0a849554f09" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><a href="https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/">Grafana Alloy：采集 Docker 日志</a></li></ul><ul id="3bf95ad3-1f20-8004-9a65-e55f62ec8b4c" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><a href="https://grafana.com/docs/loki/latest/reference/loki-http-api/">Grafana Loki HTTP API：</a><code><a href="https://grafana.com/docs/loki/latest/reference/loki-http-api/">query_range</a></code><a href="https://grafana.com/docs/loki/latest/reference/loki-http-api/">、labels 与 tail</a></li></ul><ul id="3bf95ad3-1f20-8031-a312-d61e819995e8" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><a href="https://grafana.com/docs/grafana/latest/visualizations/simplified-exploration/logs/">Grafana Logs Drilldown：无需先编写 LogQL 的日志探索</a></li></ul><ul id="3bf95ad3-1f20-800e-8081-f9c66a7da8e6" class="bulleted-list" dir="auto"><li style="list-style-type:disc"><a href="https://grafana.com/docs/loki/latest/get-started/labels/cardinality/">Grafana Loki：标签基数与高基数字段处理</a></li></ul><aside class="block-color-teal_background callout" data-notion-callout="" data-notion-callout-icon="✅" data-notion-callout-background="teal_background" style="white-space:pre-wrap;display:flex" id="7dbecf71-4818-4671-8d46-9ff074f16ad3" dir="ltr"><div style="font-size:1.5em"><span class="icon" data-emoji="✅"></span></div><div style="width:100%"><p id="945d2fb2-888f-49a4-9a23-f555255b409a" class="" dir="auto"><strong>计划完成定义：</strong>开发者可以先在 Grafana 复现并定位问题，再在管理员系统中通过必要统计与受控搜索快速进入同一条排障链路；本阶段不承担问题处置和日志工单管理。</p></div></aside></div></article><span class="sans" style="font-size:14px;padding-top:2em"></span></body></html>

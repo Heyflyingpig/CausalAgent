@@ -16,7 +16,11 @@
 
 请求上下文从 `X-Request-ID` 接受符合 `[A-Za-z0-9._:-]{1,64}` 的上游值，否则生成 UUID；所有响应通过 `X-Request-ID` 返回该值。管理员统一响应还包含 `request_id` 字段，失败响应包含稳定 `code`，字段校验错误放在 `fields`。
 
+Flask 在确定 request ID 后立即绑定运行日志上下文，只有主库确认用户有效和资源归属后才增加 `user_id/session_id/job_id`，teardown 在正常和异常路径都按逆序清理。分析 Job 首次创建时仍把当前 request ID 写入 `analysis_jobs.request_id`；幂等重放日志使用本次 HTTP request ID，worker 使用 Job 首次落库的 request ID，并通过同一 `job_id` 关联两次请求。
+
 内部异常只能记录在服务端日志，不能把堆栈、数据库连接、凭据、原始 prompt 或工具结果直接返回给客户端。需要给用户展示的错误必须是稳定、有限且不泄露内部结构的消息。
+
+未处理 500 由 Flask 的异常日志边界生成唯一 `web.request.unhandled`，已捕获并返回的 5xx 在最外层路由生成 `web.request.failed` 或专用 Job 事件；这不改变原响应。普通 400/401/403/404/409、字段校验、普通密码错误和会话自然过期不产生异常运行日志。只有已确认的禁用账号、已登录用户跨归属访问、CSRF 拒绝、高风险重认证失败或安全会话撤销进入 `security` 事件，且不记录用户名、请求正文或资源内容。
 
 ## 分页和内容读取
 

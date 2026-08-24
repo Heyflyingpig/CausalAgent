@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  ArrowLeftRight,
   ClipboardCheck,
   Database,
   FolderOpen,
@@ -28,6 +29,7 @@ const SIDEBAR_STORAGE_KEY = 'causalagent.admin.sidebar.collapsed'
 const BRAND_LOGO_URL = '/api/admin/brand/logo'
 const FLASK_ORIGIN = import.meta.env.VITE_FLASK_ORIGIN?.replace(/\/$/, '') || ''
 const CHAT_URL = `${FLASK_ORIGIN}/`
+const GRAFANA_URL = 'http://127.0.0.1:3000/'
 
 const navigation = [
   {
@@ -168,6 +170,20 @@ watch(
           <span class="identity-label">当前管理员</span>
           <strong>{{ username }}</strong>
         </div>
+        <el-tooltip content="进入 Grafana" placement="right" :disabled="!collapsed">
+          <el-button
+            class="grafana-entry-button"
+            tag="a"
+            type="warning"
+            :href="GRAFANA_URL"
+            :disabled="!identityReady"
+          >
+            <span class="grafana-entry-icon" aria-hidden="true">
+              <ArrowLeftRight :size="18" :stroke-width="1.8" />
+            </span>
+            <span class="grafana-entry-text">进入 Grafana</span>
+          </el-button>
+        </el-tooltip>
         <el-tooltip content="进入聊天" placement="right" :disabled="!collapsed">
           <el-button
             class="chat-entry-button"
