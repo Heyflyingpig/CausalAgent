@@ -1,8 +1,8 @@
 # Agent 运行时
 
-文档职责：记录 Agent worker、LangGraph、MCP、RAG、结构化输出和执行事件的当前协作方式。
+文档职责：记录 Agent worker、LangGraph、MCP、RAG、联网搜索、结构化输出和执行事件的当前协作方式。
 
-适用范围：修改 `Agent/`、`app/agent/worker/`、MCP server、RAG 初始化或用户可见事件协议时使用；Job 的持久化生命周期见 [`job-file-lifecycle.md`](job-file-lifecycle.md)，执行约束见 [`../../Agent/AGENTS.md`](../../Agent/AGENTS.md)。
+适用范围：修改 `Agent/`、`app/agent/worker/`、MCP server、RAG 初始化、联网搜索或用户可见事件协议时使用；Job 的持久化生命周期见 [`job-file-lifecycle.md`](job-file-lifecycle.md)，执行约束见 [`../../Agent/AGENTS.md`](../../Agent/AGENTS.md)。
 
 ## Worker 启动与 slot
 
@@ -16,7 +16,9 @@
 
 ## 父图与工具阶段
 
-父图当前只暴露 `mcp` 和 `rag` 两个工具阶段。MCP 子图的正常路径为 `mcp_planner -> mcp_tool_node -> mcp_result_parser`；RAG 子图内部对应 `rag_question_planner -> rag_tool_node -> rag_result_parser -> rag_finalize`。父图通过适配节点只向 RAG 子图传入 `messages`、`analysis_parameters`、`preprocess_summary` 和 `causal_analysis_result`，子图只投影 `rag_output` 为父图的 `knowledge_base_result`；RAG route、问题列表、ToolMessage 和解析中间结果不会进入父 State。
+父图当前暴露 `mcp`、`rag` 和 `web_search` 三个工具阶段。MCP 子图的正常路径为 `mcp_planner -> mcp_tool_node -> mcp_result_parser`；RAG 子图内部对应 `rag_question_planner -> rag_tool_node -> rag_result_parser -> rag_finalize`。父图通过适配节点只向 RAG 子图传入 `messages`、`analysis_parameters`、`preprocess_summary` 和 `causal_analysis_result`，子图只投影 `rag_output` 为父图的 `knowledge_base_result`；RAG route、问题列表、ToolMessage 和解析中间结果不会进入父 State。
+
+#### RAG具体实现与异常处理
 
 RAG Planner 在调用 LLM 前检查进程级 `rag_available` 和已注册的 `rag_tools`。知识库目录未初始化或工具列表为空时，Planner 写入私有 `rag_route=finish`、`rag_status=unavailable` 和统一降级中间结果，跳过 ToolNode，仍经 `rag_finalize` 回到父图的 Agent。正常 ToolNode 返回（包括 `success=False`）继续进入 Parser；ToolNode 或 Planner 的未捕获普通异常在重试结束后由 error handler 跳到 Finalize，Parser 异常标记为 `protocol_error` 后也进入 Finalize。
 
@@ -25,6 +27,16 @@ RAG 查询任务捕获普通查询、连接和目录异常时返回 `success=Fal
 结构化输出统一通过 `Agent/llm_structured_output.py` 的同步/异步入口调用，固定使用普通 `function_calling`。结构化请求会关闭 thinking；MCP planner 仍使用原生 Tool Calls，并对关闭 thinking 的 LLM 副本设置 `tool_choice="required"`，确保 planner 必须选择一个已加载工具。`agent` 和 `fold` 的条件路由只读取显式 State 字段 `route_decision`、`fold_decision`，不使用展示消息猜测控制流。
 
 RAG 启动时只检查知识库目录是否可用，不在 worker 启动阶段完整加载向量库；知识库缺失时记录 warning 并以无知识库模式继续。DirectLiNGAM 作为 `causal_direct_lingam` MCP 工具提供连续数值 CSV 分析，输出的系数矩阵约定为 `target_to_source`，报告需要保留线性、非高斯、误差独立、DAG 和无潜在混杂等假设。
+
+#### web_search具体实现与异常处理
+
+`web_search` 子图内部路径为 `web_search_planner -> academic_search_node -> web_search_result_parser_node`。父图通过适配节点只向子图传入 `messages`、`analysis_parameters`、`causal_analysis_result` 和 `knowledge_base_result`，子图只投影 `web_search_result` 回父图；中间的 `planner`、`search` 私有字段不会进入父 State。
+
+`web_search_planner` 与 RAG 不同，不在调用 LLM 前做进程级可用性检查，而是始终执行两步结构化输出：先 `generate_research_question` 提炼最需论证的具体问题，再 `get_web_search_query` 生成中英双语检索 query（`query` 面向报告展示、`query_en` 面向学术检索）。planner 捕获 `StructuredOutputError` 时写 `planner.success=False`，`academic_search_node` 据此短路、不再调用底层检索。
+
+`academic_search_node` 单节点统一走 SearXNG 的 arxiv/crossref/openalex 三引擎，按引擎分组各取 top-3 后按 rank 轮转交错，结果总量受 `WEB_SEARCH_MAX_RESULTS` 封顶。底层 `web_search()` 网络异常直接抛出，交 `tool_retry` 重试，重试耗尽后由 error handler 写 `search.success=False`。`web_search_result_parser_node` 是纯 snippet 出口（无 BM25、抓正文或 LLM 总结），把 `search.results` 投影为 `content`，产出稳定的 `web_search_result`。
+
+三个节点都挂 error handler：planner 降级写 `planner.success=False`、academic_search 降级写 `search.success=False`，二者都让后续 `result_parser` 正常投影出 `success=False` 的结果；result_parser 降级写 `status=protocol_error` 的统一结果，父图 web_search 节点还挂 `degrade_web_search_adapter_result`，子图整体失败时写 `web_search_result` 并 `goto="agent"`。统一降级结果由 `build_web_search_degradation_result` 构造（含 `status` 与 `error`），并保留 `CancelledError` 原样上抛。是否进入子图由父图 `rag` 之后的 `web_search_router` 读 `context.web_search_enabled` 决定，关闭时直接回 `agent`——这是用户级事前短路，与 RAG 的进程级 `rag_available` 事前短路（在子图 planner 内）位置不同。
 
 ## 事件流与脱敏
 
