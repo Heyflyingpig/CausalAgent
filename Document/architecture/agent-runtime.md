@@ -34,9 +34,9 @@ RAG 启动时只检查知识库目录是否可用，不在 worker 启动阶段�
 
 `web_search_planner` 与 RAG 不同，不在调用 LLM 前做进程级可用性检查，而是始终执行两步结构化输出：先 `generate_research_question` 提炼最需论证的具体问题，再 `get_web_search_query` 生成中英双语检索 query（`query` 面向报告展示、`query_en` 面向学术检索）。planner 捕获 `StructuredOutputError` 时写 `planner.success=False`，`academic_search_node` 据此短路、不再调用底层检索。
 
-`academic_search_node` 单节点统一走 SearXNG 的 arxiv/crossref/openalex 三引擎，按引擎分组各取 top-3 后按 rank 轮转交错，结果总量受 `WEB_SEARCH_MAX_RESULTS` 封顶。底层 `web_search()` 网络异常直接抛出，交 `tool_retry` 重试，重试耗尽后由 error handler 写 `search.success=False`。`web_search_result_parser_node` 是纯 snippet 出口（无 BM25、抓正文或 LLM 总结），把 `search.results` 投影为 `content`，产出稳定的 `web_search_result`。
+`academic_search_node` 单节点统一走 SearXNG 的 arxiv/crossref/openalex 三引擎，按引擎分组各取 top-3 后按 rank 轮转交错。`WEB_SEARCH_MAX_RESULTS` 的当前值为 9，搜索结果合并、报告/追问 prompt 注入和最终引用投影共用该上限，避免报告使用的资料超出公开引用范围。底层 `web_search()` 网络异常直接抛出，交 `tool_retry` 重试，重试耗尽后由 error handler 写 `search.success=False`。`web_search_result_parser_node` 是纯 snippet 出口（无 BM25、抓正文或 LLM 总结），把 `search.results` 投影为 `content`，产出稳定的 `web_search_result`。
 
-三个节点都挂 error handler：planner 降级写 `planner.success=False`、academic_search 降级写 `search.success=False`，二者都让后续 `result_parser` 正常投影出 `success=False` 的结果；result_parser 降级写 `status=protocol_error` 的统一结果，父图 web_search 节点还挂 `degrade_web_search_adapter_result`，子图整体失败时写 `web_search_result` 并 `goto="agent"`。统一降级结果由 `build_web_search_degradation_result` 构造（含 `status` 与 `error`），并保留 `CancelledError` 原样上抛。是否进入子图由父图 `rag` 之后的 `web_search_router` 读 `context.web_search_enabled` 决定，关闭时直接回 `agent`——这是用户级事前短路，与 RAG 的进程级 `rag_available` 事前短路（在子图 planner 内）位置不同。
+三个节点都挂 error handler：planner 降级写 `planner.success=False`、academic_search 降级写 `search.success=False`，二者都让后续 `result_parser` 正常投影出 `success=False` 的结果；result_parser 注册 `degrade_web_search_parser_failure`，解析异常写入 `status=protocol_error` 的统一 `web_search_result`；父图 `web_search` 节点注册 `degrade_web_search_adapter_result`，子图整体失败时写入统一结果并 `goto="agent"`。统一结果由 `build_web_search_degradation_result` 构造，`WebSearchStatus` 只有 `available`、`unavailable`、`protocol_error` 三种值；异常对象经 `sanitize_error()` 归类，`asyncio.CancelledError` 和 `JobExecutionRevoked` 不会被错误转成普通搜索降级。是否进入子图由父图 `rag` 之后的 `web_search_router` 读 `context.web_search_enabled` 决定，关闭时直接回 `agent`——这是用户级事前短路，与 RAG 的进程级 `rag_available` 事前短路（在子图 planner 内）位置不同。
 
 ## 事件流与脱敏
 

@@ -49,9 +49,15 @@ engines:
 SECRET_RE = re.compile(r'secret_key: "([0-9a-f]{64})"')
 
 
-def _run_init(config_dir: Path) -> subprocess.CompletedProcess:
+def _run_init(
+    config_dir: Path,
+    *,
+    path_prefix: Path | None = None,
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["SEARXNG_CONFIG_DIR"] = str(config_dir)
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     return subprocess.run(
         ["sh", str(SCRIPT_PATH)],
         env=env,
@@ -84,6 +90,7 @@ def test_generates_settings_yml_preserves_structure(tmp_path):
     assert "- json" in content
     assert "redis://valkey:6379/0" in content
     assert content.count("ultrasecretkey") == 0
+    assert not list(tmp_path.glob(".settings.yml.tmp.*"))
 
 
 def test_idempotent_skips_existing_settings_yml(tmp_path):
@@ -102,3 +109,19 @@ def test_fails_when_example_missing(tmp_path):
     proc = _run_init(tmp_path)
     assert proc.returncode != 0
     assert not (tmp_path / "settings.yml").exists()
+
+
+def test_generation_failure_does_not_publish_partial_settings(tmp_path):
+    """生成 secret 失败时，目标文件不能先于完整校验出现。"""
+    (tmp_path / "settings.yml.example").write_text(EXAMPLE, encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_python = bin_dir / "python3"
+    fake_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+
+    proc = _run_init(tmp_path, path_prefix=bin_dir)
+
+    assert proc.returncode != 0
+    assert not (tmp_path / "settings.yml").exists()
+    assert not list(tmp_path.glob(".settings.yml.tmp.*"))

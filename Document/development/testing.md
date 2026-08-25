@@ -34,6 +34,26 @@ docker compose -f docker-compose.test.yml run --rm unit-test python -m pytest -p
 docker compose -f docker-compose.test.yml run --rm unit-test python -m pytest -p no:cacheprovider tests/unit/agent/test_job_lifecycle.py
 ```
 
+## SearXNG 部署验证
+
+SearXNG 初始化脚本的纯脚本行为由 `tests/unit/deployment/test_searxng_init_settings.py` 覆盖，包含生成、幂等、缺失 example 和生成中断不发布半成品。Compose 部署契约由 `tests/integration/deployment/test_searxng_compose.py` 静态检查，确认镜像不是 `latest`、存在 `/healthz` healthcheck，且默认 `app`/`worker` 不依赖 SearXNG。
+
+需要 Docker Engine 才能执行真实容器验证：
+
+```bash
+docker compose -f docker-compose.yml config
+docker compose -f docker-compose.yml up -d searxng
+docker compose -f docker-compose.yml ps searxng searxng-init valkey
+```
+
+容器验证应另外确认 `/healthz` 返回成功、JSON 搜索格式可用，以及停止 SearXNG 后开启 `web_search_enabled` 的 Job 仍按运行期重试和统一降级协议收敛。该真实网络证据不能由 unit 或静态 Compose 测试替代。
+
+可使用隔离临时配置目录执行 init、healthcheck 和幂等性验证；脚本结束时只清理本次生成的 Compose project 和临时目录，不触碰开发环境现有配置：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests/run_searxng_docker_validation.ps1
+```
+
 环境受限时才使用本地回退：
 
 ```bash

@@ -17,7 +17,16 @@ if [ ! -f "$EXAMPLE" ]; then
     exit 1
 fi
 
-cp "$EXAMPLE" "$TARGET"
+TMP_FILE="$(mktemp "${CONFIG_DIR}/.settings.yml.tmp.XXXXXX")"
+cleanup() {
+    if [ -n "${TMP_FILE:-}" ]; then
+        rm -f "$TMP_FILE"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+cp "$EXAMPLE" "$TMP_FILE"
 
 # 优先 python3（secrets.token_hex 最规范），其次 openssl，最后 od（busybox 兼容）。
 if command -v python3 >/dev/null 2>&1; then
@@ -33,11 +42,14 @@ if [ -z "${SECRET:-}" ]; then
     exit 1
 fi
 
-sed -i "s/ultrasecretkey/${SECRET}/" "$TARGET"
+sed -i "s/ultrasecretkey/${SECRET}/" "$TMP_FILE"
 
-if grep -q "ultrasecretkey" "$TARGET"; then
+if grep -q "ultrasecretkey" "$TMP_FILE"; then
     echo "ERROR: secret_key placeholder replacement failed" >&2
     exit 1
 fi
 
+mv "$TMP_FILE" "$TARGET"
+TMP_FILE=""
+trap - EXIT HUP INT TERM
 echo "Generated $TARGET with a random secret_key"
