@@ -159,10 +159,10 @@ async def get_web_search_query(
                 请针对上述具体问题，先判断该数据集所属的领域（如社会劳动/生物医学/经济金融/神经科学/工业制造等），再思考该领域进行因果分析时最常见的特点或痛点（如未观测混杂、纵向数据的时变干预、高维小样本、选择偏误等），最后结合这些信息生成一个用于学术检索的查询串。
 
                 # 生成目标
-                1. 查询串的构造必须遵循「领域词打头 + 痛点词跟进」的结构：第一个术语是该数据集所属领域的核心词，后续术语是该领域因果分析中最典型的特点或痛点。
-                2. 不要堆砌具体方法名（如 PC 算法、DAG、do-calculus），而要用领域词与痛点术语把检索范围锚定到该领域的方法学文献。
-                3. 同时生成中英双语查询串：query 用中文关键词；query_en 用对应的英文核心术语。
-                4. query_en 只输出 3-4 个英文核心术语，用空格分隔，第一个必须是领域词，后续为痛点术语；不要逗号、不要整句、不要停用词。
+                1. query_en 必须恰好 3-4 个英文术语，用空格分隔；第一个是领域词，后续是因果方法学痛点词；超过 4 个词视为失败。
+                2. 痛点词只能从因果方法学痛点里选：unmeasured confounding（未观测混杂）、selection bias（选择偏误）、time-varying treatment（时变干预）、sample selection（样本选择）、measurement error（测量误差）、high-dimensional（高维）等。
+                3. 严禁出现具体方法名（PC、DAG、do-calculus、nonparametric、conditional independence 等）和数据分布描述词（skewed、sparse、noisy、small sample 等）。
+                4. query 用中文关键词、query_en 用英文核心术语，两者语义对应；不要逗号、不要整句、不要停用词。
                 # 输出格式
                 必须只返回一个 JSON 对象，包含 query、query_en 和 reason 三个字段。
 
@@ -172,6 +172,10 @@ async def get_web_search_query(
                   "query_en": "biomedical causal inference unmeasured confounding",
                   "reason": "该数据集属生物医学领域，其因果分析核心痛点是未观测混杂，据此检索相关方法学文献"
                 }}
+
+                反例（禁止，视为失败）：
+                "query_en": "biomedical signaling pathway nonparametric conditional independence skewed data"
+                （错在：8 个词超限；含方法名 nonparametric/conditional independence；含数据分布词 skewed data）
 
                 不要输出 Markdown，不要输出额外解释。
                 """,
@@ -195,7 +199,11 @@ async def get_web_search_query(
         },
         node_name="web_search_planner",
     )
-    return result.model_dump()
+    data = result.model_dump()
+    terms = data["query_en"].split()
+    if len(terms) > 4:
+        data["query_en"] = " ".join(terms[:4])
+    return data
 
 
 def web_search(query: str) -> dict:

@@ -693,3 +693,9 @@
   - 正常报告与降级报告继续公开受限搜索引用，同时遵守统一 JSON stderr 日志合同。
   - Web Search Planner 内部结构化输出降级改用受管事件，移除 query、命中数和路由选择的普通日志；历史引用附件解析失败使用不含消息 ID 和正文的注册事件。
   - 默认开发 Compose 同时保留 SearXNG/Valkey 搜索服务和 Loki/Alloy/Grafana 可观测拓扑，并同步部署与测试文档。
+
+---
+2026.8.25
+- 【联网搜索查询生成收紧】
+  - 收紧 Web Search Planner 查询生成 prompt：`query_en` 固定为「领域词 + 因果方法学痛点词」3-4 个英文术语，超过 4 词视为失败，并明确禁止方法名（PC、DAG、do-calculus、nonparametric、conditional independence 等）
+  - 生成后增加代码兜底：`query_en` 超过 4 词时截取前 4 词，防止 LLM 无视词数约束导致检索意图稀释、返回结果不精确。
