@@ -420,6 +420,13 @@ _events: dict[str, EventSpec] = {
         reason_code=REASON,
         affected_count=COUNT,
     ),
+    "chat.attachment.degraded": _spec(
+        logging.WARNING,
+        "dependency",
+        "聊天附件解析已降级",
+        attachment_type=TOKEN,
+        reason_code=REASON,
+    ),
     "rag.startup.unavailable": _spec(
         logging.WARNING,
         "dependency",

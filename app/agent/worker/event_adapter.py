@@ -13,6 +13,7 @@ NODE_DESCRIPTIONS = {
     "preprocess": "预处理数据",
     "mcp": "执行因果分析",
     "rag": "检索知识库",
+    "web_search": "联网搜索",
     "postprocess": "校验并修正因果图",
     "report": "生成分析报告",
     "normal_chat": "生成回答",

@@ -320,6 +320,33 @@
         opacity: 0.65;
     }
 
+    /* 联网搜索开关按钮样式 */
+    .web-search-toggle {
+        margin-right: auto !important;
+        padding: 9px 12px !important;
+        border: 1px solid #cbd5e1 !important;
+        background: #ffffff !important;
+        color: #475569 !important;
+        white-space: nowrap;
+    }
+    .web-search-toggle:hover {
+        background: #eef2f7 !important;
+        color: #1e293b !important;
+    }
+    .web-search-toggle.active {
+        background: #007bff !important;
+        color: #ffffff !important;
+        border-color: #007bff !important;
+    }
+    .web-search-toggle.active:hover {
+        background: #0056b3 !important;
+        color: #ffffff !important;
+    }
+    .web-search-toggle:focus-visible {
+        outline: 3px solid rgba(0, 123, 255, 0.28);
+        outline-offset: 2px;
+    }
+
     .cancel-job-button {
         padding: 9px 12px !important;
         border: 1px solid #cbd5e1 !important;
@@ -412,7 +439,7 @@
         /* 上传文件按钮的特定样式 */
         background-color: #28bb4b;  /* 绿色背景 */
         margin-right: 2px; /* 与发送按钮的间距 */
-        margin-left: 2px; 
+        margin-left: 2px;
     }
     #uploadCsvButton:hover {
         /* 鼠标悬停在上传按钮上时，加深背景色 */

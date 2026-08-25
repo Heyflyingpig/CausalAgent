@@ -39,6 +39,7 @@ EXPECTED_CODES = {
     "job.node.timeout",
     "job.node.degraded",
     "job.postprocess.degraded",
+    "chat.attachment.degraded",
     "rag.startup.unavailable",
     "rag.enrichment.degraded",
     "mcp.tool.finished",

@@ -624,6 +624,7 @@
   - 为 RAG 查询失败和非法 ToolMessage JSON 增加明确错误标记，分别保持 `unavailable` 与 `protocol_error` 语义，不改变取消/撤销异常传播和既有重试边界。
   - 补充 RAG 预检、查询错误标记、协议错误分流和权威验证边界文档。
 
+
 ---
 2026.8.18
 - 【日志管理第一阶段 1.1：日志契约与 Job 请求关联】
@@ -665,3 +666,30 @@
 - 【管理员侧栏新增 Grafana 切换入口】
   - 在管理员侧栏页脚的“进入聊天”上方新增“进入 Grafana”按钮，直接跳转到默认开发环境的 `http://127.0.0.1:3000/`。
   - 为桌面展开、折叠和移动端布局补齐交换图标、按钮间距及 Mock E2E/组件测试覆盖，不改变 Flask 管理员鉴权或 Grafana 登录边界。
+---
+2026.8.24
+- 【联网搜索引用接口边界纠正】
+  - 保留报告终态 `final_result.data.references` 与历史消息 `message.references` 的 `title + url` 引用接口，以及独立附件持久化能力。
+  - 撤回 `preprocess`、`postprocess` 和 `report` 节点与引用功能无关的流式 LLM 配置；公开文字流仍仅用于普通问答和报告追问。
+  - 增加父图 LLM 流式使用范围的回归测试，并补充普通用户 SSE 引用字段契约。
+
+---
+2026.8.25
+- 【SearXNG 部署初始化与可降级边界】
+  - `searxng-init` 改为在配置目录内生成临时 `settings.yml`，完成 secret 注入和占位符校验后原子发布，生成失败不留下半初始化目标文件。
+  - 固定开发 Compose 的 SearXNG 镜像版本，并增加 `/healthz` 浅层 healthcheck；默认 app/worker 保持与 SearXNG 解耦。
+  - 保留联网搜索运行期重试和统一降级语义，补充 init 脚本、Compose 部署契约测试和隔离 Docker 验证入口，并同步部署、启动和测试文档。
+- 【联网搜索容错、开关校验与结果上限】
+  - 为联网搜索新增 `WebSearchStatus`、`build_web_search_degradation_result()`、`degrade_web_search_parser_failure()` 和 `degrade_web_search_adapter_result()`；result_parser 与父图 web_search 节点分别注册协议错误和子图整体失败兜底，统一降级后回到 `agent`。
+  - 降级结果统一包含 `success`、`status`、`query`、`results`、`content` 和错误字段；异常对象经 `sanitize_error()` 归类，`CancelledError` 与 `JobExecutionRevoked` 保持原有传播语义，不转成普通搜索失败。
+  - `web_search_enabled` 在路由层和 Job service 层均只接受 JSON 布尔值，非布尔请求返回 `400` 或在服务层拒绝，并继续参与请求指纹和幂等冲突判断。
+  - 统一使用 `WEB_SEARCH_MAX_RESULTS=9` 控制搜索结果合并、报告/追问注入和最终引用投影，避免报告依据超出公开引用范围。
+
+---
+2026.8.25
+- 【合并 develop：联网搜索与结构化日志能力整合】
+  - 同时保留联网搜索上下文路由和 develop 的节点结构化错误日志，补齐联网搜索父图与子图 error handler 的节点、超时元数据。
+  - Job 创建链路同时持久化 `web_search_enabled` 与原始 `request_id`，保持搜索开关参与幂等指纹且重放不覆盖首次请求 ID。
+  - 正常报告与降级报告继续公开受限搜索引用，同时遵守统一 JSON stderr 日志合同。
+  - Web Search Planner 内部结构化输出降级改用受管事件，移除 query、命中数和路由选择的普通日志；历史引用附件解析失败使用不含消息 ID 和正文的注册事件。
+  - 默认开发 Compose 同时保留 SearXNG/Valkey 搜索服务和 Loki/Alloy/Grafana 可观测拓扑，并同步部署与测试文档。

@@ -213,3 +213,23 @@ def test_mcp_runtime_does_not_enable_verbose_algorithm_stdout():
             ):
                 violations.append(f"{_relative(path)}:{node.lineno}:verbose_stdout")
     assert violations == []
+
+
+def test_web_search_planner_internal_degradation_uses_managed_event():
+    """Planner 自行吞掉结构化输出异常时，必须留下受管降级事件。"""
+    path = PROJECT_ROOT / "Agent" / "causal_agent" / "nodes.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=_relative(path))
+    planner = next(
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "web_search_planner_node"
+    )
+    managed_calls = [
+        node
+        for node in ast.walk(planner)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_log_node_degradation"
+    ]
+    assert len(managed_calls) == 1

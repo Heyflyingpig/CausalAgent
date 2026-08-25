@@ -177,6 +177,7 @@ def _request_fingerprint(
     session_id: str,
     message: str,
     input_user_file_id: int | None = None,
+    web_search_enabled: bool = False,
 ) -> str:
     """使用服务端密钥为创建请求生成包含冻结文件选择的指纹。"""
     canonical = json.dumps(
@@ -184,6 +185,7 @@ def _request_fingerprint(
             "message": message,
             "session_id": session_id,
             "input_user_file_id": input_user_file_id,
+            "web_search_enabled": bool(web_search_enabled),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -381,6 +383,7 @@ def create_job(
     idempotency_key: str,
     input_user_file_id: int | None = None,
     *,
+    web_search_enabled: bool = False,
     request_id: str,
 ) -> tuple[dict[str, Any], bool]:
     """在一个 MySQL 事务中创建或重放带冻结文件输入的 Job。"""
@@ -392,7 +395,11 @@ def create_job(
             input_user_file_id = int(input_user_file_id)
         except (TypeError, ValueError) as exc:
             raise ValueError("input_user_file_id 无效") from exc
-    fingerprint = _request_fingerprint(session_id, normalized_message, input_user_file_id)
+    if not isinstance(web_search_enabled, bool):
+        raise ValueError("web_search_enabled 必须是布尔值")
+    fingerprint = _request_fingerprint(
+        session_id, normalized_message, input_user_file_id, web_search_enabled
+    )
     job_id = str(uuid4())
     connection = get_write_connection()
     try:
@@ -456,11 +463,11 @@ def create_job(
             INSERT INTO analysis_jobs (
                 job_id, user_id, session_id, request_id, message,
                 input_user_file_id, input_object_id, input_file_hash, input_filename,
-                status, max_attempts, active_session_key,
+                web_search_enabled, status, max_attempts, active_session_key,
                 idempotency_key, request_fingerprint
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                'queued', %s, %s, %s, %s
+                %s, 'queued', %s, %s, %s, %s
             )
             """,
             (
@@ -473,6 +480,7 @@ def create_job(
                 snapshot_values["input_object_id"],
                 snapshot_values["input_file_hash"],
                 snapshot_values["input_filename"],
+                int(web_search_enabled),
                 settings.JOB_MAX_ATTEMPTS,
                 f"{user_id}:{session_id}",
                 idempotency_key,

@@ -172,6 +172,7 @@ Grafana 继续使用独立账号和 `127.0.0.1:3000` 本地入口，不复用 Ca
 | `job.node.timeout` | `warning/lifecycle` | Agent 节点最终超时并进入降级路径 | `final_attempt`, `timeout_ms`, `fallback` |
 | `job.node.degraded` | `warning/lifecycle` | Agent 节点最终失败并进入降级路径 | `failure_kind`, `final_attempt`, `fallback` |
 | `job.postprocess.degraded` | `warning/lifecycle` | 因果分析后处理已降级 | `reason_code`, `affected_count` |
+| `chat.attachment.degraded` | `warning/dependency` | 聊天附件解析已降级 | `attachment_type`, `reason_code` |
 | `rag.startup.unavailable` | `warning/dependency` | RAG 知识库启动检查不可用 | `reason_code` |
 | `rag.enrichment.degraded` | `warning/dependency` | RAG 增强结果已降级 | `status`, `reason_code`, `question_count`, `evidence_count` |
 | `mcp.tool.finished` | `info/dependency` | MCP 工具调用完成 | `duration_ms`, `input_bytes`, `result_kind` |

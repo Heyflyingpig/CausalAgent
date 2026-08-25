@@ -129,6 +129,8 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
@@ -176,6 +178,7 @@ cython_debug/
 # Sensitive configuration files
 secrets.json
 config.json
+searxng/core-config/settings.yml
 
 #  demo
 杂项/
@@ -195,6 +198,7 @@ causalcopliot/
 Agent/knowledge_base/db/
 Agent/knowledge_base/source/
 Agent/knowledge_base/unfinish_source/
+Agent/knowledge_base/models/
 
 # skils
 skills/

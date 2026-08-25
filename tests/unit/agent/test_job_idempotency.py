@@ -155,6 +155,7 @@ class JobIdempotencyTests(unittest.TestCase):
                 "session-1",
                 "hello",
                 JOB_REQUEST_KEY,
+                web_search_enabled=True,
                 request_id=JOB_REQUEST_ID,
             )
 
@@ -166,8 +167,12 @@ class JobIdempotencyTests(unittest.TestCase):
         self.assertEqual(job, created)
         self.assertFalse(was_existing)
         self.assertEqual(insert_params[3], JOB_REQUEST_ID)
+        self.assertEqual(insert_params[9], 1)
         self.assertEqual(insert_params[-2], JOB_REQUEST_KEY)
-        self.assertEqual(insert_params[-1], _request_fingerprint("session-1", "hello"))
+        self.assertEqual(
+            insert_params[-1],
+            _request_fingerprint("session-1", "hello", None, True),
+        )
         self.assertEqual(connection.commits, 1)
         self.assertEqual(connection.rollbacks, 0)
 
@@ -206,6 +211,24 @@ class JobIdempotencyTests(unittest.TestCase):
         self.assertTrue(was_existing)
         self.assertEqual(connection.commits, 0)
         self.assertEqual(connection.rollbacks, 1)
+
+    def test_web_search_enabled_changes_fingerprint(self):
+        """切换 web_search_enabled 应改变请求指纹，同键复用会触发 409 冲突。"""
+        disabled = _request_fingerprint("session-1", "hello", None, False)
+        enabled = _request_fingerprint("session-1", "hello", None, True)
+        self.assertNotEqual(disabled, enabled)
+
+    def test_create_job_rejects_non_bool_web_search_enabled(self):
+        """create_job 不再宽松转换，非布尔值直接抛 ValueError。"""
+        with self.assertRaises(ValueError):
+            create_job(
+                7,
+                "session-1",
+                "hello",
+                JOB_REQUEST_KEY,
+                web_search_enabled="false",
+                request_id="job-create-request",
+            )
 
     def test_invalid_request_id_is_rejected_before_database_write(self):
         """服务层不能被绕过 HTTP 入口写入不符合契约的 request ID。"""

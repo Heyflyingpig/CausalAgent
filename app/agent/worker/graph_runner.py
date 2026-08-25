@@ -17,6 +17,7 @@ from app.agent.worker.event_adapter import (
 from app.agent.worker.execution_guard import JobExecutionGuard, JobExecutionRevoked
 from app.agent.worker.result_presenter import process_final_result
 from config.settings import settings
+from Agent.causal_agent.context import AgentRunContext
 
 
 def _snapshot_interrupts(snapshot: Any) -> list[Any]:
@@ -159,6 +160,7 @@ async def ai_call_stream(
     input_record: dict[str, Any] | None = None,
     initial_input_record: dict[str, Any] | None = None,
     execution_guard: JobExecutionGuard | None = None,
+    web_search_enabled: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """在显式传入的 graph 上执行一次调用并产出公开事件。"""
     if graph is None:
@@ -233,8 +235,10 @@ async def ai_call_stream(
         "subgraphs": True,
         "version": "v2",
     }
-    if execution_guard is not None:
-        stream_kwargs["context"] = execution_guard
+    stream_kwargs["context"] = AgentRunContext(
+        execution_guard=execution_guard,
+        web_search_enabled=web_search_enabled,
+    )
     try:
         async for chunk in graph.astream(
             input_data,

@@ -35,7 +35,17 @@ docker compose -f docker-compose.yml run --rm --no-deps alloy validate /etc/allo
 docker compose -f docker-compose.yml run --rm db-bootstrap
 ```
 
-开发 Compose 使用 `mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`app`、`worker`、`monitor` 和 `checkpoint-cleanup`；固定端口和数据卷属于共享 Docker daemon 资源，多个 worktree 同时运行时必须采用独立 project/端口策略，不能误用 `down -v`。
+首次启动时，`searxng-init` 会在配置目录内生成临时文件，完成复制、随机 `secret_key` 注入和校验后原子发布 `searxng/core-config/settings.yml`，无需手动复制；文件已存在则跳过且不会覆盖用户配置。`searxng` 使用固定版本镜像并提供 `/healthz` 浅层 healthcheck。默认 `app`/`worker` 不依赖 SearXNG 健康，联网搜索不可用时由 Job 运行期重试并降级。
+
+查看搜索服务的启动和健康状态：
+
+```bash
+docker compose -f docker-compose.yml ps searxng searxng-init valkey
+```
+
+需要验证 Compose 合并后的部署契约时，使用 `docker compose config`；不要使用 `down -v` 清理共享数据库或搜索数据卷。
+
+开发 Compose 使用 `mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`app`、`worker`、`monitor`、`checkpoint-cleanup`、`searxng-init`、`searxng` 和 `valkey`；固定端口和数据卷属于共享 Docker daemon 资源，多个 worktree 同时运行时必须采用独立 project/端口策略，不能误用 `down -v`。
 
 ## 本地 Python
 

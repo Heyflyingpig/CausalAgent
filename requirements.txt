@@ -63,6 +63,7 @@ torch==2.7.1
 sentence-transformers==3.0.1
 pymupdf==1.24.7
 unstructured==0.14.9
+trafilatura==2.1.0
 langchain-huggingface==1.2.2
 
 # 数据可视化依赖

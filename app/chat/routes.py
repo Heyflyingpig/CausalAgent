@@ -14,6 +14,7 @@ from app.request_context import (
     log_authorization_denied,
     log_request_failure,
 )
+from observability.logging_runtime import log_event
 
 chat_bp = Blueprint('chat', __name__, url_prefix='/api')
 LOGGER = logging.getLogger(__name__)
@@ -240,6 +241,19 @@ def load_session_content():
                                 visualization_mapping = json.loads(attachment["content"])
                             except json.JSONDecodeError:
                                 pass
+
+                        elif attachment["attachment_type"] == "web_search_references":
+                            try:
+                                message["references"] = json.loads(attachment["content"])
+                            except json.JSONDecodeError:
+                                log_event(
+                                    LOGGER,
+                                    "chat.attachment.degraded",
+                                    details={
+                                        "attachment_type": "web_search_references",
+                                        "reason_code": "protocol_error",
+                                    },
+                                )
 
                     if causal_graph_data:
                         message_content = causal_graph_data

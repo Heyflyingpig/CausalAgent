@@ -1,5 +1,5 @@
 import asyncio
-from .state import CausalAgentState, RagSubgraphState
+from .state import CausalAgentState, RagSubgraphState, WebSearchState
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -58,6 +58,14 @@ from .back_prompt import data_prompt
 from .back_prompt import causal_rag_prompt
 ## 报告人设
 from .back_prompt import causal_report_prompt
+
+from Agent.causal_agent.web_search_node import (
+    format_web_search_summary_for_prompt,
+    generate_research_question,
+    get_web_search_query,
+    web_search,
+    _merge_by_engine_top3,
+)
 
 # 数据库
 from Database.agent_connect import require_frozen_file_for_job
@@ -187,7 +195,7 @@ async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
             schema=RouteQuery,
             prompt=prompt,
             inputs={
-                "messages": state["messages"][-1],
+                "messages": latest_human_text,
                 "has_tool_results": has_tool_results,
                 "final_report": state.get("final_report", None)
             },
@@ -867,6 +875,87 @@ async def rag_subgraph_adapter_node(
     return {"knowledge_base_result": rag_output}
 
 
+async def web_search_planner_node(state: WebSearchState, llm: ChatOpenAI) -> dict:
+    """两步生成联网搜索 query：先提炼具体问题，再针对问题生成 query。"""
+    try:
+        question = await generate_research_question(state, llm)
+        r = await get_web_search_query(state, llm, question["question"])
+        return {
+            "planner": {
+                "success": True,
+                "research_question": question["question"],
+                "query": r["query"],
+                "query_en": r.get("query_en", ""),
+                "reason": r.get("reason", ""),
+                "error": None,
+            }
+        }
+    except StructuredOutputError:
+        _log_node_degradation(
+            "structured_output_error",
+            "web_search_planner_fallback",
+        )
+        return {
+            "planner": {
+                "success": False,
+                "research_question": "",
+                "query": "",
+                "query_en": "",
+                "reason": "",
+                "error": "无法生成搜索 query",
+            }
+        }
+
+
+async def academic_search_node(state: WebSearchState) -> dict:
+    """单节点：一次 SearXNG 查询统一走 arxiv/crossref/openalex，按引擎分组各取 top-3。"""
+    if not state.get("planner", {}).get("success"):
+        return {
+            "search": {
+                "success": False,
+                "results": [],
+                "number_of_results": 0,
+                "error": None,
+            }
+        }
+    search_query = state["planner"].get("query_en") or state["planner"].get("query", "")
+    payload = await asyncio.to_thread(web_search, search_query)
+    results = _merge_by_engine_top3(payload["results"])
+    return {
+        "search": {
+            "success": True,
+            "results": results,
+            "number_of_results": len(results),
+            "error": None,
+        }
+    }
+
+
+async def web_search_result_parser_node(state: WebSearchState) -> dict:
+    """纯 snippet 出口：把 search 结果投影为 web_search_result，无 LLM 总结。"""
+    p = state.get("planner", {})
+    search = state.get("search", {})
+    results = search.get("results", [])
+    content = [
+        {
+            "url": r.get("url", ""),
+            "title": r.get("title", ""),
+            "text": r.get("snippet", ""),
+            "source": "snippet",
+            "origin": r.get("source", ""),
+        }
+        for r in results
+    ]
+    return {
+        "web_search_result": {
+            "success": bool(search.get("success")),
+            "query": p.get("query", ""),
+            "results": results,
+            "content": content,
+        }
+    }
+
+
 # 环路检测模块
 from Agent.Postprocessing.cycles_check.detect_cycles import detect_cycles
 from Agent.Postprocessing.cycles_check.extract_causal_return import extract_adjacency_matrix
@@ -1208,8 +1297,9 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
          2. 预处理元数据：{preprocess_meta_data}
          2. 因果分析结果：{causal_analysis_result}
         3. 知识库结果：{knowledge_base_result}
-        4. 后处理结果：{postprocess_result}
-        5. 算法解释补充：{method_context}
+        4. 联网搜索结果：{web_search_result}
+        5. 后处理结果：{postprocess_result}
+        6. 算法解释补充：{method_context}
 
         ## 因果分析结果解读规则
         - 如果因果分析结果包含 error_type，请明确说明算法未能产生有效因果图，不要声称“没有因果关系”。
@@ -1269,6 +1359,9 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         max_questions=3,
         include_evidence=True
     )
+    web_summary = format_web_search_summary_for_prompt(
+        state.get("web_search_result", {}),
+    )
 
     response = await runnable.ainvoke({
         "messages": llm_prompt_messages(state["messages"]),
@@ -1276,6 +1369,7 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         "preprocess_summary": state.get("preprocess_summary", {}),
         "causal_analysis_result": state.get("causal_analysis_result", {}),
         "knowledge_base_result": knowledge_summary,
+        "web_search_result": web_summary,
         "postprocess_result": state.get("postprocess_result", {}),
         "method_context": _causal_method_context_for_report(
             state.get("causal_analysis_result", {})
@@ -1342,8 +1436,9 @@ async def inquiry_answer_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         # 当前状态摘要
         1. 因果分析结果：{causal_analysis_result}
         2. 知识库结果：{knowledge_base_result}
-        3. 后处理结果：{postprocess_result}
-        4. 报告：{final_report}
+        3. 联网搜索结果：{web_search_result}
+        4. 后处理结果：{postprocess_result}
+        5. 报告：{final_report}
         
         # 你的任务：根据历史摘要和所有分析结果，回答用户问题
         - 用户的问题：{messages}
@@ -1362,11 +1457,15 @@ async def inquiry_answer_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         max_questions=2,
         include_evidence=True
     )
+    web_summary = format_web_search_summary_for_prompt(
+        state.get("web_search_result", {}),
+    )
 
     response = await runnable.ainvoke({
         "messages": llm_prompt_messages(state["messages"]),
         "causal_analysis_result": state.get("causal_analysis_result", {}),
         "knowledge_base_result": knowledge_summary,
+        "web_search_result": web_summary,
         "postprocess_result": state.get("postprocess_result", {}),
         "final_report": state.get("final_report", {}),
         "system_role": causal_prompt()

@@ -12,13 +12,17 @@ tests/
 │   └── database/
 ├── integration/        # 跨模块静态契约、部署边界和 migration 链路
 │   ├── admin/
+│   ├── deployment/
 │   └── migrations/
 ├── e2e/admin/          # 隔离主从 + PostgreSQL checkpoint E2E 模块
 ├── run_admin_31_e2e.ps1
-└── run_admin_32_e2e.ps1
+├── run_admin_32_e2e.ps1
+└── run_searxng_docker_validation.ps1
 ```
 
 `unit` 和 `integration` 表示依赖范围，`admin`、`auth`、`database` 等目录表示业务归属。新增测试时先判断是否需要真实跨模块依赖，再选择业务目录。仓库测试同时包含 pytest 风格函数与 `unittest.TestCase`，统一由 pytest 负责发现和执行。
+
+`integration/deployment/` 只做不启动容器的 Compose 部署契约检查；SearXNG 的 init、healthcheck 和幂等性真实容器验证通过 `tests/run_searxng_docker_validation.ps1` 手工执行，不属于默认 pytest 范围。
 
 ## Docker 单元测试环境（推荐）
 

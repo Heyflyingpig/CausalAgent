@@ -1,8 +1,15 @@
 from langgraph.graph import StateGraph, END
 from .state import CausalAgentState
 from . import nodes, edges
-from .graph_utils import bind_node, bind_subgraph_node, guarded_error_handler, guarded_router
-from .tool_subgraphs import build_mcp_subgraph, build_rag_subgraph
+from .graph_utils import (
+    bind_node,
+    bind_subgraph_node,
+    guarded_context_router,
+    guarded_error_handler,
+    guarded_router,
+)
+from .tool_subgraphs import build_mcp_subgraph, build_rag_subgraph, build_web_search_subgraph
+from .context import AgentRunContext
 from .fault_tolerance import (
     recover_postprocess_to_report,
     recover_report,
@@ -11,6 +18,7 @@ from .fault_tolerance import (
     recover_fold_to_agent,
     recover_preprocess_to_agent,
     degrade_rag_adapter_result,
+    degrade_web_search_adapter_result,
     route_to_normal_chat,
     short_retry,
     timeout,
@@ -33,7 +41,7 @@ def build_graph(
 
     父图只表达业务阶段顺序，MCP/RAG 的 tool-calling 细节封装在各自子图内。
     """
-    workflow = StateGraph(CausalAgentState)
+    workflow = StateGraph(CausalAgentState, context_schema=AgentRunContext)
 
     streaming_llm = llm.model_copy(update={"streaming": True})
     agent_node_with_llm = bind_node(nodes.agent_node, event_node_name="agent", llm=llm)#将普通节点函数绑定llm，这些普通节点函数内部要调用大模型，但 LangGraph 执行节点时主要只传一个参数：state
@@ -51,6 +59,7 @@ def build_graph(
         event_node_name="rag",
         rag_subgraph=rag_subgraph,
     )
+    web_search_subgraph = build_web_search_subgraph(llm=llm)
     postprocess_node_with_llm = bind_node(nodes.postprocess_node, event_node_name="postprocess", llm=llm)
     inquiry_answer_node_with_llm = bind_node(
         nodes.inquiry_answer_node,
@@ -91,7 +100,7 @@ def build_graph(
         "preprocess",
         preprocess_node_with_llm,
         retry_policy=short_retry(),
-        timeout=timeout(run_timeout=180, idle_timeout=60),
+        timeout=timeout(run_timeout=180, idle_timeout=80),
         error_handler=guarded_error_handler(
             recover_preprocess_to_agent,
             event_node_name="preprocess",
@@ -106,6 +115,14 @@ def build_graph(
         error_handler=guarded_error_handler(
             degrade_rag_adapter_result,
             event_node_name="rag",
+        ),
+    )
+    workflow.add_node(
+        "web_search",
+        web_search_subgraph,
+        error_handler=guarded_error_handler(
+            degrade_web_search_adapter_result,
+            event_node_name="web_search",
         ),
     )
     workflow.add_node(
@@ -184,12 +201,17 @@ def build_graph(
         }
     )
     
-    workflow.add_edge(
-        "rag", 
-        "agent"
-    )
     workflow.add_conditional_edges(
-        "postprocess", 
+        "rag",
+        guarded_context_router(edges.web_search_router),
+        {
+            "web_search": "web_search",
+            "agent": "agent",
+        },
+    )
+    workflow.add_edge("web_search", "agent")
+    workflow.add_conditional_edges(
+        "postprocess",
         guarded_router(edges.postprocess_router),
         {
             "report": "report"

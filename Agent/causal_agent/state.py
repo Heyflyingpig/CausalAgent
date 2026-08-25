@@ -56,6 +56,7 @@ class CausalAgentState(TypedDict):
 
     causal_analysis_result: Optional[dict]
     knowledge_base_result: Optional[Dict[str, Any]]
+    web_search_result: Optional[dict]
 
     preprocess_summary: Optional[str]
     postprocess_result: Optional[dict]
@@ -86,3 +87,19 @@ class RagSubgraphState(TypedDict, total=False):
     rag_parse_result: Optional[Dict[str, Any]]
     rag_status: Literal["available", "unavailable", "protocol_error"]
     rag_output: Optional[Dict[str, Any]]
+
+
+class WebSearchInput(TypedDict):
+    messages: Annotated[List[BaseMessage], add]
+    analysis_parameters: Optional[dict]
+    causal_analysis_result: Optional[dict]
+    knowledge_base_result: Optional[dict]
+
+
+class WebSearchOutput(TypedDict):
+    web_search_result: Optional[dict]
+
+
+class WebSearchState(WebSearchInput, WebSearchOutput):
+    planner: dict
+    search: dict

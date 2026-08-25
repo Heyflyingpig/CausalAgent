@@ -27,6 +27,7 @@ let currentSessionId = null; // < 全局变量跟踪当前会话ID
 let isNewSessionPendingDisplay = false; //  用于跟踪新会话是否已在UI中临时显示
 let chatEventListenersAttached = false; // 跟踪事件监听器是否已附加
 let selectedUserFile = null; // 仅保存在当前页面的文件草稿，不写入 session
+let webSearchEnabled = false; // 联网搜索开关，仅保存在当前页面的草稿，不写入 session
 let waitingJob = null; // 当前 waiting_input Job 的恢复草稿
 let sendRequestInFlight = false; // 防止创建/恢复请求尚未返回时重复提交
 const activeJobsById = new Map(); // 当前用户所有活动 Job，按 job_id 隔离
@@ -72,6 +73,9 @@ const i18n = {
         send: '发送',
         cancelJob: '取消任务',
         cancelingJob: '取消中...',
+        webSearch: '联网搜索',
+        webSearchOn: '联网搜索：开',
+        webSearchOff: '联网搜索：关',
         jobCanceled: '任务已取消',
         // 动态消息
         accountPrefix: '账号: ',
@@ -130,6 +134,9 @@ const i18n = {
         send: 'Send',
         cancelJob: 'Cancel task',
         cancelingJob: 'Canceling...',
+        webSearch: 'Web Search',
+        webSearchOn: 'Web Search: On',
+        webSearchOff: 'Web Search: Off',
         jobCanceled: 'Task canceled',
         // Dynamic messages
         accountPrefix: 'Account: ',
@@ -346,6 +353,19 @@ function renderActiveJobControl(job = null) {
     }
 }
 
+function renderWebSearchToggle() {
+    const btn = document.getElementById('webSearchToggle');
+    if (!btn) return;
+    btn.textContent = webSearchEnabled ? getText('webSearchOn') : getText('webSearchOff');
+    btn.classList.toggle('active', webSearchEnabled);
+    btn.setAttribute('aria-pressed', String(webSearchEnabled));
+}
+
+function toggleWebSearch() {
+    webSearchEnabled = !webSearchEnabled;
+    renderWebSearchToggle();
+}
+
 // 应用语言到所有带有 data-i18n 属性的元素
 function applyLanguage() {
     // 更新所有带有 data-i18n 属性的元素的文本内容
@@ -369,6 +389,7 @@ function applyLanguage() {
         userInfoContent.textContent = getText('accountPrefix') + currentUsername;
     }
 
+    renderWebSearchToggle();
     renderActiveJobControl();
 }
 
@@ -810,7 +831,8 @@ function setupChatEventListeners() {
     const uploadCsvButton = document.getElementById('uploadCsvButton');
     const clearSelectedFileButton = document.getElementById('clearSelectedFileButton');
     const cancelJobButton = document.getElementById('cancelJobButton');
-    
+    const webSearchToggle = document.getElementById('webSearchToggle');
+
     if (menuIcon) menuIcon.addEventListener('click', toggleSidebar);
     if (sidebarToggle) sidebarToggle.addEventListener('click', toggleSidebar);
     if (newChatButton) newChatButton.addEventListener('click', newChat);
@@ -819,6 +841,7 @@ function setupChatEventListeners() {
     if (uploadCsvButton) uploadCsvButton.addEventListener('click', triggerCsvUpload);
     if (clearSelectedFileButton) clearSelectedFileButton.addEventListener('click', clearSelectedUserFile);
     if (cancelJobButton) cancelJobButton.addEventListener('click', cancelCurrentJob);
+    if (webSearchToggle) webSearchToggle.addEventListener('click', toggleWebSearch);
 
     chatEventListenersAttached = true; //  设置标志 
 }
@@ -849,7 +872,7 @@ function createAgentRequestIdempotencyKey() {
     throw new Error('当前浏览器不支持安全的请求幂等键生成');
 }
 
-async function requestAgentJob(message, sessionId, idempotencyKey, inputUserFileId = null) {
+async function requestAgentJob(message, sessionId, idempotencyKey, inputUserFileId = null, webSearchEnabled = false) {
     // 对创建请求的未知结果最多重试一次，并始终复用同一个幂等键。
     const request = async () => {
         const response = await fetch('/api/agent/jobs', {
@@ -863,6 +886,7 @@ async function requestAgentJob(message, sessionId, idempotencyKey, inputUserFile
                 username: currentUsername,
                 session_id: sessionId,
                 input_user_file_id: inputUserFileId,
+                web_search_enabled: webSearchEnabled,
             }),
         });
         const jobData = await response.json();
@@ -1245,6 +1269,7 @@ async function sendMessage() {
                 currentSessionId,
                 idempotencyKey,
                 selectedFileId,
+                webSearchEnabled,
             );
             clearSelectedUserFile();
         }

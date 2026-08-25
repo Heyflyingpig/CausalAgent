@@ -5,10 +5,14 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from Agent.causal_agent import nodes
+from Agent.causal_agent.context import AgentRunContext
 from Agent.causal_agent.fault_tolerance import (
+    degrade_academic_search,
     degrade_rag_tool_result,
     degrade_rag_parser_failure,
     degrade_rag_finalize_failure,
+    degrade_web_search_parser_failure,
+    degrade_web_search_planner,
     recover_mcp_tool_failure,
     short_retry,
     timeout,
@@ -20,7 +24,13 @@ from Agent.causal_agent.graph_utils import (
     guarded_error_handler,
     guarded_router,
 )
-from Agent.causal_agent.state import CausalAgentState, RagSubgraphState
+from Agent.causal_agent.state import (
+    CausalAgentState,
+    RagSubgraphState,
+    WebSearchInput,
+    WebSearchOutput,
+    WebSearchState,
+)
 
 
 def route_rag_planner(state: RagSubgraphState) -> str:
@@ -183,3 +193,64 @@ def build_rag_subgraph(llm, rag_tools, rag_available: bool = True):
     graph.add_edge("rag_result_parser", "rag_finalize")
     graph.add_edge("rag_finalize", END)
     return graph.compile(name="rag")
+
+
+def build_web_search_subgraph(llm):
+    """构建联网搜索子图，返回 compiled subgraph。"""
+    graph = StateGraph(
+        WebSearchState,
+        input_schema=WebSearchInput,
+        output_schema=WebSearchOutput,
+        context_schema=AgentRunContext,
+    )
+    # 注意：bind_node 的包装函数把 state 标注成了 CausalAgentState，
+    # LangGraph 会据此推断每个节点的 input_schema 并过滤掉 WebSearchState
+    # 特有的中间字段（planner/search）。这里显式指定 input_schema，让节点
+    # 收到完整的子图状态，否则 academic_search 读不到 planner 的产出。
+    graph.add_node(
+        "planner",
+        bind_node(
+            nodes.web_search_planner_node,
+            event_node_name="web_search_planner",
+            llm=llm,
+        ),
+        input_schema=WebSearchState,
+        retry_policy=short_retry(max_attempts=2),
+        timeout=timeout(run_timeout=120, idle_timeout=70),
+        error_handler=guarded_error_handler(
+            degrade_web_search_planner,
+            event_node_name="web_search_planner",
+            timeout_ms=120_000,
+        ),
+    )
+    graph.add_node(
+        "academic_search",
+        bind_node(nodes.academic_search_node, event_node_name="academic_search"),
+        input_schema=WebSearchState,
+        retry_policy=tool_retry(max_attempts=3),
+        timeout=timeout(run_timeout=120, idle_timeout=45),
+        error_handler=guarded_error_handler(
+            degrade_academic_search,
+            event_node_name="academic_search",
+            timeout_ms=120_000,
+        ),
+    )
+    graph.add_node(
+        "result_parser",
+        bind_node(
+            nodes.web_search_result_parser_node,
+            event_node_name="web_search_result_parser",
+        ),
+        input_schema=WebSearchState,
+        timeout=timeout(run_timeout=120, idle_timeout=45),
+        error_handler=guarded_error_handler(
+            degrade_web_search_parser_failure,
+            event_node_name="web_search_result_parser",
+            timeout_ms=120_000,
+        ),
+    )
+    graph.set_entry_point("planner")
+    graph.add_edge("planner", "academic_search")
+    graph.add_edge("academic_search", "result_parser")
+    graph.add_edge("result_parser", END)
+    return graph.compile(name="web_search")

@@ -34,6 +34,28 @@ docker compose -f docker-compose.test.yml run --rm unit-test python -m pytest -p
 docker compose -f docker-compose.test.yml run --rm unit-test python -m pytest -p no:cacheprovider tests/unit/agent/test_job_lifecycle.py
 ```
 
+## SearXNG 部署验证
+
+SearXNG 初始化脚本的纯脚本行为由 `tests/unit/deployment/test_searxng_init_settings.py` 覆盖，包含生成、幂等、缺失 example 和生成中断不发布半成品。Compose 部署契约由 `tests/integration/deployment/test_searxng_compose.py` 静态检查，确认镜像不是 `latest`、存在 `/healthz` healthcheck，且默认 `app`/`worker` 不依赖 SearXNG。
+
+需要 Docker Engine 才能执行真实容器验证：
+
+```bash
+docker compose -f docker-compose.yml config
+docker compose -f docker-compose.yml up -d searxng
+docker compose -f docker-compose.yml ps searxng searxng-init valkey
+```
+
+容器验证应另外确认 `/healthz` 返回成功、JSON 搜索格式可用，以及停止 SearXNG 后开启 `web_search_enabled` 的 Job 仍按运行期重试和统一降级协议收敛。该真实网络证据不能由 unit 或静态 Compose 测试替代。
+
+可使用隔离临时配置目录执行 init、healthcheck 和幂等性验证；脚本结束时只清理本次生成的 Compose project 和临时目录，不触碰开发环境现有配置：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tests/run_searxng_docker_validation.ps1
+```
+
+## 日志与可观测性验证
+
 日志第二阶段的重点回归位于 `tests/unit/test_logging_runtime.py`、`test_event_catalog.py`、`test_noise_control.py`、`test_request_logging.py`、`tests/unit/agent/`、`tests/unit/database/test_database_logging.py` 和 `tests/integration/test_logging_policy.py`。它们覆盖事件目录和固定消息、非法合同安全降级、异常栈清理、请求/线程/异步任务/worker slot 上下文隔离、Job 终态、node 最终降级、RAG 计数日志、MCP 可信参数及 stdout/stderr、数据库/monitor/cleanup 转移，以及运行路径普通 logging 调用和敏感详情键的 AST 政策。
 
 日志改造必须运行完整 `unit-test` 服务，不能只运行新增文件。测试通过只证明代码级合同，不证明 Docker 日志驱动、Alloy、Loki、Grafana、positions、查询标签或真实模型/MCP 链路。

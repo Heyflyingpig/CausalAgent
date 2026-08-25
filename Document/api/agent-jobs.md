@@ -25,11 +25,14 @@
 {
   "message": "请分析这些变量之间的关系",
   "session_id": "session-uuid",
-  "input_user_file_id": 123
+  "input_user_file_id": 123,
+  "web_search_enabled": false
 }
 ```
 
-`input_user_file_id` 可省略；消息必须是非空文本，长度受服务端限制。请求必须带标准 UUID v4 `Idempotency-Key`。服务端在一个 MySQL 事务中检查会话归属、活动 Job、文件归属，冻结文件快照，写入 Job、initial input、用户聊天消息和请求指纹。
+`input_user_file_id` 和 `web_search_enabled` 都可省略；`web_search_enabled` 缺省为 `false`。消息必须是非空文本，长度受服务端限制。请求必须带标准 UUID v4 `Idempotency-Key`。`web_search_enabled` 只接受 JSON 布尔值；字符串 `"true"`、`"false"`、数字、`null` 等非布尔值在接口层返回 `400`，服务层在创建 Job 前再次严格校验。该开关参与请求指纹，因此同一个幂等键不能把搜索开关从开启改为关闭或反之。
+
+服务端在一个 MySQL 事务中检查会话归属、活动 Job、文件归属，冻结文件快照，写入 Job、initial input、用户聊天消息和包含 `web_search_enabled` 的请求指纹。
 
 请求上下文中的 `X-Request-ID` 会在入口校验或生成，并作为创建 Job 的原始关联 ID 保存到 `analysis_jobs.request_id`；历史 Job 该字段可以为 `NULL`。同一 `Idempotency-Key` 重放时只返回首次创建的 Job，不会用后续请求的 `X-Request-ID` 覆盖首次值；该内部关联字段不进入普通用户响应。
 
@@ -37,7 +40,7 @@
 - 相同用户、相同幂等键和相同请求参数重放原 Job，返回 `200`、`existing=true`。
 - 同一 `user_id + session_id` 已有 `queued`、`running` 或 `waiting_input` Job 时返回 `409`，错误码为 `active_job_conflict`。
 - 同一个幂等键对应不同请求参数时返回 `409`。
-- 缺少或非 UUID v4 幂等键、消息为空或文件/会话无权访问时返回 `400` 或 `403`。
+- 缺少或非 UUID v4 幂等键、消息为空、`web_search_enabled` 非布尔值或文件/会话无权访问时返回 `400` 或 `403`。
 
 ## 活动 Job
 
@@ -54,6 +57,26 @@ Last-Event-ID: 42
 也兼容 `last_event_id=42` 查询参数。服务端从 `analysis_job_events.id > 42` 读取事件，返回标准 SSE 的 `id`、`event`、`data` 字段；没有新事件时按配置轮询并发送 heartbeat。事件 payload 按事件类型执行字段白名单清洗，worker 的 `attempt`、未知附加字段和内部对象不会对外可见。
 
 收到 `interrupt` 后，前端应展示公开问题并等待恢复；收到 `final_result`、`error` 或 `canceled` 后连接结束。若 Job 已经进入终态，即使数据库查询时没有新的事件，服务端也会结束连接。
+
+联网搜索成功且存在结果时，报告终态的 `final_result.data` 额外包含最多 9 条引用。报告/追问使用的搜索结果与公开引用共用 `WEB_SEARCH_MAX_RESULTS=9` 上限。引用只公开网页标题和 URL，不返回网页正文、搜索工具内部字段或完整搜索结果：
+
+```json
+{
+  "type": "final_result",
+  "data": {
+    "type": "causal_graph",
+    "summary": "报告正文",
+    "references": [
+      {
+        "title": "网页标题",
+        "url": "https://example.com/page"
+      }
+    ]
+  }
+}
+```
+
+引用随 assistant 消息独立持久化；重新加载会话时通过 `message.references` 返回相同的 `title + url` 数组。后端只提供该字段契约，不要求前端展示引用。报告、预处理和后处理节点不发送文字增量；公开 `text_delta` 仍只来自普通问答和报告追问节点。
 
 ## Resume 与 Cancel
 

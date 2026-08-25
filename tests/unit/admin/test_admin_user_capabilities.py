@@ -159,6 +159,7 @@ class AdminUserCapabilityTests(unittest.TestCase):
             "分析数据",
             JOB_IDEMPOTENCY_KEY,
             None,
+            web_search_enabled=False,
             request_id="job-create-request",
         )
 

@@ -7,11 +7,22 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
+from Agent.causal_agent.web_search_node import WEB_SEARCH_MAX_RESULTS
 from app.chat.response_storage import render_summary_for_display
 from observability.logging_runtime import log_context, log_event
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _extract_references(web_search_result: Any) -> list[dict]:
+    """从联网搜索结果投影引用（仅 title + url），数量与注入报告的一致。"""
+    if not web_search_result or not web_search_result.get("success"):
+        return []
+    return [
+        {"title": c.get("title", ""), "url": c.get("url", "")}
+        for c in web_search_result.get("content", [])[:WEB_SEARCH_MAX_RESULTS]
+    ]
 
 
 def process_final_result(final_state_data: dict[str, Any]) -> dict[str, Any]:
@@ -60,11 +71,18 @@ def process_final_result(final_state_data: dict[str, Any]) -> dict[str, Any]:
                         result["summary"],
                         visualization_mapping,
                     )
+                references = _extract_references(final_state_data.get("web_search_result"))
+                if references:
+                    result["references"] = references
                 return result
 
     final_report = final_state_data.get("final_report")
     if final_report:
-        return {"type": "text", "summary": final_report, "layout": "report"}
+        result = {"type": "text", "summary": final_report, "layout": "report"}
+        references = _extract_references(final_state_data.get("web_search_result"))
+        if references:
+            result["references"] = references
+        return result
 
     with log_context(node="result_presenter"):
         log_event(
