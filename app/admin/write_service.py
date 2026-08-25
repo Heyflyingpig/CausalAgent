@@ -11,6 +11,7 @@ from decimal import Decimal
 import hashlib
 import hmac
 import json
+import logging
 import re
 from typing import Any
 from uuid import uuid4
@@ -26,9 +27,10 @@ from app.auth.service import (
     verify_password,
 )
 from app.agent.checkpoint_cleanup import enqueue_checkpoint_cleanup_many
-from app.db import get_read_connection, get_write_connection
+from app.db import get_read_connection, get_write_connection, record_database_failure
 from app.request_context import get_request_id
 from config.settings import settings
+from observability.logging_runtime import log_context, log_event
 
 
 USER_OPERATION_TYPES = {"set_active", "set_role", "set_password"}
@@ -37,6 +39,7 @@ RETRYABLE_DATABASE_ERRORS = {
     errorcode.ER_LOCK_DEADLOCK,
     errorcode.ER_LOCK_WAIT_TIMEOUT,
 }
+LOGGER = logging.getLogger(__name__)
 
 
 def _json_default(value: Any) -> Any:
@@ -182,9 +185,27 @@ def _request_fingerprint(operation_type: str, body: dict[str, Any]) -> str:
     return hmac.new(secret, canonical, hashlib.sha256).hexdigest()
 
 
-def _validate_reauthentication(actor: dict[str, Any], password: Any) -> str:
+def _log_reauthentication_failure(actor: dict[str, Any], action: str) -> None:
+    with log_context(user_id=actor.get("id")):
+        log_event(
+            LOGGER,
+            "security.reauthentication.failed",
+            details={
+                "action": action,
+                "reason_code": "reauthentication_failed",
+            },
+        )
+
+
+def _validate_reauthentication(
+    actor: dict[str, Any],
+    password: Any,
+    *,
+    action: str,
+) -> str:
     """在主库重新校验当前管理员密码，不返回或记录明文。"""
     if not isinstance(password, str) or not password:
+        _log_reauthentication_failure(actor, action)
         raise AdminApiError(
             "reauth_required",
             "必须输入当前管理员密码重新认证",
@@ -208,6 +229,7 @@ def _validate_reauthentication(actor: dict[str, Any], password: Any) -> str:
         or not row.get("is_active")
         or not verify_password(password, row.get("password_hash"))
     ):
+        _log_reauthentication_failure(actor, action)
         raise AdminApiError(
             "reauth_failed",
             "当前管理员密码不正确或账号状态已变化",
@@ -229,6 +251,7 @@ def _lock_and_reauthenticate_actor(
     *,
     actor: dict[str, Any],
     password: str,
+    action: str,
 ) -> dict[str, Any]:
     """锁定操作者并在事务内再次确认管理员身份和密码。"""
     cursor.execute(
@@ -247,6 +270,7 @@ def _lock_and_reauthenticate_actor(
         or not row.get("is_active")
         or not verify_password(password, row.get("password_hash"))
     ):
+        _log_reauthentication_failure(actor, action)
         raise AdminApiError(
             "reauth_failed",
             "当前管理员密码不正确或账号状态已变化",
@@ -642,6 +666,7 @@ def execute_user_operation(
     reauth_password = _validate_reauthentication(
         actor,
         request_body.get("reauth_password"),
+        action=operation_type,
     )
     password_hashes = (
         [hash_password(value) for _target_id in target_ids]
@@ -657,6 +682,7 @@ def execute_user_operation(
             cursor,
             actor=actor,
             password=reauth_password,
+            action=operation_type,
         )
         replay = _load_existing_operation_for_update(
             cursor,
@@ -806,6 +832,7 @@ def execute_user_operation(
         )
         if replay is not None:
             return replay
+        record_database_failure(exc, operation="admin_user_write")
         _raise_database_error(exc)
         raise
     except Exception:
@@ -958,6 +985,7 @@ def delete_user(
     reauth_password = _validate_reauthentication(
         actor,
         request_body.get("reauth_password"),
+        action=operation_type,
     )
     operation_id = str(uuid4())
     connection = get_write_connection()
@@ -968,6 +996,7 @@ def delete_user(
             cursor,
             actor=actor,
             password=reauth_password,
+            action=operation_type,
         )
         replay = _load_existing_operation_for_update(
             cursor,
@@ -1164,6 +1193,7 @@ def delete_user(
         )
         if replay is not None:
             return replay
+        record_database_failure(exc, operation="admin_user_delete")
         _raise_database_error(exc)
         raise
     except Exception:
@@ -1322,6 +1352,7 @@ def delete_file(
     reauth_password = _validate_reauthentication(
         actor,
         request_body.get("reauth_password"),
+        action=operation_type,
     )
     operation_id = str(uuid4())
     connection = get_write_connection()
@@ -1332,6 +1363,7 @@ def delete_file(
             cursor,
             actor=actor,
             password=reauth_password,
+            action=operation_type,
         )
         replay = _load_existing_operation_for_update(
             cursor,
@@ -1494,6 +1526,7 @@ def delete_file(
         )
         if replay is not None:
             return replay
+        record_database_failure(exc, operation="admin_file_delete")
         _raise_database_error(exc)
         raise
     except Exception:

@@ -206,6 +206,8 @@ test('完整看板和在线配置在 Vue 生产路由语义下可交互', async 
 
   await page.goto('/admin/database')
   await expect(page.getByRole('heading', { name: '数据库状态看板' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '进入 Grafana' }))
+    .toHaveAttribute('href', 'http://127.0.0.1:3000/')
   await expect(page.getByRole('link', { name: '进入聊天' })).toHaveAttribute('href', '/')
   for (const text of ['Revision', '主库', '第一从库', '阻塞项', '连接使用率']) {
     await expect(page.getByText(text, { exact: true })).toBeVisible()
@@ -664,14 +666,20 @@ test('3.2 业务页面、受控写入、敏感揭示和可收缩导航在 mock �
   await expect(page.locator('.nav-icon svg')).toHaveCount(8)
   await expect(page.locator('.nav-icon svg').first()).toHaveAttribute('stroke-width', '1.8')
 
+  const grafanaEntry = page.getByRole('link', { name: '进入 Grafana' })
   const chatEntry = page.getByRole('link', { name: '进入聊天' })
   const logoutButton = page.getByRole('button', { name: '退出登录' })
+  await expect(grafanaEntry).toHaveCSS('text-decoration-line', 'none')
   await expect(chatEntry).toHaveCSS('text-decoration-line', 'none')
   await expect(logoutButton).toHaveCSS('margin-left', '0px')
-  const [chatBox, logoutBox] = await Promise.all([
+  const [grafanaBox, chatBox, logoutBox] = await Promise.all([
+    grafanaEntry.boundingBox(),
     chatEntry.boundingBox(),
     logoutButton.boundingBox(),
   ])
+  expect(grafanaBox?.x).toBe(chatBox?.x)
+  expect(grafanaBox?.width).toBe(chatBox?.width)
+  expect(grafanaBox?.y).toBeLessThan(chatBox?.y ?? 0)
   expect(chatBox?.x).toBe(logoutBox?.x)
   expect(chatBox?.width).toBe(logoutBox?.width)
 
@@ -766,6 +774,7 @@ test('3.2 业务页面、受控写入、敏感揭示和可收缩导航在 mock �
   await page.setViewportSize({ width: 720, height: 900 })
   await page.getByRole('button', { name: '打开后台导航' }).click()
   await expect(page.locator('.admin-sidebar')).toHaveClass(/mobile-open/)
+  await expect(page.getByRole('link', { name: '进入 Grafana' })).toBeVisible()
   await expect(page.getByRole('link', { name: '进入聊天' })).toBeVisible()
   await page.getByRole('button', { name: '关闭后台导航' }).first().click()
   await expect(page.locator('.admin-sidebar')).not.toHaveClass(/mobile-open/)

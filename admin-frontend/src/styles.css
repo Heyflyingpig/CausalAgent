@@ -125,18 +125,23 @@ button, a { font: inherit; }
 .admin-identity span, .admin-identity strong { display: block; }
 .identity-label { margin-bottom: 4px; color: var(--ca-muted); font-size: 12px; }
 .admin-identity strong { font-size: 14px; }
-.chat-entry-button, .logout-button {
+.grafana-entry-button, .chat-entry-button, .logout-button {
   width: 100%;
   font-size: 14px;
 }
-.chat-entry-button { margin-bottom: 10px; }
+.grafana-entry-button, .chat-entry-button { margin-bottom: 10px; }
+.sidebar-footer .grafana-entry-button,
+.sidebar-footer .chat-entry-button,
 .sidebar-footer .logout-button { margin-left: 0; }
+.sidebar-footer .grafana-entry-button,
+.sidebar-footer .grafana-entry-button:hover,
+.sidebar-footer .grafana-entry-button:focus,
 .sidebar-footer .chat-entry-button,
 .sidebar-footer .chat-entry-button:hover,
 .sidebar-footer .chat-entry-button:focus {
   text-decoration: none;
 }
-.chat-entry-icon, .logout-icon { display: none; align-items: center; justify-content: center; }
+.grafana-entry-icon, .chat-entry-icon, .logout-icon { display: none; align-items: center; justify-content: center; }
 
 .admin-sidebar.collapsed { padding-right: 12px; padding-left: 12px; }
 .admin-sidebar.collapsed .brand-block { padding-right: 0; padding-left: 0; }
@@ -144,6 +149,7 @@ button, a { font: inherit; }
 .admin-sidebar.collapsed .nav-text,
 .admin-sidebar.collapsed .nav-note,
 .admin-sidebar.collapsed .admin-identity,
+.admin-sidebar.collapsed .grafana-entry-text,
 .admin-sidebar.collapsed .chat-entry-text,
 .admin-sidebar.collapsed .logout-text { display: none; }
 .admin-sidebar.collapsed .nav-item {
@@ -152,8 +158,10 @@ button, a { font: inherit; }
   justify-content: center;
 }
 .admin-sidebar.collapsed .nav-icon { flex-basis: 20px; }
+.admin-sidebar.collapsed .grafana-entry-button,
 .admin-sidebar.collapsed .chat-entry-button,
 .admin-sidebar.collapsed .logout-button { width: 44px; padding: 8px; }
+.admin-sidebar.collapsed .grafana-entry-icon,
 .admin-sidebar.collapsed .chat-entry-icon,
 .admin-sidebar.collapsed .logout-icon { display: inline-flex; }
 
@@ -535,6 +543,7 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
   .admin-sidebar.collapsed .nav-label,
   .admin-sidebar.collapsed .nav-text,
   .admin-sidebar.collapsed .admin-identity,
+  .admin-sidebar.collapsed .grafana-entry-text,
   .admin-sidebar.collapsed .chat-entry-text,
   .admin-sidebar.collapsed .logout-text { display: block; }
   .admin-sidebar.collapsed .nav-note { display: none; }
@@ -543,15 +552,18 @@ h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); letter-spacing: -.03em; }
     padding: 0 12px;
     justify-content: flex-start;
   }
+  .admin-sidebar.collapsed .grafana-entry-button,
   .admin-sidebar.collapsed .chat-entry-button,
   .admin-sidebar.collapsed .logout-button { width: auto; padding: 8px 15px; }
+  .admin-sidebar.collapsed .grafana-entry-icon,
   .admin-sidebar.collapsed .chat-entry-icon,
   .admin-sidebar.collapsed .logout-icon { display: none; }
   .admin-nav { margin-bottom: 14px; }
   .nav-note { display: none; }
   .sidebar-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
   .admin-identity { flex: 1 0 100%; margin: 0; }
-  .chat-entry-button, .logout-button { width: auto; margin-bottom: 0; }
+  .grafana-entry-button, .chat-entry-button, .logout-button { width: auto; margin-bottom: 0; }
+  .grafana-entry-button { flex: 1 0 100%; }
   .admin-main { padding: 24px 16px 48px; }
   .page-header { display: block; }
   .header-actions { margin-top: 18px; justify-content: space-between; }

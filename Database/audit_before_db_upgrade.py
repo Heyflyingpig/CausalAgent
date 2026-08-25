@@ -9,22 +9,18 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-import sys
 
 import mysql.connector
+
+from observability.logging_runtime import configure_logging, current_environment
+
+if __name__ == "__main__":
+    configure_logging("maintenance", current_environment(), logging.INFO)
 
 try:
     from Database.inspection import execute_migration_preflight_checks
 except ModuleNotFoundError:  # 兼容 `python Database/audit_before_db_upgrade.py`
     from inspection import execute_migration_preflight_checks
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-
 
 def load_env() -> None:
     try:
@@ -34,7 +30,7 @@ def load_env() -> None:
         env_path = project_root / ".env"
         if env_path.exists():
             load_dotenv(dotenv_path=env_path)
-            logging.info("已从 %s 加载环境变量", env_path)
+            logging.info("已加载环境变量")
     except ImportError:
         logging.info("未安装 python-dotenv，使用系统环境变量")
 
@@ -79,6 +75,7 @@ def audit() -> list[dict]:
 
 def main() -> int:
     """输出迁移前审计结果，并在阻塞项非零或检查未知时拒绝升级。"""
+    configure_logging("maintenance", current_environment(), logging.INFO)
     failures = 0
     for check in audit():
         if check["status"] == "unknown":

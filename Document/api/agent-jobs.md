@@ -34,6 +34,8 @@
 
 服务端在一个 MySQL 事务中检查会话归属、活动 Job、文件归属，冻结文件快照，写入 Job、initial input、用户聊天消息和包含 `web_search_enabled` 的请求指纹。
 
+请求上下文中的 `X-Request-ID` 会在入口校验或生成，并作为创建 Job 的原始关联 ID 保存到 `analysis_jobs.request_id`；历史 Job 该字段可以为 `NULL`。同一 `Idempotency-Key` 重放时只返回首次创建的 Job，不会用后续请求的 `X-Request-ID` 覆盖首次值；该内部关联字段不进入普通用户响应。
+
 - 新 Job 返回 `202`，`success=true`、`existing=false`、`job_id` 和 `status=queued`。
 - 相同用户、相同幂等键和相同请求参数重放原 Job，返回 `200`、`existing=true`。
 - 同一 `user_id + session_id` 已有 `queued`、`running` 或 `waiting_input` Job 时返回 `409`，错误码为 `active_job_conflict`。

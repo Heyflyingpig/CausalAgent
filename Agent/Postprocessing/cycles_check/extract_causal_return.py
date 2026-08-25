@@ -1,6 +1,5 @@
 import numpy as np
 from typing import Tuple, List
-import logging
 
 def extract_adjacency_matrix(analysis_result: dict) -> Tuple[np.ndarray, List[str]]:
     """
@@ -28,10 +27,8 @@ def extract_adjacency_matrix(analysis_result: dict) -> Tuple[np.ndarray, List[st
         data_nodes = analysis_result.get("data", {}).get("nodes", [])
         node_names = [node['id'] for node in data_nodes]
         
-        logging.info(f"提取邻接矩阵成功: 形状 {adjacency_matrix.shape}, 节点数 {len(node_names)}")
         return adjacency_matrix, node_names
         
-    except Exception as e:
-        logging.error(f"提取邻接矩阵时发生错误: {e}", exc_info=True)
+    except Exception:
         # 返回空矩阵
         return np.array([]), []

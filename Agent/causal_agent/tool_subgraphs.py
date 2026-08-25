@@ -89,19 +89,31 @@ def build_mcp_subgraph(llm, mcp_tools):
         ),
         retry_policy=short_retry(max_attempts=2),
         timeout=timeout(run_timeout=60, idle_timeout=30),
-        error_handler=guarded_error_handler(recover_mcp_tool_failure),
+        error_handler=guarded_error_handler(
+            recover_mcp_tool_failure,
+            event_node_name="mcp_planner",
+            timeout_ms=60_000,
+        ),
     )
     graph.add_node(
         "mcp_tool_node",
         bind_runnable_node(ToolNode(mcp_tools), event_node_name="mcp_tool_node"),
         retry_policy=tool_retry(max_attempts=3),
         timeout=timeout(run_timeout=360, idle_timeout=120),
-        error_handler=guarded_error_handler(recover_mcp_tool_failure),
+        error_handler=guarded_error_handler(
+            recover_mcp_tool_failure,
+            event_node_name="mcp_tool_node",
+            timeout_ms=360_000,
+            mcp_transport=True,
+        ),
     )
     graph.add_node(
         "mcp_result_parser",
         bind_node(nodes.mcp_result_parser_node, event_node_name="mcp_result_parser"),
-        error_handler=guarded_error_handler(recover_mcp_tool_failure),
+        error_handler=guarded_error_handler(
+            recover_mcp_tool_failure,
+            event_node_name="mcp_result_parser",
+        ),
     )
     graph.set_entry_point("mcp_planner")
 
@@ -133,24 +145,38 @@ def build_rag_subgraph(llm, rag_tools, rag_available: bool = True):
         ),
         retry_policy=short_retry(max_attempts=2),
         timeout=timeout(run_timeout=60, idle_timeout=30),
-        error_handler=guarded_error_handler(degrade_rag_tool_result),
+        error_handler=guarded_error_handler(
+            degrade_rag_tool_result,
+            event_node_name="rag_question_planner",
+            timeout_ms=60_000,
+        ),
     )
     graph.add_node(
         "rag_tool_node",
         bind_runnable_node(_RagToolNode(rag_tools), event_node_name="rag_tool_node"),
         retry_policy=tool_retry(max_attempts=2),
         timeout=timeout(run_timeout=120, idle_timeout=45),
-        error_handler=guarded_error_handler(degrade_rag_tool_result),
+        error_handler=guarded_error_handler(
+            degrade_rag_tool_result,
+            event_node_name="rag_tool_node",
+            timeout_ms=120_000,
+        ),
     )
     graph.add_node(
         "rag_result_parser",
         bind_node(nodes.rag_result_parser_node, event_node_name="rag_result_parser"),
-        error_handler=guarded_error_handler(degrade_rag_parser_failure),
+        error_handler=guarded_error_handler(
+            degrade_rag_parser_failure,
+            event_node_name="rag_result_parser",
+        ),
     )
     graph.add_node(
         "rag_finalize",
         bind_node(nodes.rag_finalize_node, event_node_name="rag_finalize"),
-        error_handler=guarded_error_handler(degrade_rag_finalize_failure),
+        error_handler=guarded_error_handler(
+            degrade_rag_finalize_failure,
+            event_node_name="rag_finalize",
+        ),
     )
     graph.set_entry_point("rag_question_planner")
 
@@ -191,7 +217,11 @@ def build_web_search_subgraph(llm):
         input_schema=WebSearchState,
         retry_policy=short_retry(max_attempts=2),
         timeout=timeout(run_timeout=120, idle_timeout=70),
-        error_handler=guarded_error_handler(degrade_web_search_planner),
+        error_handler=guarded_error_handler(
+            degrade_web_search_planner,
+            event_node_name="web_search_planner",
+            timeout_ms=120_000,
+        ),
     )
     graph.add_node(
         "academic_search",
@@ -199,7 +229,11 @@ def build_web_search_subgraph(llm):
         input_schema=WebSearchState,
         retry_policy=tool_retry(max_attempts=3),
         timeout=timeout(run_timeout=120, idle_timeout=45),
-        error_handler=guarded_error_handler(degrade_academic_search),
+        error_handler=guarded_error_handler(
+            degrade_academic_search,
+            event_node_name="academic_search",
+            timeout_ms=120_000,
+        ),
     )
     graph.add_node(
         "result_parser",
@@ -209,7 +243,11 @@ def build_web_search_subgraph(llm):
         ),
         input_schema=WebSearchState,
         timeout=timeout(run_timeout=120, idle_timeout=45),
-        error_handler=guarded_error_handler(degrade_web_search_parser_failure),
+        error_handler=guarded_error_handler(
+            degrade_web_search_parser_failure,
+            event_node_name="web_search_result_parser",
+            timeout_ms=120_000,
+        ),
     )
     graph.set_entry_point("planner")
     graph.add_edge("planner", "academic_search")

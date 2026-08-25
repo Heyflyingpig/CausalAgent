@@ -6,6 +6,18 @@ from typing import Any
 from langchain_core.messages import AIMessage
 
 from Agent.causal_agent.state import CausalAgentState
+from observability.logging_runtime import current_log_context
+
+
+_TRUSTED_ARGUMENTS = (
+    "user_id",
+    "session_id",
+    "job_id",
+    "input_user_file_id",
+    "input_object_id",
+    "request_id",
+    "worker_slot",
+)
 
 
 def _tool_name(tool: Any) -> str | None:
@@ -42,6 +54,35 @@ def _tool_accepts_argument(tool: Any, argument_name: str) -> bool:
     return isinstance(args, dict) and argument_name in args
 
 
+def _required_tool_arguments(tool: Any) -> set[str]:
+    """读取 OpenAI/Pydantic schema 中声明为必填的参数名。"""
+    if isinstance(tool, dict):
+        function = tool.get("function", {})
+        parameters = function.get("parameters", {}) if isinstance(function, dict) else {}
+        required = parameters.get("required", []) if isinstance(parameters, dict) else []
+        return {name for name in required if isinstance(name, str)}
+
+    args_schema = getattr(tool, "args_schema", None)
+    if args_schema is None:
+        return set()
+    model_fields = getattr(args_schema, "model_fields", None)
+    if isinstance(model_fields, dict):
+        required: set[str] = set()
+        for name, field in model_fields.items():
+            checker = getattr(field, "is_required", None)
+            if callable(checker) and checker():
+                required.add(name)
+        return required
+    fields = getattr(args_schema, "__fields__", None)
+    if isinstance(fields, dict):
+        return {
+            name
+            for name, field in fields.items()
+            if bool(getattr(field, "required", False))
+        }
+    return set()
+
+
 def _tools_by_name(mcp_tools: list) -> dict[str, Any]:
     """按工具名索引当前可执行 MCP tools。"""
     return {
@@ -58,11 +99,21 @@ def _inject_mcp_runtime_arguments(
 ) -> AIMessage:
     """向 MCP 工具注入可信 Job 身份，不把 CSV 正文放入 ToolMessage。"""
     file_summary = state.get("file_summary") or {}
+    log_values = current_log_context()
+    raw_worker_slot = log_values.get("worker_slot")
+    worker_slot = (
+        int(raw_worker_slot)
+        if isinstance(raw_worker_slot, str) and raw_worker_slot.isdigit()
+        else None
+    )
     runtime_values = {
         "user_id": state.get("user_id"),
+        "session_id": state.get("session_id"),
         "job_id": state.get("job_id"),
         "input_user_file_id": file_summary.get("user_file_id"),
         "input_object_id": file_summary.get("object_id"),
+        "request_id": log_values.get("request_id"),
+        "worker_slot": worker_slot,
     }
     tool_index = _tools_by_name(mcp_tools)
     for tool_call in getattr(ai_message, "tool_calls", []) or []:
@@ -70,10 +121,21 @@ def _inject_mcp_runtime_arguments(
         if tool is None:
             continue
         args = tool_call.setdefault("args", {})
+        if not isinstance(args, dict):
+            raise ValueError("MCP tool arguments must be an object.")
+        # 模型提供的可信字段一律先删除；缺失权威值时不得回退使用模型值。
         args.pop("csv_data", None)
-        for name, value in runtime_values.items():
-            if value is not None and _tool_accepts_argument(tool, name):
+        for name in _TRUSTED_ARGUMENTS:
+            args.pop(name, None)
+
+        required = _required_tool_arguments(tool)
+        for name in _TRUSTED_ARGUMENTS:
+            value = runtime_values.get(name)
+            accepts = _tool_accepts_argument(tool, name)
+            if accepts and value is not None:
                 args[name] = value
+            elif accepts and name in required:
+                raise ValueError("Required MCP runtime context is unavailable.")
 
     return ai_message
 
@@ -90,6 +152,10 @@ def normalize_mcp_tool_call_message(
         raise ValueError("MCP planner did not return tool_calls.")
     ## 只保留第一个调用接口
     selected_call = dict(tool_calls[0])
+    selected_args = selected_call.get("args", {})
+    if not isinstance(selected_args, dict):
+        raise ValueError("MCP planner returned invalid tool arguments.")
+    selected_call["args"] = dict(selected_args)
     tool_name = selected_call.get("name")
     if tool_name not in valid_names:
         raise ValueError(f"MCP planner returned unknown MCP tool: {tool_name}")

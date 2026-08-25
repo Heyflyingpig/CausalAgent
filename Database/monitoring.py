@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import time
 from typing import Any, Iterable
 
 from Database.inspection import (
@@ -18,6 +19,8 @@ from Database.inspection import (
 )
 from Database.monitor_settings import get_monitor_settings
 from app.db import get_read_connection_with_source, get_write_connection
+from observability.logging_runtime import log_event
+from observability.noise_control import FailureTransitionTracker
 
 
 LOGGER = logging.getLogger(__name__)
@@ -26,6 +29,88 @@ CLEANUP_SNAPSHOT_KEYS = ("checkpoint_cleanup_runtime", "checkpoint_cleanup_outbo
 SNAPSHOT_KEYS = (*DASHBOARD_SNAPSHOT_KEYS, "deep_audit", "checkpoint_cleanup_outbox")
 DEFAULT_REFRESH_GROUPS = ("realtime", "sql_performance", "capacity")
 SLOW_QUERY_LIMIT = 20
+_SNAPSHOT_FAILURES = FailureTransitionTracker()
+_LOCK_FAILURES = FailureTransitionTracker()
+
+
+class SnapshotCollectionDegraded(RuntimeError):
+    """表示采集结果中存在无法取得的子项，不携带原始异常。"""
+
+
+def _safe_exc_info(exc: BaseException):
+    return type(exc), exc, exc.__traceback__
+
+
+def _record_snapshot_failure(
+    snapshot_key: str,
+    exc: BaseException,
+    *,
+    duration_ms: int = 0,
+) -> None:
+    decision = _SNAPSHOT_FAILURES.record_failure(snapshot_key, type(exc).__name__)
+    if decision.emit:
+        log_event(
+            LOGGER,
+            "monitor.snapshot.failed",
+            details={
+                "snapshot_key": snapshot_key,
+                "reason_code": "collection_failed",
+                "duration_ms": max(0, duration_ms),
+                "suppressed_count": decision.suppressed_count,
+            },
+            exc_info=_safe_exc_info(exc),
+        )
+
+
+def _record_snapshot_success(snapshot_key: str) -> None:
+    recovery = _SNAPSHOT_FAILURES.record_success(snapshot_key)
+    if recovery is not None:
+        log_event(
+            LOGGER,
+            "monitor.snapshot.recovered",
+            details={
+                "snapshot_key": snapshot_key,
+                "downtime_ms": recovery.downtime_ms,
+                "failure_count": recovery.failure_count,
+            },
+        )
+
+
+def _record_lock_failure(
+    snapshot_key: str,
+    exc: BaseException,
+    *,
+    operation: str,
+) -> None:
+    decision = _LOCK_FAILURES.record_failure(
+        (snapshot_key, operation),
+        type(exc).__name__,
+    )
+    if decision.emit:
+        log_event(
+            LOGGER,
+            "monitor.lock.failed",
+            details={
+                "snapshot_key": snapshot_key,
+                "reason_code": "lock_operation_failed",
+                "suppressed_count": decision.suppressed_count,
+            },
+            exc_info=_safe_exc_info(exc),
+        )
+
+
+def _record_lock_success(snapshot_key: str, *, operation: str) -> None:
+    recovery = _LOCK_FAILURES.record_success((snapshot_key, operation))
+    if recovery is not None:
+        log_event(
+            LOGGER,
+            "monitor.lock.recovered",
+            details={
+                "snapshot_key": snapshot_key,
+                "downtime_ms": recovery.downtime_ms,
+                "failure_count": recovery.failure_count,
+            },
+        )
 
 
 def _utc_now() -> datetime:
@@ -203,8 +288,10 @@ def get_dashboard_snapshots() -> dict[str, Any]:
     try:
         records = _read_snapshot_records()
     except Exception as exc:
-        LOGGER.warning("读取数据库监控共享快照失败: %s", exc, exc_info=True)
+        _record_snapshot_failure("dashboard_read", exc)
         records = {}
+    else:
+        _record_snapshot_success("dashboard_read")
     dashboard = {
         key: _enrich_snapshot(key, records.get(key), policy=effective)
         for key in DASHBOARD_SNAPSHOT_KEYS
@@ -237,8 +324,10 @@ def get_deep_audit_snapshot() -> dict[str, Any]:
     try:
         records = _read_snapshot_records()
     except Exception as exc:
-        LOGGER.warning("读取 deep 审计共享快照失败: %s", exc, exc_info=True)
+        _record_snapshot_failure("deep_audit_read", exc)
         records = {}
+    else:
+        _record_snapshot_success("deep_audit_read")
     row = records.get("deep_audit")
     payload = _decode_payload((row or {}).get("payload_json")) or _empty_snapshot(
         "deep_audit"
@@ -359,9 +448,13 @@ def _collect_payload(
     raise ValueError(f"未知监控快照类型: {snapshot_key}")
 
 
-def _collection_failure_payload(snapshot_key: str, exc: Exception) -> dict[str, Any]:
+def _collection_failure_payload(
+    snapshot_key: str,
+    exc: Exception,
+    *,
+    duration_ms: int = 0,
+) -> dict[str, Any]:
     """把单层采集器的未处理异常转换为可持久化的降级快照。"""
-    LOGGER.error("采集共享监控快照失败 [%s]: %s", snapshot_key, exc, exc_info=True)
     payload: dict[str, Any] = {
         "status": "unknown",
         "observed_at": _iso_utc(),
@@ -403,54 +496,120 @@ def _collection_failure_payload(snapshot_key: str, exc: Exception) -> dict[str, 
     return payload
 
 
+def _payload_has_unknown_status(value: Any) -> bool:
+    """识别采集器已安全吞并、但仍代表采集失败的 unknown 子结果。"""
+    if isinstance(value, dict):
+        if value.get("status") == "unknown":
+            return True
+        return any(_payload_has_unknown_status(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_payload_has_unknown_status(item) for item in value)
+    return False
+
+
 def collect_snapshot(snapshot_key: str, *, require_due: bool = False) -> bool:
     """在 MySQL 命名锁保护下复核调度状态并采集一个共享快照。"""
     if snapshot_key not in SNAPSHOT_KEYS:
         raise ValueError(f"未知监控快照类型: {snapshot_key}")
+    started_at = time.perf_counter()
     lock_name = f"causalagent:db-monitor:{snapshot_key}"
-    with get_write_connection() as lock_connection:
+    try:
+        lock_connection_context = get_write_connection()
+    except Exception as exc:
+        _record_snapshot_failure(snapshot_key, exc)
+        raise
+    with lock_connection_context as lock_connection:
         cursor = lock_connection.cursor(dictionary=True)
-        cursor.execute("SELECT GET_LOCK(%s, 0) AS acquired", (lock_name,))
-        acquired = int((cursor.fetchone() or {}).get("acquired") or 0) == 1
+        try:
+            cursor.execute("SELECT GET_LOCK(%s, 0) AS acquired", (lock_name,))
+            lock_row = cursor.fetchone() or {}
+            lock_value = lock_row.get("acquired")
+            if lock_value is None:
+                _record_lock_failure(
+                    snapshot_key,
+                    RuntimeError("named lock result unavailable"),
+                    operation="acquire",
+                )
+                return False
+            acquired = int(lock_value) == 1
+        except Exception as exc:
+            _record_lock_failure(snapshot_key, exc, operation="acquire")
+            raise
+        _record_lock_success(snapshot_key, operation="acquire")
         if not acquired:
             return False
         try:
-            records = _read_snapshot_records()
-            effective = get_monitor_settings()["effective"]
-            if require_due and not _record_is_due(
-                snapshot_key,
-                records.get(snapshot_key),
-                policy=effective,
-            ):
-                return False
-            previous = _decode_payload((records.get(snapshot_key) or {}).get("payload_json"))
+            collection_failure: Exception | None = None
             try:
-                payload = _collect_payload(
+                records = _read_snapshot_records()
+                effective = get_monitor_settings()["effective"]
+                if require_due and not _record_is_due(
                     snapshot_key,
-                    previous,
                     policy=effective,
-                )
+                    row=records.get(snapshot_key),
+                ):
+                    return False
+                previous = _decode_payload((records.get(snapshot_key) or {}).get("payload_json"))
+                try:
+                    payload = _collect_payload(
+                        snapshot_key,
+                        previous,
+                        policy=effective,
+                    )
+                except Exception as exc:
+                    collection_failure = exc
+                    payload = _collection_failure_payload(
+                        snapshot_key,
+                        exc,
+                        duration_ms=int((time.perf_counter() - started_at) * 1000),
+                    )
+                cursor.execute("""
+                    INSERT INTO database_monitor_snapshots (
+                        snapshot_key, payload_json, observed_at
+                    ) VALUES (%s, %s, UTC_TIMESTAMP(6))
+                    ON DUPLICATE KEY UPDATE
+                        payload_json = VALUES(payload_json),
+                        observed_at = VALUES(observed_at)
+                """, (
+                    snapshot_key,
+                    json.dumps(payload, ensure_ascii=False, default=_json_default),
+                ))
+                lock_connection.commit()
             except Exception as exc:
-                payload = _collection_failure_payload(snapshot_key, exc)
-            cursor.execute("""
-                INSERT INTO database_monitor_snapshots (
-                    snapshot_key, payload_json, observed_at
-                ) VALUES (%s, %s, UTC_TIMESTAMP(6))
-                ON DUPLICATE KEY UPDATE
-                    payload_json = VALUES(payload_json),
-                    observed_at = VALUES(observed_at)
-            """, (
-                snapshot_key,
-                json.dumps(payload, ensure_ascii=False, default=_json_default),
-            ))
-            lock_connection.commit()
+                _record_snapshot_failure(
+                    snapshot_key,
+                    exc,
+                    duration_ms=int((time.perf_counter() - started_at) * 1000),
+                )
+                raise
+            if collection_failure is not None:
+                _record_snapshot_failure(
+                    snapshot_key,
+                    collection_failure,
+                    duration_ms=int((time.perf_counter() - started_at) * 1000),
+                )
+            elif _payload_has_unknown_status(payload):
+                _record_snapshot_failure(
+                    snapshot_key,
+                    SnapshotCollectionDegraded(),
+                    duration_ms=int((time.perf_counter() - started_at) * 1000),
+                )
+            else:
+                _record_snapshot_success(snapshot_key)
             return True
         finally:
             try:
-                cursor.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
-                cursor.fetchone()
-            except Exception:
-                LOGGER.warning("释放监控采集锁失败: %s", snapshot_key, exc_info=True)
+                cursor.execute(
+                    "SELECT RELEASE_LOCK(%s) AS released",
+                    (lock_name,),
+                )
+                released = (cursor.fetchone() or {}).get("released")
+                if released is None or int(released) != 1:
+                    raise RuntimeError("named lock release was not confirmed")
+            except Exception as exc:
+                _record_lock_failure(snapshot_key, exc, operation="release")
+            else:
+                _record_lock_success(snapshot_key, operation="release")
 
 
 def _record_is_due(
@@ -478,8 +637,9 @@ def get_due_snapshot_keys() -> tuple[str, ...]:
     try:
         records = _read_snapshot_records()
     except Exception as exc:
-        LOGGER.warning("读取监控调度状态失败: %s", exc, exc_info=True)
+        _record_snapshot_failure("scheduler", exc)
         return ()
+    _record_snapshot_success("scheduler")
     effective = get_monitor_settings()["effective"]
     return tuple(
         snapshot_key
@@ -498,8 +658,7 @@ def collect_due_snapshots() -> dict[str, bool]:
     for snapshot_key in get_due_snapshot_keys():
         try:
             results[snapshot_key] = collect_snapshot(snapshot_key, require_due=True)
-        except Exception as exc:
-            LOGGER.error("采集共享监控快照失败 [%s]: %s", snapshot_key, exc, exc_info=True)
+        except Exception:
             results[snapshot_key] = False
     return results
 

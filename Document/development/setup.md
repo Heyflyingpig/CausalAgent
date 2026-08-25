@@ -18,6 +18,17 @@ Docker 是当前首选开发方式：
 docker compose -f docker-compose.yml up -d
 ```
 
+默认开发 Compose 会同时启动日志采集拓扑 `loki`、`alloy` 和 `grafana`。由于 Grafana 服务要求密码非空，首次启动前必须在 `.env` 设置 `GRAFANA_ADMIN_PASSWORD`；修改 Alloy 配置或首次拉取镜像时，先执行：
+
+```bash
+docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml pull loki alloy grafana
+docker compose -f docker-compose.yml run --rm --no-deps alloy validate /etc/alloy/config.alloy
+```
+
+日志查看地址为 `http://127.0.0.1:3000`。完整的日志启动、停止、生产边界和验收步骤见
+[`observability.md`](observability.md) 与 [`deployment.md`](deployment.md)。
+
 首次启动、空卷重建或数据库环境重建时，Compose 会先运行 `db-bootstrap`。需要单独重跑一次性初始化时执行：
 
 ```bash

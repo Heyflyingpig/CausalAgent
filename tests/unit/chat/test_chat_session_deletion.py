@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from flask import Flask
 
@@ -108,7 +108,7 @@ class DeleteSessionTests(unittest.TestCase):
         connection = FakeConnection(
             fetch_results=[
                 [{"job_id": "job-1", "status": "succeeded"}],
-                ("session-1",),
+                {"id": "session-1", "user_id": 7},
                 {"status": "pending"},
             ]
         )
@@ -153,7 +153,7 @@ class DeleteSessionTests(unittest.TestCase):
         connection = FakeConnection(
             fetch_results=[
                 [{"job_id": "job-1", "status": "running", "execution_state": "leased"}],
-                ("session-1",),
+                {"id": "session-1", "user_id": 7},
             ]
         )
 
@@ -172,7 +172,7 @@ class DeleteSessionTests(unittest.TestCase):
         connection = FakeConnection(
             fetch_results=[
                 [{"job_id": "job-1", "status": "succeeded"}],
-                ("session-1",),
+                {"id": "session-1", "user_id": 7},
             ],
             raise_on_prefix="INSERT INTO checkpoint_cleanup_outbox",
         )
@@ -183,6 +183,27 @@ class DeleteSessionTests(unittest.TestCase):
         self.assertFalse(connection.committed)
         self.assertTrue(connection.rolled_back)
         self.assertEqual(len(connection.fake_cursor.statements), 3)
+
+    def test_confirmed_cross_owner_session_logs_security_without_binding_id(self):
+        connection = FakeConnection(
+            fetch_results=[
+                [],
+                None,
+                {"user_id": 8},
+            ]
+        )
+
+        with patch("app.chat.routes.log_authorization_denied") as denied:
+            response = self._post_delete(connection)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(connection.rolled_back)
+        self.assertEqual(len(connection.fake_cursor.statements), 3)
+        denied.assert_called_once_with(
+            ANY,
+            resource_type="session",
+            action="delete_session",
+        )
 
     def test_missing_login_does_not_open_a_database_connection(self):
         """未登录请求在鉴权失败后不应访问数据库。"""

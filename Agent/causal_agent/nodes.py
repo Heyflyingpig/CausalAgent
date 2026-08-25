@@ -22,6 +22,29 @@ from .fault_tolerance import (
     RAG_DEGRADATION_SUMMARY,
     build_rag_degradation_result,
 )
+from observability.logging_runtime import log_event
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _log_node_degradation(
+    failure_kind: str,
+    fallback: str,
+    *,
+    exc_info: Any = None,
+) -> None:
+    """记录节点内部已经决定采用的最终降级，不包含业务正文。"""
+    log_event(
+        LOGGER,
+        "job.node.degraded",
+        details={
+            "failure_kind": failure_kind,
+            "final_attempt": 1,
+            "fallback": fallback,
+        },
+        exc_info=exc_info,
+    )
 
 ## 基本配置
 from config.settings import settings
@@ -116,8 +139,6 @@ async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     Agent节点，是图的起点，用于判断是否需要进入causal循环，
     根据当前状态强制LLM做出四选一的决策，然后将该决策转化为消息。
     """
-    logging.info(" 步骤: Agent 节点 (LLM 决策) ")
-
     causal_analysis_result = state.get('causal_analysis_result') or {}
     if causal_analysis_result and causal_analysis_result.get("success") is False:
         error_message = (
@@ -136,7 +157,6 @@ async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
 
     latest_human_text = _latest_human_text(state)
     if not has_tool_results and _is_explicit_causal_analysis_request(latest_human_text):
-        logging.info("检测到明确因果分析请求，绕过LLM路由并进入文件加载模块。")
         response_message = AIMessage(content="决策：信息不全，启动文件加载模块。", name="agent")
         return {"messages": [response_message], "route_decision": "fold"}
     agent_prompt = """
@@ -169,7 +189,6 @@ async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         ]
     )
     
-    logging.info("正在调用LLM进行路由决策...")
     try:
         structured_response = await ainvoke_structured(
             llm=llm,
@@ -184,11 +203,9 @@ async def agent_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         )
         route_decision = structured_response.route
 
-    except StructuredOutputError as e:
-        logging.warning(f"无法从LLM响应中解析或验证路由决策: {e}。将回退到 normal_chat。")
+    except StructuredOutputError:
+        _log_node_degradation("structured_output_error", "normal_chat")
         route_decision = "normal_chat"
-
-    logging.info(f"LLM决策结果: {route_decision}")
 
     # 根据LLM的结构化决策，生成用于路由的消息 
     if route_decision == 'postprocess':
@@ -244,7 +261,6 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     4.  调用 validate_analysis 进行严格的条件验证。
     5.  根据验证结果，决策进入 'preprocess' 节点或 'ask_human' 节点。
     """
-    logging.info(" 步骤: 文件加载、解析与验证节点 ")
     user_id = state.get("user_id")
     file_summary = state.get("file_summary") or {}
     input_user_file_id = file_summary.get("user_file_id")
@@ -309,7 +325,7 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         treatment = _normalize_optional_llm_text(structured_response.treatment)
         
     except StructuredOutputError:
-        logging.error("无法从 LLM 响应中解析或验证 fold 参数，将返回空值")
+        _log_node_degradation("structured_output_error", "empty_parameters")
         target = None
         treatment = None
 
@@ -325,10 +341,11 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         df = await asyncio.to_thread(pd.read_csv, io.StringIO(file_content_str))
         data_summary = await asyncio.to_thread(get_data_summary, df)
     
-    except Exception as exc:
-        logging.error(
-            "文件加载或解析阶段失败: error_type=%s",
-            type(exc).__name__,
+    except Exception:
+        _log_node_degradation(
+            "file_load_error",
+            "waiting_input",
+            exc_info=True,
         )
         
         # 使用 interrupt() 暂停并等待用户输入
@@ -358,7 +375,6 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
 
     # 根据验证结果决策
     if is_ready == 0 or is_ready == 1:
-        logging.info("验证通过，进入预处理节点。")
         state['analysis_parameters'].update({"target": target, "treatment": treatment})
 
         # 收集需要返回的新消息
@@ -379,8 +395,6 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
                 }
     
     else:
-        logging.warning(f"验证失败，需要人工干预。原因: {', '.join(issues)}")
-        
         # 对于issue中有存在变量缺失的情况的，进行修正询问，对于数据有问题，进行数据补充询问
         has_param_issue = any("目标变量" in issue or "处理变量" in issue for issue in issues)
         has_data_quality_issue = any("缺失" in issue or "样本量" in issue or "常数列" in issue or "高基数" in issue or "ID列" in issue for issue in issues)
@@ -402,8 +416,6 @@ async def fold_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         # interrupt() 会立即暂停节点执行，返回 question 给调用者
         # 当用户提供输入后，interrupt() 会返回用户的输入值
         user_response = interrupt(question)
-        
-        logging.info(f"用户提供的响应: {user_response}")
         
         # 将用户的响应添加到消息历史，并返回一个路由消息
         # 让 fold_router 知道需要回到 agent 重新判断
@@ -427,8 +439,6 @@ async def preprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     3.  调用 LLM 对数据摘要进行自然语言总结。
     4.  将图表和总结存入状态，然后直接进入下一步。
     """
-    logging.info(" 步骤: 数据预处理与分析节点 ")
-
     analysis_parameters = state.get("analysis_parameters", {})
 
     file_summary = state.get("file_summary") or {}
@@ -441,7 +451,6 @@ async def preprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         or not input_object_id
     ):
         error_msg = "无法执行预处理，因为数据或其摘要信息在状态中丢失。"
-        logging.error(error_msg)
         raise RuntimeError(error_msg)
 
     file_row = await asyncio.to_thread(
@@ -455,17 +464,17 @@ async def preprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         pd.read_csv,
         io.BytesIO(file_row["file_content"]),
     )
-    logging.info("已从 Job 冻结文件重新生成 DataFrame，shape=%s", df.shape)
-
     # 生成可视化图表 
     visualizations = {}
     try:
         visualizations = await asyncio.to_thread(generate_visualizations, df, analysis_parameters)
         state["visualizations"] = visualizations
-        logging.info("数据可视化图表已成功生成。")
-    
-    except Exception as e:
-        logging.error(f"生成数据可视化时发生未知错误: {e}", exc_info=True)
+    except Exception:
+        _log_node_degradation(
+            "visualization_error",
+            "skip_visualization",
+            exc_info=True,
+        )
         # 可视化失败不阻断流程，记录日志即可
         # 不需要添加消息到state，继续执行后续步骤
     
@@ -496,15 +505,10 @@ async def preprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     
     runnable = prompt | llm | StrOutputParser()
     
-    logging.info("正在调用LLM生成数据分析总结...")
-    
-    
     preprocess_summary = await runnable.ainvoke({
         "data_summary": json.dumps(analysis_parameters, indent=2, ensure_ascii=False),
         "system_role": data_prompt()
     })
-    logging.info(f"LLM数据总结结果: {preprocess_summary}")
-
     # 4. 更新状态并返回新消息
     state["preprocess_summary"] = preprocess_summary
     
@@ -585,7 +589,6 @@ async def mcp_planner_node(state: CausalAgentState, llm: ChatOpenAI, mcp_tools: 
         _explicit_direct_lingam_requested(state)
         and _has_mcp_tool(mcp_tools, "causal_direct_lingam")
     ):
-        logging.info("检测到明确 DirectLiNGAM 请求，确定性选择 causal_direct_lingam。")
         return {
             "messages": [
                 _direct_mcp_tool_call("causal_direct_lingam", state, mcp_tools)
@@ -606,8 +609,6 @@ async def mcp_planner_node(state: CausalAgentState, llm: ChatOpenAI, mcp_tools: 
         tool_choice="required",
         parallel_tool_calls=False,
     )
-    logging.info("正在启动 MCP 查询生成任务...")
-
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
@@ -661,20 +662,14 @@ async def mcp_result_parser_node(state: CausalAgentState) -> dict:
             "error_type": "MCPProtocolError",
         }
     if type(parsed.get("success")) is not bool:
-        logging.warning(
-            "MCP 返回结果缺少布尔型 success 字段: keys=%s",
-            sorted(str(key) for key in parsed),
-        )
+        _log_node_degradation("protocol_error", "mcp_failure_result")
         parsed = {
             "success": False,
             "error": "MCP 返回结果不符合协议：缺少布尔型 success 字段。",
             "error_type": "MCPProtocolError",
         }
     elif parsed.get("success") is True and set(parsed) == {"success", "data"}:
-        logging.warning(
-            "MCP 返回结果不是结构化因果分析结果: data_type=%s",
-            type(parsed.get("data")).__name__,
-        )
+        _log_node_degradation("protocol_error", "mcp_failure_result")
         parsed = {
             "success": False,
             "error": "MCP 返回结果不符合协议：未返回结构化因果分析结果。",
@@ -699,12 +694,7 @@ async def rag_question_planner_node(
     rag_available: bool = True,
 ) -> dict:
     """生成 RAG 问题，并通过私有 route 字段决定是否调用工具。"""
-    logging.info("正在启动 RAG 问题生成任务...")
-
     if not rag_available or not rag_tools:
-        logging.warning(
-            "RAG 知识库或工具不可用，将在 Planner 预检阶段跳过 ToolNode。"
-        )
         return {
             "rag_route": "finish",
             "rag_status": "unavailable",
@@ -718,7 +708,6 @@ async def rag_question_planner_node(
     try:
         rag_questions = await get_rag_questions(state, llm, max_questions=max_questions)
     except StructuredOutputError as exc:
-        logging.warning("RAG 问题生成失败，将跳过知识库工具: %s", exc)
         return {
             "rag_route": "finish",
             "rag_status": "unavailable",
@@ -866,6 +855,23 @@ async def rag_subgraph_adapter_node(
     )
     if not isinstance(rag_output, dict):
         raise RuntimeError("RAG 子图未返回有效 rag_output。")
+    status = rag_output.get("status")
+    if status != "available":
+        questions = rag_output.get("questions")
+        question_count = len(questions) if isinstance(questions, list) else 0
+        evidence_count = rag_output.get("evidence_count")
+        if not isinstance(evidence_count, int) or isinstance(evidence_count, bool):
+            evidence_count = 0
+        log_event(
+            LOGGER,
+            "rag.enrichment.degraded",
+            details={
+                "status": status if status in {"unavailable", "protocol_error"} else "unavailable",
+                "reason_code": "protocol_error" if status == "protocol_error" else "unavailable",
+                "question_count": question_count,
+                "evidence_count": max(0, evidence_count),
+            },
+        )
     return {"knowledge_base_result": rag_output}
 
 
@@ -884,8 +890,11 @@ async def web_search_planner_node(state: WebSearchState, llm: ChatOpenAI) -> dic
                 "error": None,
             }
         }
-    except StructuredOutputError as exc:
-        logging.warning("联网搜索 query 生成失败: %s", exc)
+    except StructuredOutputError:
+        _log_node_degradation(
+            "structured_output_error",
+            "web_search_planner_fallback",
+        )
         return {
             "planner": {
                 "success": False,
@@ -910,13 +919,7 @@ async def academic_search_node(state: WebSearchState) -> dict:
             }
         }
     search_query = state["planner"].get("query_en") or state["planner"].get("query", "")
-    logging.info(
-        "学术检索 query=%r (query_en=%r)",
-        search_query,
-        state["planner"].get("query_en"),
-    )
     payload = await asyncio.to_thread(web_search, search_query)
-    logging.info("学术检索命中 %s 条", payload["number_of_results"])
     results = _merge_by_engine_top3(payload["results"])
     return {
         "search": {
@@ -1035,8 +1038,33 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         - 使用LLM进行环路修正和边评估决策
         - 所有修正操作都会被详细记录
     """
-    logging.info(" 步骤: 后处理节点 ")
-    
+    degradation_logged = False
+
+    def record_degradation(
+        reason_code: str,
+        affected_count: Any,
+        *,
+        exc_info: Any = None,
+    ) -> None:
+        """同一次后处理最多记录一个最终降级事件。"""
+        nonlocal degradation_logged
+        if degradation_logged:
+            return
+        try:
+            safe_count = max(0, int(affected_count))
+        except (TypeError, ValueError):
+            safe_count = 0
+        log_event(
+            LOGGER,
+            "job.postprocess.degraded",
+            details={
+                "reason_code": reason_code,
+                "affected_count": safe_count,
+            },
+            exc_info=exc_info,
+        )
+        degradation_logged = True
+
     try:
         # 提取原始因果图
         analysis_result = state["causal_analysis_result"]
@@ -1045,14 +1073,12 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         # 如果提取失败，返回错误
         if adjacency_matrix.size == 0:
             error_msg = "无法从分析结果中提取有效的因果图数据。"
-            logging.error(error_msg)
+            record_degradation("invalid_result", 0)
             # 只返回新消息和错误状态
             return {
                 "messages": [AIMessage(content=f"决策：{error_msg}", name="postprocess")],
                 "postprocess_result": {"error": error_msg}
             }
-        
-        logging.info(f"提取到 {len(node_names)} 个节点的因果图")
         
         # 创建原始图的副本用于修正
         working_matrix = adjacency_matrix.copy()
@@ -1066,7 +1092,6 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
             matrix_convention=matrix_convention,
         )
         if has_cycle:
-            logging.info(f"检测到 {len(cycles)} 个环路，开始LLM辅助修正...")
             working_matrix, cycle_removed_edges = await asyncio.to_thread(
                 fix_cycles_with_llm,
                 working_matrix, 
@@ -1083,21 +1108,10 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
                 matrix_convention=matrix_convention,
             )
             if has_cycle_after:
-                logging.warning("警告：部分环路仍然存在，可能需要人工干预。")
-
-            else:
-                logging.info("所有环路已成功修正！")
+                record_degradation("postprocess_failed", len(cycles))
         
         # LLM评估关键边
         critical_edges, edge_debug_info = extract_critical_edges(analysis_result)
-        logging.info(
-            "边评估候选提取结果: source=%s, count=%s, input_type=%s, algorithm=%s, reason=%s",
-            edge_debug_info.get("source"),
-            edge_debug_info.get("candidate_edge_count"),
-            edge_debug_info.get("input_type"),
-            edge_debug_info.get("algorithm"),
-            edge_debug_info.get("reason"),
-        )
         candidate_edge_count = edge_debug_info.get("candidate_edge_count", 0)
         normalized_edge_count = edge_debug_info.get("normalized_edge_count", 0)
         if candidate_edge_count != normalized_edge_count:
@@ -1105,7 +1119,11 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
                 "因果边结构校验失败："
                 f"候选边 {candidate_edge_count} 条，仅成功规范化 {normalized_edge_count} 条。"
             )
-            logging.error(error_msg)
+            try:
+                affected_count = int(candidate_edge_count) - int(normalized_edge_count)
+            except (TypeError, ValueError):
+                affected_count = 0
+            record_degradation("invalid_result", affected_count)
             return {
                 "messages": [
                     AIMessage(
@@ -1123,10 +1141,8 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         
         edge_evaluations: Dict[str, Any] = {}
         if critical_edges:
-            logging.info(f"识别到 {len(critical_edges)} 条关键边，开始LLM评估...")
             edge_evaluations = await asyncio.to_thread(evaluate_edges_with_llm, critical_edges, state, llm)
         else:
-            logging.info("未识别到需要评估的关键边")
             edge_evaluations = {
                 "schema_version": "edge_evaluation_v2",
                 "decisions": [],
@@ -1200,8 +1216,6 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
             name="postprocess"
         ))
 
-        logging.info("后处理完成，准备进入报告生成阶段")
-        
         # 只返回新消息和后处理结果
         return {
             "messages": new_messages,
@@ -1209,6 +1223,7 @@ async def postprocess_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         }
         
     except Exception as e:
+        record_degradation("postprocess_failed", 0, exc_info=True)
         postprocess_result = {"error": str(e) + f"\n\n将使用原始分析结果继续生成报告。"}
         # 异常处理：记录错误但不中断流程
         error_message = AIMessage(
@@ -1270,7 +1285,6 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     主要是对所有的参数生成一份报告
     
     """
-    logging.info(" 步骤: 报告模块 ")
     # 分离 system prompt 和 messages placeholder
     system_prompt_template = (
         """
@@ -1363,8 +1377,6 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
         "system_role": causal_report_prompt()
     })
 
-    logging.info(f"LLM报告结果: {response}")
-
     report_complete_message = AIMessage(
         content="决策：因果分析报告已生成完成。",
         name="report"
@@ -1379,9 +1391,7 @@ async def report_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     #         html_img = f'<img src="data:image/png;base64,{base64_str}" alt="{placeholder}" style="max-width:100%; height:auto; display:block; margin:20px 0;" />'
     #         final_report = final_report.replace(placeholder, html_img)
         
-    #     logging.info(f"成功替换了 {len(mapping_data)} 个图表占位符")
-    # except Exception as e:
-    #     logging.error(f"替换图表占位符时发生错误: {e}", exc_info=True)
+    # except Exception:
     #     # 如果替换失败，仍然返回原始报告（不含图片）
     #     final_report = response
     # 只返回新消息和最终报告
@@ -1396,8 +1406,6 @@ async def normal_chat_node(state: CausalAgentState,llm: ChatOpenAI) -> dict:
     Represents "正常问答".
     This is for when the agent determines it's a simple chat conversation.
     """
-    logging.info(" 步骤: 普通问答节点 ")
-    
     prompt_template = (
         """
         system role: 你是日常聊天助手，你的任务是根据用户的对话历史，回答用户的问题。
@@ -1422,7 +1430,6 @@ async def inquiry_answer_node(state: CausalAgentState, llm: ChatOpenAI) -> dict:
     """
     根据报告追问用户的问题
     """
-    logging.info(" 步骤: 根据报告回答用户的问题节点 ")
     prompt_template = (
         """
         system role: {system_role}

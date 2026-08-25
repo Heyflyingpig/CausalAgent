@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import mysql.connector
 
-from app.db import get_write_connection
+from app.db import get_write_connection, record_database_failure
 
 
 class FrozenFileNotFoundError(FileNotFoundError):
@@ -71,15 +70,8 @@ def get_frozen_file_for_job(
                 return None
             connection.commit()
             return row
-    except mysql.connector.Error:
-        logging.error(
-            "Agent 读取冻结文件失败: user_id=%s job_id=%s user_file_id=%s object_id=%s",
-            user_id,
-            job_id,
-            input_user_file_id,
-            input_object_id,
-            exc_info=True,
-        )
+    except mysql.connector.Error as exc:
+        record_database_failure(exc, operation="frozen_file_query")
         raise
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-import logging
 from pathlib import Path
 import sys
 from typing import Any
@@ -52,29 +51,21 @@ def create_llm() -> ChatOpenAI:
     if not all([settings.MODEL, settings.BASE_URL, settings.API_KEY]):
         raise RuntimeError("LLM 配置不完整，无法初始化")
 
-    logging.info("正在初始化 LLM 模型: %s", settings.MODEL)
     llm = ChatOpenAI(
         model=settings.MODEL,
         base_url=settings.BASE_URL,
         api_key=settings.API_KEY,
         streaming=False,
     )
-    logging.info("LLM 实例初始化成功。")
     return llm
 
 
 def check_rag_availability() -> bool:
     """只检查知识库目录，实际向量库仍在首次查询时延迟加载。"""
-    logging.info("正在检查 RAG 知识库目录...")
     persist_directory = KNOWLEDGE_BASE_DIRECTORY / "db"
     if not persist_directory.exists():
-        logging.warning(
-            "知识库持久化目录不存在。请先运行 "
-            "Agent/knowledge_base/build_knowledge.py 构建知识库。"
-        )
         return False
 
-    logging.info("RAG 启动检查通过；向量库将在首次实际查询时延迟初始化。")
     return True
 
 
@@ -107,7 +98,6 @@ async def open_mcp_client_resources(
             }
         }
     )
-    logging.info("MCP 初始化。")
     session = await process_stack.enter_async_context(client.session("causal"))
     tools = await load_mcp_tools(session)
     return McpClientResources(client=client, session=session, tools=tools)

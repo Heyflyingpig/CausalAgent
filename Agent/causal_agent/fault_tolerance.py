@@ -8,6 +8,7 @@ worker 仍负责把 graph 产出的终态或异常转换为 analysis_job_events�
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Callable, Literal
 
 from langchain_core.messages import AIMessage
@@ -20,6 +21,10 @@ from app.agent.worker.execution_guard import (
     current_execution_guard,
     raise_if_execution_revoked,
 )
+from observability.logging_runtime import log_event
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def retry_transient_errors(exc: BaseException) -> bool:
@@ -236,6 +241,16 @@ def degrade_rag_finalize_failure(state: RagSubgraphState, error: NodeError) -> d
 
 def degrade_rag_adapter_result(state: CausalAgentState, error: NodeError) -> Command:
     """父图适配节点异常的最后一道兜底，只投影统一 RAG 字段。"""
+    log_event(
+        LOGGER,
+        "rag.enrichment.degraded",
+        details={
+            "status": "unavailable",
+            "reason_code": "unavailable",
+            "question_count": 0,
+            "evidence_count": 0,
+        },
+    )
     return Command(
         update={
             "knowledge_base_result": build_rag_degradation_result(error.error),

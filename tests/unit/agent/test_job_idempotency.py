@@ -27,6 +27,7 @@ from app.agent.job_service import (  # noqa: E402
 
 
 JOB_REQUEST_KEY = "123e4567-e89b-42d3-a456-426614174000"
+JOB_REQUEST_ID = "create.req-1"
 
 
 class FakeCursor:
@@ -90,6 +91,7 @@ class JobIdempotencyTests(unittest.TestCase):
             "job_id": "job-1",
             "status": "succeeded",
             "request_fingerprint": fingerprint,
+            "request_id": "first-request",
         }
         connection = FakeConnection(
             fetch_results=[existing]
@@ -101,9 +103,11 @@ class JobIdempotencyTests(unittest.TestCase):
                 "session-1",
                 "hello",
                 JOB_REQUEST_KEY,
+                request_id="retry-request",
             )
 
         self.assertEqual(job, existing)
+        self.assertEqual(job["request_id"], "first-request")
         self.assertTrue(was_existing)
         self.assertEqual(connection.commits, 1)
         self.assertEqual(connection.rollbacks, 0)
@@ -119,7 +123,13 @@ class JobIdempotencyTests(unittest.TestCase):
 
         with patch("app.agent.job_service.get_write_connection", return_value=connection):
             with self.assertRaises(IdempotencyConflictError):
-                create_job(7, "session-1", "hello", JOB_REQUEST_KEY)
+                create_job(
+                    7,
+                    "session-1",
+                    "hello",
+                    JOB_REQUEST_KEY,
+                    request_id=JOB_REQUEST_ID,
+                )
 
         self.assertEqual(connection.commits, 0)
         self.assertEqual(connection.rollbacks, 1)
@@ -145,6 +155,8 @@ class JobIdempotencyTests(unittest.TestCase):
                 "session-1",
                 "hello",
                 JOB_REQUEST_KEY,
+                web_search_enabled=True,
+                request_id=JOB_REQUEST_ID,
             )
 
         insert_params = next(
@@ -154,8 +166,13 @@ class JobIdempotencyTests(unittest.TestCase):
         )
         self.assertEqual(job, created)
         self.assertFalse(was_existing)
+        self.assertEqual(insert_params[3], JOB_REQUEST_ID)
+        self.assertEqual(insert_params[9], 1)
         self.assertEqual(insert_params[-2], JOB_REQUEST_KEY)
-        self.assertEqual(insert_params[-1], _request_fingerprint("session-1", "hello"))
+        self.assertEqual(
+            insert_params[-1],
+            _request_fingerprint("session-1", "hello", None, True),
+        )
         self.assertEqual(connection.commits, 1)
         self.assertEqual(connection.rollbacks, 0)
 
@@ -168,6 +185,7 @@ class JobIdempotencyTests(unittest.TestCase):
             "job_id": "job-1",
             "status": "succeeded",
             "request_fingerprint": fingerprint,
+            "request_id": "first-request",
         }
         connection = FakeConnection(
             fetch_results=[None, None, {"id": "session-1"}],
@@ -186,6 +204,7 @@ class JobIdempotencyTests(unittest.TestCase):
                 "session-1",
                 "hello",
                 JOB_REQUEST_KEY,
+                request_id="retry-request",
             )
 
         self.assertEqual(job, existing)
@@ -208,6 +227,18 @@ class JobIdempotencyTests(unittest.TestCase):
                 "hello",
                 JOB_REQUEST_KEY,
                 web_search_enabled="false",
+                request_id="job-create-request",
+            )
+
+    def test_invalid_request_id_is_rejected_before_database_write(self):
+        """服务层不能被绕过 HTTP 入口写入不符合契约的 request ID。"""
+        with self.assertRaises(ValueError):
+            create_job(
+                7,
+                "session-1",
+                "hello",
+                JOB_REQUEST_KEY,
+                request_id="invalid/request-id",
             )
 
 

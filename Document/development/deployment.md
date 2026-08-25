@@ -29,6 +29,7 @@
 | `checkpoint-cleanup` | 跨库 checkpoint 删除 |
 | `searxng-init` | 一次性 init，首次启动时在配置目录内生成临时文件，完成 secret_key 注入和校验后原子发布 `settings.yml`，已存在则跳过 |
 | `searxng` | 固定版本的联网搜索服务（SearXNG），提供 `format=json` + arxiv/crossref/openalex 三引擎，并以 `/healthz` 提供浅层容器健康检查 |
+| `loki` / `alloy` / `grafana` | 开发环境运行日志采集、存储和查看；只加入独立的 observability network |
 
 `app`、worker、monitor 和 cleanup 依赖 `db-bootstrap` 成功退出；`searxng` 依赖 Valkey 健康和 `searxng-init` 成功退出。默认拓扑不让 `app` 或 worker 等待 SearXNG 健康：联网搜索是 Job 级可选能力，运行期不可用时由 web_search 重试并降级，非搜索 Job 不会因 SearXNG 不可用而阻止启动。开发拓扑当前不提供自动故障切换。启动命令见 [`setup.md`](setup.md)。
 
@@ -37,6 +38,8 @@
 仓库只提交 `searxng/core-config/settings.yml.example`。`searxng-init` 服务在首次启动时自动兜底：`settings.yml` 缺失则在同一配置目录内创建临时文件，复制 example、把 `secret_key` 占位符替换为随机 64 位 hex，并在校验通过后通过原子重命名发布；生成失败不会留下半初始化的目标文件。`settings.yml` 已存在时仍然跳过，不覆盖用户配置。
 
 当前开发 Compose 固定使用 `searxng/searxng:2026.8.21-bbb3c7d82`。升级镜像时必须重新验证当前 `settings.yml.example`、JSON 输出格式、三学术引擎配置和 `/healthz`；不要直接改回 `latest`。`/healthz` 只检查 SearXNG Web 进程和配置加载后的 HTTP 响应，不检查外部学术引擎、DNS 或出站网络；真实搜索可用性仍由 web_search 的运行期重试和降级处理。
+
+开发 Compose 的可观测组件使用固定版本和独立命名卷：Loki、Alloy 不开放宿主机端口，Grafana 只绑定 `127.0.0.1:3000`。启动 Grafana 前必须设置非空的 `GRAFANA_ADMIN_PASSWORD`；采集范围由应用容器的 `causalagent_observability` 标签筛选，不包含 MySQL、PostgreSQL、Loki、Alloy 或 Grafana 自身。完整字段、标签和真实验收边界见 [`observability.md`](observability.md)。
 
 ## 生产部署
 

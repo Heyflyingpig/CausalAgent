@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
@@ -112,12 +111,6 @@ def assemble_execution_phases(
 
             boundary_messages = boundary_messages_by_event.get(int(event["id"]), [])
             if len(boundary_messages) != 1:
-                logging.warning(
-                    "ExecutionPhase 跳过无法唯一关联的边界: job=%s event=%s messages=%s",
-                    job_id,
-                    event["id"],
-                    len(boundary_messages),
-                )
                 pending_events = []
                 saw_boundary_event = True
                 continue
@@ -133,13 +126,6 @@ def assemble_execution_phases(
                 or int(input_row.get("chat_message_id") or 0) != int(user_messages[0]["id"])
                 or (not saw_boundary_event and int(input_row["sequence"]) != 0)
             ):
-                logging.warning(
-                    "ExecutionPhase 跳过关联不完整的边界: job=%s event=%s input=%s user_messages=%s",
-                    job_id,
-                    event["id"],
-                    input_id,
-                    len(user_messages),
-                )
                 pending_events = []
                 saw_boundary_event = True
                 continue
@@ -172,12 +158,6 @@ def assemble_execution_phases(
             input_id = int(latest_input["input_id"])
             user_messages = user_messages_by_input.get(input_id, [])
             if len(user_messages) != 1:
-                logging.warning(
-                    "ExecutionPhase 跳过无法唯一关联的活动阶段: job=%s input=%s user_messages=%s",
-                    job_id,
-                    input_id,
-                    len(user_messages),
-                )
                 continue
             public_events = [item for row in pending_events if (item := _history_event(row))]
             phase = phase_by_input_id.get(input_id)

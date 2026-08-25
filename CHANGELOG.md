@@ -642,3 +642,54 @@
   - 降级结果统一包含 `success`、`status`、`query`、`results`、`content` 和错误字段；异常对象经 `sanitize_error()` 归类，`CancelledError` 与 `JobExecutionRevoked` 保持原有传播语义，不转成普通搜索失败。
   - `web_search_enabled` 在路由层和 Job service 层均只接受 JSON 布尔值，非布尔请求返回 `400` 或在服务层拒绝，并继续参与请求指纹和幂等冲突判断。
   - 统一使用 `WEB_SEARCH_MAX_RESULTS=9` 控制搜索结果合并、报告/追问注入和最终引用投影，避免报告依据超出公开引用范围。
+
+---
+2026.8.18
+- 【日志管理第一阶段 1.1：日志契约与 Job 请求关联】
+  - 新增可观测性日志 v1 契约、现状盘点、敏感信息边界和第二阶段布点清单，并接入 `Document/` 导航。
+  - 新增 `c3d4e5f6a7b8_add_analysis_job_request_id` migration，保存创建 Job 的原始 `X-Request-ID`；历史行保持 `NULL`，不新增索引。
+  - 将请求 ID 从创建路由传入 Job service，服务层执行格式校验；幂等重放保留首次请求 ID，不被后续请求覆盖。
+  - 同步 readiness、deep audit、迁移链测试、Job 创建测试、迁移 head 文档和 E2E head 预期。
+- 【日志管理第一阶段 1.2：共享 JSON 运行时与进程接入】
+  - 新增共享 `observability` 日志运行时，统一 UTC、单行 JSON stderr、标准 `logging.extra` 事件字段、contextvars 上下文、递归脱敏、体积限制、异常栈清理和序列化失败降级。
+  - 接入 Web、worker、monitor、db-bootstrap、checkpoint-cleanup 及维护脚本的启动日志，新增稳定启动事件；旧业务日志保持合法 JSON，无法可靠分类时不伪造 `event_code/category`。
+  - 移除 MCP server 本地 `FileHandler` 和数据库初始化文件日志；MCP stdout 保留协议，应用日志经 worker stderr 进入容器日志。
+  - 补充日志运行时、并发上下文和 MCP stdio 边界单元测试；未执行真实 Docker、数据库、PostgreSQL checkpoint 和模型/MCP 端到端验收。
+- 【日志管理第一阶段 1.3：默认开发可观测拓扑】
+  - 在默认开发 Compose 中锁定 Grafana 13.1.1、Loki 3.7.4 和 Alloy v1.18.0，新增独立 observability network、Grafana/Loki/Alloy 持久卷和资源上限；Grafana 仅绑定 127.0.0.1:3000，并要求非空 GRAFANA_ADMIN_PASSWORD。
+  - 通过 Compose 静态标签限定 Alloy 只采集 Web、worker、monitor、MCP 转发和维护容器，排除数据库与可观测组件自身；MCP 继续复用 worker stderr。
+  - 新增 Loki 单节点 TSDB/filesystem、72 小时保留、compactor、写入/查询限制、Logs Drilldown 能力配置，以及 Alloy Docker 解包、应用 JSON 提取、低基数标签和持久 positions 配置。
+  - 新增 Grafana Loki datasource、最小错误仪表盘和可观测拓扑静态契约测试；本次未执行真实 Docker 镜像拉取、全栈启动、positions 重启、Loki 暂停恢复和 30 分钟负载验收。
+
+---
+2026.8.22
+- 【日志管理修复：补齐登录时间写入失败事件】
+  - 保留 `mysql.connector.Error` 的数据库失败事件路径，为超时、连接异常和未知异常增加 `auth.login.last_login_update_failed` 事件及稳定原因码。
+  - 更新认证服务测试和事件目录测试，验证登录时间写入失败不会阻断登录且不回显异常原文。
+
+---
+2026.8.24
+- 【日志管理第三阶段：独立 Grafana 异常日志看板实现】
+  - 保持 `causalagent-logs` Dashboard UID 和既有 Loki 数据源不变，将展示范围固定为 `warning`、`error`、`critical`，并继续在 Loki 中保留 INFO/DEBUG 供 Explore 排障。
+  - 增加环境、服务、分类和异常级别筛选，以及异常总量、级别趋势、服务/分类分布、Top 10 事件码和最近 200 条异常日志面板。
+  - `event_code` 仅在查询阶段解析；request、Job、用户、节点、工具和实例字段不新增为 Dashboard 变量或 Loki 标签。
+  - 本次不新增 Flask/Vue 日志入口，不修改生产 Compose；只执行基础静态检查，真实 Grafana/Loki、浏览器和故障场景验收仍待人工完成。
+- 【修复：旧 Job 执行占用阻塞数据库升级】
+  - 为 `b2c3d4e5f6a7` 前的旧库增加只读迁移 preflight 和显式 dry-run/apply 修复工具，不改写历史 migration，也不自动清理业务数据。
+  - 修复命令要求数据库、revision 和候选条数三重确认，拒绝运行中 Job、部分迁移 schema 和状态漂移；事务内只清除非运行 Job 的旧 `worker_id` / `locked_at`。
+  - 程序化 bootstrap 保留共享 JSON stderr 日志配置，避免 Alembic `fileConfig` 覆盖最终失败事件，并补充数据库修复与启动编排测试。
+- 【Grafana 默认简体中文】
+  - 开发 Compose 将 Grafana 服务器默认语言设置为 `zh-Hans`，新账号和未保存个人语言偏好的账号默认使用简体中文。
+  - 保留 Grafana 个人偏好优先级，不修改生产 Compose、数据卷、Loki 或异常日志看板查询。
+- 【管理员侧栏新增 Grafana 切换入口】
+  - 在管理员侧栏页脚的“进入聊天”上方新增“进入 Grafana”按钮，直接跳转到默认开发环境的 `http://127.0.0.1:3000/`。
+  - 为桌面展开、折叠和移动端布局补齐交换图标、按钮间距及 Mock E2E/组件测试覆盖，不改变 Flask 管理员鉴权或 Grafana 登录边界。
+
+---
+2026.8.25
+- 【合并 develop：联网搜索与结构化日志能力整合】
+  - 同时保留联网搜索上下文路由和 develop 的节点结构化错误日志，补齐联网搜索父图与子图 error handler 的节点、超时元数据。
+  - Job 创建链路同时持久化 `web_search_enabled` 与原始 `request_id`，保持搜索开关参与幂等指纹且重放不覆盖首次请求 ID。
+  - 正常报告与降级报告继续公开受限搜索引用，同时遵守统一 JSON stderr 日志合同。
+  - Web Search Planner 内部结构化输出降级改用受管事件，移除 query、命中数和路由选择的普通日志；历史引用附件解析失败使用不含消息 ID 和正文的注册事件。
+  - 默认开发 Compose 同时保留 SearXNG/Valkey 搜索服务和 Loki/Alloy/Grafana 可观测拓扑，并同步部署与测试文档。

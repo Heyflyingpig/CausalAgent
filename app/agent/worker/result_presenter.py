@@ -9,6 +9,10 @@ from langchain_core.messages import AIMessage
 
 from Agent.causal_agent.web_search_node import WEB_SEARCH_MAX_RESULTS
 from app.chat.response_storage import render_summary_for_display
+from observability.logging_runtime import log_context, log_event
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _extract_references(web_search_result: Any) -> list[dict]:
@@ -29,11 +33,9 @@ def process_final_result(final_state_data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(last_message, AIMessage):
             message_name = getattr(last_message, "name", None)
             if message_name in {"normal_chat", "inquiry_answer"}:
-                logging.info("返回 %s 节点的回复", message_name)
                 return {"type": "text", "summary": last_message.content}
 
             if message_name == "report" and final_state_data.get("final_report"):
-                logging.info("返回完整的因果分析报告")
                 result: dict[str, Any] = {
                     "summary": final_state_data["final_report"],
                     "layout": "report",
@@ -60,11 +62,6 @@ def process_final_result(final_state_data: dict[str, Any]) -> dict[str, Any]:
                         "revision_summary",
                         "",
                     )
-                    logging.info(
-                        "返回因果图数据: source=%s",
-                        result["graph_source"],
-                    )
-
                 result.setdefault("type", "text")
                 visualization_mapping = final_state_data.get("visualization_mapping")
                 if visualization_mapping:
@@ -74,10 +71,6 @@ def process_final_result(final_state_data: dict[str, Any]) -> dict[str, Any]:
                         result["summary"],
                         visualization_mapping,
                     )
-                    logging.info(
-                        "已替换报告中的 %s 个可视化占位符",
-                        len(visualization_mapping),
-                    )
                 references = _extract_references(final_state_data.get("web_search_result"))
                 if references:
                     result["references"] = references
@@ -85,12 +78,20 @@ def process_final_result(final_state_data: dict[str, Any]) -> dict[str, Any]:
 
     final_report = final_state_data.get("final_report")
     if final_report:
-        logging.info("未找到最新消息，降级返回 final_report")
         result = {"type": "text", "summary": final_report, "layout": "report"}
         references = _extract_references(final_state_data.get("web_search_result"))
         if references:
             result["references"] = references
         return result
 
-    logging.warning("未找到任何可返回的内容，返回默认消息")
+    with log_context(node="result_presenter"):
+        log_event(
+            LOGGER,
+            "job.node.degraded",
+            details={
+                "failure_kind": "missing_result",
+                "final_attempt": 1,
+                "fallback": "default_message",
+            },
+        )
     return {"type": "text", "summary": "抱歉，我在处理时遇到了问题。"}

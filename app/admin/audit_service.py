@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from app.db import get_read_connection, get_write_connection
+from observability.logging_runtime import log_event
 
 
 LOGGER = logging.getLogger(__name__)
@@ -74,8 +75,16 @@ def record_admin_audit_event(**event: Any) -> bool:
             insert_admin_audit_event(cursor, **event)
             conn.commit()
         return True
-    except Exception as exc:
-        LOGGER.error("管理员审计事件写入失败: %s", exc, exc_info=True)
+    except Exception:
+        log_event(
+            LOGGER,
+            "admin.audit.write_failed",
+            details={
+                "action": str(event.get("action") or "unknown"),
+                "reason_code": "audit_write_failed",
+            },
+            exc_info=True,
+        )
         return False
 
 

@@ -36,7 +36,11 @@ class HistoryCursor:
 
     def fetchone(self):
         if "FROM sessions" in self.current_sql:
-            return {"id": "session-1", "snapshot_at": BASE + timedelta(seconds=5)}
+            return {
+                "id": "session-1",
+                "user_id": 7,
+                "snapshot_at": BASE + timedelta(seconds=5),
+            }
         return None
 
     def fetchall(self):
@@ -180,4 +184,4 @@ def test_load_session_rejects_unknown_or_unauthorized_session_before_history_que
 
     assert response.status_code == 404
     assert connection.rolled_back is True
-    assert len(connection.cursor_value.statements) == 1
+    assert len(connection.cursor_value.statements) == 2
