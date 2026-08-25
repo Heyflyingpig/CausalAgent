@@ -32,3 +32,20 @@ class StagingComposeContractTests(unittest.TestCase):
         self.assertIn("VISION_MODEL: ${VISION_MODEL:-qwen/qwen3-vl-8b-instruct}", compose)
         for key in ("VISION_API_KEY=", "VISION_BASE_URL=", "VISION_MODEL=qwen/qwen3-vl-8b-instruct"):
             self.assertIn(key, example)
+
+    def test_worker_compose_contract_has_bounded_drain_and_release_mounts(self) -> None:
+        """worker Compose 应传递 drain 配置并暴露只读 release 目录。"""
+        for filename in ("docker-compose.yml", "docker-compose.replica.yml"):
+            compose = (REPOSITORY_ROOT / filename).read_text(encoding="utf-8")
+            self.assertIn("JOB_DRAIN_TIMEOUT_SECONDS=${JOB_DRAIN_TIMEOUT_SECONDS:-60}", compose)
+            self.assertIn("stop_grace_period: 75s", compose)
+
+        staging = (REPOSITORY_ROOT / "docker-compose.staging.yml").read_text(encoding="utf-8")
+        self.assertIn("JOB_DRAIN_TIMEOUT_SECONDS: ${JOB_DRAIN_TIMEOUT_SECONDS:-60}", staging)
+        self.assertIn("stop_grace_period: 75s", staging)
+        for path in (
+            "./Agent/knowledge_base/multimodal_indexes:/app/Agent/knowledge_base/multimodal_indexes:ro",
+            "./Agent/knowledge_base/multimodal_runtime:/app/Agent/knowledge_base/multimodal_runtime:ro",
+            "./Agent/knowledge_base/rag/runtime:/app/Agent/knowledge_base/rag/runtime:ro",
+        ):
+            self.assertIn(path, staging)

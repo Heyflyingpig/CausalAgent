@@ -1,4 +1,5 @@
 import asyncio
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -105,6 +106,22 @@ class RagServiceTests(unittest.TestCase):
 
         self.assertEqual(seen_configs, configs)
         self.assertEqual([item["question"] for item in result["questions"]], ["q1", "q2"])
+
+    def test_missing_or_invalid_policy_uses_safe_source_marker(self):
+        """缺失或非法 policy 应回退代码默认值并保留来源标记。"""
+        from Agent.knowledge_base import query_rag
+
+        with tempfile.TemporaryDirectory() as directory:
+            missing = f"{directory}/missing.json"
+            config, source = query_rag._load_rag_config(missing)
+            self.assertEqual(source, "code_default")
+            self.assertIsInstance(config, query_rag.RagRetrievalConfig)
+
+            invalid = f"{directory}/invalid.json"
+            with open(invalid, "w", encoding="utf-8") as handle:
+                handle.write("{not valid json")
+            _, source = query_rag._load_rag_config(invalid)
+            self.assertEqual(source, "invalid_config_fallback")
 
     def test_compatibility_exports_remain_available(self):
         from Agent.knowledge_base import query_rag

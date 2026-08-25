@@ -6,6 +6,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -17,7 +18,21 @@ from config.settings import settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MCP_SERVER_PATH = PROJECT_ROOT / "Agent" / "CausalAgentMCP" / "mcp_server.py"
-KNOWLEDGE_BASE_DIRECTORY = PROJECT_ROOT / "Agent" / "knowledge_base"
+RELEASE_ID_PATTERN = re.compile(r"^mm_[0-9a-f]{20}$")
+
+
+@dataclass(frozen=True)
+class RagReadiness:
+    """保存 worker 启动时的轻量 RAG release 检查结果。"""
+
+    status: str
+    release_id: str | None = None
+    error_code: str | None = None
+
+    @property
+    def available(self) -> bool:
+        """只有明确的 available 状态才允许启用 RAG。"""
+        return self.status == "available"
 
 
 @dataclass(frozen=True)
@@ -26,6 +41,18 @@ class ProcessRuntime:
 
     llm: ChatOpenAI
     rag_available: bool
+    rag_status: str | None = None
+    rag_release_id: str | None = None
+    rag_error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        """为旧的显式构造调用补齐稳定的 RAG 状态名称。"""
+        if self.rag_status is None:
+            object.__setattr__(
+                self,
+                "rag_status",
+                "available" if self.rag_available else "rag_unavailable",
+            )
 
 
 @dataclass(frozen=True)
@@ -63,26 +90,81 @@ def create_llm() -> ChatOpenAI:
     return llm
 
 
-def check_rag_availability() -> bool:
-    """只检查知识库目录，实际向量库仍在首次查询时延迟加载。"""
-    logging.info("正在检查 RAG 知识库目录...")
-    persist_directory = KNOWLEDGE_BASE_DIRECTORY / "db"
-    if not persist_directory.exists():
-        logging.warning(
-            "知识库持久化目录不存在。请先运行 "
-            "Agent/knowledge_base/build_knowledge.py 构建知识库。"
-        )
-        return False
+def _load_rag_runtime_config() -> Any:
+    """读取 active release 的轻量 Runtime 配置，不初始化向量库。"""
+    from Agent.knowledge_base.rag_runtime import RagRuntimeConfig
 
-    logging.info("RAG 启动检查通过；向量库将在首次实际查询时延迟初始化。")
-    return True
+    return RagRuntimeConfig.from_environment()
+
+
+def inspect_rag_readiness() -> RagReadiness:
+    """检查 active pointer、manifest、embedding 指纹和索引目录。"""
+    logging.info("[worker] checking RAG active release readiness")
+    try:
+        config = _load_rag_runtime_config()
+        if config.embedding_config.get("status") != "ready":
+            raise ValueError("active release embedding is unavailable")
+        release_id = str(config.release_id)
+        if RELEASE_ID_PATTERN.fullmatch(release_id) is None:
+            raise ValueError("active release id is invalid")
+        vector_db_dir = Path(config.vector_db_dir)
+        if not vector_db_dir.is_dir():
+            raise FileNotFoundError("active release vector directory is unavailable")
+    except FileNotFoundError:
+        readiness = RagReadiness(
+            status="rag_unavailable",
+            error_code="active_release_missing",
+        )
+    except ImportError:
+        readiness = RagReadiness(
+            status="rag_unavailable",
+            error_code="rag_dependency_missing",
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        readiness = RagReadiness(
+            status="rag_unavailable",
+            error_code="active_release_invalid",
+        )
+    except Exception:
+        readiness = RagReadiness(
+            status="rag_unavailable",
+            error_code="active_release_check_failed",
+        )
+    else:
+        readiness = RagReadiness(
+            status="available",
+            release_id=release_id,
+        )
+
+    if readiness.available:
+        logging.info(
+            "[worker] RAG readiness status=%s release=%s",
+            readiness.status,
+            readiness.release_id,
+        )
+    else:
+        logging.warning(
+            "[worker] RAG readiness status=%s code=%s",
+            readiness.status,
+            readiness.error_code,
+        )
+    return readiness
+
+
+def check_rag_availability() -> bool:
+    """兼容旧调用方，返回 active release 是否可用。"""
+    return inspect_rag_readiness().available
 
 
 def create_process_runtime() -> ProcessRuntime:
     """创建一次进程级运行时，消除对 ``app.agent.core`` 全局变量的依赖。"""
+    readiness = inspect_rag_readiness()
     return ProcessRuntime(
         llm=create_llm(),
-        rag_available=check_rag_availability(),
+        rag_available=readiness.available,
+        rag_status=readiness.status,
+        rag_release_id=readiness.release_id,
+        rag_error_code=readiness.error_code,
     )
 
 

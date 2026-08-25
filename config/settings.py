@@ -275,6 +275,12 @@ class AppConfig:
             "JOB_DRAINING_STALE_AFTER_SECONDS",
             default=420,
         )
+        self.JOB_DRAIN_TIMEOUT_SECONDS = self._get_int_config(
+            "JOB_DRAIN_TIMEOUT_SECONDS",
+            default=60,
+        )
+        if self.JOB_DRAIN_TIMEOUT_SECONDS <= 0:
+            raise ValueError("配置错误: JOB_DRAIN_TIMEOUT_SECONDS 必须大于 0。")
         self.JOB_MAX_ATTEMPTS = self._get_int_config("JOB_MAX_ATTEMPTS", default=3)
         self.JOB_CHAT_HISTORY_LIMIT = self._get_int_config("JOB_CHAT_HISTORY_LIMIT", default=20)
         self.RAG_EVAL_EVALUATION_WORKERS = self._get_int_config(

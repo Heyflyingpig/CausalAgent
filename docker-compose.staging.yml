@@ -103,6 +103,7 @@ services:
       RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT: "2"
       RAG_EVAL_ROOT: /app/tmp/rag_eval
       RAG_EVAL_DATASET_ROOT: /app/tmp/rag_eval/datasets/registered
+      JOB_DRAIN_TIMEOUT_SECONDS: ${JOB_DRAIN_TIMEOUT_SECONDS:-60}
     networks: [rag_eval_staging]
     depends_on:
       mysql-primary: {condition: service_healthy}
@@ -120,6 +121,10 @@ services:
       - rag_eval_staging_reports:/app/tmp/rag_eval/reports
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - ./Agent/knowledge_base/multimodal_indexes:/app/Agent/knowledge_base/multimodal_indexes:ro
+      - ./Agent/knowledge_base/multimodal_runtime:/app/Agent/knowledge_base/multimodal_runtime:ro
+      - ./Agent/knowledge_base/multimodal_assets:/app/Agent/knowledge_base/multimodal_assets:ro
+      - ./Agent/knowledge_base/rag/runtime:/app/Agent/knowledge_base/rag/runtime:ro
     networks: [rag_eval_staging]
     depends_on:
       mysql-replica: {condition: service_healthy}
@@ -135,9 +140,14 @@ services:
     volumes:
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - ./Agent/knowledge_base/multimodal_indexes:/app/Agent/knowledge_base/multimodal_indexes:ro
+      - ./Agent/knowledge_base/multimodal_runtime:/app/Agent/knowledge_base/multimodal_runtime:ro
+      - ./Agent/knowledge_base/multimodal_assets:/app/Agent/knowledge_base/multimodal_assets:ro
+      - ./Agent/knowledge_base/rag/runtime:/app/Agent/knowledge_base/rag/runtime:ro
     networks: [rag_eval_staging]
     depends_on:
       db-bootstrap: {condition: service_completed_successfully}
+    stop_grace_period: 75s
     logging: *bounded_logging
 
   monitor:
