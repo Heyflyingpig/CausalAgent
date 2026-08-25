@@ -1103,3 +1103,28 @@
 - 【运行产物删除】：候选题、调参集治理和 Gold 治理的终态运行支持删除；运行中任务和仍有下游引用的运行统一拒绝删除。
 - 【来源生命周期】：来源删除同时阻断 queued 摄取，避免排队任务在来源已删除后才开始执行；工作台补充来源显示名改名入口并清理已删除来源的元数据。
 - 【验证】：新增生命周期回归测试，容器内定向测试 26 项全部通过；。
+
+---
+2026.8.25（RAG release readiness 与 Agent worker drain）
+- 【Runtime readiness】：worker 启动复用 active release resolver 做轻量 pointer、manifest、正式来源、embedding、版本、collection 和向量目录检查；失败时继续运行并标记内部 `rag_unavailable`，保留对外 `status=unavailable`，不加载 RAG 重资源。
+- 【Worker 生命周期】：新增 `JOB_DRAIN_TIMEOUT_SECONDS`（默认 60 秒）；SIGTERM/SIGINT 停止领取新 Job，超时只取消本地任务并交由既有 stale lease recovery 接管，worker Compose stop grace 至少 75 秒。
+- 【Release 保留】：active pointer 发布时保留 previous pointer，维护 status 只读展示 active/previous/candidate 与候选超额提示，不自动删除目录；retrieval policy 继续独立回退与发布。
+- 【文档/验证】：同步运行时、部署、架构、README、Compose 契约和定向 worker/index 测试；本轮未扩展当前生产 Compose 中缺失的 Agent worker/PostgreSQL checkpoint 拓扑。
+
+---
+2026.8.25（多模态正式来源 canonical 契约收紧）
+- 【来源契约】：正式来源改用 canonical `source_id`、稳定 `document_id` 和精确 SHA-256；只在配置声明的受控目录树内按哈希唯一解析，并校验扩展名与文件签名。配置文件名变化不改写既有 Gold `document_id`，目录外同 hash 和零/多命中均 fail-closed。
+- 【发布门禁】：legacy manifest 仅保留只读历史识别，不能满足正式发布；发布前重新校验 manifest、来源、策略、评测和索引完整性。VLM 默认关闭，只接受来源级显式授权，不引入页级授权。
+- 【验证边界】：改名、唯一 hash、签名/扩展名、目录外同 hash、未授权 VLM 和非正式 manifest 使用 tempfile 受控目录 fixture；隔离 worktree 不含 `.gitignore` 忽略的正式 PDF，默认本地文件检查记录为 0 命中，未复制文件或放宽目录边界。
+
+---
+2026.8.25（多模态 release API 与发布控制台）
+- 【VLM 授权】：隔离摄取远程 VLM 默认关闭；前端按来源提交显式授权，run 状态和 manifest 保存授权集合。
+- 【正式发布】：新增 release status、gate-check、publish、rollback API；隔离 staged 索引先晋级正式候选目录，再由用户确认切换 active pointer，保留 previous 且不自动删除旧产物。
+- 【前端】：新增正式发布控制台、门禁清单、active/previous 摘要和发布确认弹窗；检索策略配置发布按钮改名，避免与 active pointer 发布混淆。
+
+---
+2026.8.25（历史来源兼容与隔离索引级联删除）
+- 【来源兼容】：正式固定来源 ID 改为内容 SHA-256 派生 ID；历史文件名绑定 ID 仅作为只读别名解析，重新摄取不再从历史索引覆盖当前来源选择。
+- 【级联删除】：工作台删除摄取运行时可级联清理同一隔离运行树下的终态候选、评测、检索和治理产物；生产 active pointer、Gold、运行中任务以及非隔离共享注册数据仍阻断删除。
+- 【验证】：后端相关回归 48 项通过（跳过 1 项条件测试），前端 typecheck、单测 3 项、生产构建、Python 编译和 diff 检查通过；真实历史运行仅做阻断验证，未删除现有产物。

@@ -163,7 +163,7 @@ graph TD;
 - **典型能力**：
   - 在生成报告时，自动检索相关理论和方法描述，为结论补充严谨的文献背景；
   - 支持面向初学者的「概念解释」，例如“什么是混杂变量”“为什么需要随机试验”等。
-- **默认生产链路**：使用 `RagRuntime -> RagService -> rag 普通节点`；该节点直接生成问题、调用 Service 并写回结果，不再经过 RAG ToolNode 子图。`rag_enrichment_search` 仅作为兼容工具入口保留。worker 启动时从多模态 active pointer 初始化共享 Runtime，RAG 问题的默认且唯一 corpus 是 `multimodal`。
+- **默认生产链路**：使用 `RagRuntime -> RagService -> rag 普通节点`；该节点直接生成问题、调用 Service 并写回结果，不再经过 RAG ToolNode 子图。`rag_enrichment_search` 仅作为兼容工具入口保留。worker 启动时只轻量校验多模态 active release，首次 RAG 查询才在进程内 lazy 初始化共享 Runtime；无效 release 继续运行并标记 `rag_unavailable`，RAG 问题的默认且唯一 corpus 是 `multimodal`。
 - **多模态公共知识库**：维护者可通过 `python -m Agent.knowledge_base.multimodal.cli` 对离线公共文本、表格、图片和已配置解析器支持的 PDF 创建隔离暂存索引。解析层会识别正文、版面、表格、公式和图片等内容，并转为带来源定位的多模态知识单元，再写入同一 collection；新图片链只接受冻结公共来源，Runtime 仍会校验来源、manifest 与 embedding 指纹，漂移时拒绝初始化且绝不回退到 PubMedQA。
 - **全量摄取与发布**：正式 PDF 使用 `spawn_per_batch` 的低内存 Docling 批处理，并原子保存到候选版本的 `checkpoints.sqlite3`：其中分表保存经 SHA-256 校验的本地版面解析、页元数据和最终单元，支持按页恢复而不产生大量小文件；默认关闭 Docling 图像/表格生成，页面和 `PictureItem` 图片由 PDF bbox 渲染器生成后进入远程 VLM 链路。传入外部 `outbound_manifest.json` 时，远程运行开始前会把它复制并冻结到候选目录；隔离评测中的两份冻结 Pearl 来源在远程授权开启时可自动生成本次不可变清单，其他来源仍需显式批准清单。只有完整匹配 source/page/图片哈希/context/策略指纹的记录允许外发。远程失败不回退本地 OCR。Chroma 成功构建后才提交，`run` 默认停在 `ready_to_publish`，只有显式发布才切换 active pointer。
 - **空表恢复**：Docling 发现但无法导出的空 `TableItem` 会按页面 bbox 裁剪为 `table_recovery` 资产，与同页正文一起进入同一索引；摄取层依赖 provider-neutral 的 `TableRecoveryProvider`，当前 `RemoteVlmTableRecoveryProvider` 复用已存在的远程视觉 adapter，未来可替换为本地 VLM。恢复失败记录阻断 issue，不生成伪表格单元。
@@ -177,7 +177,8 @@ graph TD;
 - **隔离评测来源页范围（2026-07-31）**：`/rag_eval` 的运行范围支持按每个来源分别设置 1-based、首尾包含的物理页段，并通过 `page_ranges` 传给隔离摄取接口；快速联调/Smoke 的 `max_pages` 仍是按选中来源顺序累计的总上限。范围会写入 staged manifest，不能绕过隔离目录或发布门禁。
 - **Docker Docling 模型路径（2026-07-31）**：`docker-compose.replica.yml` 的 `app`、`worker` 与 `rag-eval-worker` 复用工作区 `Agent/knowledge_base/models/docling`，通过 `MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling` 加载 Docling 模型；宿主机原始缓存保留为回滚副本。
 - **隔离评测运行（2026-08-02）**：后端新增 `POST /api/rag_eval/isolated/evaluation-runs`，显式绑定 `ingestion_run_id + index_version`，先把任务写入 `rag_eval_jobs` SQL 队列并由独立 `rag-eval-worker` 执行，不再依赖 Web 进程 daemon 线程。worker 通过 heartbeat 租约保活；进程异常退出后，下一次 worker 启动会将超时的 `running` 任务标记为 `failed`，不自动重跑可能产生外部模型调用的 Ragas。结果与 Markdown/JSON 产物通过评测任务结果和 artifact 接口读取，不复用旧 latest 输出；SSE 从运行目录轮询事件，支持 Web 与 worker 跨进程。
-- **隔离评测知识源上传与删除（2026-08-02）**：工作台支持上传 PDF、TXT、Markdown、CSV、XLSX 和 PNG/JPG/JPEG/WEBP/TIF/TIFF 图片；后端通过 `POST /api/rag_eval/isolated/sources` 按解析器已有格式校验、大小、可读性和 SHA-256，并将来源登记到 `tmp/rag_eval/sources/`（可用 `RAG_EVAL_ROOT` 或 `RAG_EVAL_SOURCE_ROOT` 覆盖）。上传不会自动摄取；用户上传来源可通过 `DELETE /api/rag_eval/isolated/sources/<source_id>` 删除，固定来源、运行中的摄取和已生成的 staged index/评测产物不会被删除。来源自定义显示名通过同目录的 `source_metadata.json` 保存，`PATCH /api/rag_eval/isolated/sources/<source_id>` 只更新显示元数据，不改变 source_id、内容 hash 或历史运行。用户选择来源并启动摄取后，隔离评测内测默认开启远程 VLM；设置 `VISION_ALLOW_REMOTE_DATA=false` 可关闭。
+- **隔离评测知识源上传与删除（2026-08-02）**：工作台支持上传 PDF、TXT、Markdown、CSV、XLSX 和 PNG/JPG/JPEG/WEBP/TIF/TIFF 图片；后端通过 `POST /api/rag_eval/isolated/sources` 按解析器已有格式校验、大小、可读性和 SHA-256，并将来源登记到 `tmp/rag_eval/sources/`（可用 `RAG_EVAL_ROOT` 或 `RAG_EVAL_SOURCE_ROOT` 覆盖）。上传不会自动摄取；用户上传来源可通过 `DELETE /api/rag_eval/isolated/sources/<source_id>` 删除，固定来源、运行中的摄取和已生成的 staged index/评测产物不会被删除。来源自定义显示名通过同目录的 `source_metadata.json` 保存，`PATCH /api/rag_eval/isolated/sources/<source_id>` 只更新显示元数据，不改变 source_id、内容 hash 或历史运行。远程 VLM 默认关闭，摄取请求必须显式提交 `allow_remote_data=true` 与来源级 `authorized_source_ids`，服务端策略和来源授权同时满足才会外发。
+- **多模态正式 release API/UI（2026-08-25）**：`/rag_eval` 新增独立“正式发布”控制台；`GET /api/rag_eval/multimodal/releases/status` 读取 active/previous 与候选身份，`POST /api/rag_eval/multimodal/releases/gate-check` 只执行发布门禁，`POST /api/rag_eval/multimodal/releases/publish` 必须显式提交 `confirm=true` 后才会把隔离 staged 产物晋级到正式候选目录并原子切换 active pointer，`POST /api/rag_eval/multimodal/releases/rollback` 与 CLI 复用同一正式门禁。发布前要求 canonical 来源、哈希唯一命中、扩展名/签名、索引完整性、embedding 指纹、自动 Ragas 和正式检索门禁全部通过；Gold 暂不作为必要条件。旧 active 保留为 previous，不自动删除，运行中的 worker 需 drain/restart 后生效。
 - **隔离评测产物生命周期（2026-08-24）**：来源删除会阻断 `queued/created/running/cancelling` 的摄取，避免删除后排队任务再读取来源；来源显示名可在工作台直接改名。删除 staged index 或下游运行前，服务端会拒绝仍被引用的对象，防止留下无法恢复的评测历史。
 - **医疗兼容边界**：PubMedQA 构建、数据和专用评测入口暂时保留，但已退出默认生产与默认测试链路，供后续分阶段清理。
 - **正式 RAG 测试集契约**：`rag_eval_v1` 现在区分 `gold_regression`、`generated_candidate` 和 `reference_free` 三类题集。Pearl 题集已转换为 `Agent/knowledge_base/rag/data/eval/pearl_gold_v1.json`（24 条），PubMedQA 保留为独立的 `medical_gold_v1.json`（1000 条），两者不能混作同一条默认回归线。可用 `python -m Agent.knowledge_base.rag.operation_datasets.build_eval_datasets` 从历史源文件重新生成。
@@ -196,6 +197,7 @@ graph TD;
 - **索引绑定调参集治理**：工作台的“索引绑定调参集”入口调用 `POST /api/rag_eval/isolated/tuning-dataset-runs`，在当前 staged index 内只治理自动生成题，人工题保持保护；每轮按单题 Ragas 四指标门槛与 retrieval recall/MRR 门槛淘汰、生成和 AI 证据审核，缺分或审核异常均 fail-closed。通过后仅登记到隔离 run 与 `tmp/rag_eval/datasets/tuning/<index_version>/`，不写正式 evaluation history、报告、Gold 或 active pointer；结果可从 tuning run artifact 接口读取，后续仍需显式 Gold 发布动作。
 - **Baseline v2 与 sweep 门禁**：`POST /api/rag_eval/baseline-v2/bind` 只读校验 Gold v2、active pointer/index manifest 和 `active_current` retrieval，不切换 active pointer；评测页面可发送 sweep 配置和 `retrieval_sweep` 步骤，baseline 失败时不会生成推荐。
 - PDF 当前默认使用已通过本地 smoke 的 Docling；MinerU 仅保留为显式选择时的兼容回退。原始资料、Docling 原始输出、标准化单元与本地资源 URI/内容哈希都写入版本 manifest，并在发布门禁中回读核验。远程视觉仅接受 `wcode.net` 的 `qwen/qwen3-vl-8b-instruct` 配置和固定 allowlist 资料。
+- 正式来源身份由配置声明的 canonical `source_id`、`document_id` 与精确 SHA-256 组成；解析只在配置受控目录内按哈希唯一匹配，并同时校验扩展名和文件签名。配置文件名变化不会改写既有 Gold `document_id`，受控目录外同 hash 文件和非正式 staged manifest 均不得发布。生产 VLM 默认关闭，只有命令显式提供来源级 `--authorize-source` 且 outbound manifest、远程策略和完整性/评测门禁均通过时才允许外发。
 - **自动评测集默认流程（2026-08-24）**：新用户在当前 staged index 上直接指定测试题数量，调用 `POST /api/rag_eval/isolated/candidate-runs` 生成 `generated_candidate` 题集，生成结果可直接提交评测，不依赖固定的 24 道手工 Gold 题。题集仍必须绑定当前 `ingestion_run_id + index_version`，切换索引后需要重新生成；固定 Gold 仅在高级治理入口中保留为基准能力。旧版 `max_units/questions_per_unit` 请求字段继续兼容，但新客户端应使用 `question_count`。
 
 ```bash
@@ -296,6 +298,7 @@ WEB_TIMEOUT=120
 JOB_WORKERS=2
 JOB_HEARTBEAT_INTERVAL_SECONDS=10
 JOB_STALE_AFTER_SECONDS=120
+JOB_DRAIN_TIMEOUT_SECONDS=60
 JOB_MAX_ATTEMPTS=3
 
 MAX_UPLOAD_SIZE_MB=20
@@ -327,8 +330,15 @@ docker compose -f docker-compose.yml run --rm db-bootstrap
 请先在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`。
 `checkpoint-cleanup` 仍是独立的常驻 worker，用于消费跨库清理 outbox。
 `app` 负责管理员 checkpoint 摘要读取，`monitor` 负责 PostgreSQL quick/deep
-检查，因此两者也必须取得相同的 `CHECKPOINT_POSTGRES_*` 配置。生产 Compose
-同样包含 PostgreSQL、bootstrap、worker、monitor 和 cleanup 服务。
+检查，因此两者也必须取得相同的 `CHECKPOINT_POSTGRES_*` 配置。当前
+`docker-compose.prod.yml` 实际只定义 MySQL、app、monitor、rag-eval-worker 和
+db-bootstrap，不包含 Agent worker 或 PostgreSQL checkpoint；本轮不凭空扩展该生产拓扑，
+需后续单独完成生产基础设施核对。
+
+发布新的 RAG index release 后，先确认 staged/evaluation/publish 门禁已分别完成，再停止
+Agent worker。worker 会停止领取新 Job，在 `JOB_DRAIN_TIMEOUT_SECONDS` 内等待运行任务；超时
+只取消本地执行并让 lease 由 stale recovery 接管。重启后才会让新的 active pointer 进入该进程，
+不支持热切换、蓝绿或零停机切换。
 
 全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 

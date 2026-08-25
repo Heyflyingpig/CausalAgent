@@ -18,13 +18,15 @@
 
 父图当前只暴露 `mcp` 和 `rag` 两个工具阶段。MCP 子图的正常路径为 `mcp_planner -> mcp_tool_node -> mcp_result_parser`；RAG 子图内部对应 `rag_question_planner -> rag_tool_node -> rag_result_parser -> rag_finalize`。父图通过适配节点只向 RAG 子图传入 `messages`、`analysis_parameters`、`preprocess_summary` 和 `causal_analysis_result`，子图只投影 `rag_output` 为父图的 `knowledge_base_result`；RAG route、问题列表、ToolMessage 和解析中间结果不会进入父 State。
 
-RAG Planner 在调用 LLM 前检查进程级 `rag_available` 和已注册的 `rag_tools`。知识库目录未初始化或工具列表为空时，Planner 写入私有 `rag_route=finish`、`rag_status=unavailable` 和统一降级中间结果，跳过 ToolNode，仍经 `rag_finalize` 回到父图的 Agent。正常 ToolNode 返回（包括 `success=False`）继续进入 Parser；ToolNode 或 Planner 的未捕获普通异常在重试结束后由 error handler 跳到 Finalize，Parser 异常标记为 `protocol_error` 后也进入 Finalize。
+RAG Planner 在调用 LLM 前检查进程级 `rag_available` 和已注册的 `rag_tools`。知识库目录未初始化、active release readiness 失败或工具列表为空时，Planner 写入私有 `rag_route=finish`、`rag_status=unavailable` 和统一降级中间结果，跳过 ToolNode，仍经 `rag_finalize` 回到父图的 Agent；进程 Runtime 同时保留内部 `rag_status=rag_unavailable`、安全错误码和可用时的 release id。正常 ToolNode 返回（包括 `success=False`）继续进入 Parser；ToolNode 或 Planner 的未捕获普通异常在重试结束后由 error handler 跳到 Finalize，Parser 异常标记为 `protocol_error` 后也进入 Finalize。
 
 RAG 查询任务捕获普通查询、连接和目录异常时返回 `success=False`、`status=unavailable` 及 `error_type=RAGQueryError`，这表示知识库不可用，不表示 ToolMessage 协议错误。`parse_tool_message_json()` 遇到非法 JSON 时返回 `error_type=ToolMessageProtocolError`，RAG Parser 将其归类为 `protocol_error`；正常业务失败的 `success=False` 仍归类为 `unavailable`。所有路径最终由 Finalize 生成稳定的 `rag_output`，报告继续使用 `format_rag_summary_for_prompt()` 读取父图统一字段。
 
 结构化输出统一通过 `Agent/llm_structured_output.py` 的同步/异步入口调用，固定使用普通 `function_calling`。结构化请求会关闭 thinking；MCP planner 仍使用原生 Tool Calls，并对关闭 thinking 的 LLM 副本设置 `tool_choice="required"`，确保 planner 必须选择一个已加载工具。`agent` 和 `fold` 的条件路由只读取显式 State 字段 `route_decision`、`fold_decision`，不使用展示消息猜测控制流。
 
-RAG 启动时只检查知识库目录是否可用，不在 worker 启动阶段完整加载向量库；知识库缺失时记录 warning 并以无知识库模式继续。DirectLiNGAM 作为 `causal_direct_lingam` MCP 工具提供连续数值 CSV 分析，输出的系数矩阵约定为 `target_to_source`，报告需要保留线性、非高斯、误差独立、DAG 和无潜在混杂等假设。
+RAG readiness 在 worker 启动时复用 `RagRuntimeConfig.from_environment()`，轻量校验 active pointer、相对路径、manifest 哈希、正式知识源资格、embedding 指纹、版本/collection 和向量目录；不加载 embedding、Chroma、BM25 或回答模型。失败时 worker 继续运行并标记 `rag_unavailable`，对外仍使用 `status=unavailable`；缺失或非法 retrieval policy 仍按代码默认值回退并记录来源。完整 RagRuntime 继续按进程内 lazy singleton 在首次 RAG 查询时创建，active pointer 变化需通过 worker drain 与重启生效，不支持热切换或零停机切换。
+
+worker 收到 SIGTERM/SIGINT 后停止领取新 Job，按 `JOB_DRAIN_TIMEOUT_SECONDS`（默认 60 秒）等待现有 slot。超时只取消本地执行任务并关闭资源，不把运行中的 Job 标记为 failed/cancelled；未完成 lease 由既有 stale recovery 接管。worker Compose 的 `stop_grace_period` 至少为 75 秒。DirectLiNGAM 作为 `causal_direct_lingam` MCP 工具提供连续数值 CSV 分析，输出的系数矩阵约定为 `target_to_source`，报告需要保留线性、非高斯、误差独立、DAG 和无潜在混杂等假设。
 
 ## 事件流与脱敏
 

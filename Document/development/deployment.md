@@ -32,7 +32,9 @@
 
 ## 生产部署
 
-`docker-compose.prod.yml` 使用生产 MySQL、PostgreSQL checkpoint、统一 bootstrap、Web、worker、monitor 和 cleanup 服务；生产环境不挂载源代码，使用独立卷、网络和日志轮转设置。当前生产 Compose 是单独的生产配置，不能假设它自动提供开发 Compose 的 MySQL replica 或故障切换能力。
+当前 `docker-compose.prod.yml` 实际定义生产 MySQL、统一 bootstrap、Web、monitor 和隔离 `rag-eval-worker`；它没有定义 Agent worker、PostgreSQL checkpoint 或 checkpoint cleanup。生产 Agent worker/checkpoint 拓扑是后续事项，本轮不凭空新增。生产环境不挂载源代码，使用独立卷、网络和日志轮转设置，不能假设它自动提供开发 Compose 的 MySQL replica 或故障切换能力。
+
+开发、兼容副本和 staging 的 Agent worker 使用 `JOB_DRAIN_TIMEOUT_SECONDS`（默认 60 秒）进行优雅 drain，并设置至少 75 秒的 Compose `stop_grace_period`。staging worker 显式只读挂载多模态 index、active/previous runtime pointer、assets 和 retrieval policy 目录。发布新 release 后必须先完成独立评测与显式 publish，再通过停止/重启 worker 使 active pointer 生效；不会热切换、蓝绿切换或声称零停机。
 
 生产必须通过环境变量或安全的 secret 机制提供 `SECRET_KEY`、模型配置、MySQL 职责账号和非空 `CHECKPOINT_POSTGRES_PASSWORD`。不要在文档、镜像层、命令行日志或 API 响应中打印密钥。
 
