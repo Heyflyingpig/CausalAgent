@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .contracts import sha256_bytes
+from .contracts import sha256_bytes, stable_id
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -20,30 +20,90 @@ def load_production_defaults(path: Path = DEFAULTS_PATH) -> dict[str, Any]:
         raise ValueError("unsupported multimodal production defaults schema")
     if not config.get("sources") or not config.get("evaluation", {}).get("dataset_path"):
         raise ValueError("production defaults require sources and an evaluation dataset")
+    if not config.get("controlled_source_directories"):
+        # 旧配置没有受控目录字段时，只能把其声明路径的父目录作为兼容边界。
+        config["controlled_source_directories"] = sorted({Path(str(source["path"])).parent.as_posix() for source in config["sources"]})
     if any(not isinstance(source.get("page_count"), int) or source["page_count"] < 1 for source in config["sources"]):
         raise ValueError("production defaults require positive source page counts")
     return config
 
 
-def production_source_paths(config: dict[str, Any] | None = None) -> list[Path]:
-    """解析并核验冻结来源，拒绝路径逃逸、缺失文件或内容漂移。"""
+def canonical_source_id(source: dict[str, Any]) -> str:
+    """返回来源配置声明的稳定身份，旧配置回退到规范键。"""
+    value = source.get("source_id") or source.get("canonical_source_id")
+    if isinstance(value, str) and value:
+        return value
+    return stable_id("source", {"canonical_key": source.get("canonical_key") or Path(str(source["path"])).stem.removesuffix("(1)")})
+
+
+def canonical_document_id(source: dict[str, Any]) -> str:
+    """返回正式 gold 使用的稳定 document_id，兼容旧文件名算法。"""
+    value = source.get("document_id")
+    if isinstance(value, str) and value.startswith("doc_"):
+        return value
+    return stable_id("doc", {"path": Path(str(source["path"])).name, "content_hash": source["sha256"]})
+
+
+def resolve_production_sources(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """在受控目录内按 SHA-256 唯一解析正式来源并校验格式。"""
     config = config or load_production_defaults()
-    paths: list[Path] = []
+    controlled_roots: list[Path] = []
+    for raw_root in config["controlled_source_directories"]:
+        root = (ROOT / Path(raw_root)).resolve()
+        try:
+            root.relative_to(ROOT)
+        except ValueError as exc:
+            raise ValueError("controlled production source directory must stay inside the repository") from exc
+        controlled_roots.append(root)
+
+    resolved: list[dict[str, Any]] = []
     for source in config["sources"]:
         relative = Path(source["path"])
-        path = (ROOT / relative).resolve()
-        try:
-            path.relative_to(ROOT)
-        except ValueError as exc:
-            raise ValueError("production source must stay inside the repository") from exc
-        if not path.is_file():
-            if source.get("required", False):
-                raise FileNotFoundError(f"required production source is missing: {relative.as_posix()}")
-            continue
-        if sha256_bytes(path.read_bytes()) != source["sha256"]:
-            raise ValueError(f"production source hash mismatch: {relative.as_posix()}")
-        paths.append(path)
-    return paths
+        expected_suffix = relative.suffix.lower()
+        def inside(candidate: Path, root: Path) -> bool:
+            try:
+                candidate.resolve().relative_to(root)
+                return True
+            except ValueError:
+                return False
+
+        hits = [
+            candidate
+            for root in controlled_roots
+            if root.is_dir()
+            for candidate in root.rglob("*")
+            if candidate.is_file() and inside(candidate, root) and sha256_bytes(candidate.read_bytes()) == source["sha256"]
+        ]
+        if len(hits) != 1:
+            raise ValueError(
+                f"production source hash must match exactly one controlled file: {relative.as_posix()} ({len(hits)} matches)"
+            )
+        path = hits[0].resolve()
+        if path.suffix.lower() != expected_suffix:
+            raise ValueError(f"production source extension mismatch: {path.name}")
+        from .parsers import inspect_source
+
+        issue = inspect_source(path)
+        if issue is not None:
+            raise ValueError(f"production source signature mismatch: {path.name}")
+        resolved.append(
+            {
+                "source_id": canonical_source_id(source),
+                "document_id": canonical_document_id(source),
+                "path": path,
+                "configured_path": relative.as_posix(),
+                "relative_path": path.relative_to(ROOT).as_posix(),
+                "content_hash": source["sha256"],
+                "page_count": source["page_count"],
+                "remote_authorized": bool(source.get("remote_authorized", False)),
+            }
+        )
+    return resolved
+
+
+def production_source_paths(config: dict[str, Any] | None = None) -> list[Path]:
+    """返回受控目录内唯一命中的正式来源路径。"""
+    return [source["path"] for source in resolve_production_sources(config)]
 
 
 def resolve_production_embedding_config(config: dict[str, Any] | None = None) -> dict[str, Any]:

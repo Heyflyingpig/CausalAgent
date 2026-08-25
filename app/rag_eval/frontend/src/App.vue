@@ -36,7 +36,7 @@ import {
 } from "./reviewWorkflow";
 
 type RunStatus = "created" | "queued" | "running" | "cancelling" | "staged" | "succeeded" | "cancelled" | "failed";
-type NavId = "workspace" | "candidates" | "evaluation" | "reports";
+type NavId = "workspace" | "candidates" | "evaluation" | "release" | "reports";
 type EvaluationSection = "config" | "events" | "comparison";
 type ComparisonMode = "time_trend" | "run_diff" | "strategy_diff";
 type ReportTab = "pipeline" | "retrieval" | "ragas";
@@ -50,6 +50,35 @@ interface SourceEntry {
   content_sha256: string;
   source_kind?: "frozen" | "uploaded";
   page_count?: number | null;
+}
+
+interface ReleaseCheck {
+  key: string;
+  label: string;
+  status: "pass" | "fail";
+  blocking?: boolean;
+  detail: string;
+}
+
+interface ReleaseStatus {
+  state?: "ready_to_publish" | "blocked" | "published";
+  publishable?: boolean;
+  checked_at?: string;
+  release?: {
+    release_id?: string;
+    ingestion_run_id?: string;
+    index_version?: string;
+    manifest_sha256?: string;
+    source_count?: number;
+    sources?: Array<Record<string, string | undefined>>;
+    evaluation_run_id?: string;
+  } | null;
+  checks?: ReleaseCheck[];
+  active?: Record<string, unknown> | null;
+  previous?: Record<string, unknown> | null;
+  candidates?: string[];
+  candidate_overflow?: boolean;
+  requires_worker_restart?: boolean;
 }
 
 interface PageRangeDraft { start: string; end: string; }
@@ -71,6 +100,8 @@ interface RunState {
   source_ids?: string[];
   source_names?: string[];
   source_label?: string;
+  remote_enabled?: boolean;
+  authorized_source_ids?: string[];
   max_pages?: number | null;
   page_ranges?: Array<{ source_id: string; start_page: number; end_page: number }>;
   current_stage?: string;
@@ -255,6 +286,7 @@ interface ProductionConfig {
 
 const sources = ref<SourceEntry[]>([]);
 const selectedSourceIds = ref<string[]>([]);
+const remoteAuthorizedSourceIds = ref<string[]>([]);
 const ingestion = ref<RunState | null>(null);
 const ingestionHistory = ref<RunState[]>([]);
 const selectedIngestionRunId = ref("");
@@ -325,6 +357,13 @@ const configLoading = ref(false);
 const configSaving = ref(false);
 const configMessage = ref("");
 const configError = ref("");
+const releaseStatus = ref<ReleaseStatus | null>(null);
+const releaseLoading = ref(false);
+const releasePublishing = ref(false);
+const releaseError = ref("");
+const releaseNotice = ref("");
+const releaseConfirmOpen = ref(false);
+const releaseRollbackLoading = ref(false);
 const sidebarCollapsed = ref(false);
 const sourceLoading = ref(false);
 const uploadInput = ref<HTMLInputElement | null>(null);
@@ -370,8 +409,10 @@ const supportedUploadExtensions = [
 ];
 const supportedUploadLabel = supportedUploadExtensions.join(", ");
 const selectedSources = computed(() => sources.value.filter((item) => selectedSourceIds.value.includes(item.source_id)));
+const selectedRemoteSources = computed(() => selectedSources.value.filter((item) => remoteAuthorizedSourceIds.value.includes(item.source_id)));
 const ingestionReady = computed(() => ingestion.value?.status === "staged" && Boolean(ingestion.value.index_version));
 const busy = computed(() => uploadLoading.value || sourceDeleteLoading.value !== null || ingestionDeleteLoading.value || ingestionLoading.value || evaluationLoading.value);
+const releasePublishable = computed(() => Boolean(releaseStatus.value?.publishable && releaseStatus.value?.state === "ready_to_publish"));
 const evaluationMetrics = computed(() => Object.entries(evaluationResult.value?.summary.key_metrics || {}));
 const displayEvents = computed(() => {
   const visible: RunEvent[] = [];
@@ -663,14 +704,14 @@ async function renameSource(source: SourceEntry) {
 async function deleteSelectedIngestion() {
   const run = ingestion.value;
   if (!run || !terminalStatuses.includes(run.status)) return;
-  if (!window.confirm(`确认删除工作索引“${ingestionDisplayName(run)}”？\n\n这会删除该摄取运行及其 staged 索引；如果仍被候选题、评测或 Gold 引用，服务端会拒绝。`)) return;
+  if (!window.confirm(`确认删除工作索引“${ingestionDisplayName(run)}”？\n\n这会同时删除该摄取运行及其终态候选、评测和治理报告；如果 active pointer、Gold 或仍在运行的任务引用它，服务端会拒绝。`)) return;
   ingestionDeleteLoading.value = true;
   actionError.value = "";
   sourceNotice.value = "";
   try {
     await api(`/api/rag_eval/isolated/ingestion-runs/${encodeURIComponent(run.run_id)}`, {
       method: "DELETE",
-      body: "{}",
+      body: JSON.stringify({ cascade: true }),
     });
     stopWatching();
     ingestion.value = null;
@@ -739,6 +780,7 @@ async function loadCatalog() {
     pageRanges.value = nextRanges;
     const availableIds = new Set(data.sources.map((item) => item.source_id));
     selectedSourceIds.value = selectedSourceIds.value.filter((value) => availableIds.has(value));
+    remoteAuthorizedSourceIds.value = remoteAuthorizedSourceIds.value.filter((value) => availableIds.has(value));
     if (!selectedSourceIds.value.length) selectedSourceIds.value = data.sources.map((item) => item.source_id);
   } catch (error) {
     catalogError.value = error instanceof Error ? error.message : "来源目录加载失败";
@@ -911,7 +953,13 @@ async function startIngestion() {
     }
     const state = await api<RunState>("/api/rag_eval/isolated/ingestion-runs", {
       method: "POST",
-      body: JSON.stringify({ source_ids: selectedSourceIds.value, max_pages: pageLimit.value === "4" || pageLimit.value === "12" ? Number(pageLimit.value) : null, page_ranges: customRanges }),
+      body: JSON.stringify({
+        source_ids: selectedSourceIds.value,
+        max_pages: pageLimit.value === "4" || pageLimit.value === "12" ? Number(pageLimit.value) : null,
+        page_ranges: customRanges,
+        allow_remote_data: selectedRemoteSources.value.length > 0,
+        authorized_source_ids: selectedRemoteSources.value.map((source) => source.source_id),
+      }),
     });
     ingestion.value = state;
     localStorage.setItem("ingestion_run_id", state.run_id);
@@ -1165,12 +1213,27 @@ const visibleSampleDeltas = computed(() => {
   }
   return sorted;
 });
-function toggleSource(sourceId: string) { selectedSourceIds.value = selectedSourceIds.value.includes(sourceId) ? selectedSourceIds.value.filter((value) => value !== sourceId) : [...selectedSourceIds.value, sourceId]; }
+function toggleSource(sourceId: string) {
+  selectedSourceIds.value = selectedSourceIds.value.includes(sourceId)
+    ? selectedSourceIds.value.filter((value) => value !== sourceId)
+    : [...selectedSourceIds.value, sourceId];
+  if (!selectedSourceIds.value.includes(sourceId)) {
+    remoteAuthorizedSourceIds.value = remoteAuthorizedSourceIds.value.filter((value) => value !== sourceId);
+  }
+}
+
+function toggleRemoteAuthorization(sourceId: string) {
+  if (!selectedSourceIds.value.includes(sourceId)) return;
+  remoteAuthorizedSourceIds.value = remoteAuthorizedSourceIds.value.includes(sourceId)
+    ? remoteAuthorizedSourceIds.value.filter((value) => value !== sourceId)
+    : [...remoteAuthorizedSourceIds.value, sourceId];
+}
 
 function selectNav(nav: NavId) {
   activeNav.value = nav;
   if (nav === "candidates") { void loadGoldDatasetStatus(); }
   if (nav === "evaluation") { evaluationSection.value = "config"; void loadConfig(); }
+  if (nav === "release") { void loadReleaseStatus(); }
   if (nav === "reports") { void loadEvaluationHistory(); }
 }
 
@@ -1379,11 +1442,94 @@ async function loadIngestionHistory() {
   ingestionHistory.value = history.items.filter((run) => run.status === "staged");
 }
 
+async function loadReleaseStatus() {
+  releaseError.value = "";
+  try {
+    const params = new URLSearchParams();
+    if (ingestionReady.value && ingestion.value?.run_id && ingestion.value.index_version) {
+      params.set("ingestion_run_id", ingestion.value.run_id);
+      params.set("index_version", ingestion.value.index_version);
+      if (evaluationRun.value?.run_id) params.set("evaluation_run_id", evaluationRun.value.run_id);
+    }
+    releaseStatus.value = await api<ReleaseStatus>(`/api/rag_eval/multimodal/releases/status${params.toString() ? `?${params.toString()}` : ""}`);
+  } catch (error) { releaseError.value = error instanceof Error ? error.message : "正式 release 状态加载失败"; }
+}
+
+async function checkReleaseGate() {
+  releaseError.value = "";
+  releaseNotice.value = "";
+  if (!ingestionReady.value || !ingestion.value?.run_id || !ingestion.value.index_version) {
+    releaseError.value = "请先选择一个已完成的 staged 索引";
+    return;
+  }
+  if (!evaluationRun.value?.run_id) {
+    releaseError.value = "请先完成绑定当前索引的自动 Ragas 评测";
+    return;
+  }
+  releaseLoading.value = true;
+  try {
+    releaseStatus.value = await api<ReleaseStatus>("/api/rag_eval/multimodal/releases/gate-check", {
+      method: "POST",
+      body: JSON.stringify({
+        ingestion_run_id: ingestion.value.run_id,
+        index_version: ingestion.value.index_version,
+        evaluation_run_id: evaluationRun.value.run_id,
+        expected_active_index_version: String(releaseStatus.value?.active?.index_version || ""),
+      }),
+    });
+  } catch (error) { releaseError.value = error instanceof Error ? error.message : "正式发布门禁检查失败"; }
+  finally { releaseLoading.value = false; }
+}
+
+function openReleaseConfirmation() {
+  if (!releasePublishable.value) return;
+  releaseConfirmOpen.value = true;
+}
+
+async function publishRelease() {
+  if (!releasePublishable.value || !ingestion.value?.run_id || !ingestion.value.index_version || !evaluationRun.value?.run_id) return;
+  releasePublishing.value = true;
+  releaseError.value = "";
+  try {
+    await api<ReleaseStatus>("/api/rag_eval/multimodal/releases/publish", {
+      method: "POST",
+      body: JSON.stringify({
+        ingestion_run_id: ingestion.value.run_id,
+        index_version: ingestion.value.index_version,
+        evaluation_run_id: evaluationRun.value.run_id,
+        expected_active_index_version: String(releaseStatus.value?.active?.index_version || ""),
+        confirm: true,
+      }),
+    });
+    releaseConfirmOpen.value = false;
+    releaseNotice.value = "正式 active pointer 已更新；运行中的 worker 需要 drain/restart 后才会使用新索引。";
+    await loadReleaseStatus();
+  } catch (error) { releaseError.value = error instanceof Error ? error.message : "正式 active pointer 发布失败"; }
+  finally { releasePublishing.value = false; }
+}
+
+async function rollbackRelease() {
+  const previousVersion = String(releaseStatus.value?.previous?.index_version || "");
+  const activeVersion = String(releaseStatus.value?.active?.index_version || "");
+  if (!previousVersion || releaseRollbackLoading.value) return;
+  if (!window.confirm(`确认回滚到 ${previousVersion}？回滚仍会重新执行正式发布门禁。`)) return;
+  releaseRollbackLoading.value = true;
+  releaseError.value = "";
+  try {
+    await api<ReleaseStatus>("/api/rag_eval/multimodal/releases/rollback", {
+      method: "POST",
+      body: JSON.stringify({ index_version: previousVersion, expected_active_index_version: activeVersion, confirm: true }),
+    });
+    releaseNotice.value = `已请求回滚到 ${previousVersion}；运行中的 worker 需要 drain/restart 后才会生效。`;
+    await loadReleaseStatus();
+  } catch (error) { releaseError.value = error instanceof Error ? error.message : "正式 active pointer 回滚失败"; }
+  finally { releaseRollbackLoading.value = false; }
+}
+
 async function selectIngestionRun(runId: string) {
   const state = await refreshRun("ingestion", runId);
   selectedIngestionRunId.value = state.run_id;
   localStorage.setItem("ingestion_run_id", state.run_id);
-  if (state.source_ids?.length) selectedSourceIds.value = [...state.source_ids];
   await loadGoldDatasetStatus();
 }
 
@@ -1707,7 +1853,6 @@ async function restoreIngestionRun(preferredId: string | null): Promise<boolean>
       ingestion.value = preferredRun;
       selectedIngestionRunId.value = preferredRun.run_id;
       localStorage.setItem("ingestion_run_id", preferredRun.run_id);
-      if (preferredRun.source_ids?.length) selectedSourceIds.value = [...preferredRun.source_ids];
       if (!terminalStatuses.includes(preferredRun.status)) watchRun("ingestion", preferredRun.run_id);
       sourceNotice.value = (terminalStatuses.includes(preferredRun.status) ? "已恢复最新完成的摄取任务：" : "已恢复当前运行中的摄取任务：") + preferredRun.run_id;
       return true;
@@ -1866,6 +2011,7 @@ function refreshVisibleRun() {
           <button class="nav-subitem" :class="{ active: evaluationSection === 'events' }" @click="selectEvaluationSection('events')">评测流程事件</button>
           <button class="nav-subitem" :class="{ active: evaluationSection === 'comparison' }" @click="selectEvaluationSection('comparison')">对比分析</button>
         </div>
+        <button class="nav-item" :class="{ active: activeNav === 'release' }" title="正式发布" aria-label="正式发布" @click="selectNav('release')"><ShieldCheck :size="17" /><span>正式发布</span></button>
         <button class="nav-item" :class="{ active: activeNav === 'reports' }" title="报告编辑" aria-label="报告编辑" @click="selectNav('reports')"><FileChartColumn :size="17" /><span>报告编辑</span></button>
       </nav>
       <div class="sidebar-footer"><span class="sidebar-status-dot"></span><div><strong>隔离环境</strong><small>隔离索引专用</small></div></div>
@@ -1875,25 +2021,26 @@ function refreshVisibleRun() {
       <header class="topbar">
         <div>
           <p class="kicker">知识检索与评测</p>
-          <h1>{{ activeNav === 'workspace' ? '隔离知识源工作台' : activeNav === 'candidates' ? '自动生成评测集' : activeNav === 'reports' ? '报告编辑' : evaluationSection === 'config' ? '评测配置' : evaluationSection === 'events' ? '评测流程事件' : '对比分析' }}</h1>
+          <h1>{{ activeNav === 'workspace' ? '隔离知识源工作台' : activeNav === 'candidates' ? '自动生成评测集' : activeNav === 'release' ? '正式发布控制台' : activeNav === 'reports' ? '报告编辑' : evaluationSection === 'config' ? '评测配置' : evaluationSection === 'events' ? '评测流程事件' : '对比分析' }}</h1>
         </div>
-        <div class="topbar-meta"><span class="live-dot"></span><span>后端接口已连接</span><button class="icon-button" title="刷新当前数据" aria-label="刷新当前数据" @click="activeNav === 'reports' ? loadEvaluationHistory() : refreshWorkspace()"><RefreshCw :size="16" :class="{ spinning: sourceLoading || historyLoading }" /></button></div>
+        <div class="topbar-meta"><span class="live-dot"></span><span>后端接口已连接</span><button class="icon-button" title="刷新当前数据" aria-label="刷新当前数据" @click="activeNav === 'reports' ? loadEvaluationHistory() : activeNav === 'release' ? loadReleaseStatus() : refreshWorkspace()"><RefreshCw :size="16" :class="{ spinning: sourceLoading || historyLoading || releaseLoading }" /></button></div>
       </header>
 
       <main class="content" :class="{ 'comparison-content': activeNav === 'evaluation' && evaluationSection === 'comparison' }">
         <template v-if="activeNav === 'workspace'">
-          <div class="stage-line" aria-label="运行阶段"><div class="stage-marker active"><span>01</span><strong>知识源摄取</strong><small>多模态解析 · 标准化 · Chroma</small></div><div class="stage-connector"></div><div class="stage-marker" :class="{ active: ingestionReady }"><span>02</span><strong>评测中心</strong><small>retrieval · Ragas · 报告</small></div></div>
+          <div class="stage-line" aria-label="运行阶段"><div class="stage-marker active"><span>01</span><strong>知识源摄取</strong><small>多模态解析 · 标准化 · Chroma</small></div><div class="stage-connector"></div><div class="stage-marker" :class="{ active: ingestionReady }"><span>02</span><strong>评测中心</strong><small>retrieval · Ragas · 报告</small></div><div class="stage-connector"></div><div class="stage-marker" :class="{ active: releasePublishable }"><span>03</span><strong>正式发布</strong><small>门禁 · active pointer</small></div></div>
           <div v-if="actionError || catalogError" class="alert danger-alert"><AlertCircle :size="17" /><span>{{ actionError || catalogError }}</span></div>
           <div v-if="sourceNotice" class="alert success-alert"><Check :size="17" /><span>{{ sourceNotice }}</span></div>
           <section class="workspace-grid workbench-layout">
             <article class="panel source-panel">
               <div class="panel-header"><div class="panel-title"><span class="icon-badge coral"><Database :size="18" /></span><div><p class="eyebrow">SOURCE INPUT</p><h2>选择知识源</h2></div></div><div class="source-panel-actions"><span class="count-label">{{ selectedSources.length }} / {{ sources.length }}</span><input ref="uploadInput" class="visually-hidden" type="file" :accept="supportedUploadExtensions.join(',')" @change="uploadSource" /><button type="button" class="secondary-button upload-button" :disabled="busy" @click="openUploadDialog"><Upload :size="15" />{{ uploadLoading ? '上传中' : '上传知识源' }}</button></div></div>
               <div class="source-capability-note"><strong>多模态解析</strong><span>支持 {{ supportedUploadLabel }}；文本、表格、图片以及 PDF 中的版面、公式、表格和图片会统一解析为可追溯的知识单元。</span></div>
-              <div class="index-selector workspace-index-selector"><span>本次工作索引（全局）</span><div class="index-selector-row"><select v-model="selectedIngestionRunId" @change="selectIngestionRun(selectedIngestionRunId)"><option v-for="run in ingestionHistory" :key="run.run_id" :value="run.run_id">{{ ingestionDisplayName(run) }}</option></select><button v-if="ingestion && terminalStatuses.includes(ingestion.status)" type="button" class="secondary-button danger index-delete-button" :disabled="busy" @click="deleteSelectedIngestion"><Trash2 :size="15" />{{ ingestionDeleteLoading ? '删除中…' : '删除索引' }}</button></div><small>下拉框只显示已生成 staged 索引；运行中的任务仍在下方显示。删除会先检查候选题、评测和 Gold 引用。</small></div>
+              <div class="index-selector workspace-index-selector"><span>本次工作索引（全局）</span><div class="index-selector-row"><select v-model="selectedIngestionRunId" @change="selectIngestionRun(selectedIngestionRunId)"><option v-for="run in ingestionHistory" :key="run.run_id" :value="run.run_id">{{ ingestionDisplayName(run) }}</option></select><button v-if="ingestion && terminalStatuses.includes(ingestion.status)" type="button" class="secondary-button danger index-delete-button" :disabled="busy" @click="deleteSelectedIngestion"><Trash2 :size="15" />{{ ingestionDeleteLoading ? '删除中…' : '删除索引' }}</button></div><small>下拉框只选择当前工作索引，不会改变下方下一次摄取的来源；删除会级联清理终态隔离报告，但 active pointer、Gold 或运行中任务仍会阻断。</small></div>
               <div v-if="sourceLoading && !sources.length" class="empty-line"><LoaderCircle class="spin" :size="17" />加载来源目录</div>
               <div v-else-if="!sources.length" class="empty-line"><FileText :size="17" />暂无可选来源</div>
-              <div v-else class="source-list"><div v-for="source in sources" :key="source.source_id" class="source-row" :class="{ selected: selectedSourceIds.includes(source.source_id) }"><label class="source-select"><input type="checkbox" :checked="selectedSourceIds.includes(source.source_id)" @change="toggleSource(source.source_id)" /><span class="source-check"><Check :size="14" /></span><span class="source-copy"><strong>{{ source.display_name || source.name }}</strong><small>{{ source.source_kind === 'uploaded' ? '用户上传' : '固定来源' }} · {{ source.page_count ? `${source.page_count} 页` : '页数待读取' }} · {{ formatBytes(source.size_bytes) }} · {{ source.content_sha256.slice(0, 12) }}</small></span></label><span class="source-actions"><button type="button" class="source-rename-button" :disabled="busy" @click="renameSource(source)">改名</button><button v-if="source.source_kind === 'uploaded'" type="button" class="source-delete-button" :disabled="busy || sourceDeleteLoading === source.source_id" :title="`删除 ${source.name}`" :aria-label="`删除 ${source.name}`" @click="deleteSource(source)"><Trash2 :size="15" /></button></span></div></div>
+              <div v-else class="source-list"><div v-for="source in sources" :key="source.source_id" class="source-row" :class="{ selected: selectedSourceIds.includes(source.source_id) }"><label class="source-select"><input type="checkbox" :checked="selectedSourceIds.includes(source.source_id)" @change="toggleSource(source.source_id)" /><span class="source-check"><Check :size="14" /></span><span class="source-copy"><strong>{{ source.display_name || source.name }}</strong><small>{{ source.source_kind === 'uploaded' ? '用户上传 · 仅隔离评测' : '固定来源 · 可申请正式发布' }} · {{ source.page_count ? `${source.page_count} 页` : '页数待读取' }} · {{ formatBytes(source.size_bytes) }} · {{ source.content_sha256.slice(0, 12) }}</small></span></label><label v-if="selectedSourceIds.includes(source.source_id)" class="source-vlm-consent"><input type="checkbox" :checked="remoteAuthorizedSourceIds.includes(source.source_id)" @change="toggleRemoteAuthorization(source.source_id)" /><span>允许 VLM</span></label><span class="source-actions"><button type="button" class="source-rename-button" :disabled="busy" @click="renameSource(source)">改名</button><button v-if="source.source_kind === 'uploaded'" type="button" class="source-delete-button" :disabled="busy || sourceDeleteLoading === source.source_id" :title="`删除 ${source.name}`" :aria-label="`删除 ${source.name}`" @click="deleteSource(source)"><Trash2 :size="15" /></button></span></div></div>
               <div class="run-options"><label>运行范围<select v-model="pageLimit"><option value="4">快速联调 · 4 页</option><option value="12">Smoke · 12 页</option><option value="all">全部来源页</option><option value="custom">自定义页码范围</option></select></label><span>{{ pageLimit === 'custom' ? '按来源分别执行物理页范围' : '快速模式按选中来源顺序累计页数' }}；每次创建新的隔离索引</span></div>
+              <div class="vlm-consent-summary"><ShieldCheck :size="15" /><span>远程 VLM 默认关闭；本次已授权 {{ selectedRemoteSources.length }} / {{ selectedSources.length }} 个来源。</span></div>
               <div v-if="pageLimit === 'custom'" class="custom-range-panel"><div class="custom-range-heading"><strong>按来源设置物理页码</strong><small>页码从 1 开始，首尾包含；本次共 {{ customPageTotal }} 页</small></div><div v-for="source in selectedSources" :key="`range-${source.source_id}`" class="custom-range-row"><span>{{ source.name }}</span><input v-model="pageRanges[source.source_id].start" type="number" min="1" aria-label="开始页" /><span>至</span><input v-model="pageRanges[source.source_id].end" type="number" min="1" aria-label="结束页" /><small>页</small></div></div>
               <div class="panel-footer"><button class="primary-button" :disabled="busy || !selectedSourceIds.length" @click="startIngestion"><Play :size="16" />{{ ingestionReady ? '重新摄取' : '开始摄取' }}</button><button v-if="ingestion && ['created','running','cancelling'].includes(ingestion.status)" class="secondary-button danger" :disabled="ingestion.status === 'cancelling'" @click="cancelIngestion">取消</button></div>
               <div v-if="ingestion" class="run-summary"><div class="summary-line"><span>当前索引</span><strong>{{ ingestionDisplayName(ingestion) }}</strong><span class="status-pill" :class="statusTone(ingestion.status)">{{ statusLabel(ingestion.status) }}</span></div><div class="progress-track"><span :style="{ width: ingestion.status === 'staged' ? '100%' : ingestion.status === 'running' ? '48%' : '0%' }"></span></div><div class="summary-metrics"><span>units <b>{{ ingestion.unit_count ?? '--' }}</b></span><span>vectors <b>{{ ingestion.vector_count ?? '--' }}</b></span><span title="索引版本 ID">版本 <code>{{ ingestion.index_version || '--' }}</code></span></div></div>
@@ -2076,7 +2223,7 @@ function refreshVisibleRun() {
                   <div class="config-fields"><label v-for="field in ragasFieldKeys" :key="`ragas-${field}`" class="config-field"><span class="field-title"><span>{{ configMeta(field).label }}</span><span class="config-help" :title="configTooltip(field)">?</span></span><input :value="draftDisplay(ragasDraft, field)" type="number" :step="configMeta(field).integer ? 1 : 0.01" @input="updateDraft(ragasDraft, field, $event)" /><small>建议 {{ formatRange(configMeta(field).recommended) }} · 硬限制 {{ formatRange(configMeta(field).allowed) }}</small></label></div>
                   <div class="metric-selector"><strong>Ragas 指标</strong><label v-for="metric in metricOptions" :key="metric"><input type="checkbox" :checked="isMetricSelected(metric)" @change="toggleMetric(metric)" />{{ metric }}</label></div>
                    <label class="switch-row"><input v-model="executeRagas" type="checkbox" /><span class="switch-control"></span><span><strong>执行完整 Ragas 评测</strong><small>{{ executeRagas ? '开启后会生成当前检索策略的回答和上下文，再调用 Ragas judge；涉及大模型，请耐心等待。' : '关闭后只运行 retrieval，不调用回答生成模型或 Ragas judge。' }}</small></span></label>
-                  <div class="panel-footer"><button class="primary-button" :disabled="configSaving" @click="saveConfig"><Check :size="16" />保存评测配置</button><button class="secondary-button" :disabled="configSaving" @click="publishConfig"><FileChartColumn :size="16" />发布到正式配置</button></div>
+                  <div class="panel-footer"><button class="primary-button" :disabled="configSaving" @click="saveConfig"><Check :size="16" />保存评测配置</button><button class="secondary-button" :disabled="configSaving" @click="publishConfig"><FileChartColumn :size="16" />发布检索策略配置</button></div>
                 </div>
               </article>
               <aside class="panel production-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge gold"><Database :size="18" /></span><div><p class="eyebrow">PRODUCTION CONFIG</p><h2>当前正式配置</h2></div></div><span class="status-pill" :class="productionConfig?.exists ? 'success' : 'muted'">{{ productionConfig?.exists ? '已存在' : '未发布' }}</span></div><div class="production-body"><p>这里展示正式 RAG 当前读取的检索参数。只有显式点击发布后才会更新正式配置文件。</p><pre v-if="productionConfig?.retrieval_config">{{ JSON.stringify(productionConfig.retrieval_config, null, 2) }}</pre><div v-else class="empty-line">暂无正式配置</div><div class="production-meta" v-if="productionConfig?.metadata"><span>最近发布</span><code>{{ String(productionConfig.metadata.published_at || '--') }}</code></div></div></aside>
@@ -2087,6 +2234,22 @@ function refreshVisibleRun() {
           <template v-else-if="evaluationSection === 'events'"><div v-if="evaluationActive || parallelEvaluationActive" class="ai-waiting-notice"><LoaderCircle class="spin" :size="17" /><span>{{ parallelEvaluationActive ? `并行实验进行中，已完成 ${parallelCompletedCount}/${evaluationBatchRuns.length}；各 run 会独立生成报告。` : evaluationWaitingMessage }}</span></div><section v-if="evaluationBatchRuns.length" class="panel parallel-run-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><GitCompare :size="18" /></span><div><p class="eyebrow">PARALLEL EXPERIMENTS</p><h2>并行实验状态</h2></div></div><span class="count-label">{{ parallelCompletedCount }} / {{ evaluationBatchRuns.length }} 完成</span></div><div class="parallel-run-grid"><button v-for="run in evaluationBatchRuns" :key="run.run_id" :class="{ selected: evaluationRun?.run_id === run.run_id }" @click="focusBatchRun(run)"><span><strong>{{ profileName(run.strategy_profile?.profile_id) }}</strong><small>{{ run.run_id }}</small></span><span class="status-pill" :class="statusTone(run.status)">{{ statusLabel(run.status) }}</span></button></div></section><section class="panel evaluation-progress-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><Gauge :size="18" /></span><div><p class="eyebrow">PIPELINE PROGRESS</p><h2>评测阶段进度</h2></div></div><span class="count-label">{{ evaluationCompletedStages }} / {{ evaluationProgressRows.length }} 阶段完成</span></div><div class="progress-stage-grid"><article v-for="(row, index) in evaluationProgressRows" :key="row.step" class="progress-stage-card" :class="row.status"><div class="progress-stage-heading"><span class="progress-stage-index">{{ String(index + 1).padStart(2, '0') }}</span><div><strong>{{ evaluationStageLabel(row.step) }}</strong><small>{{ evaluationProgressStatusLabel(row.status) }}</small></div></div><div class="progress-stage-track"><span :style="{ width: `${evaluationProgressPercent(row.current, row.total, row.status)}%` }"></span></div><div class="progress-stage-meta"><span v-if="row.phase">{{ evaluationPhaseLabel(row.phase) }}</span><strong v-if="row.current !== undefined && row.total !== undefined">{{ row.current }} / {{ row.total }}</strong><span v-else>{{ row.status === 'done' ? '阶段已完成' : row.status === 'pending' ? '等待前序阶段' : '等待事件更新' }}</span></div><div v-if="row.substeps?.length" class="progress-substeps"><span v-for="substep in row.substeps" :key="substep.phase"><small>{{ evaluationPhaseLabel(substep.phase) }}</small><b v-if="substep.current !== undefined && substep.total !== undefined">{{ substep.current }} / {{ substep.total }}</b></span></div></article></div></section><section class="panel evaluation-events-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge slate"><CircleDot :size="18" /></span><div><p class="eyebrow">EVALUATION TRACE</p><h2>评测流程事件</h2></div></div><span class="count-label">{{ displayEvents.length }} 条（重复进度已合并）</span></div><div class="event-list evaluation-event-list"><div v-if="!displayEvents.length" class="empty-line">等待评测中心启动任务</div><div v-for="(event, index) in displayEvents" :key="`${event.timestamp}-${index}`" class="event-row"><span class="event-time">{{ formatBeijingTime(event.timestamp) }}</span><span class="event-type">{{ event.type }}</span><span>{{ event.message }}</span></div></div></section><div class="event-actions"><button class="secondary-button" @click="selectEvaluationSection('config')"><SlidersHorizontal :size="15" />返回评测配置</button><button class="secondary-button" :disabled="!evaluationRun" @click="evaluationRun && openReport(evaluationRun.run_id)"><FileChartColumn :size="15" />编辑当前报告</button><button v-if="evaluationBatchRuns.length && !parallelEvaluationActive" class="primary-button" @click="selectEvaluationSection('comparison')"><GitCompare :size="15" />对比实验结果</button></div></template>
 
           <template v-else><section class="comparison-layout"><article class="panel comparison-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><GitCompare :size="18" /></span><div><p class="eyebrow">EVALUATION COMPARISON</p><h2>时间趋势与运行对比</h2></div></div><span class="count-label">隔离数据</span></div><div class="comparison-controls"><label>时间跨度<select v-model="historyRange"><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="90d">近 90 天</option><option value="all">全部历史</option></select></label><label>知识源<select v-model="historySource"><option value="">全部知识源</option><option v-for="source in sourceFilterOptions" :key="source" :value="source">{{ source }}</option></select></label><label>粒度<select v-model="comparisonGranularity"><option value="day">按天</option><option value="run">按运行</option></select></label><button class="secondary-button" @click="refreshComparison"><RefreshCw :size="15" />刷新</button></div><div class="comparison-mode-grid"><button class="comparison-mode" :class="{ selected: comparisonMode === 'time_trend' }" @click="comparisonMode = 'time_trend'"><TrendingUp :size="18" /><span>时间趋势</span><small>观察指标随时间变化</small></button><button class="comparison-mode" :class="{ selected: comparisonMode === 'run_diff' }" @click="comparisonMode = 'run_diff'"><GitCompare :size="18" /><span>运行 A/B</span><small>比较基线与候选 run</small></button><button class="comparison-mode" :class="{ selected: comparisonMode === 'strategy_diff' }" @click="comparisonMode = 'strategy_diff'"><SlidersHorizontal :size="18" /><span>策略对比</span><small>比较检索与 Ragas 配置</small></button></div><div v-if="historyLoading || diffLoading" class="comparison-empty"><LoaderCircle class="spin" :size="24" />正在读取隔离评测</div><template v-else-if="comparisonMode === 'time_trend'"><div v-if="!trendRows.length" class="comparison-empty"><TrendingUp :size="24" /><strong>暂无可比较的评测</strong><p>完成一次完整评测后，这里会展示真实历史趋势。</p></div><div v-else class="comparison-table-wrap"><table class="comparison-table"><thead><tr><th>时间</th><th>运行数</th><th v-for="metric in historyMetricKeys" :key="metric">{{ metricLabel(metric) }}</th></tr></thead><tbody><tr v-for="row in trendRows" :key="row.label"><td class="mono">{{ row.label }}</td><td>{{ row.count }}</td><td v-for="metric in historyMetricKeys" :key="metric">{{ formatMetric(row.metrics[metric]) }}</td></tr></tbody></table></div></template><template v-else><div class="diff-controls"><label>基线<select v-model="diffBaseRunId"><option v-for="run in historyRuns" :key="`base-${run.run_id}`" :value="run.run_id">{{ historyLabel(run) }}</option></select></label><label>候选<select v-model="diffCandidateRunId"><option v-for="run in historyRuns" :key="`candidate-${run.run_id}`" :value="run.run_id">{{ historyLabel(run) }}</option></select></label><button class="secondary-button" @click="loadEvaluationDiff"><GitCompare :size="15" />加载对比</button></div><div v-if="!diffResult" class="comparison-empty"><GitCompare :size="24" /><strong>选择两个隔离评测运行</strong><p>运行 A/B 与策略对比要求题集 identity 一致；跨题集比较会被后端拒绝。</p></div><template v-else><div class="comparison-table-wrap metric-comparison-wrap"><table class="comparison-table metric-comparison-table"><thead><tr><th>指标</th><th>基线</th><th>候选</th><th>变化</th></tr></thead><tbody><tr v-for="metric in diffResult.metric_deltas" :key="metric.metric"><th scope="row">{{ metricLabel(metric.metric) }}</th><td>{{ formatMetric(metric.base) }}</td><td>{{ formatMetric(metric.candidate) }}</td><td><span class="metric-change" :class="metricDeltaTone(metric.delta)" :title="metricDeltaLabel(metric.delta)"><ArrowUp v-if="metric.delta !== null && metric.delta > 0" :size="15" aria-hidden="true" /><ArrowDown v-else-if="metric.delta !== null && metric.delta < 0" :size="15" aria-hidden="true" /><Minus v-else :size="15" aria-hidden="true" /><span>{{ formatMetric(metric.delta) }}</span></span></td></tr></tbody></table></div><div v-if="diffResult.config_deltas.length" class="config-diff-section"><div class="diff-section-heading"><div><h3>配置差异</h3><p>以下差异来自两次 run 的独立配置快照。</p></div><span>{{ diffResult.config_deltas.length }} 项</span></div><div class="comparison-table-wrap config-diff-wrap"><table class="comparison-table config-diff-table"><thead><tr><th>配置项</th><th>基线</th><th>候选</th></tr></thead><tbody><tr v-for="item in diffResult.config_deltas" :key="item.field"><th scope="row">{{ configFieldLabel(item.field) }}<small class="config-field-path">{{ item.field }}</small></th><td><code>{{ formatConfigValue(item.base) }}</code></td><td><code>{{ formatConfigValue(item.candidate) }}</code></td></tr></tbody></table></div></div><div class="diff-summary"><span>样本 {{ diffResult.summary.sample_count }}</span><span>整体改善 {{ diffResult.summary.improved_count }}</span><span>整体退化 {{ diffResult.summary.regressed_count }}</span><span title="持续坏例可与整体改善、整体退化和指标分歧重叠">持续坏例 {{ diffResult.summary.persistent_bad_case_count }} <small>可重叠</small></span></div><div class="comparison-legend" aria-label="指标变化图例"><span class="positive"><ArrowUp :size="14" />改善</span><span class="negative"><ArrowDown :size="14" />退化</span><span class="flat"><Minus :size="14" />持平</span><span class="unscored">未评分</span><small>数值越高越好；持续坏例可与样本结论重叠</small></div><div class="sample-diff-toolbar"><label>样本筛选<select v-model="sampleFilter"><option value="all">全部样本</option><option value="regressed">整体退化</option><option value="mixed">指标分歧</option><option value="improved">整体改善</option><option value="unchanged">基本持平</option><option value="unscored">未评分</option></select></label><label>排序<select v-model="sampleSort"><option value="default">按样本编号</option><option value="classification">退化优先</option><option value="largest_drop">最大下降优先</option></select></label><span class="sample-count-label">显示 {{ visibleSampleDeltas.length }} / {{ diffResult.sample_deltas.length }} 条</span></div><div class="comparison-table-wrap sample-diff-wrap"><table class="comparison-table sample-diff-table"><thead><tr><th>样本编号</th><th>对比结论</th><th v-for="metric in sampleMetricKeys" :key="metric">{{ metricLabel(metric) }}<small>基线 / 候选 / 变化</small></th></tr></thead><tbody><tr v-for="sample in visibleSampleDeltas" :key="sample.sample_id"><td class="mono" :title="sample.question">{{ sample.sample_id }}</td><td><span class="classification-badge" :class="sampleClassificationTone(sample.classification)">{{ sampleClassificationLabel(sample.classification) }}</span></td><td v-for="metric in sampleMetricKeys" :key="metric" class="sample-metric-cell"><template v-if="sampleMetric(sample, metric)"><div class="sample-metric"><div class="sample-metric-line"><small>基线</small><span>{{ formatMetric(sampleMetric(sample, metric)?.base) }}</span></div><div class="sample-metric-line"><small>候选</small><span :class="['sample-metric-candidate', metricDeltaTone(sampleMetric(sample, metric)?.delta ?? null)]">{{ formatMetric(sampleMetric(sample, metric)?.candidate) }} <span class="sample-metric-delta"><ArrowUp v-if="(sampleMetric(sample, metric)?.delta ?? 0) > 0" :size="13" /><ArrowDown v-else-if="(sampleMetric(sample, metric)?.delta ?? 0) < 0" :size="13" /><Minus v-else :size="13" />{{ formatMetric(sampleMetric(sample, metric)?.delta ?? null) }}</span></span></div></div></template><span v-else class="unscored">未评分</span></td></tr><tr v-if="!visibleSampleDeltas.length"><td class="sample-empty" :colspan="sampleMetricKeys.length + 2">没有符合条件的样本</td></tr></tbody></table></div></template></template></article><aside class="panel quick-actions-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge gold"><Gauge :size="18" /></span><div><p class="eyebrow">快捷操作流程</p><h2>快速处理本次对比</h2></div></div></div><div class="quick-action-list"><button class="quick-action" @click="selectEvaluationSection('config')"><span class="quick-step">01</span><span><strong>加载并修改配置</strong><small>先确认当前检索与 Ragas 参数</small></span><ChevronDown :size="16" /></button><button class="quick-action" @click="selectEvaluationSection('events')"><span class="quick-step">02</span><span><strong>核对执行事件</strong><small>确认评测没有被取消或卡住</small></span><ChevronDown :size="16" /></button><button class="quick-action" :disabled="!evaluationRun" @click="evaluationRun && openReport(evaluationRun.run_id)"><span class="quick-step">03</span><span><strong>编辑本次报告</strong><small>在报告编辑中切换三类 Markdown</small></span><ChevronDown :size="16" /></button><button class="quick-action" @click="selectNav('workspace')"><span class="quick-step">04</span><span><strong>更换知识源</strong><small>回到工作台创建新的隔离索引</small></span><ChevronDown :size="16" /></button></div></aside></section></template>
+        </template>
+
+        <template v-else-if="activeNav === 'release'">
+          <div class="release-intro"><div><p class="kicker">RELEASE CONTROL</p><h2>正式 active pointer 发布</h2><p>只发布经过来源身份、索引完整性、自动 Ragas 和正式检索门禁的候选版本；不会发布检索策略，也不会自动删除旧索引。</p></div><span class="status-pill" :class="releasePublishable ? 'success' : releaseStatus?.state === 'blocked' ? 'danger' : 'muted'">{{ releasePublishable ? '可发布' : releaseStatus?.state === 'blocked' ? '门禁阻断' : '待检查' }}</span></div>
+          <div v-if="releaseError" class="alert danger-alert"><AlertCircle :size="17" /><span>{{ releaseError }}</span></div>
+          <div v-if="releaseNotice" class="alert success-alert"><Check :size="17" /><span>{{ releaseNotice }}</span></div>
+          <section class="release-summary-grid">
+            <article class="panel release-candidate-card"><div class="panel-header"><div class="panel-title"><span class="icon-badge teal"><ShieldCheck :size="18" /></span><div><p class="eyebrow">CANDIDATE RELEASE</p><h2>{{ releaseStatus?.release?.index_version || ingestion?.index_version || '未选择候选' }}</h2></div></div><span class="status-pill" :class="ingestionReady ? 'active' : 'muted'">{{ ingestionReady ? '隔离 staged' : '未就绪' }}</span></div><div class="release-facts"><span><small>摄取运行</small><code>{{ releaseStatus?.release?.ingestion_run_id || ingestion?.run_id || '--' }}</code></span><span><small>manifest SHA-256</small><code>{{ releaseStatus?.release?.manifest_sha256?.slice(0, 16) || '--' }}{{ releaseStatus?.release?.manifest_sha256 ? '…' : '' }}</code></span><span><small>自动评测</small><code>{{ evaluationRun?.run_id || '--' }}</code></span></div></article>
+            <article class="panel release-pointer-card"><div class="panel-header"><div class="panel-title"><span class="icon-badge gold"><Database :size="18" /></span><div><p class="eyebrow">ACTIVE POINTER</p><h2>正式运行版本</h2></div></div><button v-if="releaseStatus?.previous?.index_version" type="button" class="secondary-button" :disabled="releaseRollbackLoading" @click="rollbackRelease"><RefreshCw :size="15" />{{ releaseRollbackLoading ? '回滚中…' : '回滚 previous' }}</button></div><div class="pointer-facts"><span><small>active</small><strong>{{ String(releaseStatus?.active?.index_version || '--') }}</strong></span><span><small>previous</small><strong>{{ String(releaseStatus?.previous?.index_version || '--') }}</strong></span><span><small>生效方式</small><strong>worker 重启</strong></span></div></article>
+          </section>
+          <section class="release-layout">
+            <article class="panel release-gate-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge coral"><ShieldCheck :size="18" /></span><div><p class="eyebrow">PUBLISH GATES</p><h2>正式发布门禁</h2></div></div><button class="secondary-button" :disabled="releaseLoading || !ingestionReady" @click="checkReleaseGate"><RefreshCw :size="15" :class="{ spinning: releaseLoading }" />{{ releaseLoading ? '检查中…' : '重新检查门禁' }}</button></div><div v-if="!releaseStatus?.checks?.length" class="release-empty"><ShieldCheck :size="24" /><strong>尚未执行发布门禁</strong><span>选择已完成的 staged 索引并完成自动 Ragas 评测后，点击重新检查。</span></div><div v-else class="release-check-list" role="list" aria-label="正式发布门禁清单"><article v-for="check in releaseStatus.checks" :key="check.key" class="release-check-row" :class="check.status" role="listitem"><span class="release-check-icon"><Check v-if="check.status === 'pass'" :size="15" /><AlertCircle v-else :size="15" /></span><div><strong>{{ check.label }}</strong><small>{{ check.detail }}</small></div><span class="status-pill" :class="check.status === 'pass' ? 'success' : 'danger'">{{ check.status === 'pass' ? '通过' : '阻断' }}</span></article></div></article>
+            <aside class="panel release-source-panel"><div class="panel-header"><div class="panel-title"><span class="icon-badge slate"><FileText :size="18" /></span><div><p class="eyebrow">SOURCE IDENTITY</p><h2>正式来源快照</h2></div></div><span class="count-label">{{ releaseStatus?.release?.source_count || 0 }} 个</span></div><div v-if="!releaseStatus?.release?.sources?.length" class="empty-line">执行门禁后显示来源身份</div><div v-else class="release-source-list"><div v-for="source in releaseStatus.release.sources" :key="`${source.source_id}-${source.document_id}`" class="release-source-row"><strong>{{ source.relative_path || source.source_id }}</strong><small>{{ source.source_id }} · {{ source.document_id }}</small><code>{{ source.content_hash?.slice(0, 16) || '--' }}…</code></div></div><p class="release-source-note">正式发布要求哈希在受控 source 目录内唯一命中；显示名不会参与正式身份判断。</p></aside>
+          </section>
+          <div class="release-action-bar"><div><strong>{{ releasePublishable ? '所有必需门禁已通过' : '发布按钮保持锁定' }}</strong><span>{{ releasePublishable ? '点击后后端仍会重新检查全部门禁，并原子切换 active pointer。' : '门禁通过前不能发布；Gold 当前不是必要条件。' }}</span></div><div class="release-action-buttons"><button class="secondary-button" @click="loadReleaseStatus"><RefreshCw :size="15" />刷新状态</button><button class="primary-button" :disabled="!releasePublishable || releasePublishing" @click="openReleaseConfirmation"><ArrowUp :size="16" />{{ releasePublishing ? '发布中…' : '发布正式 active pointer' }}</button></div></div>
+          <div v-if="releaseConfirmOpen" class="gold-replace-backdrop" role="presentation"><section class="gold-replace-dialog release-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="release-confirm-title"><p class="eyebrow">EXPLICIT POINTER PUBLISH</p><h2 id="release-confirm-title">确认发布正式 active pointer？</h2><p>将把 active 从 <code>{{ String(releaseStatus?.active?.index_version || '--') }}</code> 切换到 <code>{{ releaseStatus?.release?.index_version }}</code>。当前 active 会保存为 previous，不会自动删除旧索引；运行中的 worker 需要 drain/restart 后才会生效。</p><div class="review-gate-actions"><button class="secondary-button" :disabled="releasePublishing" @click="releaseConfirmOpen = false">取消</button><button class="primary-button" :disabled="releasePublishing" @click="publishRelease"><ArrowUp :size="15" />{{ releasePublishing ? '发布中…' : '确认发布' }}</button></div></section></div>
         </template>
 
         <template v-else>

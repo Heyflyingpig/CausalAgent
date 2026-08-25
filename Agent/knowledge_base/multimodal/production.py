@@ -8,9 +8,9 @@ from typing import Any, Callable
 
 from langchain_chroma import Chroma
 
-from .defaults import ROOT, load_production_defaults, production_source_paths
+from .defaults import ROOT, canonical_document_id, canonical_source_id, load_production_defaults, production_source_paths, resolve_production_sources
 from .contracts import stable_id
-from .index import _embeddings
+from .index import _embeddings, file_sha256
 
 def load_evaluation_cases(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """读取 20 至 30 条人工核对评测题并验证最小 schema。"""
@@ -163,23 +163,68 @@ def evaluate_with_search(
     return metrics | {"gate": apply_thresholds(metrics, config["evaluation"]["thresholds"])}
 
 
-def is_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | None = None) -> bool:
-    """判断 manifest 是否精确对应冻结的两项正式资料。"""
+def is_legacy_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | None = None) -> bool:
+    """只识别旧格式历史 manifest；结果绝不能作为正式发布凭据。"""
     config = config or load_production_defaults()
-    expected = {(Path(source["path"]).name, source["sha256"]) for source in config["sources"]}
-    actual = {(Path(source.get("relative_path", "")).name, source.get("content_hash")) for source in manifest.get("sources", [])}
+    sources = manifest.get("sources", [])
+    if not isinstance(sources, list):
+        return False
+    if not sources or any(
+        not isinstance(source, dict) or "source_id" in source or "document_id" in source
+        for source in sources
+    ):
+        return False
+    legacy_expected = {(Path(source["path"]).name, source["sha256"]) for source in config["sources"]}
+    actual_legacy = {(Path(str(source.get("relative_path", ""))).name, source.get("content_hash")) for source in sources}
+    return actual_legacy == legacy_expected
+
+
+def is_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | None = None) -> bool:
+    """判断 manifest 是否携带完整 canonical 正式来源身份。"""
+    config = config or load_production_defaults()
+    sources = manifest.get("sources", [])
+    if not isinstance(sources, list) or not sources:
+        return False
+    if any(
+        not isinstance(source, dict)
+        or not isinstance(source.get("source_id"), str)
+        or not isinstance(source.get("document_id"), str)
+        or not isinstance(source.get("content_hash"), str)
+        or not isinstance(source.get("controlled_path"), str)
+        for source in sources
+    ):
+        return False
+    try:
+        resolved = resolve_production_sources(config)
+    except (FileNotFoundError, OSError, ValueError):
+        return False
+    expected = {
+        (source["source_id"], source["document_id"], source["content_hash"], source["relative_path"])
+        for source in resolved
+    }
+    actual = {
+        (source.get("source_id"), source.get("document_id"), source.get("content_hash"), source.get("controlled_path"))
+        for source in sources
+        if isinstance(source, dict)
+    }
     return actual == expected
 
 
 def _production_document_id_aliases(manifest: dict[str, Any]) -> dict[str, str]:
     """将目录布局无关的来源身份映射到冻结评测集使用的稳定文档 ID。"""
     aliases: dict[str, str] = {}
+    config = load_production_defaults()
+    by_hash = {source["sha256"]: canonical_document_id(source) for source in config["sources"]}
+    by_source_id = {canonical_source_id(source): canonical_document_id(source) for source in config["sources"]}
     for document in manifest.get("documents", []):
         document_id = document.get("document_id")
         relative_path = document.get("relative_path")
         content_hash = document.get("content_hash")
-        if all(isinstance(value, str) for value in (document_id, relative_path, content_hash)):
-            aliases[document_id] = stable_id("doc", {"path": Path(relative_path).name, "content_hash": content_hash})
+        source_id = document.get("source_id")
+        if isinstance(document_id, str) and isinstance(source_id, str) and source_id in by_source_id:
+            aliases[document_id] = by_source_id[source_id]
+        elif all(isinstance(value, str) for value in (document_id, relative_path, content_hash)):
+            aliases[document_id] = by_hash.get(content_hash, stable_id("doc", {"path": Path(relative_path).name, "content_hash": content_hash}))
     return aliases
 
 
@@ -191,7 +236,15 @@ def validate_production_manifest(manifest: dict[str, Any], config: dict[str, Any
         failures.append("production_parser_mismatch")
     if manifest.get("build_configuration", {}).get("pdf_parser") != config["pdf_parser"]:
         failures.append("production_pdf_parser_strategy_mismatch")
-    if manifest.get("build_configuration", {}).get("vision", {}).get("enabled") != config["vision"]["remote_enabled"]:
+    vision = manifest.get("build_configuration", {}).get("vision", {})
+    enabled = vision.get("enabled") is True
+    authorized = vision.get("authorized_source_ids", [])
+    expected_source_ids = {canonical_source_id(source) for source in config["sources"]}
+    if enabled and (not isinstance(authorized, list) or not authorized or not set(authorized) <= expected_source_ids):
+        failures.append("production_source_level_vision_authorization_missing")
+    if not enabled and authorized:
+        failures.append("production_vision_authorization_without_enablement")
+    if config["vision"].get("remote_enabled") and not enabled:
         failures.append("production_vision_policy_mismatch")
     if manifest.get("build_configuration", {}).get("vision", {}).get("local_ocr_enabled") != config["vision"]["local_ocr_enabled"]:
         failures.append("production_local_ocr_policy_mismatch")
@@ -268,6 +321,7 @@ def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[
             },
         }
     report["coverage"] = coverage
+    report["manifest_sha256"] = file_sha256(version_dir / "manifest.json")
     (version_dir / "production_evaluation.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

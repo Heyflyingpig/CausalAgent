@@ -59,6 +59,22 @@ class _FakeIsolatedRunManager:
             raise KeyError(run_id)
         return {"run_id": run_id, "status": "pass", "kind": self.states[run_id]["kind"]}
 
+    def release_status(self, ingestion_run_id="", index_version="", evaluation_run_id=None):
+        self.calls.append(("release_status", ingestion_run_id, index_version, evaluation_run_id))
+        return {"release": {"ingestion_run_id": ingestion_run_id, "index_version": index_version}, "active": None, "previous": None}
+
+    def check_release(self, ingestion_run_id, index_version, evaluation_run_id=None, expected_active_index_version=None):
+        self.calls.append(("check_release", ingestion_run_id, index_version, evaluation_run_id, expected_active_index_version))
+        return {"state": "ready_to_publish", "publishable": True, "release": {"index_version": index_version}, "checks": []}
+
+    def publish_release(self, ingestion_run_id, index_version, evaluation_run_id, expected_active_index_version=None):
+        self.calls.append(("publish_release", ingestion_run_id, index_version, evaluation_run_id, expected_active_index_version))
+        return {"status": "published", "active": {"index_version": index_version}, "previous": None}
+
+    def rollback_release(self, index_version, expected_active_index_version=None):
+        self.calls.append(("rollback_release", index_version, expected_active_index_version))
+        return {"status": "rolled_back", "active": {"index_version": index_version}, "previous": None}
+
     def subscribe(self, run_id):
         if run_id not in self.states:
             raise KeyError(run_id)
@@ -82,10 +98,10 @@ class _FakeIsolatedRunManager:
         self.states.pop(run_id)
         return {"run_id": run_id, "status": "deleted", "deleted": True}
 
-    def delete_ingestion_run(self, run_id):
+    def delete_ingestion_run(self, run_id, cascade=False):
         if run_id not in self.states:
             raise KeyError(run_id)
-        self.calls.append(("delete_ingestion_run", run_id))
+        self.calls.append(("delete_ingestion_run", run_id, cascade))
         return {"run_id": run_id, "status": "deleted", "deleted": True}
 
     def delete_derived_run(self, run_id):
@@ -289,7 +305,26 @@ class IsolatedRagEvalRouteTests(unittest.TestCase):
             json={"source_ids": ["source-test"], "max_pages": 4},
         )
         self.assertEqual(started.status_code, 202)
-        self.assertEqual(self.manager.calls[0][1], {"source_ids": ["source-test"], "sources": None, "max_pages": 4, "page_ranges": None})
+        self.assertEqual(self.manager.calls[0][1], {
+            "source_ids": ["source-test"],
+            "sources": None,
+            "max_pages": 4,
+            "page_ranges": None,
+            "allow_remote_data": False,
+            "authorized_source_ids": [],
+        })
+
+        authorized = self.client.post(
+            "/api/rag_eval/isolated/ingestion-runs",
+            json={
+                "source_ids": ["source-test"],
+                "allow_remote_data": True,
+                "authorized_source_ids": ["source-test"],
+            },
+        )
+        self.assertEqual(authorized.status_code, 202)
+        self.assertEqual(self.manager.calls[1][1]["allow_remote_data"], True)
+        self.assertEqual(self.manager.calls[1][1]["authorized_source_ids"], ["source-test"])
 
         custom = self.client.post(
             "/api/rag_eval/isolated/ingestion-runs",
@@ -299,13 +334,67 @@ class IsolatedRagEvalRouteTests(unittest.TestCase):
             },
         )
         self.assertEqual(custom.status_code, 202)
-        self.assertEqual(self.manager.calls[1][1]["page_ranges"][0]["start_page"], 40)
+        self.assertEqual(self.manager.calls[2][1]["page_ranges"][0]["start_page"], 40)
 
         invalid = self.client.post(
             "/api/rag_eval/isolated/ingestion-runs",
             json={"source_ids": "source-test"},
         )
         self.assertEqual(invalid.status_code, 400)
+
+    def test_legacy_frozen_source_id_resolves_to_current_content_hash_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "Pearl-mono(1).pdf"
+            content = b"frozen source"
+            source.write_bytes(content)
+            content_hash = hashlib.sha256(content).hexdigest()
+            current_id = "source_" + content_hash
+            legacy_id = "source_" + hashlib.sha256(f"{source.name}:{content_hash}".encode("utf-8")).hexdigest()[:20]
+            record = {
+                "source_id": current_id,
+                "name": source.name,
+                "display_name": source.name,
+                "content_sha256": content_hash,
+                "source_kind": "frozen",
+                "page_count": 1,
+            }
+            with patch.object(isolated_runs, "_source_catalog_records", return_value=[(source, record)]):
+                paths, source_ids, _ = isolated_runs._resolve_source_inputs([legacy_id], None)
+            self.assertEqual(paths, [source.resolve()])
+            self.assertEqual(source_ids, [current_id])
+
+    def test_multimodal_release_api_contract_requires_explicit_publish_confirmation(self):
+        status = self.client.get(
+            "/api/rag_eval/multimodal/releases/status?ingestion_run_id=ingest-test&index_version=mm-test"
+        )
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.get_json()["data"]["release"]["index_version"], "mm-test")
+
+        gate = self.client.post("/api/rag_eval/multimodal/releases/gate-check", json={
+            "ingestion_run_id": "ingest-test",
+            "index_version": "mm-test",
+            "evaluation_run_id": "eval-test",
+            "expected_active_index_version": "mm-old",
+        })
+        self.assertEqual(gate.status_code, 200)
+        self.assertTrue(gate.get_json()["data"]["publishable"])
+
+        not_confirmed = self.client.post("/api/rag_eval/multimodal/releases/publish", json={
+            "ingestion_run_id": "ingest-test",
+            "index_version": "mm-test",
+            "evaluation_run_id": "eval-test",
+        })
+        self.assertEqual(not_confirmed.status_code, 400)
+
+        published = self.client.post("/api/rag_eval/multimodal/releases/publish", json={
+            "ingestion_run_id": "ingest-test",
+            "index_version": "mm-test",
+            "evaluation_run_id": "eval-test",
+            "expected_active_index_version": "mm-old",
+            "confirm": True,
+        })
+        self.assertEqual(published.status_code, 200)
+        self.assertEqual(published.get_json()["data"]["status"], "published")
 
     def test_local_gold_dataset_status_and_evaluation_source(self):
         gold_path = Path(self.temporary.name) / "gold.json"
@@ -458,10 +547,10 @@ class IsolatedRagEvalRouteTests(unittest.TestCase):
         self.assertEqual(cancelled.status_code, 200)
         self.assertTrue(cancelled.get_json()["data"]["cancel_requested"])
 
-        deleted = self.client.delete("/api/rag_eval/isolated/ingestion-runs/ingest-test")
+        deleted = self.client.delete("/api/rag_eval/isolated/ingestion-runs/ingest-test", json={"cascade": True})
         self.assertEqual(deleted.status_code, 200)
         self.assertTrue(deleted.get_json()["data"]["deleted"])
-        self.assertEqual(self.manager.calls[-1], ("delete_ingestion_run", "ingest-test"))
+        self.assertEqual(self.manager.calls[-1], ("delete_ingestion_run", "ingest-test", True))
 
     def test_derived_run_delete_contracts(self):
         for path in [

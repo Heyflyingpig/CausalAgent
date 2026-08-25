@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -17,8 +18,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .assets import AssetStore
-from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, OutboundImageRecord, UnitStatus, VisionAnalysis, canonical_json, render_retrieval_text, sha256_bytes, stable_id
-from .defaults import load_production_defaults, production_source_paths
+from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, OutboundImageRecord, UnitStatus, VisionAnalysis, canonical_json, content_document_id, content_source_id, render_retrieval_text, sha256_bytes, stable_id
+from .defaults import load_production_defaults, production_source_paths, resolve_production_sources
 from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, file_sha256, replace_with_retry
 from .parsers import IMAGE_SUFFIXES, PAGE_QUALITY_GATE_VERSION, PAGE_QUALITY_MIN_TEXT_COVERAGE, TEXT_SPLIT, ParsedDocument, ParsedItem, clear_docling_batch_cache, decide_page_route, docling_configuration, inspect_source, parse_document_page
 from .remote_policy import RemoteSamplePolicy
@@ -59,6 +60,7 @@ class MultimodalKnowledgeBaseMaintenance:
         max_pages: int | None = None,
         all_production_pages: bool = False,
         checkpoint_dir: str | Path | None = None,
+        authorized_source_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """仅本地解析来源并生成供人工审阅的远程图片清单。"""
         if max_images is not None and max_images < 1:
@@ -70,6 +72,13 @@ class MultimodalKnowledgeBaseMaintenance:
         if all_production_pages and checkpoint_dir is None:
             raise ValueError("full production discovery requires a checkpoint directory")
         entries, issues = self._scan(sources)
+        if all_production_pages and not authorized_source_ids:
+            raise PermissionError("full production discovery requires explicit source-level authorization")
+        authorized = (
+            {entry["source_id"] for entry in entries}
+            if authorized_source_ids is None and not all_production_pages
+            else self._authorized_source_ids(entries, allow_remote_data=True, authorized_source_ids=authorized_source_ids)
+        )
         if any(issue.severity is IssueSeverity.ERROR for issue in issues):
             raise ValueError("source scan contains blocking issues")
         production_page_counts = self._validate_full_production_entries(entries) if all_production_pages else {}
@@ -84,8 +93,10 @@ class MultimodalKnowledgeBaseMaintenance:
         parser_name = os.getenv("MULTIMODAL_PARSER", "docling")
         for entry in entries:
             path = Path(entry["path"])
+            if entry["source_id"] not in authorized:
+                continue
             page_count = source_page_counts[str(path.resolve())]
-            document_id = stable_id("doc", {"path": entry["relative_path"], "content_hash": entry["content_hash"]})
+            document_id = entry["document_id"]
             for page_number in range(1, page_count + 1):
                 if not all_production_pages and not self._remote_resource_allowed(path, page_number):
                     continue
@@ -114,7 +125,7 @@ class MultimodalKnowledgeBaseMaintenance:
                         continue
                     prepared = analyzer.prepare_image(item.asset_bytes)
                     page_records.append(OutboundImageRecord(
-                        source_relative_path=entry["relative_path"], source_sha256=entry["content_hash"],
+                        source_relative_path=entry["relative_path"], source_sha256=entry["content_hash"], source_id=entry["source_id"],
                         document_id=document_id, page_number=item.page_number or page_number,
                         image_index=max(1, (page_number * 10000 + item_index) % 10000),
                         original_sha256=prepared.original_sha256, normalized_sha256=prepared.normalized_sha256,
@@ -161,7 +172,7 @@ class MultimodalKnowledgeBaseMaintenance:
         actual = {str(Path(entry["path"]).resolve()): entry["content_hash"] for entry in entries}
         if actual != expected:
             raise ValueError("full production discovery requires exactly the frozen production sources")
-        page_counts = {str(path.resolve()): int(source["page_count"]) for path, source in zip(paths, config["sources"], strict=True)}
+        page_counts = {str(item["path"].resolve()): int(item["page_count"]) for item in resolve_production_sources(config)}
         if any(count < 1 for count in page_counts.values()):
             raise ValueError("frozen production page counts must be positive")
         return page_counts
@@ -172,6 +183,8 @@ class MultimodalKnowledgeBaseMaintenance:
         return {
             "source_path": str(Path(entry["path"]).resolve()),
             "source_sha256": entry["content_hash"],
+            "source_id": entry["source_id"],
+            "document_id": entry["document_id"],
             "page_count": page_count,
             "parser": {"name": parser_name, "version": parser_version},
             "quality_gate_version": PAGE_QUALITY_GATE_VERSION,
@@ -275,16 +288,21 @@ class MultimodalKnowledgeBaseMaintenance:
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         replace_with_retry(temporary, path)
 
-    def run_r2_smoke(self, sources: list[str], outbound_manifest: str | Path, output_path: str | Path, *, concurrency_levels: tuple[int, ...] = (4, 8, 16)) -> dict[str, Any]:
+    def run_r2_smoke(self, sources: list[str], outbound_manifest: str | Path, output_path: str | Path, *, authorized_source_ids: list[str] | None = None, concurrency_levels: tuple[int, ...] = (4, 8, 16)) -> dict[str, Any]:
         """只对预冻结图片执行远程 smoke，不创建候选、索引或 active pointer 变更。"""
         if not concurrency_levels or any(level < 1 for level in concurrency_levels):
             raise ValueError("R2 concurrency levels must be positive")
         entries, issues = self._scan(sources)
+        if not authorized_source_ids:
+            raise PermissionError("R2 smoke requires explicit source-level authorization")
+        authorized = self._authorized_source_ids(entries, allow_remote_data=True, authorized_source_ids=authorized_source_ids)
         if any(issue.severity is IssueSeverity.ERROR for issue in issues):
             raise ValueError("source scan contains blocking issues")
         records = self._frozen_outbound_records(outbound_manifest, entries)
         if not records:
             raise ValueError("R2 smoke requires a non-empty frozen outbound manifest")
+        if any(record.source_id not in authorized for record in records):
+            raise PermissionError("R2 smoke manifest contains an unauthorized source")
         output = Path(output_path)
         if output.exists():
             raise ValueError("R2 smoke output already exists")
@@ -322,7 +340,7 @@ class MultimodalKnowledgeBaseMaintenance:
         parser_name = os.getenv("MULTIMODAL_PARSER", "docling")
         for entry in entries:
             path = Path(entry["path"])
-            document_id = stable_id("doc", {"path": entry["relative_path"], "content_hash": entry["content_hash"]})
+            document_id = entry["document_id"]
             pages = sorted(record.page_number for record in records if record.document_id == document_id)
             for page_number in dict.fromkeys(pages):
                 parsed = parse_document_page(path, parser_name, page_number)
@@ -340,7 +358,7 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("R2 manifest images do not match the current local parser output")
         return targets
 
-    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, auto_outbound_manifest: bool = False, progress_callback: Callable[[dict[str, Any]], None] | None = None, cancel_check: Callable[[], bool] | None = None, max_pages: int | None = None, page_ranges: dict[str, tuple[int, int]] | None = None) -> dict[str, Any]:
+    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, authorized_source_ids: list[str] | None = None, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, auto_outbound_manifest: bool = False, progress_callback: Callable[[dict[str, Any]], None] | None = None, cancel_check: Callable[[], bool] | None = None, max_pages: int | None = None, page_ranges: dict[str, tuple[int, int]] | None = None) -> dict[str, Any]:
         """逐页解析、原子保存 checkpoint，并分批写入不可变暂存索引。"""
         if retry_from_index_version is not None and reuse_local_from_index_version is not None:
             raise ValueError("--reuse-local-checkpoints-from cannot be combined with --retry-from-index-version")
@@ -352,11 +370,14 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("max_pages and page_ranges cannot be combined")
         clear_docling_batch_cache()
         entries, issues = self._scan(sources)
+        if allow_remote_data and not authorized_source_ids:
+            raise PermissionError("remote ingestion requires explicit source-level authorization")
+        authorized = self._authorized_source_ids(entries, allow_remote_data=allow_remote_data, authorized_source_ids=authorized_source_ids)
         normalized_page_ranges = {
             str(Path(path).resolve()): (int(start), int(end))
             for path, (start, end) in (page_ranges or {}).items()
         }
-        outbound_records = self._frozen_outbound_records(outbound_manifest, entries) if allow_remote_data else []
+        outbound_records = self._frozen_outbound_records(outbound_manifest, entries) if authorized else []
         if allow_remote_data and max_images is not None and max_images < len(outbound_records):
             raise ValueError("--max-images cannot be smaller than the frozen outbound manifest")
         total_pages = 0
@@ -373,7 +394,7 @@ class MultimodalKnowledgeBaseMaintenance:
             "unit_count": 0,
             "message": "知识源扫描完成，开始逐页解析",
         })
-        manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records, max_pages=max_pages, auto_outbound_manifest=auto_outbound_manifest, page_ranges=normalized_page_ranges)
+        manifest = self._manifest(entries, allow_remote_data=bool(authorized), authorized_source_ids=authorized, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records, max_pages=max_pages, auto_outbound_manifest=auto_outbound_manifest, page_ranges=normalized_page_ranges)
         version = self._index_version(manifest)
         version_dir = self.index_root / version
         retry_source = self._retry_source_directory(retry_from_index_version, manifest, retry_failed)
@@ -399,7 +420,8 @@ class MultimodalKnowledgeBaseMaintenance:
         try:
             for entry in entries:
                 path = Path(entry["path"])
-                document_id = stable_id("doc", {"path": entry["relative_path"], "content_hash": entry["content_hash"]})
+                document_id = entry["document_id"]
+                source_authorized = entry["source_id"] in authorized
                 source_asset_uri = store.put(document_id, path.name, path.read_bytes(), category="source")
                 parser_artifacts: list[dict[str, str]] = []
                 document_units = 0
@@ -460,6 +482,7 @@ class MultimodalKnowledgeBaseMaintenance:
                                 outbound_records,
                                 page_items,
                                 document_id,
+                                entry["source_id"],
                                 entry["relative_path"],
                                 entry["content_hash"],
                                 analyzer,
@@ -477,12 +500,14 @@ class MultimodalKnowledgeBaseMaintenance:
                             analyzer,
                             allow_remote_data,
                             outbound_records,
+                            source_authorized=source_authorized,
                         )
                         for item_index, item in enumerate(page_items, 1):
                             unit = self._build_unit(
                                 item, path, document_id, page_number * 10000 + item_index,
                                 parsed.parser_name, parsed.parser_version, embedding, store, analyzer,
                                 page_quality, page_issues, allow_remote_data,
+                                source_authorized=source_authorized,
                                 context=self._same_page_context(item, page_items),
                                 source_relative_path=entry["relative_path"],
                                 source_sha256=entry["content_hash"],
@@ -521,7 +546,7 @@ class MultimodalKnowledgeBaseMaintenance:
                 for page_number in document_page_numbers:
                     page_checkpoint = self._read_page_checkpoint(version_dir, document_id, page_number) or {}
                     page_routes.append({key: page_checkpoint.get(key) for key in ("page_number", "route", "quality_gate_version", "route_reason", "quality_input_summary")})
-                documents.append({"document_id": document_id, "relative_path": entry["relative_path"], "content_hash": entry["content_hash"], "source_asset_uri": source_asset_uri, "parser_artifact_uris": [artifact["asset_uri"] for artifact in parser_artifacts], "parser_artifacts": parser_artifacts, "parser_name": parsed_name, "parser_version": parsed_version, "source_page_count": expected_pages, "page_start": selected_range[0], "page_end": selected_range[1], "page_numbers": document_page_numbers, "expected_page_count": document_page_count, "attempted_page_count": document_page_count, "unit_count": document_units, "page_routes": page_routes})
+                documents.append({"source_id": entry["source_id"], "document_id": document_id, "relative_path": entry["relative_path"], "content_hash": entry["content_hash"], "source_asset_uri": source_asset_uri, "parser_artifact_uris": [artifact["asset_uri"] for artifact in parser_artifacts], "parser_artifacts": parser_artifacts, "parser_name": parsed_name, "parser_version": parsed_version, "source_page_count": expected_pages, "page_start": selected_range[0], "page_end": selected_range[1], "page_numbers": document_page_numbers, "expected_page_count": document_page_count, "attempted_page_count": document_page_count, "unit_count": document_units, "page_routes": page_routes})
                 if max_pages is not None and attempted_pages >= max_pages:
                     break
             self._check_cancel(cancel_check)
@@ -573,14 +598,17 @@ class MultimodalKnowledgeBaseMaintenance:
         if cancel_check and cancel_check():
             raise InterruptedError("multimodal ingestion was cancelled")
 
-    def run(self, sources: list[str], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
+    def run(self, sources: list[str], *, allow_remote_data: bool = False, authorized_source_ids: list[str] | None = None, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
         """以版本锁执行 ingest 和评测；仅在显式授权时发布。"""
         started = time.monotonic()
         entries, _ = self._scan(sources)
-        outbound_records = self._frozen_outbound_records(outbound_manifest, entries) if allow_remote_data else []
+        if allow_remote_data and not authorized_source_ids:
+            raise PermissionError("remote ingestion requires explicit source-level authorization")
+        authorized = self._authorized_source_ids(entries, allow_remote_data=allow_remote_data, authorized_source_ids=authorized_source_ids)
+        outbound_records = self._frozen_outbound_records(outbound_manifest, entries) if authorized else []
         if allow_remote_data and max_images is not None and max_images < len(outbound_records):
             raise ValueError("--max-images cannot be smaller than the frozen outbound manifest")
-        manifest = self._manifest(entries, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records)
+        manifest = self._manifest(entries, allow_remote_data=bool(authorized), authorized_source_ids=authorized, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records)
         version = self._index_version(manifest)
         lock = self.index_root / ".locks" / version
         try:
@@ -594,7 +622,7 @@ class MultimodalKnowledgeBaseMaintenance:
             resumable = self._is_resumable_build(self.index_root / version)
             if version_exists and not reused and not resumable:
                 return {"status": "incomplete_staged", "index_version": version, "published": False}
-            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, retry_from_index_version=retry_from_index_version, reuse_local_from_index_version=reuse_local_from_index_version, outbound_manifest=outbound_manifest)
+            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, authorized_source_ids=list(authorized), max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, retry_from_index_version=retry_from_index_version, reuse_local_from_index_version=reuse_local_from_index_version, outbound_manifest=outbound_manifest)
             self._check_run_control(started, timeout_seconds, cancel_check)
             evaluation = self.evaluate(version)
             self._check_run_control(started, timeout_seconds, cancel_check)
@@ -660,6 +688,8 @@ class MultimodalKnowledgeBaseMaintenance:
         production_evaluation = None
         from .production import evaluate_staged_index, is_production_manifest
         if is_production_manifest(manifest):
+            from .production import validate_production_manifest
+            failures.extend(validate_production_manifest(manifest))
             if not failures:
                 production_evaluation = evaluate_staged_index(directory, collection)
                 if not production_evaluation["gate"]["passed"]:
@@ -668,42 +698,122 @@ class MultimodalKnowledgeBaseMaintenance:
         (directory / "evaluation.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
 
-    def publish(self, index_version: str) -> dict[str, Any]:
-        """仅在通过门禁后原子切换多模态 active pointer。"""
+    def publish(self, index_version: str, *, expected_active_index_version: str | None = None) -> dict[str, Any]:
+        """重新执行全部门禁后，才原子切换正式 active pointer。"""
         directory = self._version_dir(index_version)
         evaluation_path = directory / "evaluation.json"
         if not evaluation_path.exists(): raise ValueError("index must be evaluated before publish")
         evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
         if not evaluation.get("passed"): raise ValueError("blocking evaluation failures prevent publication")
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        manifest_sha256 = file_sha256(directory / "manifest.json")
+        from .production import is_production_manifest, validate_production_manifest
+        if not is_production_manifest(manifest):
+            raise ValueError("non-production manifest cannot be published")
+        try:
+            resolve_production_sources()
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            raise ValueError("current controlled production sources are not valid") from exc
+        fresh_evaluation = self.evaluate(index_version)
+        if not fresh_evaluation.get("passed"):
+            raise ValueError("blocking evaluation failures prevent publication")
+        if fresh_evaluation.get("manifest_sha256") != manifest_sha256:
+            raise ValueError("manifest changed during publication revalidation")
         if manifest.get("schema_version", 0) >= 3 and not self._is_reusable_staged_version(index_version):
             raise ValueError("staged build is incomplete and cannot be published")
-        from .production import is_production_manifest, validate_production_manifest
-        if is_production_manifest(manifest):
-            policy_failures = validate_production_manifest(manifest)
-            if policy_failures:
-                raise ValueError(f"production strategy mismatch prevents publication: {', '.join(policy_failures)}")
-            production_evaluation = directory / "production_evaluation.json"
-            if not production_evaluation.exists() or not json.loads(production_evaluation.read_text(encoding="utf-8")).get("gate", {}).get("passed"):
-                raise ValueError("production retrieval evaluation must pass before publication")
+        policy_failures = validate_production_manifest(manifest)
+        if policy_failures:
+            raise ValueError(f"production strategy mismatch prevents publication: {', '.join(policy_failures)}")
+        production_evaluation = directory / "production_evaluation.json"
+        if not production_evaluation.exists() or not json.loads(production_evaluation.read_text(encoding="utf-8")).get("gate", {}).get("passed"):
+            raise ValueError("production retrieval evaluation must pass before publication")
         if "build_configuration" not in manifest or "quality_policy" not in manifest or "quality_observations" not in manifest:
             raise ValueError("legacy manifest is not eligible for publication under P0 gates")
+        current = self.registry.read()
+        current_version = str((current or {}).get("index_version") or "")
+        if expected_active_index_version not in {None, "", current_version}:
+            raise ValueError("active pointer changed during publication")
         self.registry.publish(index_root=self.index_root, index_version=index_version, collection_name=f"{self.collection_prefix}_{index_version}", manifest_sha256=file_sha256(directory / "manifest.json"), embedding=manifest["embedding"])
         return {"status": "published", "index_version": index_version}
 
-    def rollback(self, index_version: str) -> dict[str, Any]:
+    def rollback(self, index_version: str, *, expected_active_index_version: str | None = None) -> dict[str, Any]:
         """只允许回滚至已通过评测的历史多模态版本。"""
-        return self.publish(index_version) | {"status": "rolled_back"}
+        return self.publish(index_version, expected_active_index_version=expected_active_index_version) | {"status": "rolled_back"}
+
+    def promote_staged(
+        self,
+        *,
+        source_index_root: Path,
+        source_asset_root: Path,
+        index_version: str,
+    ) -> dict[str, Any]:
+        """把已通过隔离门禁的不可变版本物化到正式候选目录，不切换 active pointer。"""
+        if not isinstance(index_version, str) or not index_version.startswith("mm_") or "/" in index_version or "\\" in index_version:
+            raise ValueError("invalid multimodal index version")
+        source_root = Path(source_index_root).resolve()
+        source_dir = (source_root / index_version).resolve()
+        source_dir.relative_to(source_root)
+        if not source_dir.is_dir() or not (source_dir / "manifest.json").is_file():
+            raise FileNotFoundError("staged index is unavailable")
+        target_root = self.index_root.resolve()
+        target_root.mkdir(parents=True, exist_ok=True)
+        target_dir = (target_root / index_version).resolve()
+        target_dir.relative_to(target_root)
+        source_manifest_sha = file_sha256(source_dir / "manifest.json")
+        if target_dir.exists():
+            target_manifest = target_dir / "manifest.json"
+            if target_manifest.is_file() and file_sha256(target_manifest) == source_manifest_sha:
+                return {"status": "reused", "index_version": index_version, "manifest_sha256": source_manifest_sha}
+            raise ValueError("formal candidate version already exists with a different manifest")
+
+        temporary = target_root / f".{index_version}.promote-{uuid.uuid4().hex}"
+        try:
+            shutil.copytree(source_dir, temporary)
+            asset_root = Path(source_asset_root).resolve()
+            if asset_root.is_dir():
+                for source_asset in asset_root.rglob("*"):
+                    if not source_asset.is_file():
+                        continue
+                    relative = source_asset.relative_to(asset_root)
+                    target_asset = (self.asset_root.resolve() / relative).resolve()
+                    target_asset.relative_to(self.asset_root.resolve())
+                    target_asset.parent.mkdir(parents=True, exist_ok=True)
+                    if target_asset.exists() and target_asset.read_bytes() != source_asset.read_bytes():
+                        raise ValueError(f"formal asset conflicts with staged asset: {relative.as_posix()}")
+                    if not target_asset.exists():
+                        shutil.copy2(source_asset, target_asset)
+            temporary.replace(target_dir)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        return {"status": "promoted", "index_version": index_version, "manifest_sha256": source_manifest_sha}
 
     def status(self, index_version: str | None = None) -> dict[str, Any]:
         """返回 active pointer 或一个版本的可审计状态。"""
-        if index_version is None: return {"active": self.registry.read()}
+        if index_version is None:
+            snapshot = self.registry.retention_snapshot(self.index_root)
+            return {
+                "active": snapshot["active"],
+                "previous": snapshot["previous"],
+                "candidates": snapshot["candidates"],
+                "candidate_overflow": snapshot["candidate_overflow"],
+                "retention": snapshot,
+            }
         directory = self._version_dir(index_version)
         return {"manifest": json.loads((directory / "manifest.json").read_text(encoding="utf-8")), "evaluation": json.loads((directory / "evaluation.json").read_text(encoding="utf-8")) if (directory / "evaluation.json").exists() else None}
 
     def _scan(self, sources: list[str]) -> tuple[list[dict[str, str]], list[IngestionIssue]]:
-        """扫描文件或目录并以相对输入名和内容哈希产生稳定条目。"""
+        """扫描文件并绑定 canonical 来源身份；正式身份只来自受控目录解析结果。"""
         entries: list[dict[str, str]] = []; issues: list[IngestionIssue] = []
+        try:
+            formal_sources = {str(item["path"].resolve()): item for item in resolve_production_sources()}
+        except (FileNotFoundError, ValueError, OSError):
+            config = load_production_defaults()
+            controlled = [(Path(__file__).resolve().parents[3] / Path(raw)).resolve() for raw in config["controlled_source_directories"]]
+            requested = [Path(raw).resolve() for raw in sources]
+            if any(root == path or root in path.parents for root in controlled for path in requested):
+                raise
+            formal_sources = {}
         for raw in sources:
             path = Path(raw)
             paths = sorted(item for item in path.rglob("*") if item.is_file()) if path.is_dir() else [path]
@@ -711,7 +821,23 @@ class MultimodalKnowledgeBaseMaintenance:
                 issue = inspect_source(item)
                 if issue: issues.append(issue); continue
                 relative_path = (Path(path.name) / item.relative_to(path)).as_posix() if path.is_dir() else item.name
-                entries.append({"path": str(item.resolve()), "relative_path": relative_path, "content_hash": sha256_bytes(item.read_bytes())})
+                resolved = formal_sources.get(str(item.resolve()))
+                content_hash = sha256_bytes(item.read_bytes())
+                catalog_source_id = content_source_id(
+                    content_hash,
+                    uploaded=item.name.startswith("upload_") and "__" in item.name,
+                )
+                entries.append({
+                    "path": str(item.resolve()),
+                    "relative_path": relative_path,
+                    "controlled_path": resolved["relative_path"] if resolved else "",
+                    "content_hash": content_hash,
+                    "source_id": resolved["source_id"] if resolved else catalog_source_id,
+                    "catalog_source_id": catalog_source_id,
+                    "canonical_source_id": resolved["source_id"] if resolved else "",
+                    "document_id": resolved["document_id"] if resolved else content_document_id(content_hash),
+                    "formal": "true" if resolved else "false",
+                })
         return sorted(entries, key=lambda item: (item["relative_path"].casefold(), item["content_hash"])), issues
 
     @staticmethod
@@ -719,18 +845,36 @@ class MultimodalKnowledgeBaseMaintenance:
         """返回 Docling 页级超时、批量进程和图像输出的不可变配置。"""
         return dict(docling_configuration())
 
-    def _manifest(self, entries: list[dict[str, str]], *, allow_remote_data: bool = False, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, outbound_records: list[OutboundImageRecord] | None = None, max_pages: int | None = None, auto_outbound_manifest: bool = False, page_ranges: dict[str, tuple[int, int]] | None = None) -> dict[str, Any]:
+    def _authorized_source_ids(self, entries: list[dict[str, str]], *, allow_remote_data: bool, authorized_source_ids: list[str] | None) -> set[str]:
+        """把显式运行授权收缩为来源级集合；正式来源不接受隐式全选。"""
+        if not allow_remote_data:
+            return set()
+        if authorized_source_ids is None:
+            return set()
+        authorized = set(authorized_source_ids)
+        matched: set[str] = set()
+        for entry in entries:
+            if authorized.intersection({entry["source_id"], entry.get("catalog_source_id", "")}):
+                matched.add(entry["source_id"])
+        if len(matched) != len(authorized):
+            raise ValueError("authorized source ids must match the current sources")
+        return matched
+
+    def _manifest(self, entries: list[dict[str, str]], *, allow_remote_data: bool = False, authorized_source_ids: set[str] | None = None, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, outbound_records: list[OutboundImageRecord] | None = None, max_pages: int | None = None, auto_outbound_manifest: bool = False, page_ranges: dict[str, tuple[int, int]] | None = None) -> dict[str, Any]:
         """构造不包含宿主绝对路径的来源清单。"""
         if retry_generation < 0 or retry_generation > MAX_RETRY_GENERATION:
             raise ValueError(f"retry generation must be between 0 and {MAX_RETRY_GENERATION}")
-        public = [{"relative_path": entry["relative_path"], "content_hash": entry["content_hash"]} for entry in entries]
+        for entry in entries:
+            entry.setdefault("source_id", content_source_id(entry["content_hash"]))
+            entry.setdefault("document_id", content_document_id(entry["content_hash"]))
+        public = [{"source_id": entry["source_id"], "document_id": entry["document_id"], "relative_path": entry["relative_path"], "controlled_path": entry.get("controlled_path", ""), "content_hash": entry["content_hash"]} for entry in entries]
         source_page_ranges = [
             {"relative_path": entry["relative_path"], "start_page": page_ranges[str(Path(entry["path"]).resolve())][0], "end_page": page_ranges[str(Path(entry["path"]).resolve())][1]}
             for entry in entries
             if page_ranges and str(Path(entry["path"]).resolve()) in page_ranges
         ]
         return {
-            "schema_version": 4,
+            "schema_version": 5,
             "sources": public,
             "source_page_limit": max_pages,
             "source_page_ranges": source_page_ranges,
@@ -743,7 +887,7 @@ class MultimodalKnowledgeBaseMaintenance:
                 "page_quality_gate": {"version": PAGE_QUALITY_GATE_VERSION, "min_text_coverage": PAGE_QUALITY_MIN_TEXT_COVERAGE, "native_text_min_chars": 80},
                 "remote_policy_hash": self.remote_policy.policy_sha256,
                 "table_recovery": self._table_recovery_configuration(),
-                "vision": {"enabled": allow_remote_data, "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "response_adapter_version": RESPONSE_ADAPTER_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", "16000000")), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation, "outbound_manifest_mode": "auto_generated_isolated" if auto_outbound_manifest else "external_or_empty"},
+                "vision": {"enabled": allow_remote_data, "authorized_source_ids": sorted(authorized_source_ids or set()), "local_ocr_enabled": False, "model": os.getenv("VISION_MODEL", REQUIRED_MODEL), "prompt_version": PROMPT_VERSION, "response_adapter_version": RESPONSE_ADAPTER_VERSION, "max_images": max_images, "max_retries": int(os.getenv("VISION_MAX_RETRIES", "2")), "max_pixels": int(os.getenv("VISION_MAX_PIXELS", str(16000000))), "max_image_bytes": int(os.getenv("VISION_MAX_IMAGE_BYTES", str(10 * 1024 * 1024))), "retry_failed": retry_failed, "retry_generation": retry_generation, "outbound_manifest_mode": "auto_generated_isolated" if auto_outbound_manifest else "external_or_empty"},
             },
             "outbound_manifest_sha256": sha256_bytes(self._outbound_manifest_payload(outbound_records or [])),
             "outbound_image_count": len(outbound_records or []),
@@ -1155,6 +1299,7 @@ class MultimodalKnowledgeBaseMaintenance:
         records: list[OutboundImageRecord],
         page_items: list[ParsedItem],
         document_id: str,
+        source_id: str,
         source_relative_path: str,
         source_sha256: str,
         analyzer: VisionAnalyzer,
@@ -1179,6 +1324,7 @@ class MultimodalKnowledgeBaseMaintenance:
             records.append(OutboundImageRecord(
                 source_relative_path=source_relative_path,
                 source_sha256=source_sha256,
+                source_id=source_id,
                 document_id=document_id,
                 page_number=page_number,
                 image_index=image_index,
@@ -1211,9 +1357,11 @@ class MultimodalKnowledgeBaseMaintenance:
         analyzer: VisionAnalyzer,
         allow_remote_data: bool,
         records: list[OutboundImageRecord],
+        *,
+        source_authorized: bool = True,
     ) -> dict[int, VisionAnalysis | Exception]:
         """并发执行当前页图片 VLM 调用，返回按页内 item 序号绑定的结果。"""
-        if not allow_remote_data:
+        if not allow_remote_data or not source_authorized:
             return {}
         candidates: dict[int, tuple[ParsedItem, OutboundImageRecord, str]] = {}
         for item_index, item in enumerate(page_items, 1):
@@ -1257,6 +1405,7 @@ class MultimodalKnowledgeBaseMaintenance:
         issues: list[IngestionIssue],
         allow_remote_data: bool,
         *,
+        source_authorized: bool = True,
         context: str = "",
         source_relative_path: str | None = None,
         source_sha256: str | None = None,
@@ -1276,14 +1425,14 @@ class MultimodalKnowledgeBaseMaintenance:
             manifest_authorized = record is not None
             if item.content_kind == "table_recovery":
                 provider = table_recovery_provider
-                if provider is None and allow_remote_data:
+                if provider is None and allow_remote_data and source_authorized:
                     provider = RemoteVlmTableRecoveryProvider(analyzer)
                 requires_manifest = bool(getattr(provider, "requires_outbound_manifest", False))
-                if provider is None or (requires_manifest and not allow_remote_data):
+                if provider is None or (requires_manifest and not allow_remote_data) or (requires_manifest and not source_authorized):
                     quality["vision_failed_images"] += 1
                     issues.append(IngestionIssue(code="table_recovery_unavailable", message="空表没有可用的表格恢复 provider", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
                     return None
-                if requires_manifest and not (self._remote_resource_allowed(path, item.page_number) or manifest_authorized):
+                if requires_manifest and not manifest_authorized:
                     quality["skipped_images"] += 1
                     issues.append(IngestionIssue(code="remote_source_not_allowed", message="表格恢复图片不在批准的远程外发清单中", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
                     return None
@@ -1304,7 +1453,7 @@ class MultimodalKnowledgeBaseMaintenance:
                     quality["vision_failed_images"] += 1
                     issues.append(IngestionIssue(code="table_recovery_failed", message=f"表格恢复失败：{type(exc).__name__}", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
                     return None
-            elif allow_remote_data and (self._remote_resource_allowed(path, item.page_number) or manifest_authorized):
+            elif allow_remote_data and source_authorized and manifest_authorized:
                 quality["eligible_images"] += 1
                 try:
                     if not source_relative_path or not source_sha256 or outbound_records is None:
@@ -1395,11 +1544,24 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("outbound manifest is unreadable or invalid") from exc
         if payload.get("schema_version") != "outbound-v1":
             raise ValueError("outbound manifest schema is unsupported")
-        sources = {(entry["relative_path"], entry["content_hash"]) for entry in entries}
+        for entry in entries:
+            entry.setdefault("source_id", content_source_id(entry["content_hash"]))
+        sources = {
+            (entry["source_id"], entry["relative_path"], entry["content_hash"])
+            for entry in entries
+        } | {
+            ("", entry["relative_path"], entry["content_hash"])
+            for entry in entries
+        }
         identities = {(record.document_id, record.page_number, record.image_index) for record in records}
         if len(identities) != len(records):
             raise ValueError("outbound manifest contains duplicate image identities")
-        if any((record.source_relative_path, record.source_sha256) not in sources for record in records):
+        if any(
+            (record.source_id, record.source_relative_path, record.source_sha256) not in sources
+            and ("", record.source_relative_path, record.source_sha256) not in sources
+            and (None, record.source_relative_path, record.source_sha256) not in sources
+            for record in records
+        ):
             raise ValueError("outbound manifest does not match the current frozen sources")
         if any(record.remote_policy_sha256 != self.remote_policy.policy_sha256 for record in records):
             raise ValueError("outbound manifest does not match the current remote policy")
@@ -1460,21 +1622,46 @@ class MultimodalKnowledgeBaseMaintenance:
         sources = manifest.get("sources")
         if not isinstance(documents, list) or not documents or not isinstance(sources, list):
             return ["missing_document_audit_chain"]
-        expected_sources = {(source.get("relative_path"), source.get("content_hash")) for source in sources if isinstance(source, dict)}
+        expected_sources = {
+            (source.get("source_id"), source.get("content_hash"))
+            for source in sources
+            if isinstance(source, dict) and source.get("source_id")
+        }
+        legacy_sources = {(source.get("relative_path"), source.get("content_hash")) for source in sources if isinstance(source, dict)}
         document_ids: set[str] = set()
         for document in documents:
             if not isinstance(document, dict):
                 return ["missing_audit_asset"]
             relative_path = document.get("relative_path")
             content_hash = document.get("content_hash")
+            source_id = document.get("source_id")
             document_id = document.get("document_id")
             source_asset_uri = document.get("source_asset_uri")
+            source_match = (
+                (source_id, content_hash) in expected_sources
+                if isinstance(source_id, str)
+                else (relative_path, content_hash) in legacy_sources
+            )
+            expected_document_id = next(
+                (
+                    source.get("document_id")
+                    for source in sources
+                    if isinstance(source, dict)
+                    and isinstance(source.get("document_id"), str)
+                    and (
+                        (source_id and source.get("source_id") == source_id)
+                        or (not source_id and source.get("relative_path") == relative_path)
+                    )
+                    and source.get("content_hash") == content_hash
+                ),
+                stable_id("doc", {"path": relative_path, "content_hash": content_hash}) if isinstance(relative_path, str) else None,
+            )
             if (
                 not isinstance(relative_path, str)
                 or not isinstance(content_hash, str)
                 or not isinstance(document_id, str)
-                or document_id != stable_id("doc", {"path": relative_path, "content_hash": content_hash})
-                or (relative_path, content_hash) not in expected_sources
+                or document_id != expected_document_id
+                or not source_match
                 or not isinstance(source_asset_uri, str)
                 or not store.exists(source_asset_uri)
                 or sha256_bytes(store.read(source_asset_uri)) != content_hash
@@ -1490,7 +1677,15 @@ class MultimodalKnowledgeBaseMaintenance:
                     return ["missing_audit_asset"]
                 if not store.exists(artifact["asset_uri"]) or sha256_bytes(store.read(artifact["asset_uri"])) != artifact["content_hash"]:
                     return ["missing_audit_asset"]
-        if {(document["relative_path"], document["content_hash"]) for document in documents} != expected_sources:
+        actual_sources = {
+            (document.get("source_id"), document.get("content_hash"))
+            for document in documents
+            if document.get("source_id")
+        }
+        if actual_sources != expected_sources and {
+            (document.get("relative_path"), document.get("content_hash"))
+            for document in documents
+        } != legacy_sources:
             return ["missing_audit_asset"]
         if any(unit.document_id not in document_ids for unit in units):
             return ["orphaned_unit_document"]
@@ -1522,9 +1717,18 @@ class MultimodalKnowledgeBaseMaintenance:
         response_adapter_version = manifest.get("build_configuration", {}).get("vision", {}).get("response_adapter_version")
         if payload.get("schema_version") != "outbound-v1" or len(records) != manifest.get("outbound_image_count"):
             return ["invalid_outbound_manifest"]
-        sources = {(source.get("relative_path"), source.get("content_hash")) for source in manifest.get("sources", []) if isinstance(source, dict)}
+        sources = {
+            (source.get("source_id"), source.get("relative_path"), source.get("content_hash"))
+            for source in manifest.get("sources", [])
+            if isinstance(source, dict)
+        }
         identities = {(record.document_id, record.page_number, record.image_index) for record in records}
-        if len(identities) != len(records) or any((record.source_relative_path, record.source_sha256) not in sources for record in records):
+        if len(identities) != len(records) or any(
+            (record.source_id, record.source_relative_path, record.source_sha256) not in sources
+            and ("", record.source_relative_path, record.source_sha256) not in sources
+            and (None, record.source_relative_path, record.source_sha256) not in sources
+            for record in records
+        ):
             return ["invalid_outbound_manifest"]
         if not isinstance(policy_hash, str) or any(record.remote_policy_sha256 != policy_hash for record in records):
             return ["invalid_outbound_manifest"]
@@ -1565,13 +1769,15 @@ class MultimodalKnowledgeBaseMaintenance:
         }
 
     def _remote_resource_allowed(self, source_path: Path, page_number: int | None) -> bool:
-        """只允许固定 Pearl 页进入维护 CLI 的远程视觉。"""
+        """只允许唯一哈希解析出的受控来源页进入远程视觉。"""
         resolved = source_path.resolve()
-        base = Path(__file__).resolve().parents[1]
-        pearl_root = (base / "source").resolve()
-        pearl_names = {"Pearl_2009_Causality-mono(1).pdf", "Pearl_Mackenzie_2018_The_Book_of_Why-mono(1).pdf"}
-        if resolved.parent == pearl_root and resolved.name in pearl_names:
-            return self.remote_policy.allows_pearl_page(resolved.name, page_number)
+        try:
+            sources = resolve_production_sources()
+        except (FileNotFoundError, OSError, ValueError):
+            return False
+        for source in sources:
+            if source["path"] == resolved:
+                return self.remote_policy.allows_pearl_page(Path(source["configured_path"]).name, page_number)
         return False
 
     def _resolve_table_recovery_provider(self, analyzer: VisionAnalyzer, allow_remote_data: bool) -> TableRecoveryProvider | None:

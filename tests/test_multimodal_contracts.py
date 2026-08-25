@@ -300,7 +300,7 @@ class MultimodalContractTests(unittest.TestCase):
             self.assertFalse(service._remote_resource_allowed(source, None))
 
     def test_remote_policy_allows_only_fixed_pearl_pages(self) -> None:
-        """Pearl 资料必须同时匹配固定文件名和固定页码。"""
+        """Pearl 资料必须同时匹配受控来源身份和固定页码。"""
         service = MultimodalKnowledgeBaseMaintenance()
         pearl = Path(__file__).resolve().parents[1] / "Agent" / "knowledge_base" / "source" / "Pearl_2009_Causality-mono(1).pdf"
         self.assertTrue(service._remote_resource_allowed(pearl, 1))
@@ -308,6 +308,29 @@ class MultimodalContractTests(unittest.TestCase):
         self.assertTrue(service._remote_resource_allowed(pearl, 487))
         self.assertFalse(service._remote_resource_allowed(pearl, 0))
         self.assertFalse(service._remote_resource_allowed(pearl, 488))
+
+    def test_remote_policy_does_not_guess_when_formal_source_resolution_fails(self) -> None:
+        """正式来源零命中或多命中时，不能退回文件名猜测来放行 VLM。"""
+        service = MultimodalKnowledgeBaseMaintenance()
+        pearl = Path(__file__).resolve().parents[1] / "Agent" / "knowledge_base" / "source" / "Pearl_2009_Causality-mono(1).pdf"
+        with patch("Agent.knowledge_base.multimodal.pipeline.resolve_production_sources", side_effect=ValueError("2 matches")):
+            self.assertFalse(service._remote_resource_allowed(pearl, 1))
+
+    def test_remote_authorization_maps_catalog_hash_id_to_formal_source_id(self) -> None:
+        """隔离目录用内容哈希 ID，正式 manifest 仍保留 canonical source ID。"""
+        service = MultimodalKnowledgeBaseMaintenance()
+        entries = [{
+            "source_id": "pearl-2009-causality",
+            "catalog_source_id": "source_" + "a" * 64,
+        }]
+        self.assertEqual(
+            service._authorized_source_ids(
+                entries,
+                allow_remote_data=True,
+                authorized_source_ids=["source_" + "a" * 64],
+            ),
+            {"pearl-2009-causality"},
+        )
 
     def test_vision_400_uses_json_prompt_fallback_and_audits_without_response(self) -> None:
         """结构化输出不兼容时只降级一次，并写入脱敏审计。"""
@@ -640,7 +663,32 @@ class MultimodalContractTests(unittest.TestCase):
             (index_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             with patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.count", return_value=1):
                 result = service.evaluate(version)
-            self.assertTrue(result["passed"]); self.assertEqual(service.publish(version)["status"], "published")
+            self.assertTrue(result["passed"])
+            with self.assertRaisesRegex(ValueError, "non-production manifest"):
+                service.publish(version)
+
+    def test_non_production_manifest_cannot_publish_active_pointer(self) -> None:
+        """完整性与质量通过也不能让非正式来源切换 active pointer。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            version = "mm_" + "c" * 20
+            index_dir = root / "indexes" / version
+            index_dir.mkdir(parents=True)
+            manifest = {
+                "schema_version": 5,
+                "index_version": version,
+                "sources": [{"source_id": "uploaded", "document_id": "doc_" + "d" * 64, "relative_path": "uploaded.pdf", "content_hash": "a" * 64}],
+                "documents": [],
+                "build_configuration": {},
+                "quality_policy": {},
+                "quality_observations": {},
+            }
+            (index_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (index_dir / "evaluation.json").write_text(json.dumps({"passed": True}), encoding="utf-8")
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            with self.assertRaisesRegex(ValueError, "non-production manifest"):
+                service.publish(version)
+            self.assertFalse((root / "active.json").exists())
 
     def test_legacy_manifest_cannot_pass_new_quality_or_publication_gates(self) -> None:
         """缺少 P0 构建和质量契约的历史版本不得被默认零值放行。"""
@@ -655,7 +703,7 @@ class MultimodalContractTests(unittest.TestCase):
                 result = service.evaluate(version)
             self.assertFalse(result["passed"]); self.assertIn("legacy_manifest_missing_build_configuration", result["failures"]); self.assertIn("legacy_manifest_missing_quality_policy", result["quality"]["failures"])
             (index_dir / "evaluation.json").write_text(json.dumps({"passed": True}), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "legacy manifest"):
+            with self.assertRaisesRegex(ValueError, "non-production manifest"):
                 service.publish(version)
 
     def test_multimodal_is_the_default_and_only_rag_corpus(self) -> None:
@@ -910,7 +958,34 @@ class MultimodalContractTests(unittest.TestCase):
                 unit = service._build_unit(item, source, "doc_" + "a" * 64, 1, "docling", "2.115.0", embedding, AssetStore(root / "assets"), analyzer, quality, issues, allow_remote_data=True, source_relative_path="page.png", source_sha256="b" * 64, outbound_records=[])
             self.assertIsNone(unit)
             analyzer.analyze.assert_not_called()
-            self.assertTrue(any(issue.code == "remote_image_failed" and issue.blocking for issue in issues))
+            self.assertTrue(any(issue.code == "remote_source_not_allowed" and issue.blocking for issue in issues))
+
+    def test_remote_image_without_source_authorization_is_blocked_before_sdk_call(self) -> None:
+        """即使有 outbound 记录，未获来源级授权也不得调用 VLM。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); image = _png_bytes(); source = root / "page.png"; source.write_bytes(image)
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            embedding = __import__("Agent.knowledge_base.multimodal.index", fromlist=["embedding_fingerprint"]).embedding_fingerprint()
+            preparer = VisionAnalyzer(root / "cache", allow_remote_data=False)
+            analyzer = MagicMock(); analyzer.model = REQUIRED_MODEL; analyzer.response_adapter_version = RESPONSE_ADAPTER_VERSION; analyzer.remote_policy_sha256 = preparer.remote_policy_sha256
+            quality = {"eligible_images": 0, "enriched_images": 0, "vision_failed_images": 0, "skipped_images": 0, "low_value_images_skipped": 0, "filtered_short_text_units": 0}
+            issues: list = []
+            item = ParsedItem(modality="image", content_kind="image", raw_text="caption", asset_bytes=image, asset_name="page.png", page_number=1)
+            outbound = [_outbound_record(preparer, image, source_relative_path="page.png", source_sha256="b" * 64, document_id="doc_" + "a" * 64)]
+            unit = service._build_unit(item, source, "doc_" + "a" * 64, 1, "docling", "2.115.0", embedding, AssetStore(root / "assets"), analyzer, quality, issues, allow_remote_data=True, source_authorized=False, source_relative_path="page.png", source_sha256="b" * 64, outbound_records=outbound)
+            self.assertIsNone(unit)
+            analyzer.analyze.assert_not_called()
+            self.assertTrue(any(issue.code == "remote_source_not_allowed" and issue.blocking for issue in issues))
+
+    def test_remote_ingestion_requires_explicit_source_authorization(self) -> None:
+        """远程摄取入口没有来源级授权时必须在调用 provider 前阻断。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.md"
+            source.write_text("正文", encoding="utf-8")
+            service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
+            with self.assertRaisesRegex(PermissionError, "source-level authorization"):
+                service.ingest([str(source)], allow_remote_data=True)
 
     def test_image_unit_id_changes_with_prompt_fingerprint(self) -> None:
         """图片 unit ID 不再绑定 RapidOCR，但必须绑定远程提示词版本。"""
@@ -948,7 +1023,8 @@ class MultimodalContractTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(json.loads(rows[0][0])["schema_version"], "local-parse-v2")
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page") as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
-                vlm_version = service.ingest([str(source)], allow_remote_data=True, max_images=1, reuse_local_from_index_version=ocr_only["index_version"])
+                source_id = service._scan([str(source)])[0][0]["source_id"]
+                vlm_version = service.ingest([str(source)], allow_remote_data=True, authorized_source_ids=[source_id], max_images=1, reuse_local_from_index_version=ocr_only["index_version"])
             parse_page.assert_not_called()
             self.assertNotEqual(vlm_version["index_version"], ocr_only["index_version"])
 
@@ -981,7 +1057,8 @@ class MultimodalContractTests(unittest.TestCase):
             source_asset = root / "assets" / checkpoint["items"][0]["asset_uri"]
             source_asset.unlink()
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed) as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
-                service.ingest([str(source)], allow_remote_data=True, max_images=1, reuse_local_from_index_version=ocr_only["index_version"])
+                source_id = service._scan([str(source)])[0][0]["source_id"]
+                service.ingest([str(source)], allow_remote_data=True, authorized_source_ids=[source_id], max_images=1, reuse_local_from_index_version=ocr_only["index_version"])
             parse_page.assert_called_once()
 
     def test_local_checkpoint_requires_schema_and_matching_parser_contract(self) -> None:

@@ -104,6 +104,33 @@ class RagEvalWorkerQueueTests(unittest.TestCase):
             self.assertEqual(fake_jobs.enqueued[0][1], "ingestion")
             thread.assert_not_called()
 
+    def test_ingestion_persists_explicit_remote_source_authorization(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "sources"
+            source_root.mkdir()
+            source = source_root / "upload_a__source.txt"
+            source.write_text("source", encoding="utf-8")
+            fake_jobs = _FakeJobService()
+            with patch("app.rag_eval.isolated_runs.ISOLATED_RUN_ROOT", root / "runs"), \
+                    patch("app.rag_eval.isolated_runs.RAG_EVAL_SOURCE_ROOT", source_root), \
+                    patch(
+                        "app.rag_eval.isolated_runs._resolve_source_inputs",
+                        return_value=([source], ["upload_a"], ["测试来源"]),
+                    ), \
+                    patch("app.rag_eval.isolated_runs._remote_data_enabled", return_value=True), \
+                    patch("app.rag_eval.job_service.enqueue_job", fake_jobs.enqueue_job):
+                manager = IsolatedRunManager()
+                state = manager.start_ingestion(
+                    source_ids=["upload_a"],
+                    max_pages=1,
+                    allow_remote_data=True,
+                    authorized_source_ids=["upload_a"],
+                )
+
+            self.assertTrue(state["remote_enabled"])
+            self.assertEqual(state["authorized_source_ids"], ["upload_a"])
+
     def test_candidate_creation_queues_without_starting_web_thread(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

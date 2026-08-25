@@ -34,6 +34,7 @@ from Agent.knowledge_base.multimodal.defaults import (
     production_source_paths,
     resolve_production_embedding_config,
 )
+from Agent.knowledge_base.multimodal.contracts import content_source_id
 from Agent.knowledge_base.multimodal.index import embedding_fingerprint, replace_with_retry
 from Agent.knowledge_base.multimodal.parsers import SUPPORTED_SUFFIXES, inspect_source
 from Agent.knowledge_base.multimodal.pipeline import MultimodalKnowledgeBaseMaintenance
@@ -80,9 +81,18 @@ _DELETABLE_DERIVED_KINDS = {
     "dataset_governance",
     "tuning_dataset_governance",
 }
+_CASCADE_RUN_KINDS = _DELETABLE_DERIVED_KINDS | {"evaluation"}
 _PERSISTENT_WORKER_KINDS = {"ingestion", "candidate_generation", "rag_query", "evaluation", "dataset_governance", "tuning_dataset_governance"}
 _GOVERNANCE_CANDIDATE_BATCH_SIZE = 8
 _GOVERNANCE_CANDIDATE_MAX_ATTEMPTS = 3
+
+
+class ReleaseGateError(ValueError):
+    """正式 release 门禁未通过或发布前置条件已变化。"""
+
+    def __init__(self, message: str, report: Dict[str, Any]) -> None:
+        super().__init__(message)
+        self.report = report
 
 # 单测和离线验收可注入确定性实现；生产默认路径仍使用结构化模型审核。
 GOVERNANCE_REVIEWER = None
@@ -92,8 +102,8 @@ GOVERNANCE_CANDIDATE_REWRITER = None
 
 
 def _remote_data_enabled() -> bool:
-    """读取隔离评测内测远程视觉开关，默认开启并支持显式关闭。"""
-    return os.getenv("VISION_ALLOW_REMOTE_DATA", "true").strip().lower() in {"1", "true", "yes", "on"}
+    """读取远程视觉能力开关；用户授权仍由每次摄取的来源集合决定。"""
+    return os.getenv("VISION_ALLOW_REMOTE_DATA", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _remote_data_enabled_for_sources(source_paths: List[Path]) -> bool:
@@ -839,9 +849,7 @@ def _source_catalog_records() -> List[tuple[Path, Dict[str, Any]]]:
     for path in production_source_paths():
         content = path.read_bytes()
         content_hash = hashlib.sha256(content).hexdigest()
-        source_id = "source_" + hashlib.sha256(
-            f"{path.name}:{content_hash}".encode("utf-8")
-        ).hexdigest()[:20]
+        source_id = content_source_id(content_hash)
         catalog.append((path, {
                 "source_id": source_id,
                 "name": path.name,
@@ -852,6 +860,46 @@ def _source_catalog_records() -> List[tuple[Path, Dict[str, Any]]]:
                 "page_count": _pdf_page_count(content),
             }))
     return catalog + _uploaded_source_catalog_records()
+
+
+def _legacy_frozen_source_id(path: Path, content_hash: str) -> str:
+    """重建内容哈希迁移前的固定来源 ID，仅用于读取历史运行。"""
+    return "source_" + hashlib.sha256(f"{path.name}:{content_hash}".encode("utf-8")).hexdigest()[:20]
+
+
+def _source_id_lookup(records: List[tuple[Path, Dict[str, Any]]]) -> Dict[str, tuple[Path, Dict[str, Any]]]:
+    """建立当前 ID 与历史固定来源 ID 到同一来源记录的兼容映射。"""
+    lookup: Dict[str, tuple[Path, Dict[str, Any]]] = {}
+    for path, entry in records:
+        aliases = [str(entry["source_id"])]
+        if entry.get("source_kind") == "frozen":
+            aliases.append(_legacy_frozen_source_id(path, str(entry["content_sha256"])))
+        for alias in aliases:
+            previous = lookup.get(alias)
+            if previous is not None and previous[1]["source_id"] != entry["source_id"]:
+                raise ValueError(f"source_id alias is ambiguous: {alias}")
+            lookup[alias] = (path, entry)
+    return lookup
+
+
+def _canonical_catalog_source_ids(
+    source_ids: List[str],
+    records: List[tuple[Path, Dict[str, Any]]],
+    *,
+    keep_unknown: bool = False,
+) -> List[str]:
+    """把目录来源 ID（含历史别名）规范化为当前来源 ID。"""
+    lookup = _source_id_lookup(records)
+    canonical: List[str] = []
+    for source_id in source_ids:
+        match = lookup.get(source_id)
+        if match is None:
+            if keep_unknown:
+                canonical.append(source_id)
+                continue
+            raise ValueError(f"unknown source_id: {source_id}")
+        canonical.append(str(match[1]["source_id"]))
+    return canonical
 
 
 def _source_catalog() -> List[Dict[str, Any]]:
@@ -989,13 +1037,15 @@ def _resolve_source_inputs(
         if not requested or len(requested) > _MAX_SOURCES or any(not value for value in requested):
             raise ValueError(f"source_ids must contain 1 to {_MAX_SOURCES} items")
         records = _source_catalog_records()
-        entries = {entry["source_id"]: (path, entry) for path, entry in records}
+        entries = _source_id_lookup(records)
         missing = [value for value in requested if value not in entries]
         if missing:
             raise ValueError(f"unknown source_id: {missing[0]}")
-        ordered_paths = [entries[source_id][0] for source_id in requested]
-        display_names = [str(entries[source_id][1].get("display_name") or source_id) for source_id in requested]
-        return ordered_paths, requested, display_names
+        ordered = [entries[source_id] for source_id in requested]
+        ordered_paths = [match[0] for match in ordered]
+        resolved_ids = [str(match[1]["source_id"]) for match in ordered]
+        display_names = [str(match[1].get("display_name") or source_id) for source_id, match in zip(requested, ordered)]
+        return ordered_paths, resolved_ids, display_names
 
     if not sources or len(sources) > _MAX_SOURCES:
         raise ValueError(f"sources must contain 1 to {_MAX_SOURCES} items")
@@ -1080,6 +1130,8 @@ class IsolatedRunManager:
         sources: List[Dict[str, Any]] | None = None,
         max_pages: int | None = None,
         page_ranges: List[Dict[str, Any]] | None = None,
+        allow_remote_data: bool = False,
+        authorized_source_ids: List[str] | None = None,
     ) -> Dict[str, Any]:
         """异步摄取显式来源，并返回新的隔离运行身份。"""
         if max_pages is not None and (isinstance(max_pages, bool) or max_pages < 1):
@@ -1087,6 +1139,34 @@ class IsolatedRunManager:
         if max_pages is not None and page_ranges:
             raise ValueError("max_pages and page_ranges cannot be combined")
         source_paths, resolved_source_ids, source_display_names = _resolve_source_inputs(source_ids, sources)
+        authorized_requested = sorted(set(authorized_source_ids or []))
+        catalog_records = _source_catalog_records() if source_ids else []
+        authorized = (
+            sorted(set(_canonical_catalog_source_ids(authorized_requested, catalog_records, keep_unknown=True)))
+            if source_ids and authorized_requested
+            else authorized_requested
+        )
+        if source_ids and page_ranges:
+            normalized_page_ranges = []
+            for item in page_ranges:
+                if not isinstance(item, dict):
+                    normalized_page_ranges.append(item)
+                    continue
+                normalized_page_ranges.append({
+                    **item,
+                    "source_id": _canonical_catalog_source_ids([str(item.get("source_id") or "")], catalog_records)[0],
+                })
+            page_ranges = normalized_page_ranges
+        if not isinstance(allow_remote_data, bool):
+            raise ValueError("allow_remote_data must be a boolean")
+        if not allow_remote_data and authorized:
+            raise ValueError("authorized_source_ids require allow_remote_data=true")
+        if not set(authorized) <= set(resolved_source_ids):
+            raise ValueError("authorized_source_ids must match the current sources")
+        if allow_remote_data and not authorized:
+            raise PermissionError("remote VLM requires explicit source-level authorization")
+        if allow_remote_data and not _remote_data_enabled():
+            raise PermissionError("remote VLM is disabled by server policy")
         normalized_ranges, page_range_map = _normalize_page_ranges(page_ranges, source_paths, resolved_source_ids)
 
         run_id = _new_run_id("ingest")
@@ -1094,13 +1174,14 @@ class IsolatedRunManager:
         state = {
             "run_id": run_id,
             "kind": "ingestion",
-            "source_ids": list(source_ids or []),
+            "source_ids": list(resolved_source_ids),
             "source_names": source_display_names,
             "source_display_names": source_display_names,
             "source_label": "、".join(source_display_names),
             "max_pages": max_pages,
             "page_ranges": normalized_ranges,
-            "remote_enabled": _remote_data_enabled_for_sources(source_paths),
+            "remote_enabled": bool(allow_remote_data and authorized),
+            "authorized_source_ids": authorized,
             "status": "queued",
             "created_at": _timestamp(),
             "started_at": "",
@@ -1130,6 +1211,249 @@ class IsolatedRunManager:
 
         self._enqueue_persistent_run(run_id, "ingestion")
         return self.get(run_id)
+
+    def release_status(
+        self,
+        ingestion_run_id: str = "",
+        index_version: str = "",
+        evaluation_run_id: str | None = None,
+    ) -> Dict[str, Any]:
+        """返回候选 release 与正式 active/previous pointer 的只读快照。"""
+        formal = MultimodalKnowledgeBaseMaintenance()
+        pointer = formal.status()
+        result: Dict[str, Any] = {
+            "active": pointer.get("active"),
+            "previous": pointer.get("previous"),
+            "candidates": pointer.get("candidates", []),
+            "candidate_overflow": pointer.get("candidate_overflow", False),
+            "release": None,
+        }
+        if ingestion_run_id or index_version:
+            context = self._release_context(ingestion_run_id, index_version, evaluation_run_id)
+            result["release"] = context["release"]
+        return result
+
+    def check_release(
+        self,
+        ingestion_run_id: str,
+        index_version: str,
+        evaluation_run_id: str | None = None,
+        expected_active_index_version: str | None = None,
+    ) -> Dict[str, Any]:
+        """执行可审计的正式发布门禁，但不复制产物也不切换 pointer。"""
+        context = self._release_context(ingestion_run_id, index_version, evaluation_run_id)
+        manifest = context["manifest"]
+        checks: list[Dict[str, Any]] = []
+
+        def add_check(key: str, label: str, passed: bool, detail: str) -> None:
+            checks.append({
+                "key": key,
+                "label": label,
+                "status": "pass" if passed else "fail",
+                "blocking": True,
+                "detail": detail,
+            })
+
+        from Agent.knowledge_base.multimodal.production import (
+            is_production_manifest,
+            validate_production_manifest,
+        )
+
+        production_manifest = is_production_manifest(manifest)
+        add_check(
+            "controlled_source_identity",
+            "正式来源身份",
+            production_manifest,
+            "source_id、document_id、哈希和受控路径必须完全匹配当前配置"
+            if not production_manifest
+            else "所有来源均在受控目录内唯一哈希命中",
+        )
+
+        isolated_maintenance = MultimodalKnowledgeBaseMaintenance(
+            asset_root=context["run_dir"] / "assets",
+            index_root=context["run_dir"] / "indexes",
+            active_config=context["run_dir"] / "active_index.json",
+        )
+        try:
+            evaluation = isolated_maintenance.evaluate(index_version)
+            add_check(
+                "staged_integrity",
+                "staged 索引完整性",
+                bool(evaluation.get("passed")),
+                "；".join(evaluation.get("failures") or []) or "manifest、资源、units 和向量数量一致",
+            )
+            production_evaluation = evaluation.get("production_evaluation") or {}
+            add_check(
+                "production_retrieval",
+                "正式检索门禁",
+                bool(production_evaluation.get("gate", {}).get("passed")),
+                "；".join(production_evaluation.get("gate", {}).get("failures") or []) or "正式检索评测通过",
+            )
+        except Exception as exc:
+            evaluation = {"passed": False, "failures": [str(exc)]}
+            add_check("staged_integrity", "staged 索引完整性", False, str(exc))
+            add_check("production_retrieval", "正式检索门禁", False, "尚未生成正式检索评测")
+
+        policy_failures = validate_production_manifest(manifest) if production_manifest else ["non_production_manifest"]
+        add_check(
+            "production_policy",
+            "正式策略一致性",
+            not policy_failures,
+            "；".join(policy_failures) or "解析器、VLM 和 embedding 策略与正式配置一致",
+        )
+
+        evaluation_state = context["evaluation_state"]
+        evaluation_bound = bool(
+            evaluation_state
+            and evaluation_state.get("kind") == "evaluation"
+            and evaluation_state.get("status") == "succeeded"
+            and evaluation_state.get("ingestion_run_id") == ingestion_run_id
+            and evaluation_state.get("index_version") == index_version
+            and (evaluation_state.get("summary") or {}).get("status") == "pass"
+        )
+        add_check(
+            "ragas",
+            "自动 Ragas 评测",
+            evaluation_bound,
+            "当前索引绑定的 Ragas 评测未通过或不存在"
+            if not evaluation_bound
+            else "当前索引绑定的自动 Ragas 评测已通过",
+        )
+
+        formal = MultimodalKnowledgeBaseMaintenance()
+        pointer = formal.status()
+        active_version = str((pointer.get("active") or {}).get("index_version") or "")
+        pointer_ok = expected_active_index_version in {None, "", active_version}
+        add_check(
+            "active_pointer_consistency",
+            "active pointer 并发一致性",
+            pointer_ok,
+            "发布前 active pointer 已发生变化"
+            if not pointer_ok
+            else "发布目标仍基于当前 active pointer 快照",
+        )
+        current_manifest_sha = hashlib.sha256(context["manifest_path"].read_bytes()).hexdigest()
+        add_check(
+            "manifest_unchanged",
+            "manifest 不可变",
+            current_manifest_sha == context["release"]["manifest_sha256"],
+            "manifest 在门禁期间发生变化"
+            if current_manifest_sha != context["release"]["manifest_sha256"]
+            else "manifest 哈希与候选身份一致",
+        )
+        publishable = all(item["status"] == "pass" for item in checks if item["blocking"])
+        return {
+            "state": "ready_to_publish" if publishable else "blocked",
+            "publishable": publishable,
+            "checked_at": _timestamp(),
+            "release": context["release"],
+            "checks": checks,
+            "evaluation": evaluation,
+            "active": pointer.get("active"),
+            "previous": pointer.get("previous"),
+            "requires_worker_restart": True,
+        }
+
+    def publish_release(
+        self,
+        ingestion_run_id: str,
+        index_version: str,
+        evaluation_run_id: str,
+        expected_active_index_version: str | None = None,
+    ) -> Dict[str, Any]:
+        """晋级隔离 staged 产物并复用正式 CLI publish 门禁切换 active pointer。"""
+        report = self.check_release(
+            ingestion_run_id,
+            index_version,
+            evaluation_run_id,
+            expected_active_index_version,
+        )
+        if not report["publishable"]:
+            raise ReleaseGateError("正式发布门禁未通过", report)
+        context = self._release_context(ingestion_run_id, index_version, evaluation_run_id)
+        formal = MultimodalKnowledgeBaseMaintenance()
+        promotion = formal.promote_staged(
+            source_index_root=context["run_dir"] / "indexes",
+            source_asset_root=context["run_dir"] / "assets",
+            index_version=index_version,
+        )
+        published = formal.publish(
+            index_version,
+            expected_active_index_version=expected_active_index_version,
+        )
+        pointer = formal.status()
+        return {
+            "status": published.get("status", "published"),
+            "release": report["release"],
+            "gate": report,
+            "promotion": promotion,
+            "publish": published,
+            "active": pointer.get("active"),
+            "previous": pointer.get("previous"),
+            "requires_worker_restart": True,
+        }
+
+    def rollback_release(
+        self,
+        index_version: str,
+        expected_active_index_version: str | None = None,
+    ) -> Dict[str, Any]:
+        """调用与 CLI 相同的正式回滚门禁；不自动删除其他版本。"""
+        formal = MultimodalKnowledgeBaseMaintenance()
+        result = formal.rollback(index_version, expected_active_index_version=expected_active_index_version)
+        pointer = formal.status()
+        return {
+            **result,
+            "active": pointer.get("active"),
+            "previous": pointer.get("previous"),
+            "requires_worker_restart": True,
+        }
+
+    def _release_context(
+        self,
+        ingestion_run_id: str,
+        index_version: str,
+        evaluation_run_id: str | None,
+    ) -> Dict[str, Any]:
+        """解析候选 release 的唯一身份并隐藏宿主绝对路径。"""
+        ingestion = self._load(ingestion_run_id)
+        if ingestion.get("kind") != "ingestion" or ingestion.get("status") != "staged":
+            raise ValueError("ingestion run is not staged and cannot be released")
+        if ingestion.get("index_version") != index_version:
+            raise ValueError("index_version does not belong to ingestion run")
+        run_dir = _run_dir(ingestion_run_id)
+        index_dir = (run_dir / "indexes" / index_version).resolve()
+        index_dir.relative_to(run_dir.resolve())
+        manifest_path = index_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError("staged release manifest is unavailable")
+        manifest = _read_json(manifest_path)
+        manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        evaluation_state = None
+        if evaluation_run_id:
+            evaluation_state = self._load(evaluation_run_id)
+        return {
+            "run_dir": run_dir,
+            "manifest_path": manifest_path,
+            "manifest": manifest,
+            "evaluation_state": evaluation_state,
+            "release": {
+                "release_id": f"{ingestion_run_id}:{index_version}:{manifest_sha[:16]}",
+                "ingestion_run_id": ingestion_run_id,
+                "index_version": index_version,
+                "manifest_sha256": manifest_sha,
+                "source_count": len(manifest.get("sources") or []),
+                "sources": [
+                    {
+                        key: source.get(key)
+                        for key in ("source_id", "document_id", "relative_path", "controlled_path", "content_hash")
+                    }
+                    for source in manifest.get("sources", [])
+                    if isinstance(source, dict)
+                ],
+                "evaluation_run_id": evaluation_run_id or "",
+            },
+        }
 
     def start_rag_query(
         self,
@@ -1624,8 +1948,8 @@ class IsolatedRunManager:
             self._queues.pop(run_id, None)
         return {"run_id": run_id, "status": "deleted", "deleted": True}
 
-    def delete_ingestion_run(self, run_id: str) -> Dict[str, Any]:
-        """删除没有下游引用的终态摄取运行及其 staged index。"""
+    def delete_ingestion_run(self, run_id: str, *, cascade: bool = False) -> Dict[str, Any]:
+        """删除终态摄取运行；级联模式只清理终态隔离下游产物。"""
         state = self._load(run_id)
         if state.get("kind") != "ingestion":
             raise ValueError("run is not an ingestion")
@@ -1637,8 +1961,26 @@ class IsolatedRunManager:
             }
         if state.get("status") not in _TERMINAL_RUN_STATUSES:
             raise ValueError("只能删除已结束的摄取运行")
-        self._ensure_run_has_no_references(state)
-        return self._remove_run_directory(run_id)
+        references = self._collect_run_references(state)
+        if not cascade:
+            self._raise_if_referenced(references)
+            return self._remove_run_directory(run_id)
+
+        blockers = [
+            reference
+            for reference in references
+            if reference["type"] in {"active_pointer", "gold"}
+            or reference["type"] == "run"
+            and (
+                reference["status"] in _ACTIVE_INGESTION_STATUSES
+                or reference["kind"] not in _CASCADE_RUN_KINDS
+            )
+        ]
+        self._raise_if_referenced(blockers, cascade=True)
+        deleted_run_ids = [run_id] + [reference["run_id"] for reference in references if reference["type"] == "run"]
+        result = self._remove_run_directories(deleted_run_ids)
+        result["cascade"] = True
+        return result
 
     def delete_derived_run(self, run_id: str) -> Dict[str, Any]:
         """删除没有下游引用的终态候选、治理或 staged RAG 运行。"""
@@ -1658,11 +2000,29 @@ class IsolatedRunManager:
 
     def _ensure_run_has_no_references(self, target_state: Dict[str, Any]) -> None:
         """删除前阻止下游运行、正式 Gold 或生产 active pointer 失去来源。"""
+        self._raise_if_referenced(self._collect_run_references(target_state))
+
+    @staticmethod
+    def _raise_if_referenced(references: List[Dict[str, str]], *, cascade: bool = False) -> None:
+        """把引用集合转换为稳定的冲突提示；级联模式只用于区分提示语。"""
+        if not references:
+            return
+        labels = [
+            f"{reference['run_id']}({reference['kind']}/{reference['status']})"
+            if reference["type"] == "run"
+            else reference["label"]
+            for reference in references
+        ]
+        prefix = "级联删除被阻断，仍存在引用：" if cascade else "运行仍被下游或正式产物引用："
+        raise ValueError(prefix + "、".join(dict.fromkeys(labels)))
+
+    def _collect_run_references(self, target_state: Dict[str, Any]) -> List[Dict[str, str]]:
+        """收集下游运行、正式 Gold 和 active pointer 引用，不执行任何删除。"""
         run_id = str(target_state.get("run_id") or "")
         kind = str(target_state.get("kind") or "")
         index_version = str(target_state.get("index_version") or "")
         dataset_id = str(target_state.get("dataset_id") or "")
-        references: List[str] = []
+        references: List[Dict[str, str]] = []
 
         if ISOLATED_RUN_ROOT.is_dir():
             for run_dir in ISOLATED_RUN_ROOT.iterdir():
@@ -1681,7 +2041,12 @@ class IsolatedRunManager:
                     matches = bool(identity_values) and _json_contains_value(state, identity_values)
                 if matches:
                     references.append(
-                        f"{state.get('run_id') or run_dir.name}({state.get('kind') or 'unknown'}/{state.get('status') or 'unknown'})"
+                        {
+                            "type": "run",
+                            "run_id": str(state.get("run_id") or run_dir.name),
+                            "kind": str(state.get("kind") or "unknown"),
+                            "status": str(state.get("status") or "unknown"),
+                        }
                     )
 
         try:
@@ -1690,29 +2055,36 @@ class IsolatedRunManager:
             if kind == "ingestion" and index_version:
                 active_pointer = _read_reference_json(Path(benchmark_v2.DEFAULT_ACTIVE_POINTER))
                 if _json_contains_value(active_pointer, {index_version}):
-                    references.append("production_active_index")
+                    references.append({"type": "active_pointer", "label": "production_active_index"})
             gold_payload = _read_reference_json(Path(benchmark_v2.DEFAULT_GOLD_V2_OUTPUT))
             identity_values = {value for value in (run_id, index_version, dataset_id) if value}
             if identity_values and _json_contains_value(gold_payload, identity_values):
-                references.append("gold_v2")
+                references.append({"type": "gold", "label": "gold_v2"})
         except (ImportError, OSError, TypeError, ValueError):
             logging.warning("检查正式索引或 Gold 引用失败，拒绝删除 %s", run_id, exc_info=True)
             raise ValueError("无法确认正式索引或 Gold 引用状态，暂不能删除")
-
-        if references:
-            unique_references = list(dict.fromkeys(references))
-            raise ValueError("运行仍被下游或正式产物引用：" + "、".join(unique_references))
+        return references
 
     def _remove_run_directory(self, run_id: str) -> Dict[str, Any]:
         """在终态检查完成后删除一个受路径校验保护的运行目录。"""
-        target = _run_dir(run_id)
-        if not target.is_dir():
-            raise KeyError(f"isolated run not found: {run_id}")
+        result = self._remove_run_directories([run_id])
+        result.pop("deleted_run_ids", None)
+        return result
+
+    def _remove_run_directories(self, run_ids: List[str]) -> Dict[str, Any]:
+        """在同一内存锁内删除一组已完成引用检查的运行目录。"""
+        if not run_ids:
+            raise ValueError("at least one isolated run is required")
+        targets = [(run_id, _run_dir(run_id)) for run_id in run_ids]
+        if any(not target.is_dir() for _, target in targets):
+            missing = next(run_id for run_id, target in targets if not target.is_dir())
+            raise KeyError(f"isolated run not found: {missing}")
         with self._lock:
-            shutil.rmtree(target)
-            self._runs.pop(run_id, None)
-            self._queues.pop(run_id, None)
-        return {"run_id": run_id, "status": "deleted", "deleted": True}
+            for run_id, target in targets:
+                shutil.rmtree(target)
+                self._runs.pop(run_id, None)
+                self._queues.pop(run_id, None)
+        return {"run_id": run_ids[0], "status": "deleted", "deleted": True, "deleted_run_ids": list(run_ids)}
 
     def list_ingestion_history(
         self,
@@ -2632,6 +3004,8 @@ class IsolatedRunManager:
         sources: List[str],
         max_pages: int | None = None,
         page_ranges: Dict[str, tuple[int, int]] | None = None,
+        allow_remote_data: bool = False,
+        authorized_source_ids: List[str] | None = None,
     ) -> None:
         """执行隔离摄取；旧 index_root、asset_root 和 active pointer 不参与。"""
         run_dir = _run_dir(run_id)
@@ -2640,7 +3014,7 @@ class IsolatedRunManager:
             index_root=run_dir / "indexes",
             active_config=run_dir / "active_index.json",
         )
-        remote_enabled = _remote_data_enabled_for_sources([Path(source) for source in sources])
+        remote_enabled = bool(allow_remote_data and authorized_source_ids)
         self._emit(run_id, "stage_start", "开始解析并构建 staged Chroma", {"stage": "ingest"})
         self._set_status(run_id, "running", started_at=_timestamp(), current_stage="ingest")
         try:
@@ -2648,6 +3022,7 @@ class IsolatedRunManager:
                 sources,
                 allow_remote_data=remote_enabled,
                 auto_outbound_manifest=remote_enabled,
+                authorized_source_ids=list(authorized_source_ids or []),
                 progress_callback=lambda event: self._emit(
                     run_id,
                     "ingestion_progress",
@@ -2989,6 +3364,8 @@ class IsolatedRunManager:
                 [str(path) for path in source_paths],
                 state.get("max_pages"),
                 page_range_map,
+                bool(state.get("remote_enabled")),
+                list(state.get("authorized_source_ids") or []),
             )
             return
         if kind == "candidate_generation":

@@ -25,6 +25,7 @@ from app.rag_eval.isolated_runs import (
     isolated_run_manager,
     list_source_catalog,
     register_uploaded_source,
+    ReleaseGateError,
     update_source_display_name,
 )
 from app.rag_eval.index_binding import IndexBindingError
@@ -476,7 +477,8 @@ def api_delete_isolated_run(run_id):
             payload = request.get_json(silent=True) or {}
             return _run_delete_response(run_id, "delete_evaluation_run", force=payload.get("force") is True)
         if kind == "ingestion":
-            return _run_delete_response(run_id, "delete_ingestion_run")
+            payload = request.get_json(silent=True) or {}
+            return _run_delete_response(run_id, "delete_ingestion_run", cascade=payload.get("cascade") is True)
         if kind in {"rag_query", "candidate_generation", "dataset_governance", "tuning_dataset_governance"}:
             return _run_delete_response(run_id, "delete_derived_run")
         raise ValueError("run type does not support deletion")
@@ -537,6 +539,8 @@ def api_start_isolated_ingestion():
         sources = payload.get("sources")
         max_pages = payload.get("max_pages")
         page_ranges = payload.get("page_ranges")
+        allow_remote_data = payload.get("allow_remote_data", False)
+        authorized_source_ids = payload.get("authorized_source_ids", [])
         if source_ids is not None and not isinstance(source_ids, list):
             raise ValueError("source_ids must be a list")
         if sources is not None and not isinstance(sources, list):
@@ -545,13 +549,21 @@ def api_start_isolated_ingestion():
             raise ValueError("max_pages must be an integer")
         if page_ranges is not None and not isinstance(page_ranges, list):
             raise ValueError("page_ranges must be a list")
+        if not isinstance(allow_remote_data, bool):
+            raise ValueError("allow_remote_data must be a boolean")
+        if not isinstance(authorized_source_ids, list) or not all(isinstance(item, str) for item in authorized_source_ids):
+            raise ValueError("authorized_source_ids must be a list of strings")
         result = isolated_run_manager.start_ingestion(
             source_ids=source_ids,
             sources=sources,
             max_pages=max_pages,
             page_ranges=page_ranges,
+            allow_remote_data=allow_remote_data,
+            authorized_source_ids=authorized_source_ids,
         )
         return _json_response({"success": True, "data": result}, 202)
+    except PermissionError as exc:
+        return _json_response({"success": False, "error": str(exc)}, 409)
     except (FileNotFoundError, ValueError) as exc:
         return _json_response({"success": False, "error": str(exc)}, 400)
     except Exception as exc:
@@ -566,6 +578,86 @@ def api_isolated_source_catalog():
         return _json_response({"success": True, "data": {"sources": list_source_catalog()}})
     except Exception as exc:
         logging.error("读取隔离来源目录失败: %s", exc, exc_info=True)
+        return _json_response({"success": False, "error": str(exc)}, 500)
+
+
+@rag_eval_bp.route("/multimodal/releases/status", methods=["GET"])
+def api_multimodal_release_status():
+    """读取正式 active/previous pointer 和指定隔离候选的只读状态。"""
+    try:
+        return _json_response({
+            "success": True,
+            "data": isolated_run_manager.release_status(
+                request.args.get("ingestion_run_id", ""),
+                request.args.get("index_version", ""),
+                request.args.get("evaluation_run_id") or None,
+            ),
+        })
+    except (KeyError, ValueError, FileNotFoundError) as exc:
+        return _json_response({"success": False, "error": str(exc)}, 400)
+    except Exception as exc:
+        logging.error("读取多模态 release 状态失败: %s", exc, exc_info=True)
+        return _json_response({"success": False, "error": str(exc)}, 500)
+
+
+@rag_eval_bp.route("/multimodal/releases/gate-check", methods=["POST"])
+def api_multimodal_release_gate_check():
+    """重新执行指定 staged 候选的正式发布门禁，不切换 active pointer。"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        result = isolated_run_manager.check_release(
+            str(payload.get("ingestion_run_id") or ""),
+            str(payload.get("index_version") or ""),
+            str(payload.get("evaluation_run_id") or "") or None,
+            str(payload.get("expected_active_index_version") or "") or None,
+        )
+        return _json_response({"success": True, "data": result})
+    except (KeyError, ValueError, FileNotFoundError) as exc:
+        return _json_response({"success": False, "error": str(exc)}, 400)
+    except Exception as exc:
+        logging.error("执行多模态 release 门禁失败: %s", exc, exc_info=True)
+        return _json_response({"success": False, "error": str(exc)}, 500)
+
+
+@rag_eval_bp.route("/multimodal/releases/publish", methods=["POST"])
+def api_multimodal_release_publish():
+    """用户显式确认后晋级候选并切换正式 active pointer。"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        if payload.get("confirm") is not True:
+            raise ValueError("confirm=true is required to publish the active pointer")
+        result = isolated_run_manager.publish_release(
+            str(payload.get("ingestion_run_id") or ""),
+            str(payload.get("index_version") or ""),
+            str(payload.get("evaluation_run_id") or ""),
+            str(payload.get("expected_active_index_version") or "") or None,
+        )
+        return _json_response({"success": True, "data": result})
+    except ReleaseGateError as exc:
+        return _json_response({"success": False, "error": str(exc), "data": exc.report}, 409)
+    except (KeyError, ValueError, FileNotFoundError) as exc:
+        return _json_response({"success": False, "error": str(exc)}, 400)
+    except Exception as exc:
+        logging.error("发布多模态 active pointer 失败: %s", exc, exc_info=True)
+        return _json_response({"success": False, "error": str(exc)}, 500)
+
+
+@rag_eval_bp.route("/multimodal/releases/rollback", methods=["POST"])
+def api_multimodal_release_rollback():
+    """执行与 CLI 一致的正式多模态版本回滚。"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        if payload.get("confirm") is not True:
+            raise ValueError("confirm=true is required to rollback the active pointer")
+        result = isolated_run_manager.rollback_release(
+            str(payload.get("index_version") or ""),
+            str(payload.get("expected_active_index_version") or "") or None,
+        )
+        return _json_response({"success": True, "data": result})
+    except (KeyError, ValueError, FileNotFoundError) as exc:
+        return _json_response({"success": False, "error": str(exc)}, 400)
+    except Exception as exc:
+        logging.error("回滚多模态 active pointer 失败: %s", exc, exc_info=True)
         return _json_response({"success": False, "error": str(exc)}, 500)
 
 
@@ -628,7 +720,11 @@ def api_isolated_ingestion_state(run_id):
 @rag_eval_bp.route("/isolated/ingestion-runs/<run_id>", methods=["DELETE"])
 def api_delete_isolated_ingestion(run_id):
     """删除没有下游引用的终态摄取运行及其 staged index。"""
-    return _deprecated_run_response(_run_delete_response(run_id, "delete_ingestion_run"), run_id)
+    payload = request.get_json(silent=True) or {}
+    return _deprecated_run_response(
+        _run_delete_response(run_id, "delete_ingestion_run", cascade=payload.get("cascade") is True),
+        run_id,
+    )
 
 @rag_eval_bp.route("/isolated/ingestion-runs/<run_id>/stream", methods=["GET"])
 def api_isolated_ingestion_stream(run_id):

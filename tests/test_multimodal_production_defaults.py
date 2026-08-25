@@ -11,10 +11,12 @@ from unittest.mock import patch
 from Agent.knowledge_base.multimodal.production import (
     audit_production_coverage,
     evaluate_retrieval_cases,
+    is_legacy_production_manifest,
     is_production_manifest,
     load_production_defaults,
     production_source_paths,
 )
+from Agent.knowledge_base.multimodal import defaults as defaults_module
 
 
 class MultimodalProductionDefaultsTests(unittest.TestCase):
@@ -33,7 +35,7 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
                 "normalized": True,
             },
         )
-        self.assertTrue(config["vision"]["remote_enabled"])
+        self.assertFalse(config["vision"]["remote_enabled"])
         self.assertEqual(config["parser"], "docling")
         self.assertEqual(
             config["pdf_parser"],
@@ -256,13 +258,161 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
             ]
         }
 
-        self.assertTrue(is_production_manifest(production_manifest, config))
+        self.assertFalse(is_production_manifest(production_manifest, config))
+        self.assertTrue(is_legacy_production_manifest(production_manifest, config))
         self.assertFalse(
             is_production_manifest(
                 {"sources": [{"relative_path": "images/benchmark.png", "content_hash": "a" * 64}]},
                 config,
             )
         )
+
+    def test_renamed_configured_pdf_keeps_canonical_document_id(self) -> None:
+        """配置旧文件名但受控目录只有同 hash 新文件名时仍保持 gold document_id。"""
+        content = b"%PDF-1.7\ncanonical"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controlled = root / "controlled"
+            controlled.mkdir()
+            actual = controlled / "book.pdf"
+            actual.write_bytes(content)
+            digest = __import__("hashlib").sha256(content).hexdigest()
+            config = {
+                "schema_version": "multimodal_production_defaults_v1",
+                "controlled_source_directories": ["controlled"],
+                "sources": [{
+                    "source_id": "book-source",
+                    "document_id": "doc_" + "a" * 64,
+                    "path": "controlled/book(1).pdf",
+                    "sha256": digest,
+                    "page_count": 1,
+                    "required": True,
+                }],
+                "evaluation": {"dataset_path": "eval.json", "thresholds": {}},
+            }
+            with patch.object(defaults_module, "ROOT", root):
+                resolved = defaults_module.resolve_production_sources(config)
+                self.assertEqual(resolved[0]["path"], actual.resolve())
+                self.assertEqual(resolved[0]["document_id"], config["sources"][0]["document_id"])
+                self.assertTrue(is_production_manifest({
+                    "sources": [{
+                        "source_id": "book-source",
+                        "document_id": config["sources"][0]["document_id"],
+                        "relative_path": "controlled/book.pdf",
+                        "controlled_path": "controlled/book.pdf",
+                        "content_hash": digest,
+                    }]
+                }, config))
+
+    def test_production_source_hash_requires_exactly_one_controlled_hit(self) -> None:
+        """零命中与多命中都必须失败关闭，不能按文件名猜测。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controlled = root / "controlled"
+            controlled.mkdir()
+            base = {
+                "schema_version": "multimodal_production_defaults_v1",
+                "controlled_source_directories": ["controlled"],
+                "sources": [{
+                    "source_id": "book-source",
+                    "document_id": "doc_" + "a" * 64,
+                    "path": "controlled/book.pdf",
+                    "sha256": "b" * 64,
+                    "page_count": 1,
+                    "required": True,
+                }],
+                "evaluation": {"dataset_path": "eval.json", "thresholds": {}},
+            }
+            with patch.object(defaults_module, "ROOT", root):
+                with self.assertRaisesRegex(ValueError, r"\(0 matches\)"):
+                    defaults_module.resolve_production_sources(base)
+                content = b"%PDF-1.7\nsame"
+                (controlled / "one.pdf").write_bytes(content)
+                (controlled / "two.pdf").write_bytes(content)
+                base["sources"][0]["sha256"] = __import__("hashlib").sha256(content).hexdigest()
+                with self.assertRaisesRegex(ValueError, r"\(2 matches\)"):
+                    defaults_module.resolve_production_sources(base)
+
+    def test_production_source_rejects_extension_signature_and_hash_mismatch(self) -> None:
+        """正式来源同时拒绝扩展名、文件签名和哈希错误。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controlled = root / "controlled"
+            controlled.mkdir()
+            content = b"not a pdf"
+            actual = controlled / "book.txt"
+            actual.write_bytes(content)
+            config = {
+                "schema_version": "multimodal_production_defaults_v1",
+                "controlled_source_directories": ["controlled"],
+                "sources": [{
+                    "source_id": "book-source",
+                    "document_id": "doc_" + "a" * 64,
+                    "path": "controlled/book.pdf",
+                    "sha256": __import__("hashlib").sha256(content).hexdigest(),
+                    "page_count": 1,
+                    "required": True,
+                }],
+                "evaluation": {"dataset_path": "eval.json", "thresholds": {}},
+            }
+            with patch.object(defaults_module, "ROOT", root):
+                with self.assertRaisesRegex(ValueError, "extension mismatch"):
+                    defaults_module.resolve_production_sources(config)
+                actual.rename(controlled / "book.pdf")
+                with self.assertRaisesRegex(ValueError, "signature mismatch"):
+                    defaults_module.resolve_production_sources(config)
+                config["sources"][0]["sha256"] = "c" * 64
+                with self.assertRaisesRegex(ValueError, "0 matches"):
+                    defaults_module.resolve_production_sources(config)
+
+    def test_outside_same_hash_source_is_not_formal_and_document_drift_is_rejected(self) -> None:
+        """受控目录外同 hash 文件与 document_id 漂移都不能满足正式契约。"""
+        content = b"%PDF-1.7\noutside"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "controlled").mkdir()
+            outside = root / "outside.pdf"
+            outside.write_bytes(content)
+            config = {
+                "schema_version": "multimodal_production_defaults_v1",
+                "controlled_source_directories": ["controlled"],
+                "sources": [{
+                    "source_id": "book-source",
+                    "document_id": "doc_" + "a" * 64,
+                    "path": "controlled/book.pdf",
+                    "sha256": __import__("hashlib").sha256(content).hexdigest(),
+                    "page_count": 1,
+                    "required": True,
+                }],
+                "evaluation": {"dataset_path": "eval.json", "thresholds": {}},
+            }
+            with patch.object(defaults_module, "ROOT", root):
+                with self.assertRaisesRegex(ValueError, "0 matches"):
+                    defaults_module.resolve_production_sources(config)
+            manifest = {"sources": [{
+                "source_id": "book-source",
+                "document_id": "doc_" + "b" * 64,
+                "relative_path": "outside.pdf",
+                "content_hash": config["sources"][0]["sha256"],
+            }]}
+            self.assertFalse(is_production_manifest(manifest, config))
+
+    def test_vision_is_source_authorized_and_disabled_by_default(self) -> None:
+        """生产 VLM 默认关闭，启用时必须携带来源级授权而不是页级授权。"""
+        config = load_production_defaults()
+        base = {
+            "parser": config["parser"],
+            "build_configuration": {
+                "pdf_parser": config["pdf_parser"],
+                "vision": {"enabled": False, "local_ocr_enabled": False},
+                "embedding": config["embedding"],
+            },
+            "embedding": config["embedding"],
+        }
+        self.assertEqual(__import__("Agent.knowledge_base.multimodal.production", fromlist=["validate_production_manifest"]).validate_production_manifest(base, config), [])
+        enabled = json.loads(json.dumps(base))
+        enabled["build_configuration"]["vision"] = {"enabled": True, "local_ocr_enabled": False}
+        self.assertIn("production_source_level_vision_authorization_missing", __import__("Agent.knowledge_base.multimodal.production", fromlist=["validate_production_manifest"]).validate_production_manifest(enabled, config))
 
 
 if __name__ == "__main__":

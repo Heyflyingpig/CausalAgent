@@ -111,17 +111,28 @@ class StagedIndex:
 
 
 class ActiveIndexRegistry:
-    """以原子文件替换维护多模态 active index，不影响现有 RAG 配置。"""
+    """以原子文件替换维护 active/previous pointer，并提供只读保留观测。"""
 
     def __init__(self, path: Path) -> None:
         """初始化独立于 PubMedQA 的 active pointer 文件位置。"""
         self.path = path
+
+    @property
+    def previous_path(self) -> Path:
+        """返回与 active pointer 并列的 previous pointer 路径。"""
+        return self.path.with_name("previous_index.json")
 
     def read(self) -> dict[str, Any] | None:
         """读取当前 pointer；不存在时表示尚未发布。"""
         if not self.path.exists():
             return None
         return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def read_previous(self) -> dict[str, Any] | None:
+        """读取上一个 active pointer；首次发布时不存在。"""
+        if not self.previous_path.exists():
+            return None
+        return json.loads(self.previous_path.read_text(encoding="utf-8"))
 
     def publish(self, *, index_root: Path, index_version: str, collection_name: str, manifest_sha256: str, embedding: dict[str, Any]) -> None:
         """原子更新仅含相对路径和验证信息的 active pointer。"""
@@ -133,9 +144,48 @@ class ActiveIndexRegistry:
             "embedding": embedding,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
+        current = self.read()
+        if current is not None and current.get("index_version") != index_version:
+            self._write_atomic(current, self.previous_path)
+        self._write_atomic(payload, self.path)
+
+    def retention_snapshot(self, index_root: Path) -> dict[str, Any]:
+        """返回 active、previous 与候选版本摘要；此方法绝不删除目录。"""
+        active = self.read()
+        previous = self.read_previous()
+        protected_versions = {
+            pointer.get("index_version")
+            for pointer in (active, previous)
+            if isinstance(pointer, dict) and isinstance(pointer.get("index_version"), str)
+        }
+        candidates = sorted(
+            child.name
+            for child in index_root.iterdir()
+            if child.is_dir()
+            and child.name.startswith("mm_")
+            and child.name != ".locks"
+            and child.name not in protected_versions
+        ) if index_root.is_dir() else []
+        return {
+            "policy": {
+                "active_slots": 1,
+                "previous_slots": 1,
+                "candidate_slots": 1,
+                "automatic_delete": False,
+            },
+            "active": active,
+            "previous": previous,
+            "protected_versions": sorted(protected_versions),
+            "candidates": candidates,
+            "candidate_overflow": len(candidates) > 1,
+        }
+
+    @staticmethod
+    def _write_atomic(payload: dict[str, Any], path: Path) -> None:
+        """将 pointer 写入临时文件后原子替换目标。"""
+        temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        replace_with_retry(temporary, self.path)
+        replace_with_retry(temporary, path)
 
 
 def file_sha256(path: Path) -> str:

@@ -26,6 +26,20 @@ def stable_id(prefix: str, value: Any) -> str:
     return f"{prefix}_{sha256_bytes(canonical_json(value).encode('utf-8'))}"
 
 
+def content_source_id(content_hash: str, *, uploaded: bool = False) -> str:
+    """按内容生成来源目录 ID；上传来源保留既有短 ID 格式。"""
+    if not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+        raise ValueError("content_hash must be a lowercase SHA-256 digest")
+    return f"{'upload' if uploaded else 'source'}_{content_hash[:24] if uploaded else content_hash}"
+
+
+def content_document_id(content_hash: str) -> str:
+    """按内容生成隔离来源的稳定文档 ID，不绑定文件名。"""
+    if not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+        raise ValueError("content_hash must be a lowercase SHA-256 digest")
+    return f"doc_{content_hash}"
+
+
 class UnitStatus(str, Enum):
     """知识单元可持久化的处理状态。"""
 
@@ -116,6 +130,7 @@ class OutboundImageRecord(BaseModel):
     quality_gate_version: str = "page-quality-v1"
     route_reason: str = "picture_items_present"
     quality_summary: dict[str, int] = Field(default_factory=dict)
+    source_id: str = ""
 
     @field_validator("source_relative_path")
     @classmethod

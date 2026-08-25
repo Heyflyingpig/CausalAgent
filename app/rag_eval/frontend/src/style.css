@@ -915,3 +915,53 @@ h2 { color: #123842; font-weight: 780; }
   .review-action-bar .review-gate-actions button { width: 100%; }
   .gold-replace-dialog .review-gate-actions { display: grid; grid-template-columns: 1fr; }
 }
+
+.source-vlm-consent { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: #167d8a; font-size: .72rem; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.source-vlm-consent input { accent-color: #168b9a; }
+.vlm-consent-summary { display: flex; align-items: center; gap: 7px; margin: 12px 20px 0; padding: 9px 11px; border: 1px solid #d7e9eb; border-radius: 8px; background: #f5fbfc; color: #52727a; font-size: .72rem; line-height: 1.45; }
+.release-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+.release-intro h2 { margin: 3px 0 6px; color: #173e47; font-size: 1.24rem; }
+.release-intro p:not(.kicker) { max-width: 720px; margin: 0; color: #557078; font-size: .8rem; line-height: 1.6; }
+.release-summary-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .9fr); gap: 18px; margin-bottom: 18px; }
+.release-facts, .pointer-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 0 21px 20px; }
+.release-facts span, .pointer-facts span { display: grid; gap: 5px; min-width: 0; }
+.release-facts small, .pointer-facts small { color: #759098; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.release-facts code, .pointer-facts strong { overflow: hidden; color: #234b54; font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
+.pointer-facts strong { font-size: .88rem; }
+.release-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(290px, .8fr); gap: 18px; margin-bottom: 18px; }
+.release-check-list, .release-source-list { display: grid; gap: 8px; padding: 0 21px 21px; }
+.release-check-row { display: grid; grid-template-columns: 25px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px; border: 1px solid #e1ecee; border-radius: 9px; background: #fbfdfd; }
+.release-check-row.fail { border-color: #f3c6c0; background: #fff8f7; }
+.release-check-icon { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; background: #e7f7ed; color: #167d45; }
+.release-check-row.fail .release-check-icon { background: #fee8e5; color: #b42318; }
+.release-check-row div { display: grid; gap: 3px; min-width: 0; }
+.release-check-row strong { color: #274d56; font-size: .78rem; }
+.release-check-row small { overflow: hidden; color: #6b858c; font-size: .72rem; line-height: 1.45; text-overflow: ellipsis; }
+.release-source-row { display: grid; gap: 4px; padding: 11px 12px; border-bottom: 1px solid #edf2f2; }
+.release-source-row strong { overflow: hidden; color: #2d5660; font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
+.release-source-row small { overflow: hidden; color: #718a91; font-size: .67rem; text-overflow: ellipsis; white-space: nowrap; }
+.release-source-row code { color: #5b7880; font-size: .68rem; }
+.release-source-note { margin: 0; padding: 0 21px 20px; color: #718a91; font-size: .72rem; line-height: 1.55; }
+.release-empty { display: grid; justify-items: center; gap: 8px; padding: 42px 22px; color: #789198; text-align: center; }
+.release-empty strong { color: #466871; font-size: .82rem; }
+.release-empty span { max-width: 320px; font-size: .74rem; line-height: 1.55; }
+.release-action-bar { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; border: 1px solid #cfe5e8; border-radius: 11px; background: #f7fcfc; }
+.release-action-bar > div:first-child { display: grid; gap: 4px; }
+.release-action-bar strong { color: #234b54; font-size: .8rem; }
+.release-action-bar span { color: #6b858c; font-size: .72rem; line-height: 1.45; }
+.release-action-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.release-confirm-dialog { max-width: 520px; }
+
+@media (max-width: 860px) {
+  .release-summary-grid, .release-layout { grid-template-columns: 1fr; }
+  .release-action-bar { align-items: stretch; flex-direction: column; }
+  .release-action-buttons { justify-content: flex-start; }
+}
+
+@media (max-width: 580px) {
+  .release-intro { flex-direction: column; }
+  .release-facts, .pointer-facts { grid-template-columns: 1fr; }
+  .release-check-row { grid-template-columns: 25px minmax(0, 1fr); }
+  .release-check-row .status-pill { grid-column: 2; justify-self: start; }
+  .source-vlm-consent { margin-left: 0; }
+}
