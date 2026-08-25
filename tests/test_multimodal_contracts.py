@@ -24,7 +24,7 @@ from Agent.knowledge_base.multimodal.pipeline import MultimodalKnowledgeBaseMain
 from Agent.knowledge_base.multimodal.parsers import ParsedDocument, ParsedItem, OcrResult, _convert_docling_page, _rapidocr_probe, decide_page_route, inspect_source, ocr_fingerprint, parse_document
 from Agent.knowledge_base.rag_runtime import RagRuntimeConfig
 from Agent.knowledge_base.multimodal.vision import PROMPT_VERSION, REQUIRED_MODEL, RESPONSE_ADAPTER_VERSION, VisionAnalyzer
-from Agent.knowledge_base.query_rag import _merge_candidates
+from Agent.knowledge_base.query_rag import RagRetrievalConfig, _build_retrieval_trace_with_resources, _merge_candidates
 from Agent.knowledge_base.sparse_retriever import candidate_identity
 from Agent.tool_node.rag_questions import normalize_rag_question_output
 from Agent.tool_node.rag_tool_registry import build_rag_tools
@@ -70,6 +70,26 @@ class MultimodalContractTests(unittest.TestCase):
         merged = _merge_candidates([dense], [sparse], return_before_final=True)
         self.assertEqual(len(merged), 1)
         self.assertAlmostEqual(merged[0]["rerank_score"], 0.65 * 0.8 + 0.25 * 0.4 + 0.2)
+
+    def test_figure_word_does_not_create_a_modality_retrieval_branch(self) -> None:
+        """用户提到图时仍走统一 dense 检索，不按内部 modality 改写结果。"""
+        vector_db = MagicMock()
+        vector_db.similarity_search_with_relevance_scores.return_value = [
+            (MagicMock(page_content="图中内容", metadata={"unit_id": "unit_1", "modality": "image"}), 0.9),
+        ]
+        sparse_retriever = MagicMock()
+        sparse_retriever.search.return_value = []
+
+        trace = _build_retrieval_trace_with_resources(
+            "图中是什么？",
+            RagRetrievalConfig(),
+            vector_db=vector_db,
+            embedding_function=MagicMock(),
+            sparse_retriever=sparse_retriever,
+        )
+
+        vector_db.similarity_search_with_relevance_scores.assert_called_once_with("图中是什么？", k=10)
+        self.assertNotIn("dense_modality", {item["retrieval_source"] for item in trace["evidence_payload"]})
 
     """验证不依赖解析器、模型或远程 API 的核心安全契约。"""
 
