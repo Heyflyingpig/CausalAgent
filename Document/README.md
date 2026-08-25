@@ -8,7 +8,7 @@
 
 `Document/` 描述系统当前是什么、如何工作以及为什么这样设计。文档中的命令、路由、表名和配置必须以当前代码、迁移、Compose 和测试入口核对后为准；若实现与文档冲突，应先修正文档事实或指出实现偏移，不应把旧文档当作代码依据。
 
-执行规则见根目录 [`AGENTS.md`](../AGENTS.md) 以及各实现目录的局部规则文件。文档职责与修改边界见 [`development/documentation.md`](development/documentation.md)。
+执行规则见根目录 [`AGENTS.md`](../AGENTS.md) 以及各实现目录的局部规则文件。文档职责与修改边界见 [`documentation.md`](documentation.md)。
 
 ## 文档导航
 
@@ -37,7 +37,7 @@
 - [`development/testing.md`](development/testing.md)：后端、前端、集成和隔离 E2E 验证矩阵。
 - [`development/deployment.md`](development/deployment.md)：镜像构建、开发/生产 Compose 拓扑和发布边界。
 - [`development/observability.md`](development/observability.md)：日志字段、事件目录、上下文关联、降噪、敏感信息边界和验收状态。
-- [`development/documentation.md`](development/documentation.md)：文档归属、维护、链接和日志规则。
+- [`documentation.md`](documentation.md)：文档归属、维护、链接和日志规则。
 
 ### 管理员模块
 
