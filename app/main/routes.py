@@ -37,3 +37,10 @@ def setting():
 def index():
     # 总是返回 chat.html，由前端 JS 决定显示登录还是主界面
     return send_from_directory("static", 'chat.html')
+
+
+@main_bp.route('/rag_eval')
+@main_bp.route('/rag-eval')
+def rag_eval_page():
+    """返回 Vue RAG 运行台页面。"""
+    return send_from_directory("static/rag_eval_app", "index.html")

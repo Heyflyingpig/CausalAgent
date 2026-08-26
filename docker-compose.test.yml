@@ -7,6 +7,8 @@ services:
       dockerfile: Dockerfile
       target: test
     command: ["python", "-m", "pytest", "-p", "no:cacheprovider", "tests/unit"]
+    env_file:
+      - ./tests/unit-test-env
     environment:
       LANGCHAIN_API_KEY: ""
       LANGCHAIN_TRACING_V2: "false"
@@ -17,8 +19,4 @@ services:
       - type: bind
         source: .
         target: /app
-        read_only: true
-      - type: bind
-        source: ./tests/unit-test-env
-        target: /app/.env
         read_only: true

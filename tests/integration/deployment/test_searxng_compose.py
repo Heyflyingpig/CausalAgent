@@ -21,6 +21,7 @@ def _compose_config() -> dict:
     env = os.environ.copy()
     # docker compose config 只需通过 Compose 的非空变量校验；不读取或输出仓库密钥。
     env["CHECKPOINT_POSTGRES_PASSWORD"] = "compose-test-only"
+    env["GRAFANA_ADMIN_PASSWORD"] = "compose-test-only"
     proc = subprocess.run(
         [
             "docker",
@@ -56,3 +57,29 @@ def test_default_app_and_worker_do_not_depend_on_searxng():
     for service_name in ("app", "worker"):
         depends_on = config["services"][service_name].get("depends_on", {})
         assert "searxng" not in depends_on
+
+
+def test_default_compose_keeps_agent_and_rag_workers_separate():
+    config = _compose_config()
+    services = config["services"]
+
+    assert {
+        "mysql-primary",
+        "mysql-replica",
+        "postgres-checkpoint",
+        "db-bootstrap",
+        "app",
+        "worker",
+        "monitor",
+        "checkpoint-cleanup",
+        "rag-eval-worker",
+        "searxng-init",
+        "searxng",
+        "valkey",
+        "loki",
+        "alloy",
+        "grafana",
+    } <= set(services)
+    assert services["worker"]["command"] == ["python", "-m", "app.agent.worker"]
+    assert services["rag-eval-worker"]["command"] == ["python", "-m", "app.rag_eval.worker"]
+    assert "searxng" not in services["rag-eval-worker"].get("depends_on", {})

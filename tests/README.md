@@ -14,6 +14,7 @@ tests/
 │   ├── admin/
 │   ├── deployment/
 │   └── migrations/
+├── acceptance/         # 分层 RAG contract/integration/production runner
 ├── e2e/admin/          # 隔离主从 + PostgreSQL checkpoint E2E 模块
 ├── run_admin_31_e2e.ps1
 ├── run_admin_32_e2e.ps1
@@ -61,6 +62,24 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 ```
 
 退出 Shell 后容器自动删除。修改 Python 源码或测试文件后不需要重建镜像；只有依赖变化才需要重新构建。
+
+## RAG 多模态与隔离评测验收
+
+多模态来源、staged index、release 和隔离评测的 focused tests 位于仓库根 `tests/test_multimodal_*.py`、`tests/test_isolated_rag_eval_routes.py`、`tests/test_rag_eval_*.py`；持久队列由默认开发 Compose 的 `rag-eval-worker` 执行。声明式矩阵在 `Document/rag_eval_production_acceptance_matrix.json`，安全 runner 在 `tests/acceptance/run_rag_eval_production_acceptance.py`：
+
+```bash
+# 只列出 contract 检查；不执行检查或写入报告
+python tests/acceptance/run_rag_eval_production_acceptance.py --layer contract --list
+
+# contract / integration 执行对应白名单检查
+python tests/acceptance/run_rag_eval_production_acceptance.py --layer contract
+python tests/acceptance/run_rag_eval_production_acceptance.py --layer integration
+
+# production 仅在显式确认后执行只读 readiness
+python tests/acceptance/run_rag_eval_production_acceptance.py --layer production --confirm-production-readiness
+```
+
+runner 不会代替真实资料摄取、外部模型/VLM、完整 Ragas 评测、题集冻结、release publish 或 active pointer 切换；这些命令或静态结果不得表述为真实生产验收。当前测试入口只保留新的 acceptance runner，不应重新添加已移除的旧入口。
 
 ## 本地 Python 回退方式
 

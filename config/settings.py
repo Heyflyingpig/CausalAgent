@@ -270,8 +270,55 @@ class AppConfig:
             "JOB_DRAINING_STALE_AFTER_SECONDS",
             default=420,
         )
+        self.JOB_DRAIN_TIMEOUT_SECONDS = self._get_int_config(
+            "JOB_DRAIN_TIMEOUT_SECONDS",
+            default=60,
+        )
+        if self.JOB_DRAIN_TIMEOUT_SECONDS <= 0:
+            raise ValueError("配置错误: JOB_DRAIN_TIMEOUT_SECONDS 必须大于 0。")
         self.JOB_MAX_ATTEMPTS = self._get_int_config("JOB_MAX_ATTEMPTS", default=3)
         self.JOB_CHAT_HISTORY_LIMIT = self._get_int_config("JOB_CHAT_HISTORY_LIMIT", default=20)
+        self.RAG_EVAL_EVALUATION_WORKERS = self._get_int_config(
+            "RAG_EVAL_EVALUATION_WORKERS",
+            default=5,
+        )
+        if not 1 <= self.RAG_EVAL_EVALUATION_WORKERS <= 16:
+            raise ValueError("配置错误: RAG_EVAL_EVALUATION_WORKERS 必须在 1 到 16 之间。")
+        rag_eval_kind_limits = (
+            ("RAG_EVAL_INGESTION_CONCURRENCY_LIMIT", 1),
+            ("RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT", 1),
+            ("RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT", 1),
+            ("RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT", 1),
+            ("RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT", 3),
+            ("RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT", 2),
+        )
+        for name, default in rag_eval_kind_limits:
+            value = self._get_int_config(name, default=default)
+            if not 1 <= value <= 5:
+                raise ValueError(f"配置错误: {name} 必须在 1 到 5 之间。")
+            setattr(self, name, value)
+        self.RAG_EVAL_ROOT = self._get_config(
+            "RAG_EVAL_ROOT",
+            required=False,
+            default="tmp/rag_eval",
+        )
+        self.RAG_EVAL_DATASET_ROOT = self._get_config(
+            "RAG_EVAL_DATASET_ROOT",
+            required=False,
+            default=str(Path(self.RAG_EVAL_ROOT) / "datasets" / "registered"),
+        )
+        self.RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS = self._get_float_config(
+            "RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS",
+            default=1.0,
+        )
+        self.RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS = self._get_int_config(
+            "RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS",
+            default=10,
+        )
+        self.RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS = self._get_int_config(
+            "RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS",
+            default=120,
+        )
         self.SSE_POLL_INTERVAL_SECONDS = self._get_float_config("SSE_POLL_INTERVAL_SECONDS", default=1.0)
         self.SSE_HEARTBEAT_INTERVAL_SECONDS = self._get_int_config(
             "SSE_HEARTBEAT_INTERVAL_SECONDS",

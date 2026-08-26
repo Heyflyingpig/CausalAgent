@@ -199,6 +199,16 @@ Agent/knowledge_base/db/
 Agent/knowledge_base/source/
 Agent/knowledge_base/unfinish_source/
 Agent/knowledge_base/models/
+Agent/knowledge_base/rag/docs/
+Agent/knowledge_base/rag/output/reports/
+Agent/knowledge_base/rag/data/eval/history/
+Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*
+!Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_rebound_requires_reapproval_v3.json
+!Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_reapproval_manifest_v3.json
+Agent/knowledge_base/multimodal_assets/
+Agent/knowledge_base/multimodal_indexes/
+Agent/knowledge_base/multimodal_runtime/
+Agent/knowledge_base/multimodal_benchmarks/
 
 # skils
 skills/
@@ -210,6 +220,16 @@ study/
 admin-frontend/node_modules/
 admin-frontend/test-results/
 admin-frontend/playwright-report/
+app/rag_eval/frontend/node_modules/
+app/static/rag_eval_app/
+!app/static/rag_eval_app/
+!app/static/rag_eval_app/assets/
+!app/static/rag_eval_app/assets/*
+
+# RAG 隔离评测运行产物与预发本地密钥
+/tmp/rag_eval/
+*.governance.lock
+.env.staging
 
 # docs
 docs/
