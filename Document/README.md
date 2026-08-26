@@ -15,7 +15,8 @@
 ### 架构
 
 - [`architecture/overview.md`](architecture/overview.md)：进程边界、主要数据流、运行拓扑和组件职责。
-- [`architecture/agent-runtime.md`](architecture/agent-runtime.md)：Web、Job worker、LangGraph、MCP、RAG、结构化输出和用户事件流。
+- [`architecture/agent-runtime.md`](architecture/agent-runtime.md)：Web、Agent worker、LangGraph、MCP、生产 RAG runtime、结构化输出和用户事件流。
+- [`architecture/rag-evaluation.md`](architecture/rag-evaluation.md)：隔离评测的来源、staged index、数据集、release、评测 worker 和生产切换边界。
 - [`architecture/job-file-lifecycle.md`](architecture/job-file-lifecycle.md)：Session、Job、输入账本、文件库、checkpoint 与跨库清理生命周期。
 
 ### API
@@ -23,6 +24,7 @@
 - [`api/conventions.md`](api/conventions.md)：鉴权、CSRF、request ID、错误结构、分页、敏感内容和 SSE 通用约定。
 - [`api/agent-jobs.md`](api/agent-jobs.md)：分析 Job 创建、恢复、取消、幂等与 SSE。
 - [`api/chat-files.md`](api/chat-files.md)：普通用户会话、消息和文件接口。
+- [`api/rag-eval.md`](api/rag-eval.md)：`/api/rag_eval` 完整 HTTP、长任务、SSE 和兼容路径契约。
 
 ### 数据库
 
@@ -48,4 +50,4 @@
 
 ## 归属原则
 
-系统级 checkpoint、cleanup worker、MySQL 主从、数据库连接和 monitor 内部机制只在 `database/` 维护；管理员页面如何消费这些能力只在 `admin/` 维护。Job、文件冻结和普通用户 SSE 的业务生命周期只在架构/API 对应页面维护，管理员 API 只引用其消费契约。
+系统级 checkpoint、cleanup worker、MySQL 主从、数据库连接和 monitor 内部机制只在 `database/` 维护；管理员页面如何消费这些能力只在 `admin/` 维护。生产 Agent Job、文件冻结和普通用户 SSE 的业务生命周期只在架构/API 对应页面维护；隔离 RAG 评测、来源、staged index、release 和 `rag-eval-worker` 只在 `architecture/rag-evaluation.md` 与 `api/rag-eval.md` 维护，管理员 API 只引用其消费契约。

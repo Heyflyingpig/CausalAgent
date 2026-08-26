@@ -1128,3 +1128,10 @@
 - 【来源兼容】：正式固定来源 ID 改为内容 SHA-256 派生 ID；历史文件名绑定 ID 仅作为只读别名解析，重新摄取不再从历史索引覆盖当前来源选择。
 - 【级联删除】：工作台删除摄取运行时可级联清理同一隔离运行树下的终态候选、评测、检索和治理产物；生产 active pointer、Gold、运行中任务以及非隔离共享注册数据仍阻断删除。
 - 【验证】：后端相关回归 48 项通过（跳过 1 项条件测试），前端 typecheck、单测 3 项、生产构建、Python 编译和 diff 检查通过；真实历史运行仅做阻断验证，未删除现有产物。
+
+---
+2026.8.26（RAG 文档职责收敛）
+- 【架构文档】：新增 `Document/architecture/rag-evaluation.md`，统一记录隔离评测、来源、staged index、release、评测 worker 与生产切换边界。
+- 【API 契约】：新增 `Document/api/rag-eval.md`，覆盖当前 `/api/rag_eval` 的 77 个 method-path 操作、请求/响应、SSE 和兼容路径。
+- 【清理】：移除 `Document/` 下旧的独立 RAG 说明、runbook、实验计划和 release worker spec；历史 `CHANGELOG.md` 条目保持不变。
+- 【验证】：完成现行引用、Markdown 头部/相对链接、路由集合与 `git diff --check` 检查。

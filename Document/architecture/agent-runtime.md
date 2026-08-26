@@ -1,8 +1,8 @@
 # Agent 运行时
 
-文档职责：记录 Agent worker、LangGraph、MCP、RAG、结构化输出和执行事件的当前协作方式。
+文档职责：记录生产 Agent worker、LangGraph、MCP、生产 RAG runtime、结构化输出和执行事件的当前协作方式。
 
-适用范围：修改 `Agent/`、`app/agent/worker/`、MCP server、RAG 初始化或用户可见事件协议时使用；Job 的持久化生命周期见 [`job-file-lifecycle.md`](job-file-lifecycle.md)，执行约束见 [`../../Agent/AGENTS.md`](../../Agent/AGENTS.md)。
+适用范围：修改 `Agent/`、`app/agent/worker/`、MCP server、生产 RAG 初始化或用户可见事件协议时使用；隔离 RAG 评测、来源、staged index、release 和 `rag-eval-worker` 见 [`rag-evaluation.md`](rag-evaluation.md)；Job 的持久化生命周期见 [`job-file-lifecycle.md`](job-file-lifecycle.md)，执行约束见 [`../../Agent/AGENTS.md`](../../Agent/AGENTS.md)。
 
 ## Worker 启动与 slot
 
