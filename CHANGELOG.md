@@ -693,3 +693,11 @@
   - 正常报告与降级报告继续公开受限搜索引用，同时遵守统一 JSON stderr 日志合同。
   - Web Search Planner 内部结构化输出降级改用受管事件，移除 query、命中数和路由选择的普通日志；历史引用附件解析失败使用不含消息 ID 和正文的注册事件。
   - 默认开发 Compose 同时保留 SearXNG/Valkey 搜索服务和 Loki/Alloy/Grafana 可观测拓扑，并同步部署与测试文档。
+
+---
+2026.8.26
+- 【RAG 白名单导入与 develop 融合】
+  - 从 `feature/rag_enhancement` 仅导入隔离评测、多模态摄取/OCR/索引、active release publish/rollback、Agent worker readiness/drain、RAG worker/卷/配置、迁移、前端、测试和验收 runner；保留 develop 的 Job、WebSearch、日志与文档体系。
+  - RAG 评测任务使用 MySQL 持久队列和独立 `rag-eval-worker`；生产 Agent worker 启动时轻量检查 active release，缺失时保持无 RAG 降级，SIGTERM/SIGINT 按 `JOB_DRAIN_TIMEOUT_SECONDS` 停止领取并等待在途任务。
+  - 多模态链路保留受控来源、OCR/可选远程视觉、staged index、评测与显式 release gate；publish/rollback 保留 active/previous 指针且不自动删除索引或运行产物。
+  - 新增 RAG API/架构文档、隔离评测前端、数据库迁移和生产验收入口；不导入 MySQL queue drill Compose、runner 与测试，并移除已被多模态运行时替代的旧 RAG 原型和样例导出文件。

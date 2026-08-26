@@ -66,10 +66,12 @@ def route_mcp_tool_result(state: CausalAgentState) -> str:
 class _RagToolNode:
     """给 ToolNode 的正常结果补写私有 parse route，不污染父 State。"""
 
-    def __init__(self, tools):
-        self._tool_node = ToolNode(tools)
+    def __init__(self, tools, *, enabled: bool = True):
+        self._tool_node = ToolNode(tools) if enabled else None
 
     async def ainvoke(self, state: RagSubgraphState, config):
+        if self._tool_node is None:
+            raise RuntimeError("RAG 工具不可用")
         result = await self._tool_node.ainvoke(state, config)
         if not isinstance(result, dict):
             raise TypeError("RAG ToolNode 必须返回 State update dict。")
@@ -153,7 +155,10 @@ def build_rag_subgraph(llm, rag_tools, rag_available: bool = True):
     )
     graph.add_node(
         "rag_tool_node",
-        bind_runnable_node(_RagToolNode(rag_tools), event_node_name="rag_tool_node"),
+        bind_runnable_node(
+            _RagToolNode(rag_tools, enabled=bool(rag_available and rag_tools)),
+            event_node_name="rag_tool_node",
+        ),
         retry_policy=tool_retry(max_attempts=2),
         timeout=timeout(run_timeout=120, idle_timeout=45),
         error_handler=guarded_error_handler(

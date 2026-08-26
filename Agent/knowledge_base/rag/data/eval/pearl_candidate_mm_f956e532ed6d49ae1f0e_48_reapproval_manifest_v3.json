@@ -1,0 +1,250 @@
+{
+  "schema_version": "rag_candidate_review_v1",
+  "reviewer": "rebind-pending-review",
+  "candidate_dataset_id": "pearl_candidate_mm_ba8c42a52764da20ec7d_48",
+  "candidate_dataset_revision": "c71196de5022_20260807T054020474823Z_a68f2a74_reviewed_user-approved-20260807_bound_mm_ba8c42a52764da20ec7d_rebound_mm_f956e532ed6d49ae1f0e_rebound_mm_f956e532ed6d49ae1f0e",
+  "candidate_sha256": "61dbb56722037033b948aa562c8bf5430744fba62c7fa9365dfdc06c67bec24a",
+  "decisions": [
+    {
+      "sample_id": "generated-23Z_a68f2a74-0001",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0002",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：document_navigation_or_structure_question"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0003",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0004",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0005",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：ambiguous_reference、document_navigation_or_structure_question"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0006",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_too_short_or_underspecified"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0007",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_too_short_or_underspecified、ambiguous_reference"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0008",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：document_navigation_or_structure_question"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0009",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0010",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_too_short_or_underspecified"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0011",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：obvious_typo_or_informal_wording"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0012",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0013",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_too_short_or_underspecified、ambiguous_reference"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0014",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：ambiguous_reference"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0015",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0016",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0017",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0018",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_overly_compound、ambiguous_reference"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0019",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0020",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_overly_compound、multi_figure_or_table_comparison、cross_document_question"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0021",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：obvious_typo_or_informal_wording"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0022",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0023",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0024",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_overly_compound、ambiguous_reference、multi_figure_or_table_comparison"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0025",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：ambiguous_reference、multi_figure_or_table_comparison"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0026",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0027",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：multi_figure_or_table_comparison"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0028",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：obvious_typo_or_informal_wording、multi_figure_or_table_comparison"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0029",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_overly_compound、multi_figure_or_table_comparison"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0030",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0031",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：obvious_typo_or_informal_wording"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0032",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0033",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：ambiguous_reference、multi_figure_or_table_comparison"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0034",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0035",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_too_short_or_underspecified"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0036",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：ambiguous_reference"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0037",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：obvious_typo_or_informal_wording"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0038",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：obvious_typo_or_informal_wording"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0039",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0040",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：obvious_typo_or_informal_wording"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0041",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：ambiguous_reference"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0042",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_too_short_or_underspecified"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0043",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：obvious_typo_or_informal_wording"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0044",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0045",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：multi_figure_or_table_comparison"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0046",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0047",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：ambiguous_reference"
+    },
+    {
+      "sample_id": "generated-23Z_a68f2a74-0048",
+      "decision": "needs_revision",
+      "note": "Gold locator 已重绑到当前索引，需重新审核。 自动复审提示：question_too_short_or_underspecified"
+    }
+  ],
+  "review_status": "requires_reapproval"
+}

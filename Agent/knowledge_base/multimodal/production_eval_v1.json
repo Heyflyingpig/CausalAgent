@@ -1,0 +1,271 @@
+{
+  "schema_version": "multimodal_retrieval_eval_v1",
+  "reviewed_at": "2026-07-28",
+  "review_method": "逐题回读并渲染本地 PDF 对应物理页，交叉核对 Docling 原始对象、问题、定位、模态与关键事实。",
+  "cases": [
+    {
+      "case_id": "causality-001",
+      "question": "贝叶斯反演公式中的先验概率和后验概率分别是什么？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [27],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "P(H) 是获得证据前的先验信念，P(H|e) 是获得证据后的后验概率。",
+      "key_facts": ["P(H) 为 prior", "P(H|e) 为 posterior", "分母 P(e) 起归一化作用"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-002",
+      "question": "盗窃警报示例中，警报发生后盗窃的置信度为什么仍低于 1%？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [30],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "盗窃先验概率只有十万分之一，且系统存在约 1% 的误报率；警报虽将赔率提高近百倍，后验仍约为 0.94%。",
+      "key_facts": ["盗窃先验为 10^-4", "误报率为 1%", "后验约 0.00941"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-003",
+      "question": "d-分离中，对撞机及其后代的条件化会怎样改变路径？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [40],
+      "gold_unit_ids": [],
+      "expected_modality": "image",
+      "reference_answer": "对撞机默认阻断路径；对对撞机或其后代条件化会打开路径，使原本独立的原因变得依赖。",
+      "key_facts": ["对撞机默认阻断", "条件化对撞机或其后代会解除阻断"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-004",
+      "question": "价格控制例子如何说明控制变化与观测变化不同？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [50],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "政府把价格设为 p0 时只替换价格方程，需求方程保持不变；因此受控价格变化的效应不同于均衡中的观测变化。",
+      "key_facts": ["替换价格方程", "需求方程保持完整", "控制变化不等于观测变化"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-005",
+      "question": "原子干预 do(X=x) 在结构因果模型中如何实现？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [92],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "删除决定 X 的原方程，把 X 固定为 x 并代入其余方程；图上等价于剪除所有指向 X 的箭头。",
+      "key_facts": ["删除 X 的结构方程", "代入 X=x", "剪除进入 X 的箭头"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-006",
+      "question": "马尔可夫模型中，测量哪些变量可保证 P(y|do(x)) 可识别？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [100],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "当 X、Y 以及 X 中各变量的所有父节点都被测量时，因果效应可通过对 X 的父节点调整而识别。",
+      "key_facts": ["测量 X 和 Y", "测量 X 的父节点", "对 PAx 调整"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-007",
+      "question": "为什么某些受处理 X 影响的协变量仍可能帮助识别总效应？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [115],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "某些图中必须测量 X 的后代才能通过多阶段、非标准调整识别总效应；这不同于直接对处理后变量做普通条件化。",
+      "key_facts": ["X 的后代有时需要测量", "使用多阶段非标准调整"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-008",
+      "question": "条件政策 do(X=g(Z)) 的效应如何由无条件干预表达式得到？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [135],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "在无条件干预效应中用 g(z) 替换 x，再按观测分布 P(z) 对 Z 求期望，前提是 Z 不是 X 的后代。",
+      "key_facts": ["用 g(z) 替换 x", "按 P(z) 求期望", "Z 不能是 X 的后代"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-009",
+      "question": "表 6.1 中，综合数据与按性别分层的数据为什么会给出相反的用药结论？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [197],
+      "gold_unit_ids": [],
+      "expected_modality": "table",
+      "reference_answer": "综合数据中用药组恢复率为 50%，高于未用药组的 40%；但男性分层为 60% 对 70%，女性分层为 20% 对 30%，两个分层都显示用药组更低。这是分组构成差异造成的辛普森反转。",
+      "key_facts": ["综合恢复率 50% 对 40%", "男性恢复率 60% 对 70%", "女性恢复率 20% 对 30%"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-010",
+      "question": "休谟的因果双重定义包含哪两个方面，Pearl 指出其主要问题是什么？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [260],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "定义结合了相继的规律性和反事实依赖；问题是相关规律不足以说明因果，而观察规律与反事实思维练习也不能简单视作同义。",
+      "key_facts": ["规律性", "反事实依赖", "相关性不足以说明因果"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-011",
+      "question": "表 8.1 的可识别 ACE 分布中，哪些 (z, x, y) 组合具有非零概率？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [300],
+      "gold_unit_ids": [],
+      "expected_modality": "table",
+      "reference_answer": "非零组合为 (0,0,0)=0.275、(0,1,0)=0.225、(1,0,0)=0.225 和 (1,1,1)=0.275，其余组合均为 0。",
+      "key_facts": ["(0,0,0) 与 (1,1,1) 均为 0.275", "(0,1,0) 与 (1,0,0) 均为 0.225", "其余组合为 0"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "causality-012",
+      "question": "为什么划火柴通常比氧气更能解释火灾？",
+      "gold_doc_ids": ["doc_0af71971e6cf65479b70a4aee2240d41dc5eceec43f6bdd87ec071099b34659d"],
+      "gold_page_numbers": [330],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "二者都可能是必要条件，但充分性概率偏向较少见且足以触发结果的划火柴行为，因此它具有更强解释力。",
+      "key_facts": ["必要性概率 PN", "充分性概率 PS", "充分性区分解释力"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-001",
+      "question": "因果模型中的可检验推论有什么作用？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [19],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "图中的路径假设会导出数据中的独立性或依赖模式；若数据违背这些推论，就需要修改模型。",
+      "key_facts": ["从图读取可观察模式", "数据矛盾时修订模型"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-002",
+      "question": "猛犸象狩猎例子如何说明因果想象与计划的关系？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [29],
+      "gold_unit_ids": [],
+      "expected_modality": "image",
+      "reference_answer": "计划要求借助现实的思维模型，想象并比较猎人数、风向等不同策略的后果。",
+      "key_facts": ["提前规划", "操纵思维模型", "比较策略后果"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-003",
+      "question": "表 4.1 中四种疫苗响应类型在接种与不接种时分别会出现什么结果？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [148],
+      "gold_unit_ids": [],
+      "expected_modality": "table",
+      "reference_answer": "必然患病型无论是否接种都会患流感；致病型接种后患病、不接种不患病；预防型接种后不患病、不接种患病；免疫型两种情况下都不患病。",
+      "key_facts": ["Doomed 两种情况下都患病", "Causative 与 Preventive 的结果相反", "Immune 两种情况下都不患病"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-004",
+      "question": "贝叶斯法则为什么能解决逆概率问题？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [100],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "它用较易估计的正向条件概率、先验和边缘概率推导反向条件概率。",
+      "key_facts": ["P(S|T)P(T)=P(T|S)P(S)", "由正向概率推逆向概率"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-005",
+      "question": "图 1.7 中，疫苗接种通过哪两条因果路径影响死亡？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [51],
+      "gold_unit_ids": [],
+      "expected_modality": "image",
+      "reference_answer": "一条路径是疫苗接种经由副作用影响死亡，另一条是疫苗接种经由天花感染影响死亡；前者可能增加风险，后者通过预防天花降低风险。",
+      "key_facts": ["Vaccination → Reaction → Death", "Vaccination → Smallpox → Death", "两条路径方向和作用可能不同"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-006",
+      "question": "后门路径的定义和阻断条件是什么？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [150],
+      "gold_unit_ids": [],
+      "expected_modality": "image",
+      "reference_answer": "后门路径是从 X 到 Y 且第一条箭头指向 X 的路径；调整集需阻断全部后门路径且不能包含 X 的因果后代。",
+      "key_facts": ["第一条箭头指向 X", "阻断全部后门路径", "调整集不含 X 的后代"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-007",
+      "question": "蒙提霍尔问题中的门被打开为什么会让两个父节点产生依赖？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [181],
+      "gold_unit_ids": [],
+      "expected_modality": "image",
+      "reference_answer": "门被打开是玩家选择和汽车位置的共同结果；对这一对撞机条件化会在两个父节点之间制造非因果的贝叶斯依赖。",
+      "key_facts": ["Door Opened 是中介式共同结果", "条件化产生虚假依赖", "无因果的信息转移"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-008",
+      "question": "洛斯悖论中为什么必须控制初始体重？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [200],
+      "gold_unit_ids": [],
+      "expected_modality": "image",
+      "reference_answer": "初始体重同时影响饮食选择和最终体重，是饮食与结果的混杂因素，因此必须控制它才能估计饮食的因果效应。",
+      "key_facts": ["初始体重影响饮食", "初始体重影响最终体重", "它是混杂因素"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-009",
+      "question": "结构因果模型如何经济地表示大量反事实可能世界？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [245],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "通过对图或结构方程做确保 X=x 的最小修改，结构模型无需枚举所有可能世界就能计算最接近的反事实世界。",
+      "key_facts": ["删除箭头或替换方程", "最小修改", "避免枚举可能世界"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-010",
+      "question": "法律中的“若无因果”测试如何定义必要原因？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [260],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "若没有该行为，结果就不会发生，则该行为是结果的必要原因；这种原因也可以是间接的。",
+      "key_facts": ["没有该行为则结果不发生", "必要原因", "可为间接原因"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-011",
+      "question": "中介分析关注的第二种“为什么”问题是什么？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [273],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "在已知原因和结果的情况下，追问二者之间通过什么机制连接，例如柑橘为何能预防坏血病。",
+      "key_facts": ["已知原因与结果", "追问作用机制", "不同机制需要不同行动"],
+      "human_reviewed": true
+    },
+    {
+      "case_id": "why-012",
+      "question": "为什么强人工智能需要因果模型而不能只依赖机器学习的概率分布？",
+      "gold_doc_ids": ["doc_ae3548236a0d5658f28911036af96d89fc0a1a66590b6dc60d6107dc1bba7709"],
+      "gold_page_numbers": [326],
+      "gold_unit_ids": [],
+      "expected_modality": "text",
+      "reference_answer": "强人工智能必须反思行为并比较未采取行动的反事实结果；机器学习可估计分布，但从分布推导行动后果仍需要因果模型。",
+      "key_facts": ["反思过去行为", "比较替代行动", "概率分布不足以推出因果关系"],
+      "human_reviewed": true
+    }
+  ]
+}

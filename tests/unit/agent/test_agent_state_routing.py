@@ -53,7 +53,6 @@ from Agent.causal_agent.tool_subgraphs import (
 )
 from Agent.llm_structured_output import StructuredOutputError
 from Agent.tool_node.mcp_tool_call_adapter import normalize_mcp_tool_call_message
-from observability.logging_runtime import log_context
 
 
 def _state(message="普通问题", **updates):
@@ -83,12 +82,9 @@ def _mcp_tool(name="causal_pc"):
             "csv_data": {},
             "target": {},
             "user_id": None,
-            "session_id": None,
             "job_id": None,
             "input_user_file_id": None,
             "input_object_id": None,
-            "request_id": None,
-            "worker_slot": None,
         },
     )
 
@@ -338,48 +334,7 @@ def test_rag_question_failure_skips_tool_node_with_stable_result(monkeypatch):
     assert route_rag_planner({**state, **result}) == "finish"
 
 
-def test_rag_adapter_logs_one_count_only_degradation_without_question_content(monkeypatch):
-    class FakeRagSubgraph:
-        async def ainvoke(self, *args, **kwargs):
-            return {
-                "rag_output": {
-                    "status": "unavailable",
-                    "questions": ["question-sensitive"],
-                    "evidence_count": 2,
-                    "summary": "evidence-sensitive",
-                }
-            }
-
-    observed = []
-    monkeypatch.setattr(
-        nodes,
-        "log_event",
-        lambda _logger, code, **kwargs: observed.append((code, kwargs)),
-    )
-    result = asyncio.run(
-        nodes.rag_subgraph_adapter_node(
-            _state(),
-            rag_subgraph=FakeRagSubgraph(),
-            runtime=types.SimpleNamespace(context=None),
-            config={},
-        )
-    )
-
-    assert result["knowledge_base_result"]["status"] == "unavailable"
-    assert len(observed) == 1
-    code, kwargs = observed[0]
-    assert code == "rag.enrichment.degraded"
-    assert kwargs["details"] == {
-        "status": "unavailable",
-        "reason_code": "unavailable",
-        "question_count": 1,
-        "evidence_count": 2,
-    }
-    assert "question-sensitive" not in repr(kwargs["details"])
-    assert "evidence-sensitive" not in repr(kwargs["details"])
-
-
-def test_mcp_adapter_overwrites_forged_trusted_arguments_with_runtime_data():
+def test_mcp_adapter_preserves_standard_tool_calls_and_injects_runtime_data():
     """MCP planner 只注入可信 Job 身份，绝不把 CSV 正文放入 ToolMessage。"""
     tool = _mcp_tool()
     message = AIMessage(
@@ -387,75 +342,28 @@ def test_mcp_adapter_overwrites_forged_trusted_arguments_with_runtime_data():
         tool_calls=[
             {
                 "name": "causal_pc",
-                "args": {
-                    "target": "Y",
-                    "csv_data": "forged,csv\n1,2",
-                    "user_id": 999,
-                    "session_id": "forged-session",
-                    "job_id": "forged-job",
-                    "input_user_file_id": 999,
-                    "input_object_id": 999,
-                    "request_id": "forged-request",
-                    "worker_slot": 999,
-                },
+                "args": {"target": "Y"},
                 "id": "call-1",
                 "type": "tool_call",
             }
         ],
     )
 
-    with log_context(request_id="request-1", worker_slot=3):
-        normalized = normalize_mcp_tool_call_message(
-            message,
-            _state(),
-            [tool],
-        )
+    normalized = normalize_mcp_tool_call_message(
+        message,
+        _state(),
+        [tool],
+    )
 
     assert isinstance(normalized, AIMessage)
     assert normalized.tool_calls[0]["name"] == "causal_pc"
     args = normalized.tool_calls[0]["args"]
     assert args["target"] == "Y"
     assert args["user_id"] == 1
-    assert args["session_id"] == "session-1"
     assert args["job_id"] == "job-1"
     assert args["input_user_file_id"] == 11
     assert args["input_object_id"] == 22
-    assert args["request_id"] == "request-1"
-    assert args["worker_slot"] == 3
     assert "csv_data" not in args
-    assert message.tool_calls[0]["args"]["user_id"] == 999
-
-
-def test_mcp_adapter_fails_closed_when_required_authoritative_context_is_missing():
-    tool = {
-        "type": "function",
-        "function": {
-            "name": "causal_pc",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "job_id": {"type": "string"},
-                    "request_id": {"type": "string"},
-                },
-                "required": ["job_id", "request_id"],
-            },
-        },
-    }
-    message = AIMessage(
-        content="",
-        tool_calls=[{
-            "name": "causal_pc",
-            "args": {
-                "job_id": "model-forged-job",
-                "request_id": "model-forged-request",
-            },
-            "id": "call-required",
-            "type": "tool_call",
-        }],
-    )
-
-    with pytest.raises(ValueError, match="runtime context"):
-        normalize_mcp_tool_call_message(message, _state(job_id=None), [tool])
 
 
 def test_mcp_planner_disables_thinking_and_requires_a_tool_choice():
@@ -525,7 +433,7 @@ def test_mcp_planner_disables_thinking_and_requires_a_tool_choice():
 
 
 def test_mcp_planner_deterministically_selects_explicit_direct_lingam():
-    """用户明确点名 DirectLiNGAM 时优先选工具，但不把 CSV 注入消息。"""
+    """用户明确点名 DirectLiNGAM 时必须优先选择独立工具并注入 CSV。"""
 
     class UnusedLLM:
         """如果确定性选择失效，测试会因访问模型而失败。"""

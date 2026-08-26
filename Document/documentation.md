@@ -20,7 +20,7 @@
 - Session、Job、文件冻结和 checkpoint 生命周期归 `architecture/job-file-lifecycle.md`。
 - 普通用户 HTTP/SSE 契约归 `api/`；管理员完整接口归 `admin/api.md`。
 - MySQL/PostgreSQL、主从、迁移、checkpoint、cleanup 和 monitor 内部机制归 `database/`。
-- 启动、测试、日志系统、构建部署和文档维护归 `development/`；文档维护规则由Document/documentation.md` 统一维护。
+- 启动、测试、日志系统和构建部署归 `development/`；文档维护规则由本文件统一维护。
 - 管理员页面、后端授权和管理员 API 如何消费共享能力归 `admin/`，不复制数据库 worker 内部实现。
 
 `Document/operations/` 不创建。原计划中的部署、监控和运行维护内容分别归 `development/deployment.md`、`database/monitoring.md` 和 `admin/`。

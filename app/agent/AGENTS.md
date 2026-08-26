@@ -6,7 +6,7 @@
 
 ## 修改前必须阅读
 
-- 必须阅读 [`Document/architecture/`](../../Document/architecture/)及其子目录
+- 必须阅读 [`Document/architecture/job-file-lifecycle.md`](../../Document/architecture/job-file-lifecycle.md)、[`Document/architecture/agent-runtime.md`](../../Document/architecture/agent-runtime.md)、[`Document/api/agent-jobs.md`](../../Document/api/agent-jobs.md) 和 [`Document/api/conventions.md`](../../Document/api/conventions.md)。
 - 必须检查调用入口、`app/agent/routes.py`、`job_service.py`、worker runtime/bootstrap、相关 migration、普通用户前端调用和对应 unit 测试。
 - 修改 checkpoint identity、Job 字段或事件 payload 时必须同时核对 PostgreSQL inspection、管理员 Job API 和 SSE 恢复逻辑。
 
@@ -24,11 +24,9 @@
 - 普通用户事件必须经过脱敏，只允许公开文字和稳定状态；禁止输出原始 prompt、ToolMessage、完整工具结果、文件正文、图状态、内部 attempt 或隐藏推理。
 - terminal/interrupt 事件的写入、assistant 消息和 Job 状态必须保持事务语义；稳定生命周期事件必须有可重放的 event key。
 - checkpoint 读取失败时禁止盲目 stale recovery；必须阻止可能重复执行的恢复动作并返回稳定错误。
-- 修改 Job、worker、请求上下文或执行日志时，必须保持 request/job/session/worker/node/tool 上下文隔离；运行日志不能写入 `analysis_job_events`，也不能包含 prompt、ToolMessage、文件正文或隐藏推理。
 
 ## 修改后验证
 
 - Job/API 变更至少覆盖正常、重复请求、参数冲突、活动 Job 冲突、状态冲突、越权、断线续传和终态收敛。
 - worker/事件变更至少运行 `tests/unit/agent/` 中对应测试，并检查普通用户 payload 的脱敏结果。
 - 修改文件、Session 删除或 outbox 时必须联测 `app/chat/`、`app/files/`、`Database/` 和对应 migration；不能只跑 Agent 图测试。
-- 日志变更至少要运行对应的日志运行时、请求/worker 和 Agent 测试，并把真实 Docker/Alloy/Loki/Grafana 未验证项单独列出。

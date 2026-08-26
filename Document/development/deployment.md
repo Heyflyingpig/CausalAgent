@@ -16,7 +16,7 @@
 
 ## 开发部署
 
-`docker-compose.yml` 是 MySQL 主从 + PostgreSQL checkpoint 的开发拓扑，服务职责如下：
+默认 `docker-compose.yml` 是包含主系统、RAG 评测、联网搜索和可观测性的 15 服务开发拓扑；服务职责如下：
 
 | 服务 | 作用 |
 | --- | --- |
@@ -27,11 +27,12 @@
 | `worker` | Agent Job worker |
 | `monitor` | 数据库共享快照采集 |
 | `checkpoint-cleanup` | 跨库 checkpoint 删除 |
+| `rag-eval-worker` | 独立领取 RAG 摄取、候选、评测和治理队列任务 |
 | `searxng-init` | 一次性 init，首次启动时在配置目录内生成临时文件，完成 secret_key 注入和校验后原子发布 `settings.yml`，已存在则跳过 |
-| `searxng` | 固定版本的联网搜索服务（SearXNG），提供 `format=json` + arxiv/crossref/openalex 三引擎，并以 `/healthz` 提供浅层容器健康检查 |
+| `searxng` / `valkey` | 固定版本的 SearXNG 联网学术搜索及其缓存/队列依赖 |
 | `loki` / `alloy` / `grafana` | 开发环境运行日志采集、存储和查看；只加入独立的 observability network |
 
-`app`、worker、monitor 和 cleanup 依赖 `db-bootstrap` 成功退出；`searxng` 依赖 Valkey 健康和 `searxng-init` 成功退出。默认拓扑不让 `app` 或 worker 等待 SearXNG 健康：联网搜索是 Job 级可选能力，运行期不可用时由 web_search 重试并降级，非搜索 Job 不会因 SearXNG 不可用而阻止启动。开发拓扑当前不提供自动故障切换。启动命令见 [`setup.md`](setup.md)。
+`app`、Agent worker、monitor、RAG evaluation worker 和 cleanup 依赖 `db-bootstrap` 成功退出；`searxng` 依赖 Valkey 健康和 `searxng-init` 成功退出。联网搜索是 Job 级可选能力，默认拓扑不让 `app` 或 Agent worker 等待 SearXNG 健康，运行期不可用时由 Web Search 子图重试并降级；非搜索 Job 不会因此阻止启动。开发拓扑当前不提供自动故障切换。启动命令见 [`setup.md`](setup.md)。
 
 ## 联网搜索（SearXNG）
 
@@ -41,12 +42,20 @@
 
 开发 Compose 的可观测组件使用固定版本和独立命名卷：Loki、Alloy 不开放宿主机端口，Grafana 只绑定 `127.0.0.1:3000`。启动 Grafana 前必须设置非空的 `GRAFANA_ADMIN_PASSWORD`；采集范围由应用容器的 `causalagent_observability` 标签筛选，不包含 MySQL、PostgreSQL、Loki、Alloy 或 Grafana 自身。完整字段、标签和真实验收边界见 [`observability.md`](observability.md)。
 
+## 预发部署
+
+`docker-compose.staging.yml` 是隔离预发拓扑，保留 `gateway`、`scripts/staging_environment_guard.py` 启动 guard 和独立 `rag-eval-worker`，并使用独立 MySQL 主从、PostgreSQL checkpoint、卷和 gateway 日志。所有 Python 服务先通过 guard 校验项目/DSN/数据库/卷名中的 production/prod 标识，`db-bootstrap` 成功后才启动应用服务；gateway 负责入口和日志轮转。staging 显式只读挂载多模态 index、active/previous runtime、assets 与 retrieval policy。它不自动加入开发专用 SearXNG/Valkey 或 Loki/Alloy/Grafana。
+
 ## 生产部署
 
-`docker-compose.prod.yml` 使用生产 MySQL、PostgreSQL checkpoint、统一 bootstrap、Web、worker、monitor 和 cleanup 服务；生产环境不挂载源代码，使用独立卷、网络和日志轮转设置。当前生产 Compose 是单独的生产配置，不能假设它自动提供开发 Compose 的 MySQL replica 或故障切换能力。
+`docker-compose.prod.yml` 使用生产 MySQL、PostgreSQL checkpoint、统一 bootstrap、Web、Agent worker、monitor、checkpoint cleanup 和独立 `rag-eval-worker`；生产环境不挂载源代码，使用独立卷、网络和日志轮转设置。RAG evaluation worker 与主系统进程隔离，并通过独立评测卷共享必要的运行产物；它不带开发可观测性标签，不应把评测日志混入主系统观测流。当前生产 Compose 是单独的生产配置，不能假设它自动提供开发 Compose 的 MySQL replica、SearXNG、Loki/Alloy/Grafana 或故障切换能力。
 当前生产 Compose 未定义 SearXNG 服务；如果生产环境启用 `web_search_enabled`，必须另外提供可访问的 `SEARXNG_URL` 和对应的搜索服务部署，搜索不可用时仍遵循 worker 运行期降级语义。
 
-生产必须通过环境变量或安全的 secret 机制提供 `SECRET_KEY`、模型配置、MySQL 职责账号和非空 `CHECKPOINT_POSTGRES_PASSWORD`。不要在文档、镜像层、命令行日志或 API 响应中打印密钥。
+## RAG release 与 worker 生命周期
+
+开发、兼容副本和 staging 的 Agent worker 使用 `JOB_DRAIN_TIMEOUT_SECONDS`（默认 60 秒）进行优雅 drain，并设置至少 75 秒的 Compose `stop_grace_period`。worker 启动只做 active pointer、manifest、正式来源、embedding、版本、collection 和向量目录的轻量 readiness 检查；失败时继续运行并标记内部 `rag_unavailable`，不加载 RAG 重资源。发布新 release 后必须先完成隔离评测和显式 publish，再通过停止/重启 worker 使 active pointer 生效；不支持热切换、蓝绿切换或零停机。active pointer 发布会保留 previous pointer，candidate/资产/评测产物不自动删除。完整行为契约见 [`../architecture/rag-evaluation.md`](../architecture/rag-evaluation.md)。
+
+生产必须通过环境变量或安全的 secret 机制提供 `SECRET_KEY`、模型配置、MySQL 职责账号、非空 `CHECKPOINT_POSTGRES_PASSWORD` 和 RAG evaluation worker 所需配置。不要在文档、镜像层、命令行日志或 API 响应中打印密钥。
 
 ## 管理员产物
 
@@ -56,4 +65,4 @@
 
 ## 数据库发布顺序
 
-空库或数据库环境重建时先启动依赖数据库，再运行 `Database.bootstrap` 完成 Alembic 和 checkpoint setup，确认成功后才启动 app/worker/monitor/cleanup。具有破坏性的 checkpoint/file migration 不会自动回填旧数据；执行 downgrade 必须选择明确 revision，并在隔离环境先验证往返。迁移风险和 preflight 规则见 [`../database/migrations-checkpoints.md`](../database/migrations-checkpoints.md)。
+开发/预发空库或数据库环境重建时先启动依赖数据库，再运行 `Database.bootstrap` 完成 Alembic 和 checkpoint setup，确认成功后才启动 app/worker/monitor/cleanup/rag-eval-worker。当前唯一 Alembic head 是 `s4d5e6f7a8b9`；具有破坏性的 checkpoint/file migration 不会自动回填旧数据，执行 downgrade 必须选择明确 revision，并在隔离环境先验证往返。迁移风险和 preflight 规则见 [`../database/migrations-checkpoints.md`](../database/migrations-checkpoints.md)。

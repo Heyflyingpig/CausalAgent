@@ -54,7 +54,6 @@ async def heartbeat_until_stopped(
             return
         except asyncio.TimeoutError:
             pass
-
         try:
             authority = await asyncio.to_thread(
                 job_service.refresh_execution_lease,
@@ -79,7 +78,6 @@ async def heartbeat_until_stopped(
                     exc_info=True,
                 )
             continue
-
         recovery = _LEASE_FAILURES.record_success(tracker_key)
         if recovery is not None:
             log_event(
@@ -136,8 +134,6 @@ async def _run_job(
     job_id = job["job_id"]
     attempt_count = int(job["attempt_count"])
     lease_epoch = int(job.get("lease_epoch") or 0)
-    started_at = asyncio.get_running_loop().time()
-    tracker_key = (job_id, worker_id, attempt_count, lease_epoch)
     guard = JobExecutionGuard(job_id, worker_id, attempt_count, lease_epoch)
     guard_token = guard.install()
     stop_heartbeat = asyncio.Event()
@@ -155,6 +151,9 @@ async def _run_job(
     graph_stream = None
     revoked = False
     cleanup_complete = True
+    cleanup_errors: list[BaseException] = []
+    started_at = asyncio.get_running_loop().time()
+    tracker_key = (job_id, worker_id, attempt_count, lease_epoch)
     cleanup_phases: list[str] = []
     terminal_logged = False
     failure_phase = "input_loading"
@@ -218,7 +217,6 @@ async def _run_job(
             await guard.check_after_call()
             if initial_input is None:
                 raise RuntimeError("任务初始输入账本为空")
-
         failure_phase = "graph_execution"
         graph_stream = ai_call_stream(
             latest_input,
@@ -301,7 +299,8 @@ async def _run_job(
             except BaseException:
                 record_cleanup_failure("writer_abort")
     except asyncio.CancelledError as exc:
-        # 进程/worker 级取消不是业务失败；仍需先结束 writer，再保留向上传播语义。
+        # 进程/worker 级取消不是业务取消，但也不能遗留活跃 writer；只有完整
+        # cleanup 后才允许 finally 条件释放 canceled/draining 执行占用。
         revoked = True
         guard.mark_revoked()
         log_revoked("worker_shutdown")
@@ -382,11 +381,10 @@ async def _run_job(
                 record_cleanup_failure("lease_monitor")
             finally:
                 _LEASE_FAILURES.clear(tracker_key)
-
             if revoked or guard.revoked:
                 if cleanup_complete:
                     try:
-                        await asyncio.to_thread(
+                        released = await asyncio.to_thread(
                             job_service.release_execution_ownership,
                             job_id,
                             worker_id,

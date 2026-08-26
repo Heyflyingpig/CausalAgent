@@ -10,12 +10,13 @@ from Database.job_execution_upgrade_repair import (
     JobExecutionUpgradeBlockedError,
     check_upgrade_compatibility,
 )
+from Database.migration_version_repair import repair_legacy_revision_ids
 from observability.logging_runtime import configure_logging, current_environment, log_event
+
+LOGGER = logging.getLogger(__name__)
 
 if __name__ == "__main__":
     configure_logging("maintenance", current_environment(), logging.INFO)
-
-LOGGER = logging.getLogger(__name__)
 
 try:
     from alembic import command
@@ -45,8 +46,7 @@ def upgrade_mysql_schema(project_root: Path | None = None) -> None:
     """使用项目现有 Alembic 迁移将 MySQL schema 升级到当前 head。"""
     root = project_root or _project_root()
     alembic_config = Config(str(root / "alembic.ini"))
-    # Programmatic bootstrap already owns the root JSON stderr handler. The
-    # Alembic CLI keeps its normal fileConfig behaviour.
+    # 编排入口已经配置共享 JSON handler，避免 Alembic fileConfig 覆盖它。
     alembic_config.attributes["configure_logger"] = False
     command.upgrade(alembic_config, "head")
 
@@ -71,13 +71,17 @@ def run_bootstrap(project_root: Path | None = None) -> None:
     if not mysql_bootstrap.bootstrap():
         raise RuntimeError("MySQL 数据库连接检查失败，停止执行后续初始化。")
 
+    connection = mysql_bootstrap.open_connection()
+    try:
+        repair_legacy_revision_ids(connection)
+    finally:
+        connection.close()
+    # 旧 revision 修复只做一次安全的物理 schema 判定；结果不含敏感信息，
+    # 成功状态统一由末尾的 maintenance.startup.ready 事件表示。
     check_upgrade_compatibility(mysql_bootstrap.mysql_config)
     upgrade_mysql_schema(project_root)
     setup_postgres_checkpoint_schema()
-    log_event(
-        LOGGER,
-        "maintenance.startup.ready",
-    )
+    log_event(LOGGER, "maintenance.startup.ready")
 
 
 def main() -> int:
