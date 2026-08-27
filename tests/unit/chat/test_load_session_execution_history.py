@@ -162,8 +162,26 @@ def test_load_session_returns_phase_and_uses_fixed_batch_queries():
     assert response.status_code == 200
     messages = response.get_json()["messages"]
     assert [message["sender"] for message in messages] == ["user", "ai"]
+    assert messages[0]["text"] == "问题"
+    assert messages[0]["analysis_job_id"] == "job-1"
+    assert messages[0]["analysis_job_input_id"] == 1
+    assert messages[1]["text"] == "回答"
+    assert messages[1]["analysis_job_id"] == "job-1"
+    assert messages[1]["analysis_job_input_id"] == 1
     phase = messages[0]["thinking_after"]
+    assert set(phase) == {
+        "phase_sequence",
+        "status",
+        "elapsed_seconds",
+        "last_event_id",
+        "events",
+        "analysis_job_id",
+        "analysis_job_input_id",
+    }
+    assert phase["phase_sequence"] == 0
     assert phase["status"] == "completed"
+    assert phase["analysis_job_id"] == "job-1"
+    assert phase["analysis_job_input_id"] == 1
     assert [event["event_id"] for event in phase["events"]] == [101]
     assert "attempt" not in phase["events"][0]
     assert "secret" not in repr(phase)
@@ -171,6 +189,10 @@ def test_load_session_returns_phase_and_uses_fixed_batch_queries():
     assert connection.committed is True
     assert len(connection.cursor_value.statements) == 5
     assert sum("FROM analysis_job_events" in sql for sql, _ in connection.cursor_value.statements) == 1
+    event_sql = next(sql for sql, _ in connection.cursor_value.statements if "FROM analysis_job_events" in sql)
+    assert "FORCE INDEX (idx_analysis_job_events_job_id)" in event_sql
+    assert "ORDER BY job_id, id" in event_sql
+    assert phase["last_event_id"] == 102
 
 
 def test_load_session_rejects_unknown_or_unauthorized_session_before_history_queries():
