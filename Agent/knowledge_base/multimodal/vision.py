@@ -23,8 +23,8 @@ from .contracts import OutboundImageRecord, VisionAnalysis, canonical_json, sha2
 from .remote_policy import RemoteSamplePolicy
 
 PROMPT_VERSION = "vision-v2"
-RESPONSE_ADAPTER_VERSION = "response-ocr-lines-v2"
-REQUIRED_MODEL = "qwen/qwen3-vl-8b-instruct"
+RESPONSE_ADAPTER_VERSION = "response-normalize-v3"
+REQUIRED_MODEL = "qwen-vl-plus"
 DEFAULT_MAX_PIXELS = 16_000_000
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 _PROMPT = """只转写和描述图片中直接可见的内容，不得根据邻近正文补画面中不存在的事实或箭头方向。返回一个 JSON 对象且必须完整包含：content_kind（causal_graph|chart|table|formula|illustration|other）、ocr_text（逐行可见文字，不确定字符不要猜）、visible_facts、summary、entities、table_markdown、formula_latex、directed_relations（source/target/condition）、uncertain_relations、confidence（0 到 1）、informative。方向不清晰的关系只能写入 uncertain_relations。"""
@@ -55,6 +55,15 @@ class VisionResponseError(ValueError):
         self.validation_error_paths = tuple(validation_error_paths or ())
 
 
+class VisionCircuitOpenError(RuntimeError):
+    """quota/billing 失败后阻止本次运行继续外发。"""
+
+    category = "quota_billing_circuit_open"
+
+    def __init__(self) -> None:
+        super().__init__("vision quota/billing circuit is open")
+
+
 class VisionAnalyzer:
     """限制外发范围、重试次数与预算的 WCode 视觉客户端。"""
 
@@ -76,6 +85,7 @@ class VisionAnalyzer:
         self.remote_policy_sha256 = remote_policy_sha256 or RemoteSamplePolicy().policy_sha256
         self._semaphore = threading.BoundedSemaphore(self.max_concurrency)
         self._calls_lock = threading.Lock()
+        self._quota_billing_circuit_open = False
         self.calls = 0
 
     def configured(self) -> bool:
@@ -148,6 +158,8 @@ class VisionAnalyzer:
             failure = json.loads(failure_path.read_text(encoding="utf-8"))
             raise RuntimeError(f"vision failure is already recorded: {failure.get('failure_type', 'unknown')}")
         with self._calls_lock:
+            if self._quota_billing_circuit_open:
+                raise VisionCircuitOpenError()
             if self.max_images is not None and self.calls >= self.max_images:
                 raise RuntimeError("vision image budget exhausted")
             self.calls += 1
@@ -158,28 +170,38 @@ class VisionAnalyzer:
         last_error: Exception | None = None
         failure_category = "unknown"
         request_count = 0
+        fallback_attempted = False
         started = time.monotonic()
         with self._semaphore:
             for attempt in range(self.max_retries + 1):
                 try:
+                    self._raise_if_quota_billing_circuit_open()
                     request_count += 1
                     response = self._invoke(client, message, structured=True)
                     status = "success"
                 except Exception as exc:
+                    last_error = exc
+                    failure_category = self._failure_category(exc)
+                    if failure_category == "quota_billing":
+                        self._trip_quota_billing_circuit()
+                        break
                     if getattr(exc, "status_code", 0) not in {400, 422}:
-                        last_error = exc
-                        failure_category = self._failure_category(exc)
                         if failure_category not in {"timeout", "connection", "rate_limited", "server_error"} or attempt >= self.max_retries:
                             break
                         time.sleep((2 ** attempt) + random.uniform(0, 0.25))
                         continue
                     try:
+                        self._raise_if_quota_billing_circuit_open()
+                        fallback_attempted = True
                         request_count += 1
                         response = self._invoke(client, message, structured=False)
                         status = "success_json_prompt_fallback"
                     except Exception as fallback_error:
                         last_error = fallback_error
                         failure_category = self._failure_category(fallback_error)
+                        if failure_category == "quota_billing":
+                            self._trip_quota_billing_circuit()
+                            break
                         if self._retryable(failure_category) and attempt < self.max_retries:
                             time.sleep((2 ** attempt) + random.uniform(0, 0.25))
                             continue
@@ -188,6 +210,8 @@ class VisionAnalyzer:
                     analysis = self._parse_analysis(response.choices[0].message.content or "")
                 except VisionResponseError:
                     try:
+                        self._raise_if_quota_billing_circuit_open()
+                        fallback_attempted = True
                         request_count += 1
                         response = self._invoke(client, message + [{"type": "text", "text": _REPAIR_PROMPT}], structured=False)
                         analysis = self._parse_analysis(response.choices[0].message.content or "")
@@ -195,6 +219,9 @@ class VisionAnalyzer:
                     except Exception as repair_error:
                         last_error = repair_error
                         failure_category = self._failure_category(repair_error)
+                        if failure_category == "quota_billing":
+                            self._trip_quota_billing_circuit()
+                            break
                         if self._retryable(failure_category) and attempt < self.max_retries:
                             time.sleep((2 ** attempt) + random.uniform(0, 0.25))
                             continue
@@ -210,7 +237,13 @@ class VisionAnalyzer:
                     break
         self._record_failure(failure_path, last_error, failure_category)
         self._append_audit(None, "failed", cache_path.name, int((time.monotonic() - started) * 1000), max(0, request_count - 1), failure_category)
-        raise RuntimeError("vision analysis failed without persisting response content") from last_error
+        failure = RuntimeError("vision analysis failed without persisting response content")
+        failure.category = failure_category  # type: ignore[attr-defined]
+        failure.fallback_attempted = fallback_attempted  # type: ignore[attr-defined]
+        status_code = getattr(last_error, "status_code", None)
+        if isinstance(status_code, int) and not isinstance(status_code, bool) and 100 <= status_code <= 599:
+            failure.status_code = status_code  # type: ignore[attr-defined]
+        raise failure from last_error
 
     def _record_matches(self, record: OutboundImageRecord, prepared: NormalizedImage, context: str) -> bool:
         """校验调用数据与已批准 outbound 记录完全一致。"""
@@ -245,9 +278,52 @@ class VisionAnalyzer:
             if isinstance(payload, dict):
                 payload = dict(payload)
                 for field in ("ocr_text", "table_markdown", "formula_latex"):
+                    if field not in payload:
+                        continue
                     value = payload.get(field)
                     if isinstance(value, list) and all(isinstance(line, str) for line in value):
                         payload[field] = "\n".join(value)
+                    elif value is None:
+                        payload[field] = ""
+                    elif not isinstance(value, str):
+                        # 保持公式/表格的严格类型边界，未知对象交给 schema 拒绝。
+                        continue
+                for field in ("visible_facts", "entities"):
+                    if field not in payload:
+                        continue
+                    value = payload.get(field)
+                    if isinstance(value, list):
+                        payload[field] = [
+                            item if isinstance(item, str) else VisionAnalyzer._coerce_text(item)
+                            for item in value
+                        ]
+                    elif isinstance(value, str):
+                        payload[field] = [value] if value.strip() else []
+                    elif value is None:
+                        payload[field] = []
+                    else:
+                        payload[field] = [VisionAnalyzer._coerce_text(value)]
+                uncertain_relations = payload.get("uncertain_relations")
+                if isinstance(uncertain_relations, list):
+                    normalized_relations = []
+                    for relation in uncertain_relations:
+                        source = relation.get("source") if isinstance(relation, dict) else None
+                        target = relation.get("target") if isinstance(relation, dict) else None
+                        condition = relation.get("condition") if isinstance(relation, dict) else None
+                        if (
+                            isinstance(relation, dict)
+                            and set(relation) <= {"source", "target", "condition"}
+                            and isinstance(source, str) and source.strip()
+                            and isinstance(target, str) and target.strip()
+                            and (condition is None or isinstance(condition, str))
+                        ):
+                            relation_text = f"{source.strip()} -> {target.strip()}"
+                            if isinstance(condition, str) and condition.strip():
+                                relation_text += f" ({condition.strip()})"
+                            normalized_relations.append(relation_text)
+                        else:
+                            normalized_relations.append(relation)
+                    payload["uncertain_relations"] = normalized_relations
             return VisionAnalysis.model_validate(payload)
         except ValidationError as exc:
             paths = {
@@ -267,11 +343,46 @@ class VisionAnalyzer:
             raise VisionResponseError("invalid_schema") from exc
 
     @staticmethod
+    def _coerce_text(value: Any) -> str:
+        """将新模型的非字符串字段稳定保留为可检索文本。"""
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return str(value)
+
+    @staticmethod
     def _failure_category(error: Exception) -> str:
         """把 SDK/协议异常归一化为不含正文的稳定类别。"""
         if isinstance(error, VisionResponseError):
             return error.category
+        if isinstance(error, VisionCircuitOpenError):
+            return error.category
         status = int(getattr(error, "status_code", 0) or 0)
+        error_details = " ".join(
+            str(value)
+            for value in (
+                type(error).__name__,
+                str(error),
+                getattr(error, "code", None),
+                getattr(error, "error_code", None),
+                getattr(error, "type", None),
+                getattr(error, "message", None),
+                getattr(error, "body", None),
+            )
+            if value is not None
+        ).lower()
+        quota_markers = (
+            "insufficient_quota", "quota_exceeded", "quota exceeded", "quota exhausted", "out of quota",
+            "billing", "payment required", "payment_required", "insufficient balance", "balance exceeded",
+            "credits exhausted", "credit exhausted", "spending limit", "余额不足", "额度耗尽", "欠费", "计费",
+        )
+        if status == 402 or any(marker in error_details for marker in quota_markers) or (
+            "quota" in error_details and any(term in error_details for term in ("exceed", "exhaust", "insufficient", "limit"))
+        ):
+            return "quota_billing"
         if status == 408:
             return "timeout"
         if status == 429:
@@ -291,6 +402,17 @@ class VisionAnalyzer:
     def _retryable(category: str) -> bool:
         """仅网络、限流、超时和服务端错误允许重试。"""
         return category in {"timeout", "connection", "rate_limited", "server_error"}
+
+    def _raise_if_quota_billing_circuit_open(self) -> None:
+        """熔断打开后不再发起结构化、fallback 或修复请求。"""
+        with self._calls_lock:
+            if self._quota_billing_circuit_open:
+                raise VisionCircuitOpenError()
+
+    def _trip_quota_billing_circuit(self) -> None:
+        """记录本次分析运行的 quota/billing 熔断状态。"""
+        with self._calls_lock:
+            self._quota_billing_circuit_open = True
 
     def _invoke(self, client: OpenAI, message: list[dict[str, Any]], *, structured: bool) -> Any:
         """用结构化输出或兼容 JSON Prompt 请求一次完整响应。"""
