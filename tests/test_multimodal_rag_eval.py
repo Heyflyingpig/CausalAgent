@@ -312,6 +312,7 @@ class GenericRagEvalTests(unittest.TestCase):
             "dimension": 512,
             "normalized": True,
         }
+        defaults = evaluation.load_production_defaults()
         manifest = {
             "index_version": "mm_test",
             "embedding": embedding,
@@ -320,7 +321,16 @@ class GenericRagEvalTests(unittest.TestCase):
                 "pdf_parser": {"page_range_mode": "single_page"},
                 "vision": {"enabled": False, "local_ocr_enabled": True},
             },
-            "sources": [{"relative_path": "book.pdf", "content_hash": "a" * 64}],
+            "sources": [
+                {
+                    "source_id": source["source_id"],
+                    "document_id": source["document_id"],
+                    "relative_path": Path(source["path"]).name,
+                    "controlled_path": source["path"],
+                    "content_hash": source["sha256"],
+                }
+                for source in defaults["sources"]
+            ],
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -348,9 +358,7 @@ class GenericRagEvalTests(unittest.TestCase):
                     "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path),
                     "MULTIMODAL_INDEX_ROOT": str(root / "indexes"),
                 },
-            ), patch.object(evaluation, "embedding_fingerprint", return_value=embedding), patch.object(
-                evaluation, "is_production_manifest", return_value=True
-            ):
+            ), patch.object(evaluation, "embedding_fingerprint", return_value=embedding):
                 identity = evaluation.read_active_release_identity()
 
         self.assertEqual(identity["index_version"], "mm_test")

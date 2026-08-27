@@ -1,11 +1,15 @@
 import dataclasses
+import json
 import logging
+import os
 import sys
+import tempfile
 import threading
 import time
 import types
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -14,8 +18,10 @@ import bm25s
 from Agent.knowledge_base.rag_runtime import (
     RagRuntimeConfig,
     RagRuntimeInitializationError,
+    _resolve_multimodal_release,
     create_rag_runtime,
 )
+from Agent.knowledge_base.multimodal.defaults import load_production_defaults
 from Agent.knowledge_base.sparse_retriever import (
     Bm25sSparseRetriever,
     tokenize_text,
@@ -41,6 +47,115 @@ def _runtime_config(**embedding_overrides):
 
 
 class RagRuntimeLifecycleTests(unittest.TestCase):
+    @staticmethod
+    def _write_active_release(root: Path) -> tuple[Path, Path, dict[str, object]]:
+        """构造不含任何 PDF 的冻结 release fixture。"""
+        config = load_production_defaults()
+        version = "mm_" + "a" * 20
+        index_root = root / "indexes"
+        index_dir = index_root / version
+        (index_dir / "chroma").mkdir(parents=True)
+        embedding = {
+            "provider": "huggingface",
+            "model": "bge-small-zh-v1.5",
+            "mode": "local",
+            "dimension": 512,
+            "normalized": True,
+        }
+        manifest = {
+            "index_version": version,
+            "embedding": embedding,
+            "sources": [
+                {
+                    "source_id": source["source_id"],
+                    "document_id": source["document_id"],
+                    "relative_path": Path(source["path"]).name,
+                    "controlled_path": source["path"],
+                    "content_hash": source["sha256"],
+                }
+                for source in config["sources"]
+            ],
+        }
+        manifest_path = index_dir / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        active_path = root / "active_index.json"
+        active_path.write_text(
+            json.dumps(
+                {
+                    "index_version": version,
+                    "index_path": f"{version}/chroma",
+                    "collection_name": f"causal_multimodal_{version}",
+                    "manifest_sha256": __import__("hashlib").sha256(manifest_path.read_bytes()).hexdigest(),
+                    "embedding": embedding,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return active_path, index_root, embedding
+
+    def test_active_release_resolves_without_local_source_files(self):
+        """运行期只消费冻结 release，来源 PDF 缺失不能阻断解析。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            active_path, index_root, embedding = self._write_active_release(Path(temporary))
+            with patch.dict(
+                os.environ,
+                {
+                    "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path),
+                    "MULTIMODAL_INDEX_ROOT": str(index_root),
+                    "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "",
+                },
+            ):
+                release = _resolve_multimodal_release(embedding)
+
+        self.assertEqual(release["index_version"], "mm_" + "a" * 20)
+
+    def test_active_release_rejects_manifest_hash_embedding_and_index_path_drift(self):
+        """运行期仍拒绝 manifest 哈希、embedding 与 index path 漂移。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            active_path, index_root, embedding = self._write_active_release(root)
+            active = json.loads(active_path.read_text(encoding="utf-8"))
+
+            active["manifest_sha256"] = "0" * 64
+            active_path.write_text(json.dumps(active), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path),
+                    "MULTIMODAL_INDEX_ROOT": str(index_root),
+                    "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "",
+                },
+            ), self.assertRaisesRegex(ValueError, "manifest 哈希"):
+                _resolve_multimodal_release(embedding)
+
+            active = json.loads(active_path.read_text(encoding="utf-8"))
+            manifest_path = index_root / ("mm_" + "a" * 20) / "manifest.json"
+            active["manifest_sha256"] = __import__("hashlib").sha256(manifest_path.read_bytes()).hexdigest()
+            active["embedding"] = {**embedding, "dimension": 384}
+            active_path.write_text(json.dumps(active), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path),
+                    "MULTIMODAL_INDEX_ROOT": str(index_root),
+                    "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "",
+                },
+            ), self.assertRaisesRegex(ValueError, "embedding 指纹"):
+                _resolve_multimodal_release(embedding)
+
+            active["embedding"] = embedding
+            active["index_path"] = "../outside/chroma"
+            active_path.write_text(json.dumps(active), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "MULTIMODAL_ACTIVE_INDEX_CONFIG": str(active_path),
+                    "MULTIMODAL_INDEX_ROOT": str(index_root),
+                    "MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE": "",
+                },
+            ), self.assertRaisesRegex(ValueError, "index_path"):
+                _resolve_multimodal_release(embedding)
+
     def test_concurrent_runtime_creation_serializes_local_embedding_initialization(self):
         active = 0
         max_active = 0

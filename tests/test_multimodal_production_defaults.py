@@ -11,12 +11,14 @@ from unittest.mock import patch
 from Agent.knowledge_base.multimodal.production import (
     audit_production_coverage,
     evaluate_retrieval_cases,
+    has_frozen_production_identity,
     is_legacy_production_manifest,
     is_production_manifest,
     load_production_defaults,
     production_source_paths,
 )
 from Agent.knowledge_base.multimodal import defaults as defaults_module
+from Agent.knowledge_base.multimodal import production as production_module
 
 
 class MultimodalProductionDefaultsTests(unittest.TestCase):
@@ -266,6 +268,74 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
                 config,
             )
         )
+
+    def test_frozen_identity_does_not_require_local_source_files(self) -> None:
+        """已发布 release 的静态身份校验不能因构建者 PDF 缺失而失败。"""
+        config = load_production_defaults()
+        manifest = {
+            "sources": [
+                {
+                    "source_id": source["source_id"],
+                    "document_id": source["document_id"],
+                    "relative_path": Path(source["path"]).name,
+                    "controlled_path": source["path"],
+                    "content_hash": source["sha256"],
+                }
+                for source in config["sources"]
+            ]
+        }
+
+        with patch.object(
+            production_module,
+            "resolve_production_sources",
+            side_effect=AssertionError("static identity must not resolve PDFs"),
+        ):
+            self.assertTrue(has_frozen_production_identity(manifest, config))
+
+        with patch.object(
+            production_module,
+            "resolve_production_sources",
+            side_effect=ValueError("controlled source is unavailable"),
+        ):
+            self.assertFalse(is_production_manifest(manifest, config))
+
+    def test_frozen_identity_rejects_drift_duplicates_and_unsafe_paths(self) -> None:
+        """静态身份校验拒绝来源漂移、重复来源和危险路径元数据。"""
+        config = load_production_defaults()
+        manifest = {
+            "sources": [
+                {
+                    "source_id": source["source_id"],
+                    "document_id": source["document_id"],
+                    "relative_path": Path(source["path"]).name,
+                    "controlled_path": source["path"],
+                    "content_hash": source["sha256"],
+                }
+                for source in config["sources"]
+            ]
+        }
+
+        for field, value in (
+            ("source_id", "source-drift"),
+            ("document_id", "doc_" + "f" * 64),
+            ("content_hash", "f" * 64),
+        ):
+            drifted = json.loads(json.dumps(manifest))
+            drifted["sources"][0][field] = value
+            self.assertFalse(has_frozen_production_identity(drifted, config), field)
+
+        duplicated = json.loads(json.dumps(manifest))
+        duplicated["sources"][1] = json.loads(json.dumps(duplicated["sources"][0]))
+        self.assertFalse(has_frozen_production_identity(duplicated, config))
+
+        for field, value in (
+            ("relative_path", "../outside.pdf"),
+            ("controlled_path", "/etc/passwd"),
+            ("controlled_path", "C:\\outside.pdf"),
+        ):
+            unsafe = json.loads(json.dumps(manifest))
+            unsafe["sources"][0][field] = value
+            self.assertFalse(has_frozen_production_identity(unsafe, config), value)
 
     def test_renamed_configured_pdf_keeps_canonical_document_id(self) -> None:
         """配置旧文件名但受控目录只有同 hash 新文件名时仍保持 gold document_id。"""

@@ -104,7 +104,7 @@ runs/<run_id>/
 - `chroma/`：批量写入且成功提交后的向量存储；
 - 需要时的页级 `checkpoints.sqlite3` 和 run-local 解析资源目录。
 
-staged 完整性检查会比较 manifest、unit/vector/ingestion 计数、embedding fingerprint、index version 和归属的 ingestion run，并严格回读 run-local source、Docling 产物和单元资源。Chroma 以独立 attempt 目录构建，构建失败不能留下可发布的伪完整索引。解析资源用于构建审计和可选的图片/表格复核，不是正式 RAG 检索运行时的必需发布文件。
+staged 完整性检查会比较 manifest、unit/vector/ingestion 计数、embedding fingerprint、index version 和归属的 ingestion run，并严格回读 run-local source、Docling 产物和单元资源。Chroma 以独立 attempt 目录构建，构建失败不能留下可发布的伪完整索引。解析资源用于构建审计和可选的图片/表格复核，不是正式 RAG 检索运行时的必需发布文件；这类来源和解析产物校验属于构建、评测和发布门禁。
 
 索引身份不是一个可随意传入的字符串，而是由 `ingestion_run_id`、`index_version`、`collection_name`、manifest 哈希和 embedding fingerprint 共同约束。后续 RAG 试跑、候选题集、评测和 Gold 校验必须绑定同一个 staged index；切换索引后不能复用旧绑定而跳过重新校验。
 
@@ -129,7 +129,7 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 
 ## 3. release 生命周期
 
-正式多模态知识库由 formal index root 和 runtime pointer 管理；PNG、Docling 页级 JSON 以及 source 副本属于可独立保留的解析资产包，不作为正式 RAG 发布包的一部分。默认语义是：
+正式多模态知识库由 formal index root 和 runtime pointer 管理；PNG、Docling 页级 JSON 以及 source 副本属于可独立保留的解析资产包，不作为正式 RAG 发布包的一部分。构建、评测和发布阶段必须在受控目录内按内容哈希唯一解析正式 PDF；已发布 release 的生产 worker 只校验 manifest 中的冻结来源身份，不回读原始 PDF。默认语义是：
 
 - `active_index.json` 指向当前正式索引；
 - `previous_index.json` 保留上一个 active 版本，支持受控回滚；
@@ -143,7 +143,7 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 
 | key | 含义 |
 | --- | --- |
-| `controlled_source_identity` | source ID、document ID、路径和哈希命中正式受控来源 |
+| `controlled_source_identity` | 发布门禁中 source ID、document ID、路径和哈希必须命中正式受控来源；运行时只校验同一冻结身份 |
 | `staged_integrity` | staged 阶段严格校验 manifest、解析资源、units、向量和 build state；正式候选复核可使用不依赖外置解析资源的模式 |
 | `production_retrieval` | 当前正式检索门禁通过 |
 | `production_policy` | parser、VLM、embedding 等正式策略与 manifest 一致 |
@@ -155,7 +155,7 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 
 ### 3.2 发布与回滚
 
-`publish` 必须提交 `confirm=true`，并再次执行发布前门禁。通过后分两步执行：先把 run-local staged index 物化到 formal candidate，解析资产包保持在 run-local 或外部存储中；再由正式发布逻辑重新校验并原子更新 active pointer。正式 RAG 运行时读取 active pointer 指向的 Chroma 和 manifest，不要求 PNG 或 Docling 页级 JSON 在 formal 目录中存在。candidate 物化与 pointer 更新不是一个跨目录事务；如果第二步失败，candidate 可能已经保留但不会成为 active。可选的 `expected_active_index_version` 用于阻止并发覆盖。
+`publish` 必须提交 `confirm=true`，并再次执行发布前门禁。通过后分两步执行：先把 run-local staged index 物化到 formal candidate，解析资产包保持在 run-local 或外部存储中；再由正式发布逻辑重新校验并原子更新 active pointer。正式 RAG 运行时读取 active pointer 指向的 Chroma 和 manifest，只校验冻结来源身份，不要求原始 PDF、PNG 或 Docling 页级 JSON 在 formal 目录中存在。candidate 物化与 pointer 更新不是一个跨目录事务；如果第二步失败，candidate 可能已经保留但不会成为 active。可选的 `expected_active_index_version` 用于阻止并发覆盖。
 
 回滚同样需要 `confirm=true`，复用正式发布门禁并检查期望的 active 版本；成功后仍需生产 Agent worker drain/restart 才能让已经加载的 lazy Runtime 使用新 release。
 
@@ -184,7 +184,7 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 
 ### 4.2 生产 Agent worker
 
-生产聊天任务的入口是 `python -m app.agent.worker`，一般架构见 [`agent-runtime.md`](agent-runtime.md)。它启动时只做 active release 的轻量 readiness 检查；检查失败时以 `rag_unavailable` 运行，避免把 Web/worker 启动等同于 RAG 已可用。真正的 `RagRuntime` 在首次查询时 lazy 初始化，进程内共享，active pointer 变化后需要 drain 和 restart，不热切换已有 Runtime。
+生产聊天任务的入口是 `python -m app.agent.worker`，一般架构见 [`agent-runtime.md`](agent-runtime.md)。它启动时只做 active pointer、manifest 冻结来源身份、embedding、版本、collection 和向量目录的轻量 readiness 检查，不读取原始 PDF；检查失败时以 `rag_unavailable` 运行，避免把 Web/worker 启动等同于 RAG 已可用。真正的 `RagRuntime` 在首次查询时 lazy 初始化，进程内共享，active pointer 变化后需要 drain 和 restart，不热切换已有 Runtime。
 
 生产 Agent worker 具备独立的 SIGTERM/SIGINT drain 语义；这不等同于 `rag-eval-worker` 已实现相同的优雅停机机制。两者的运行、扩缩容和部署说明分别由 [`development/deployment.md`](../development/deployment.md) 与本文维护。
 

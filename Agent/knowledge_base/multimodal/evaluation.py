@@ -11,7 +11,7 @@ from typing import Any
 from .contracts import canonical_json
 from .defaults import DEFAULTS_PATH, ROOT, load_production_defaults
 from .index import embedding_fingerprint
-from .production import is_production_manifest
+from .production import has_frozen_production_identity
 
 
 MULTIMODAL_EVAL_SCHEMA = "multimodal_retrieval_eval_v1"
@@ -123,7 +123,7 @@ def read_active_release_identity(*, strict: bool = True) -> dict[str, Any]:
         raise ValueError("多模态 active index manifest 哈希不匹配")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if strict and os.getenv("MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE", "").lower() != "true":
-        if not is_production_manifest(manifest):
+        if not has_frozen_production_identity(manifest):
             raise ValueError("多模态 active index 不是冻结的正式知识源")
 
     runtime_embedding = embedding_fingerprint()

@@ -14,7 +14,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from Agent.knowledge_base.multimodal.defaults import resolve_production_embedding_config as resolve_embedding_runtime_config
-from Agent.knowledge_base.multimodal.production import is_production_manifest
+from Agent.knowledge_base.multimodal.production import has_frozen_production_identity
 from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever, SparseRetriever
 from observability.logging_runtime import log_event
 
@@ -115,7 +115,10 @@ def _resolve_multimodal_release(embedding_config: Mapping[str, Any]) -> dict[str
     if manifest_hash != active.get("manifest_sha256"):
         raise ValueError("多模态 active index manifest 哈希不匹配")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if os.environ.get("MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE", "").lower() != "true" and not is_production_manifest(manifest):
+    if (
+        os.environ.get("MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE", "").lower() != "true"
+        and not has_frozen_production_identity(manifest)
+    ):
         raise ValueError("多模态 active index 不是冻结的正式知识源")
     runtime_fingerprint = {
         "provider": embedding_config.get("provider"),

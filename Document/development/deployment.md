@@ -53,7 +53,7 @@
 
 ## RAG release 与 worker 生命周期
 
-开发、兼容副本和 staging 的 Agent worker 使用 `JOB_DRAIN_TIMEOUT_SECONDS`（默认 60 秒）进行优雅 drain，并设置至少 75 秒的 Compose `stop_grace_period`。worker 启动只做 active pointer、manifest、正式来源、embedding、版本、collection 和向量目录的轻量 readiness 检查；失败时继续运行并标记内部 `rag_unavailable`，不加载 RAG 重资源。发布新 release 后必须先完成隔离评测和显式 publish，再通过停止/重启 worker 使 active pointer 生效；不支持热切换、蓝绿切换或零停机。active pointer 发布会保留 previous pointer，candidate/资产/评测产物不自动删除。完整行为契约见 [`../architecture/rag-evaluation.md`](../architecture/rag-evaluation.md)。
+开发、兼容副本和 staging 的 Agent worker 使用 `JOB_DRAIN_TIMEOUT_SECONDS`（默认 60 秒）进行优雅 drain，并设置至少 75 秒的 Compose `stop_grace_period`。worker 启动只做 active pointer、manifest 冻结来源身份、embedding、版本、collection 和向量目录的轻量 readiness 检查，不读取原始 PDF；失败时继续运行并标记内部 `rag_unavailable`，不加载 RAG 重资源。构建、evaluate、gate-check 和 publish 阶段仍严格要求构建者在受控目录内提供并校验正式 PDF。发布新 release 后必须先完成隔离评测和显式 publish，再通过停止/重启 worker 使 active pointer 生效；不支持热切换、蓝绿切换或零停机。active pointer 发布会保留 previous pointer，candidate/资产/评测产物不自动删除。完整行为契约见 [`../architecture/rag-evaluation.md`](../architecture/rag-evaluation.md)。
 
 生产必须通过环境变量或安全的 secret 机制提供 `SECRET_KEY`、模型配置、MySQL 职责账号、非空 `CHECKPOINT_POSTGRES_PASSWORD` 和 RAG evaluation worker 所需配置。不要在文档、镜像层、命令行日志或 API 响应中打印密钥。
 
