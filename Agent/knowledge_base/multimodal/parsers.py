@@ -688,7 +688,7 @@ def _docling_items(document: object, source_path: Path, target_page: int | None 
                 items.append(ParsedItem("table", "table", raw_text=text, page_number=page_number, bbox=bbox, parent_key=f"page_{page_number}" if page_number else None))
             elif page_number and bbox:
                 page_image = _docling_page_image_bytes(document, page_number)
-                cropped = _crop_page_image(page_image, bbox) if page_image else None
+                cropped = _crop_page_image(page_image, bbox) if page_image else _render_pdf_region(source_path, page_number, bbox)
                 if cropped:
                     items.append(ParsedItem(
                         "table", "table_recovery", page_number=page_number, bbox=bbox,

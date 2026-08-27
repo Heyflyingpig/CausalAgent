@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -25,12 +26,119 @@ from .parsers import IMAGE_SUFFIXES, PAGE_QUALITY_GATE_VERSION, PAGE_QUALITY_MIN
 from .remote_policy import RemoteSamplePolicy
 from .table_recovery import TABLE_RECOVERY_ADAPTER_VERSION, RemoteVlmTableRecoveryProvider, TableRecoveryProvider, TableRecoveryResult, looks_like_markdown_table
 from .vision import PROMPT_VERSION, REQUIRED_MODEL, RESPONSE_ADAPTER_VERSION, VisionAnalyzer
+from observability.logging_runtime import log_event
 
 LOCAL_PARSE_CHECKPOINT_SCHEMA = "local-parse-v2"
 R3_DISCOVERY_CHECKPOINT_SCHEMA = "r3-discovery-v2"
 MAX_RETRY_GENERATION = 2
 CHECKPOINT_DATABASE_NAME = "checkpoints.sqlite3"
 _MISSING_VISION_RESULT = object()
+LOGGER = logging.getLogger(__name__)
+_MULTIMODAL_FAILURE_CATEGORIES = frozenset(
+    {
+        "cache_write_failed",
+        "connection",
+        "http_400",
+        "http_401",
+        "http_403",
+        "http_404",
+        "http_422",
+        "invalid_json",
+        "invalid_schema",
+        "quota_billing",
+        "quota_billing_circuit_open",
+        "rate_limited",
+        "server_error",
+        "timeout",
+        "unexpected_error",
+    }
+)
+
+
+def _exception_chain(exc: BaseException | None):
+    """遍历脱敏所需的异常链，不读取异常文本。"""
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _safe_status_code(exc: BaseException | None) -> int | None:
+    """只提取异常对象上已结构化且在 HTTP 范围内的状态码。"""
+    for candidate in _exception_chain(exc):
+        value = getattr(candidate, "status_code", None)
+        if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+            return value
+    return None
+
+
+def _stable_failure_reason(exc: BaseException | None, fallback: str) -> str:
+    """从异常链提取已注册的失败类别，未知类别回退到调用点错误码。"""
+    for candidate in _exception_chain(exc):
+        category = getattr(candidate, "category", None)
+        if category in _MULTIMODAL_FAILURE_CATEGORIES:
+            return category
+        if candidate is exc or not isinstance(candidate, Exception):
+            continue
+        try:
+            category = VisionAnalyzer._failure_category(candidate)
+        except Exception:
+            continue
+        if category in _MULTIMODAL_FAILURE_CATEGORIES and category != "unexpected_error":
+            return category
+    return fallback
+
+
+def _log_multimodal_parse_failure(
+    *,
+    phase: str,
+    reason_code: str,
+    source_alias: str | None = None,
+    page_number: int | None = None,
+    sequence_index: int | None = None,
+    sequence_kind: str | None = None,
+    exc: BaseException | None = None,
+) -> None:
+    """在解析边界写入固定目录事件，不携带异常文本、正文或路径。"""
+    effective_reason_code = _stable_failure_reason(exc, reason_code)
+    status_code = _safe_status_code(exc)
+    log_event(
+        LOGGER,
+        "rag.multimodal.parse_failed",
+        details={
+            "phase": phase,
+            "reason_code": effective_reason_code,
+            "source_alias": source_alias,
+            "page_number": max(0, int(page_number)) if page_number is not None else None,
+            "image_index": max(0, int(sequence_index)) if sequence_kind == "image" and sequence_index is not None else None,
+            "table_index": max(0, int(sequence_index)) if sequence_kind == "table" and sequence_index is not None else None,
+            "status_code": status_code,
+            "fallback_attempted": any(bool(getattr(candidate, "fallback_attempted", False)) for candidate in _exception_chain(exc)),
+            "circuit_breaker_open": any(
+                getattr(candidate, "category", None) in {"quota_billing", "quota_billing_circuit_open"}
+                or type(candidate).__name__ == "VisionCircuitOpenError"
+                for candidate in _exception_chain(exc)
+            ),
+        },
+    )
+
+
+def _log_page_parse_issues(issues: list[IngestionIssue], page_number: int, *, source_alias: str | None = None) -> None:
+    """只把资产缺失类解析 issue 提升为一次稳定事件。"""
+    reason_codes = {
+        "table_recovery_asset_missing",
+        "table_recovery_bbox_missing",
+    }
+    for issue in issues:
+        if issue.code in reason_codes:
+            _log_multimodal_parse_failure(
+                phase="local_parse",
+                reason_code=issue.code,
+                source_alias=source_alias,
+                page_number=page_number,
+            )
 
 class MultimodalKnowledgeBaseMaintenance:
     """为 CLI 与未来 HTTP adapter 提供单一维护入口。"""
@@ -463,6 +571,7 @@ class MultimodalKnowledgeBaseMaintenance:
                             self._write_local_parse_checkpoint(version_dir, document_id, page_number, local_checkpoint)
                         page_quality = {key: 0 for key in quality_keys}
                         page_issues = list(parsed.issues)
+                        _log_page_parse_issues(page_issues, page_number, source_alias=document_id)
                         page_artifacts = [
                             {"name": name, "asset_uri": store.put(document_id, name, payload, category="parsed"), "content_hash": sha256_bytes(payload)}
                             for name, payload in parsed.raw_artifacts
@@ -1438,6 +1547,15 @@ class MultimodalKnowledgeBaseMaintenance:
                     outbound_record = record
                 except Exception as exc:
                     quality["vision_failed_images"] += 1
+                    _log_multimodal_parse_failure(
+                        phase="table_recovery",
+                        reason_code="table_recovery_failed",
+                        source_alias=document_id,
+                        page_number=item.page_number,
+                        sequence_index=max(1, position % 10000),
+                        sequence_kind="table",
+                        exc=exc,
+                    )
                     issues.append(IngestionIssue(code="table_recovery_failed", message=f"表格恢复失败：{type(exc).__name__}", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
                     return None
             elif allow_remote_data and source_authorized and manifest_authorized:
@@ -1458,6 +1576,15 @@ class MultimodalKnowledgeBaseMaintenance:
                     outbound_record = record
                 except Exception as exc:
                     quality["vision_failed_images"] += 1
+                    _log_multimodal_parse_failure(
+                        phase="remote_image",
+                        reason_code="remote_image_failed",
+                        source_alias=document_id,
+                        page_number=item.page_number,
+                        sequence_index=max(1, position % 10000),
+                        sequence_kind="image",
+                        exc=exc,
+                    )
                     issues.append(IngestionIssue(code="remote_image_failed", message=f"远程图片分析失败：{type(exc).__name__}", severity=IssueSeverity.ERROR, blocking=True, source_path=str(path)))
                     return None
             elif allow_remote_data:
