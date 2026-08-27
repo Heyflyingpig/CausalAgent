@@ -167,6 +167,7 @@ def test_rag_evidence_answer_failure_returns_insufficient_evidence(monkeypatch):
         )
 
     monkeypatch.setattr(query_rag, "invoke_structured", fail_structured)
+    monkeypatch.setattr(query_rag, "_get_llm", lambda: object())
     result = query_rag._answer_question(
         {
             "question": "PC 算法有什么限制？",

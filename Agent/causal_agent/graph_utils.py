@@ -23,6 +23,10 @@ _TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 def _runtime_guard(runtime: Runtime):
     """读取 LangGraph runtime context；测试/旧直接调用退回当前异步上下文。"""
     context = getattr(runtime, "context", None)
+    # 新调用链传入 AgentRunContext，旧的直接图调用和测试则可能把
+    # JobExecutionGuard 本身作为 context；两种形式都必须保留取消/失租检查。
+    if hasattr(context, "ensure_active"):
+        return context
     guard = getattr(context, "execution_guard", None)
     return guard if hasattr(guard, "ensure_active") else current_execution_guard()
 
@@ -264,7 +268,7 @@ def guarded_context_router(func):
 def guarded_error_handler(
     func,
     *,
-    event_node_name: str,
+    event_node_name: str | None = None,
     timeout_ms: int = 0,
     fallback: str | None = None,
     mcp_transport: bool = False,
@@ -276,7 +280,8 @@ def guarded_error_handler(
         error: NodeError,
         runtime: Runtime,
     ):
-        with _node_log_context(state, event_node_name):
+        node_name = event_node_name or getattr(func, "__name__", "guarded_error_handler")
+        with _node_log_context(state, node_name):
             guard = _runtime_guard(runtime)
             if guard is not None:
                 await guard.ensure_active()
@@ -320,7 +325,7 @@ def guarded_error_handler(
                         LOGGER,
                         "job.node.degraded",
                         details={
-                            "failure_kind": _failure_kind(error, event_node_name),
+                            "failure_kind": _failure_kind(error, node_name),
                             "final_attempt": final_attempt,
                             "fallback": fallback_name,
                         },

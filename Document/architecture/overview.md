@@ -46,7 +46,7 @@ flowchart LR
 
 默认开发 Compose `docker-compose.yml` 当前包含八个服务：`mysql-primary`、`mysql-replica`、`postgres-checkpoint`、`db-bootstrap`、`app`、`worker`、`monitor` 和 `checkpoint-cleanup`。`db-bootstrap` 成功后，依赖它的运行服务才启动；开发拓扑没有自动故障切换。
 
-生产 Compose `docker-compose.prod.yml` 使用生产命名的 MySQL、PostgreSQL checkpoint、`app`、`worker`、`monitor`、`checkpoint-cleanup` 和 `db-bootstrap` 服务。它不是开发主从 Compose 的自动升级版，生产数据、网络和镜像由生产配置单独管理。部署入口见 [`../development/deployment.md`](../development/deployment.md)。
+当前生产 Compose `docker-compose.prod.yml` 实际包含生产 MySQL、PostgreSQL checkpoint、`db-bootstrap`、`app`、Agent `worker`、`checkpoint-cleanup`、`monitor` 和独立 `rag-eval-worker` 服务；它不提供开发拓扑的 MySQL replica、SearXNG/Valkey、Loki/Alloy/Grafana 或自动故障切换。部署入口见 [`../development/deployment.md`](../development/deployment.md)。
 
 ## 组件边界
 

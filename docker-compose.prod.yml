@@ -49,7 +49,7 @@ services:
       - causalagent_network_prod
     
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping --protocol=tcp -h 127.0.0.1 -P 3306 -u root"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -145,6 +145,11 @@ services:
       - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
       - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
       - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=${CHECKPOINT_POSTGRES_POOL_MAX_SIZE:-5}
+      - JOB_WORKERS=${JOB_WORKERS:-2}
+      - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
+      - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
+      - JOB_CHAT_HISTORY_LIMIT=${JOB_CHAT_HISTORY_LIMIT:-20}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
@@ -164,6 +169,8 @@ services:
       
       # === 关键区别5：生产环境变量 ===
       - FLASK_ENV=production
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
       
       # 原因：
       # - production模式关闭调试信息
@@ -188,9 +195,20 @@ services:
       # 代码已经在构建时COPY到镜像内了
       
       # 只挂载需要持久化的数据
-      - ./knowledge_base/db:/app/knowledge_base/db
-      - ./static/generated_graphs:/app/static/generated_graphs
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/source:/app/Agent/knowledge_base/source:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - ./Agent/knowledge_base/multimodal_indexes:/app/Agent/knowledge_base/multimodal_indexes:ro
+      - ./Agent/knowledge_base/multimodal_runtime:/app/Agent/knowledge_base/multimodal_runtime:ro
+      - ./Agent/knowledge_base/multimodal_assets:/app/Agent/knowledge_base/multimodal_assets:ro
+      - ./Agent/knowledge_base/rag/runtime:/app/Agent/knowledge_base/rag/runtime:ro
+      - ./app/static/generated_graphs:/app/app/static/generated_graphs
       - app_logs_prod:/app/logs  # 新增：应用日志持久化
+      - rag_eval_isolated_runs:/app/tmp/rag_eval/runs                    # 隔离运行目录（与 rag-eval-worker 共享）
+      - rag_eval_sources:/app/tmp/rag_eval/sources                       # 知识源目录（与 rag-eval-worker 共享）
+      - rag_eval_datasets:/app/tmp/rag_eval/datasets/registered          # 数据集目录（与 rag-eval-worker 共享）
+      - rag_eval_artifacts:/app/tmp/rag_eval/artifacts
+      - rag_eval_reports:/app/tmp/rag_eval/reports
     
     # 原因：
     # - 代码在镜像内，不依赖宿主机文件系统
@@ -199,6 +217,10 @@ services:
     # - 不会因为误修改文件导致问题
     
     depends_on:
+      mysql:
+        condition: service_healthy
+      postgres-checkpoint:
+        condition: service_healthy
       db-bootstrap:
         condition: service_completed_successfully
     
@@ -227,36 +249,6 @@ services:
     # 注意：deploy配置需要Docker Swarm或Kubernetes
     # 如果是单机部署，使用docker run的--cpus和--memory参数
 
-  db-bootstrap:
-    image: causalagent:latest
-    container_name: causalagent_db_bootstrap_prod
-    command: python -m Database.bootstrap
-    environment:
-      - MYSQL_HOST=mysql
-      - MYSQL_WRITE_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-      - MYSQL_USER=${MYSQL_USER}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
-      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
-      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
-      - MYSQL_DATABASE=${MYSQL_DATABASE}
-      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
-      - CHECKPOINT_POSTGRES_PORT=5432
-      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
-      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
-      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
-      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
-      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
-      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=2
-    depends_on:
-      mysql:
-        condition: service_healthy
-      postgres-checkpoint:
-        condition: service_healthy
-    networks:
-      - causalagent_network_prod
-
   worker:
     image: causalagent:latest
     container_name: causalagent_worker_prod
@@ -273,6 +265,12 @@ services:
       - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
       - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
       - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-5}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
+      - MYSQL_CONNECT_TIMEOUT_SECONDS=${MYSQL_CONNECT_TIMEOUT_SECONDS:-5}
+      - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
+      - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
       - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
       - CHECKPOINT_POSTGRES_PORT=5432
       - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
@@ -284,18 +282,27 @@ services:
       - JOB_WORKERS=${JOB_WORKERS:-2}
       - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
+      - JOB_DRAIN_TIMEOUT_SECONDS=${JOB_DRAIN_TIMEOUT_SECONDS:-60}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
       - JOB_CHAT_HISTORY_LIMIT=${JOB_CHAT_HISTORY_LIMIT:-20}
+      - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-searxng}
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
       - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=production
+      - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
-      - FLASK_ENV=production
     volumes:
-      - ./knowledge_base/db:/app/knowledge_base/db
-      - ./static/generated_graphs:/app/static/generated_graphs
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/source:/app/Agent/knowledge_base/source:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - ./Agent/knowledge_base/multimodal_indexes:/app/Agent/knowledge_base/multimodal_indexes:ro
+      - ./Agent/knowledge_base/multimodal_runtime:/app/Agent/knowledge_base/multimodal_runtime:ro
+      - ./Agent/knowledge_base/multimodal_assets:/app/Agent/knowledge_base/multimodal_assets:ro
+      - ./Agent/knowledge_base/rag/runtime:/app/Agent/knowledge_base/rag/runtime:ro
       - app_logs_prod:/app/logs
     depends_on:
       db-bootstrap:
@@ -303,6 +310,7 @@ services:
     networks:
       - causalagent_network_prod
     restart: unless-stopped
+    stop_grace_period: 75s
     logging:
       driver: "json-file"
       options:
@@ -325,6 +333,11 @@ services:
       - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
       - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
       - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-3}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-1}
+      - MYSQL_CONNECT_TIMEOUT_SECONDS=${MYSQL_CONNECT_TIMEOUT_SECONDS:-5}
+      - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
       - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
       - CHECKPOINT_POSTGRES_PORT=5432
       - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
@@ -336,6 +349,13 @@ services:
       - CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS=${CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS:-1}
       - CHECKPOINT_CLEANUP_HEARTBEAT_INTERVAL_SECONDS=${CHECKPOINT_CLEANUP_HEARTBEAT_INTERVAL_SECONDS:-10}
       - CHECKPOINT_CLEANUP_LEASE_SECONDS=${CHECKPOINT_CLEANUP_LEASE_SECONDS:-300}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=production
+    volumes:
+      - app_logs_prod:/app/logs
     depends_on:
       db-bootstrap:
         condition: service_completed_successfully
@@ -364,13 +384,15 @@ services:
       - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
       - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
       - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
+      - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
       - CHECKPOINT_POSTGRES_PORT=5432
       - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
       - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
       - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
       - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
-      - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=${CHECKPOINT_POSTGRES_POOL_MAX_SIZE:-5}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
@@ -390,6 +412,10 @@ services:
       - FLASK_ENV=production
 
     depends_on:
+      mysql:
+        condition: service_healthy
+      postgres-checkpoint:
+        condition: service_healthy
       db-bootstrap:
         condition: service_completed_successfully
 
@@ -403,6 +429,105 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  rag-eval-worker:
+    image: causalagent:latest
+    container_name: causalagent_rag_eval_worker_prod
+    command: python -m app.rag_eval.worker
+
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-5}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
+      - MYSQL_CONNECT_TIMEOUT_SECONDS=${MYSQL_CONNECT_TIMEOUT_SECONDS:-5}
+      - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
+      - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
+      - RAG_EVAL_EVALUATION_WORKERS=${RAG_EVAL_EVALUATION_WORKERS:-5}
+      - RAG_EVAL_INGESTION_CONCURRENCY_LIMIT=${RAG_EVAL_INGESTION_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT=${RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT:-3}
+      - RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT=${RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT:-2}
+      - RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS:-1}
+      - RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS=${RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
+      - RAG_EVAL_EVALUATION_STALE_AFTER_SECONDS=${RAG_EVAL_EVALUATION_STALE_AFTER_SECONDS:-1800}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=production
+      - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
+
+    volumes:
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/source:/app/Agent/knowledge_base/source:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - rag_eval_isolated_runs:/app/tmp/rag_eval/runs
+      - rag_eval_sources:/app/tmp/rag_eval/sources
+      - rag_eval_datasets:/app/tmp/rag_eval/datasets/registered
+      - rag_eval_artifacts:/app/tmp/rag_eval/artifacts
+      - rag_eval_reports:/app/tmp/rag_eval/reports
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+
+    networks:
+      - causalagent_network_prod
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  db-bootstrap:
+    image: causalagent:latest
+    container_name: causalagent_db_bootstrap_prod
+    command: python -m Database.bootstrap
+
+    environment:
+      - MYSQL_HOST=mysql
+      - MYSQL_WRITE_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=2
+      - FLASK_ENV=production
+
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres-checkpoint:
+        condition: service_healthy
+
+    networks:
+      - causalagent_network_prod
 
 networks:
   causalagent_network_prod:
@@ -424,6 +549,21 @@ volumes:
     driver: local
   
   app_logs_prod:
+    driver: local
+
+  rag_eval_isolated_runs:
+    driver: local
+
+  rag_eval_sources:
+    driver: local
+
+  rag_eval_datasets:
+    driver: local
+
+  rag_eval_artifacts:
+    driver: local
+
+  rag_eval_reports:
     driver: local
 
 # ==========================================

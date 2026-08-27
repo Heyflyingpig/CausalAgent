@@ -1,0 +1,204 @@
+{
+  "schema_version": "rag_eval_production_acceptance_v1",
+  "default_layer": "contract",
+  "checks": [
+    {
+      "id": "contract.api.run_lifecycle",
+      "layer": "contract",
+      "capability": "通用隔离评测 run lifecycle API",
+      "source_format": "not_applicable",
+      "runner": "unittest",
+      "target": "tests.test_rag_eval_run_lifecycle",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["repository_metadata"]
+    },
+    {
+      "id": "contract.api.deprecated_compatibility",
+      "layer": "contract",
+      "capability": "旧隔离评测 API 的弃用兼容合同",
+      "source_format": "not_applicable",
+      "runner": "unittest",
+      "target": "tests.test_rag_eval_run_lifecycle",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["repository_metadata"]
+    },
+    {
+      "id": "contract.datasets.registry_and_ref",
+      "layer": "contract",
+      "capability": "评测数据集注册表与 dataset_ref 身份解析",
+      "source_format": "not_applicable",
+      "runner": "unittest",
+      "target": "tests.test_rag_eval_dataset_registry",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "contract.index.binding_gate",
+      "layer": "contract",
+      "capability": "staged index 身份绑定与发布门禁",
+      "source_format": "not_applicable",
+      "runner": "unittest",
+      "target": "tests.test_rag_eval_index_binding",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "contract.queue.capacity",
+      "layer": "contract",
+      "capability": "隔离评测队列容量只读合同",
+      "source_format": "not_applicable",
+      "runner": "unittest",
+      "target": "tests.test_rag_eval_queue_capacity",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "contract.multimodal.pdf",
+      "layer": "contract",
+      "capability": "PDF 来源格式与页级摄取合同",
+      "source_format": "pdf",
+      "runner": "unittest",
+      "target": "tests.test_multimodal_contracts",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "contract.multimodal.txt",
+      "layer": "contract",
+      "capability": "纯文本来源格式合同",
+      "source_format": "txt",
+      "runner": "unittest",
+      "target": "tests.test_multimodal_contracts",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "contract.multimodal.markdown",
+      "layer": "contract",
+      "capability": "Markdown 来源格式合同",
+      "source_format": "markdown",
+      "runner": "unittest",
+      "target": "tests.test_multimodal_contracts",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "contract.multimodal.csv",
+      "layer": "contract",
+      "capability": "CSV 来源格式合同",
+      "source_format": "csv",
+      "runner": "unittest",
+      "target": "tests.test_multimodal_contracts",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "contract.multimodal.xlsx",
+      "layer": "contract",
+      "capability": "XLSX 来源格式合同",
+      "source_format": "xlsx",
+      "runner": "unittest",
+      "target": "tests.test_multimodal_contracts",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "contract.multimodal.image",
+      "layer": "contract",
+      "capability": "图片来源格式与授权边界合同",
+      "source_format": "image",
+      "runner": "unittest",
+      "target": "tests.test_multimodal_contracts",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "integration.multimodal.rag_eval",
+      "layer": "integration",
+      "capability": "多模态来源到隔离评测的临时 fixture 链路",
+      "source_format": "not_applicable",
+      "runner": "unittest",
+      "target": "tests.test_multimodal_rag_eval",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "integration.api.isolated_routes",
+      "layer": "integration",
+      "capability": "隔离评测路由与持久任务边界",
+      "source_format": "not_applicable",
+      "runner": "unittest",
+      "target": "tests.test_isolated_rag_eval_routes",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "integration.worker.queue",
+      "layer": "integration",
+      "capability": "隔离评测 worker 队列与租约收敛",
+      "source_format": "not_applicable",
+      "runner": "unittest",
+      "target": "tests.test_rag_eval_worker_queue",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["temporary_fixture"]
+    },
+    {
+      "id": "integration.compose.develop_contract",
+      "layer": "integration",
+      "capability": "默认开发 Compose 静态部署合同",
+      "source_format": "not_applicable",
+      "runner": "compose",
+      "target": "docker-compose.yml",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["repository_metadata"]
+    },
+    {
+      "id": "integration.compose.replica_contract",
+      "layer": "integration",
+      "capability": "兼容副本 Compose 静态部署合同",
+      "source_format": "not_applicable",
+      "runner": "compose",
+      "target": "docker-compose.replica.yml",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["repository_metadata"]
+    },
+    {
+      "id": "integration.migrations.single_head",
+      "layer": "integration",
+      "capability": "Alembic migration 单 head 合同",
+      "source_format": "not_applicable",
+      "runner": "alembic",
+      "target": "heads",
+      "expected": "single_head",
+      "mutates_external_state": false,
+      "requires": ["repository_metadata"]
+    },
+    {
+      "id": "production.repository_readiness",
+      "layer": "production",
+      "capability": "生产验收所需仓库元数据只读 readiness",
+      "source_format": "not_applicable",
+      "runner": "readiness",
+      "target": "repository_metadata",
+      "expected": "pass",
+      "mutates_external_state": false,
+      "requires": ["repository_metadata"]
+    }
+  ]
+}

@@ -26,7 +26,7 @@ services:
     networks:
       - causalagent_replica_network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping --protocol=tcp -h 127.0.0.1 -P 3306 -u root"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -70,7 +70,7 @@ services:
       mysql-primary:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping --protocol=tcp -h 127.0.0.1 -P 3306 -u root"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -81,6 +81,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: causalagent_app
+    command: ["sh", "-c", "exec gunicorn --bind 0.0.0.0:5001 --workers ${WEB_WORKERS:-1} --threads ${WEB_THREADS:-12} --timeout ${WEB_TIMEOUT:-120} CausalAgent:app"]
     labels:
       causalagent_observability: "true"
       causalagent_service: "web"
@@ -139,6 +140,8 @@ services:
       - JOB_CHAT_HISTORY_LIMIT=${JOB_CHAT_HISTORY_LIMIT:-20}
       - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-searxng}
       - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
       - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-20}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
@@ -155,6 +158,7 @@ services:
       - /app/杂项
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - ./tmp/rag_eval:/app/tmp/rag_eval
     depends_on:
       mysql-primary:
         condition: service_healthy
@@ -209,6 +213,7 @@ services:
       - JOB_WORKERS=${JOB_WORKERS:-2}
       - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
+      - JOB_DRAIN_TIMEOUT_SECONDS=${JOB_DRAIN_TIMEOUT_SECONDS:-60}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
       - JOB_CHAT_HISTORY_LIMIT=${JOB_CHAT_HISTORY_LIMIT:-20}
       - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-searxng}
@@ -236,6 +241,7 @@ services:
     networks:
       - causalagent_replica_network
     restart: unless-stopped
+    stop_grace_period: 75s
 
   db-bootstrap:
     build:
@@ -313,8 +319,78 @@ services:
       - CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS=${CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS:-1}
       - CHECKPOINT_CLEANUP_HEARTBEAT_INTERVAL_SECONDS=${CHECKPOINT_CLEANUP_HEARTBEAT_INTERVAL_SECONDS:-10}
       - CHECKPOINT_CLEANUP_LEASE_SECONDS=${CHECKPOINT_CLEANUP_LEASE_SECONDS:-300}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - SECRET_KEY=${SECRET_KEY}
     volumes:
       - .:/app
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - causalagent_replica_network
+    restart: unless-stopped
+
+  rag-eval-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: causalchat_rag_eval_worker
+    command: python -m app.rag_eval.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_READ_HOSTS=mysql-replica
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_REPLICA_STATUS_USER=${MYSQL_REPLICA_STATUS_USER:-}
+      - MYSQL_REPLICA_STATUS_PASSWORD=${MYSQL_REPLICA_STATUS_PASSWORD:-}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-5}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
+      - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
+      - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
+      - RAG_EVAL_EVALUATION_WORKERS=${RAG_EVAL_EVALUATION_WORKERS:-5}
+      - RAG_EVAL_INGESTION_CONCURRENCY_LIMIT=${RAG_EVAL_INGESTION_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT=${RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT:-3}
+      - RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT=${RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT:-2}
+      - RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS:-1}
+      - RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS=${RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
+      - RAG_EVAL_EVALUATION_STALE_AFTER_SECONDS=${RAG_EVAL_EVALUATION_STALE_AFTER_SECONDS:-1800}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=development
+      - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
+    volumes:
+      - .:/app
+      - /app/__pycache__
+      - /app/杂项
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - ./tmp/rag_eval:/app/tmp/rag_eval
     depends_on:
       mysql-primary:
         condition: service_healthy

@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | 后端 unit | `tests/unit/` | 单模块状态机、权限、Job fencing、结构化输出和 monitor 逻辑 |
 | 后端 integration | `tests/integration/` | 跨模块静态契约、日志政策、部署边界和 migration 链 |
+| RAG/多模态与隔离评测 | `tests/test_multimodal_*.py`、`tests/test_rag_eval_*.py`、`tests/acceptance/` | 来源/索引/release 契约、隔离队列与评测矩阵的分层检查 |
 | 管理员 Vue unit | `admin-frontend/tests/*.spec.ts` | API DTO、组件、看板/设置语义和 SQL digest 展示 |
 | 管理员 Mock E2E | `admin-frontend` `test:e2e:mock` | 无真实数据库的页面导航、鉴权和交互 |
 | 隔离 E2E | `tests/run_admin_31_e2e.ps1` / `run_admin_32_e2e.ps1` | 空库升级、migration 往返、主从、PostgreSQL checkpoint、受控写入/删除和普通用户回归 |
@@ -20,7 +21,7 @@
 
 RAG State 隔离和异常分流的单元测试位于 `tests/unit/agent/test_rag_subgraph_state.py`，覆盖 Planner 预检跳过 ToolNode、查询失败与协议错误标记、`success=False` Parser 路径、父 State 投影和取消/撤销传播。该测试使用 fake LLM、fake RAG tool 和导入桩，不覆盖真实模型、真实 MCP session、真实知识库向量检索或 PostgreSQL checkpoint。
 
-测试镜像基于 Dockerfile 的 `test` target，安装 `requirements-test.txt`。`unit-test` 服务不依赖 app/worker/monitor/MySQL，关闭容器网络，只读挂载仓库，并用 `tests/unit-test-env` 屏蔽项目 `.env`：
+测试镜像基于 Dockerfile 的 `test` target，安装 `requirements-test.txt`。`unit-test` 服务不依赖 app/worker/monitor/MySQL，关闭容器网络，只读挂载仓库，并通过 Compose `env_file` 注入 `tests/unit-test-env`；这些已注入环境变量优先于项目 `.env`：
 
 ```bash
 docker compose -f docker-compose.test.yml build unit-test
@@ -33,6 +34,38 @@ docker compose -f docker-compose.test.yml run --rm unit-test
 docker compose -f docker-compose.test.yml run --rm unit-test python -m pytest -p no:cacheprovider tests/unit/admin
 docker compose -f docker-compose.test.yml run --rm unit-test python -m pytest -p no:cacheprovider tests/unit/agent/test_job_lifecycle.py
 ```
+
+## RAG、多模态与隔离评测
+
+多模态来源、staged index、release publish/rollback、隔离来源与持久评测队列的 focused tests 位于 `tests/test_multimodal_*.py`、`tests/test_isolated_rag_eval_routes.py` 和 `tests/test_rag_eval_*.py`；RAG 子图 State 隔离与不可用降级由 `tests/unit/agent/test_rag_subgraph_state.py` 覆盖。它们使用 fixture/fake 或静态契约，不代表真实模型、远程 VLM、向量库、SearXNG 或生产数据已执行。
+
+声明式验收矩阵位于 `Document/rag_eval_production_acceptance_matrix.json`，安全 runner 位于 `tests/acceptance/run_rag_eval_production_acceptance.py`。从仓库根目录运行：
+
+```bash
+# 只列出 contract 检查，不执行检查或写入报告
+python tests/acceptance/run_rag_eval_production_acceptance.py --layer contract --list
+
+# 执行非变更 contract 检查
+python tests/acceptance/run_rag_eval_production_acceptance.py --layer contract
+
+# integration 层按矩阵执行静态/隔离检查
+python tests/acceptance/run_rag_eval_production_acceptance.py --layer integration
+
+# production 层必须显式确认，且仅做只读 readiness
+python tests/acceptance/run_rag_eval_production_acceptance.py --layer production --confirm-production-readiness
+```
+
+production 层不会摄取资料、调用外部 VLM/模型、运行完整评测、冻结题集、发布索引或切换 active pointer；contract、integration、静态 Compose、迁移 head 或 readiness 结果都不能写成真实生产验收通过。RAG 评测使用独立 `rag-eval-worker`、队列任务和产物目录，不等同于独立数据库或安全域。当前测试入口只保留新的 acceptance runner，不应重新添加已移除的旧入口。
+
+## 迁移链验证
+
+空库升级和 migration graph 检查必须确认唯一 head 为 `s4d5e6f7a8b9`：
+
+```bash
+python -m alembic heads
+```
+
+迁移 downgrade/upgrade 仅在隔离数据库执行，并指定明确 revision；不能用 `alembic downgrade -1` 代替合并迁移的回退验证。
 
 ## SearXNG 部署验证
 
@@ -56,7 +89,7 @@ powershell -ExecutionPolicy Bypass -File tests/run_searxng_docker_validation.ps1
 
 ## 日志与可观测性验证
 
-日志第二阶段的重点回归位于 `tests/unit/test_logging_runtime.py`、`test_event_catalog.py`、`test_noise_control.py`、`test_request_logging.py`、`tests/unit/agent/`、`tests/unit/database/test_database_logging.py` 和 `tests/integration/test_logging_policy.py`。它们覆盖事件目录和固定消息、非法合同安全降级、异常栈清理、请求/线程/异步任务/worker slot 上下文隔离、Job 终态、node 最终降级、RAG 计数日志、MCP 可信参数及 stdout/stderr、数据库/monitor/cleanup 转移，以及运行路径普通 logging 调用和敏感详情键的 AST 政策。
+日志第二阶段的重点回归位于 `tests/unit/test_event_catalog.py`、`tests/unit/test_request_context_contract.py`、`tests/unit/agent/` 和 `tests/integration/test_logging_policy.py`。它们覆盖事件目录和固定消息、请求/线程/异步任务/worker slot 上下文隔离、Job 终态、node 最终降级、RAG 计数日志、MCP 可信参数及 stdout/stderr、数据库/monitor/cleanup 转移，以及运行路径普通 logging 调用和敏感详情键的 AST 政策。
 
 日志改造必须运行完整 `unit-test` 服务，不能只运行新增文件。测试通过只证明代码级合同，不证明 Docker 日志驱动、Alloy、Loki、Grafana、positions、查询标签或真实模型/MCP 链路。
 
@@ -107,4 +140,4 @@ docker compose -f docker-compose.yml ps
 
 真实模型或知识库凭据不可用时，必须明确写为“未取得真实模型证据”，不能用 fake unit 测试替代。Docker daemon、Alloy validate、positions、上下文隔离、MCP stdout/可信参数或隐私检查任一失败时，不得标记第二阶段完成。
 
-所有文档变更还必须检查相对链接、顶部职责声明、失效路径和 `git diff --check`；如果任务涉及根 README 的入口或部署说明，还必须核对 README 中的命令、链接和目录导航。只有用户明确要求时才修改根 README；完整验收通过前不追加完成态 CHANGELOG。
+所有文档变更还必须检查相对链接、顶部职责声明、失效路径和旧 acceptance 入口引用，以及 `git diff --check`；如果任务涉及根 README 的入口或部署说明，还必须核对 README 中的命令、链接和目录导航。只有用户明确要求时才修改根 README；完整验收通过前不追加完成态 CHANGELOG。

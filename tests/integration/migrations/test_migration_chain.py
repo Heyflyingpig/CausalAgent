@@ -173,12 +173,8 @@ class AgentJobIdempotencyMigrationTests(unittest.TestCase):
         audit_text = Path("Database/deep_audit.py").read_text(encoding="utf-8")
 
         self.assertIn("table_name = 'analysis_jobs'", db_text)
-        self.assertIn(
-            "'request_id', 'idempotency_key', 'request_fingerprint', 'lease_epoch'",
-            db_text,
-        )
+        self.assertIn("'idempotency_key', 'request_fingerprint', 'lease_epoch'", db_text)
         self.assertIn("uq_analysis_jobs_user_idempotency", db_text)
-        self.assertIn('"request_id"', audit_text)
         self.assertIn('"idempotency_key"', audit_text)
         self.assertIn('"request_fingerprint"', audit_text)
         self.assertIn('"uq_analysis_jobs_user_idempotency"', audit_text)
@@ -265,29 +261,77 @@ class JobExecutionReleaseMigrationTests(unittest.TestCase):
         self.assertNotIn("DROP TABLE", downgrade)
 
 
-class AgentJobRequestIdMigrationTests(unittest.TestCase):
-    """验证创建 Job 的原始请求 ID migration 链路和回滚边界。"""
+class DevelopAndRagMergeMigrationTests(unittest.TestCase):
+    """验证 develop 权威链与重新编号后的 RAG 链最终只在新合流点汇合。"""
 
-    PATH = Path(
-        "Database/migrations/versions/c3d4e5f6a7b8_add_analysis_job_request_id.py"
-    )
+    def test_develop_authority_migrations_keep_original_revisions(self):
+        """develop 的文件库、执行释放、request ID 和 web search revision 不改写。"""
+        expected = {
+            "Database/migrations/versions/a1b2c3d4e5f6_add_file_library_and_job_recovery.py": (
+                'revision: str = "a1b2c3d4e5f6"',
+                'down_revision: Union[str, Sequence[str], None] = "f9a0b1c2d3e4"',
+            ),
+            "Database/migrations/versions/b2c3d4e5f6a7_add_job_execution_release_state.py": (
+                'revision: str = "b2c3d4e5f6a7"',
+                'down_revision: Union[str, Sequence[str], None] = "a1b2c3d4e5f6"',
+            ),
+            "Database/migrations/versions/c3d4e5f6a7b8_add_analysis_job_request_id.py": (
+                'revision: str = "c3d4e5f6a7b8"',
+                'down_revision: Union[str, Sequence[str], None] = "b2c3d4e5f6a7"',
+            ),
+            "Database/migrations/versions/a0b1c2d3e4f5_merge_web_search_and_request_id_heads.py": (
+                'revision: str = "a0b1c2d3e4f5"',
+                '"2d3e4f5a6b7c"',
+                '"c3d4e5f6a7b8"',
+            ),
+        }
+        for relative_path, fragments in expected.items():
+            text = Path(relative_path).read_text(encoding="utf-8")
+            for fragment in fragments:
+                self.assertIn(fragment, text, relative_path)
 
-    def test_migration_extends_actual_current_head_without_backfill_or_index(self):
-        """新 migration 必须承接 b2 head，历史记录保持 NULL 且不创建索引。"""
-        text = self.PATH.read_text(encoding="utf-8")
-        self.assertIn('revision: str = "c3d4e5f6a7b8"', text)
-        self.assertIn('down_revision: Union[str, Sequence[str], None] = "b2c3d4e5f6a7"', text)
-        self.assertIn("ADD COLUMN request_id VARCHAR(64) NULL", text)
-        self.assertIn("AFTER session_id", text)
-        self.assertNotIn("UPDATE analysis_jobs", text)
-        self.assertNotIn("ADD INDEX", text)
+    def test_rag_chain_is_renumbered_and_ends_at_new_merge_head(self):
+        """RAG DDL 使用唯一 revision，并经新无 DDL merge 汇入 develop head。"""
+        rag_files = {
+            "Database/migrations/versions/r1a2b3c4d5e6f_add_rag_eval_profiles.py": (
+                'revision: str = "r1a2b3c4d5e6f"',
+                'down_revision: Union[str, Sequence[str], None] = "e7a9b2c3d4f5"',
+            ),
+            "Database/migrations/versions/r2b3c4d5e6f7_add_rag_eval_jobs.py": (
+                'revision: str = "r2b3c4d5e6f7"',
+                'down_revision: Union[str, Sequence[str], None] = "r1a2b3c4d5e6f"',
+            ),
+            "Database/migrations/versions/r3c4d5e6f7a8_merge_rag_eval_and_postgres_heads.py": (
+                'revision: str = "r3c4d5e6f7a8"',
+                '"r2b3c4d5e6f7"',
+                '"f8b9c0d1e2f3"',
+            ),
+            "Database/migrations/versions/g7c8d9e0f1a2_add_rag_eval_job_kind.py": (
+                'down_revision: Union[str, Sequence[str], None] = "r3c4d5e6f7a8"',
+            ),
+            "Database/migrations/versions/s4d5e6f7a8b9_merge_develop_and_rag_eval.py": (
+                'revision: str = "s4d5e6f7a8b9"',
+                '"a0b1c2d3e4f5"',
+                '"i9e0f1a2b3c4"',
+                "不执行额外 schema 变更",
+            ),
+        }
+        for relative_path, fragments in rag_files.items():
+            text = Path(relative_path).read_text(encoding="utf-8")
+            for fragment in fragments:
+                self.assertIn(fragment, text, relative_path)
 
-    def test_downgrade_only_removes_request_id_column(self):
-        """回滚只能删除本 revision 的 request_id 字段。"""
-        text = self.PATH.read_text(encoding="utf-8")
-        downgrade = text.split("def downgrade()", 1)[1]
-        self.assertIn("DROP COLUMN request_id", downgrade)
-        self.assertNotIn("DROP TABLE", downgrade)
+    def test_equivalent_feature_migrations_are_not_in_revision_directory(self):
+        """等价 feature 文件和旧的依赖其上的合流点不能残留。"""
+        for filename in (
+            "j0a1b2c3d4e5_add_file_library_and_job_recovery.py",
+            "k0b2c3d4e5f6_add_job_execution_release_state.py",
+            "j9e0f1a2b3c4_merge_agent_jobs_and_rag_eval.py",
+        ):
+            self.assertFalse(
+                (Path("Database/migrations/versions") / filename).exists(),
+                filename,
+            )
 
 
 if __name__ == "__main__":

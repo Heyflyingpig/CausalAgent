@@ -96,7 +96,7 @@ class DatabaseBootstrap:
 
     def check_database_connection(self) -> bool:
         try:
-            conn = mysql.connector.connect(**self.mysql_config)
+            conn = self.open_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             row = cursor.fetchone()
@@ -107,12 +107,17 @@ class DatabaseBootstrap:
         except mysql.connector.Error:
             return False
 
+    def open_connection(self):
+        """打开供 bootstrap 的迁移前置检查使用的写库连接。"""
+        return mysql.connector.connect(**self.mysql_config)
+
     def bootstrap(self) -> bool:
         self.create_database_if_not_exists()
         return self.check_database_connection()
 
 
 def main() -> int:
+    """命令行入口：仅执行 MySQL 建库和连接检查。"""
     configure_logging("maintenance", current_environment(), logging.INFO)
     print("CausalAgent 数据库初始化引导")
     try:
