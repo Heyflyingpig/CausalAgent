@@ -17,6 +17,9 @@ const backToSettingsButton = document.getElementById('backToSettingsButton'); //
 const csvUploaderInput = document.getElementById('csvUploader'); // 获取CSV上传器
 const uploadCsvButton = document.getElementById('uploadCsvButton'); // 获取上传按钮
 const chatArea = document.getElementById('chatArea');
+const mainContainer = document.getElementById('mainContainer');
+const inputArea = document.getElementById('inputArea');
+const newChatWelcome = document.getElementById('newChatWelcome');
 const LAST_LOGIN_RECORD_FAILED_WARNING = 'last_login_record_failed';
 const LOGIN_WARNING_DURATION_MS = 3000;
 //全局变量存储当前会话的用户名
@@ -38,6 +41,14 @@ let currentLanguage = localStorage.getItem('language') || 'zh'; // 当前语言�
 const initialNavigationParams = new URLSearchParams(window.location.search);
 let requestedLoginNext = initialNavigationParams.get('next');
 let pendingNavigationNotice = initialNavigationParams.get('notice');
+const chatLayoutState = ChatLayoutState.createState(
+    mainContainer?.classList.contains('is-conversation')
+        ? ChatLayoutState.CONVERSATION
+        : ChatLayoutState.NEW_CHAT,
+);
+let inputLayoutAnimationCleanup = null;
+const CHAT_LAYOUT_ANIMATION_DURATION_MS = 300;
+const CHAT_LAYOUT_ANIMATION_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 // 多语言文本配置
 const i18n = {
@@ -90,7 +101,8 @@ const i18n = {
         thinking: '正在思考...',
         thinkingWait: '请稍等...',
         inProgress: '进行中...',
-        newChatGreeting: '你好！这是一个新的对话。你想聊些什么？你可以上传因果的数据文件，我将对该文件进行分析',
+        newChatTitle: '上传因果数据文件，开始因果分析',
+        newChatDescription: '我会基于你上传的数据进行分析并生成因果关系结果。',
         uploading: '上传中...',
         uploadingFile: '正在上传文件: ',
         fileReceived: '已接收您的文件：',
@@ -151,7 +163,8 @@ const i18n = {
         thinking: 'Thinking...',
         thinkingWait: 'please wait...',
         inProgress: 'In progress...',
-        newChatGreeting: 'Hello! This is a new conversation. What would you like to talk about? You can upload a causal data file for analysis.',
+        newChatTitle: 'Upload a causal data file to start causal analysis',
+        newChatDescription: 'I will analyze your uploaded data and generate causal relationship results.',
         uploading: 'Uploading...',
         uploadingFile: 'Uploading file: ',
         fileReceived: 'File received: ',
@@ -169,6 +182,108 @@ const i18n = {
 function getText(key) {
     return i18n[currentLanguage][key] || i18n['zh'][key] || key;
 }
+
+function syncChatLayoutStateClasses() {
+    if (!mainContainer) return;
+    const isNewChat = chatLayoutState.current === ChatLayoutState.NEW_CHAT;
+    mainContainer.classList.toggle('is-new-chat', isNewChat);
+    mainContainer.classList.toggle('is-conversation', !isNewChat);
+    mainContainer.dataset.layoutState = chatLayoutState.current;
+    newChatWelcome?.setAttribute('aria-hidden', String(!isNewChat));
+}
+
+function cancelInputLayoutAnimation() {
+    if (inputLayoutAnimationCleanup) {
+        inputLayoutAnimationCleanup();
+        inputLayoutAnimationCleanup = null;
+    }
+}
+
+function prefersReducedMotion() {
+    return typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function animateInputToConversation(previousRect) {
+    if (!inputArea || !previousRect || prefersReducedMotion()) return;
+
+    const nextRect = inputArea.getBoundingClientRect();
+    const deltaX = previousRect.left - nextRect.left;
+    const deltaY = previousRect.top - nextRect.top;
+    if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+
+    const originalTransition = inputArea.style.transition;
+    const originalTransform = inputArea.style.transform;
+    let timeoutId = null;
+    let cleanedUp = false;
+
+    const onTransitionEnd = event => {
+        if (event.propertyName === 'transform') cleanup();
+    };
+    const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        inputArea.removeEventListener('transitionend', onTransitionEnd);
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
+        inputArea.style.transition = originalTransition;
+        inputArea.style.transform = originalTransform;
+        if (inputLayoutAnimationCleanup === cleanup) {
+            inputLayoutAnimationCleanup = null;
+        }
+    };
+
+    inputLayoutAnimationCleanup = cleanup;
+    inputArea.style.transition = 'none';
+    inputArea.style.transform = 'translate3d(' + deltaX + 'px, ' + deltaY + 'px, 0)';
+    inputArea.getBoundingClientRect();
+    inputArea.addEventListener('transitionend', onTransitionEnd);
+
+    const play = () => {
+        if (cleanedUp) return;
+        inputArea.style.transition = 'transform ' + CHAT_LAYOUT_ANIMATION_DURATION_MS
+            + 'ms ' + CHAT_LAYOUT_ANIMATION_EASING;
+        inputArea.style.transform = 'translate3d(0, 0, 0)';
+        timeoutId = window.setTimeout(
+            cleanup,
+            CHAT_LAYOUT_ANIMATION_DURATION_MS + 80,
+        );
+    };
+    if (typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(play);
+    } else {
+        window.setTimeout(play, 0);
+    }
+}
+
+function setChatLayoutState(nextState, { animate = true } = {}) {
+    if (!mainContainer) return false;
+
+    const normalizedState = nextState === ChatLayoutState.CONVERSATION
+        ? ChatLayoutState.CONVERSATION
+        : ChatLayoutState.NEW_CHAT;
+    const previousState = chatLayoutState.current;
+    const changed = previousState !== normalizedState;
+    if (!changed) {
+        syncChatLayoutStateClasses();
+        return false;
+    }
+
+    cancelInputLayoutAnimation();
+    const shouldAnimate = animate
+        && previousState === ChatLayoutState.NEW_CHAT
+        && normalizedState === ChatLayoutState.CONVERSATION
+        && inputArea
+        && !prefersReducedMotion();
+    const previousRect = shouldAnimate ? inputArea.getBoundingClientRect() : null;
+
+    ChatLayoutState.setState(chatLayoutState, normalizedState);
+    syncChatLayoutStateClasses();
+
+    if (shouldAnimate) animateInputToConversation(previousRect);
+    return true;
+}
+
+syncChatLayoutStateClasses();
 
 function formatSelectedFileSize(bytes) {
     const size = Number(bytes);
@@ -573,6 +688,7 @@ async function handleLogout() {
             currentUsername = null; //  清除全局变量
             currentUserRole = null;
             currentSessionId = null;
+            isNewSessionPendingDisplay = false;
             clearSelectedUserFile();
             setWaitingJob(null);
             closeAllActiveJobStreams();
@@ -583,6 +699,7 @@ async function handleLogout() {
             registerForm.style.display = 'none';
             closeUserInfoPopup(); // 关闭用户信息弹窗
             document.getElementById('chatArea').innerHTML = ''; // 清空聊天区域
+            setChatLayoutState(ChatLayoutState.NEW_CHAT, { animate: false });
             historyList.innerHTML = ''; // 清空历史列表
             fileList.innerHTML = ''; //  清空文件列表 
             updateUserInfo(); // 清空头像等信息
@@ -1213,9 +1330,14 @@ async function sendMessage() {
         return;
     }
 
+    if (!currentSessionId && chatLayoutState.current !== ChatLayoutState.NEW_CHAT) {
+        setChatLayoutState(ChatLayoutState.NEW_CHAT, { animate: false });
+    }
+
     const resumeJob = activeJob?.status === 'waiting_input' ? activeJob : null;
     const resumeAfterEventId = resumeJob ? (resumeJob.last_event_id || 0) : 0;
 
+    if (!ChatLayoutState.beginSend(chatLayoutState)) return;
     sendRequestInFlight = true;
     renderActiveJobControl();
 
@@ -1231,6 +1353,7 @@ async function sendMessage() {
                 console.log(`新会话ID已获取: ${currentSessionId}`);
             } else {
                 showError(data.error || "创建新对话失败。");
+                ChatLayoutState.endSend(chatLayoutState);
                 sendRequestInFlight = false;
                 renderActiveJobControl();
                 return; // 创建失败则中止发送
@@ -1238,29 +1361,19 @@ async function sendMessage() {
         } catch (error) {
             showError("创建新对话时发生网络错误。");
             console.error("创建新对话错误:", error);
+            ChatLayoutState.endSend(chatLayoutState);
             sendRequestInFlight = false;
             renderActiveJobControl();
             return; // 创建失败则中止发送
         }
     }
 
-    // 核心修改：如果是一个待显示的新会话，立即在UI上创建临时条目
-    if (!resumeJob && isNewSessionPendingDisplay) {
-        addTemporarySessionToUI(currentSessionId, message);
-        isNewSessionPendingDisplay = false; // 重置标志，防止重复创建
-    }
-
-    addMessage('user', message);
-    userInput.value = ''; // 清空输入框
-
-    // 创建思考过程元素（独立的气泡和详情面板）
-    const thinkingElements = addThinkingMessage();
-
+    let userMessageElement = null;
+    let thinkingElements = null;
     try {
         const idempotencyKey = createAgentRequestIdempotencyKey();
         let jobData;
         if (resumeJob) {
-            setWaitingJob(null);
             jobData = await requestJobResume(resumeJob, message, idempotencyKey);
         } else {
             const selectedFileId = selectedUserFile ? selectedUserFile.user_file_id : null;
@@ -1271,8 +1384,16 @@ async function sendMessage() {
                 selectedFileId,
                 webSearchEnabled,
             );
-            clearSelectedUserFile();
         }
+
+        // 请求已被后端接受后才将用户消息提交到可见聊天区，失败时欢迎态和草稿都可恢复。
+        userMessageElement = addMessage('user', message);
+        userInput.value = '';
+        thinkingElements = addThinkingMessage();
+        if (resumeJob) setWaitingJob(null);
+        setChatLayoutState(ChatLayoutState.CONVERSATION);
+        if (!resumeJob) clearSelectedUserFile();
+
         const activeJob = rememberActiveJob({
             ...jobData,
             job_id: jobData.job_id,
@@ -1287,7 +1408,12 @@ async function sendMessage() {
                 console.error(`订阅 Job ${activeJob.job_id} 的事件失败:`, error);
             }
         });
-        
+
+        if (!resumeJob && isNewSessionPendingDisplay) {
+            addTemporarySessionToUI(currentSessionId, message);
+            isNewSessionPendingDisplay = false;
+        }
+
         // 加载历史记录
         void loadHistory();
         
@@ -1295,16 +1421,19 @@ async function sendMessage() {
         console.error("发送消息时出错:", error);
         if (!error.streamHandled) {
             if (resumeJob) setWaitingJob(resumeJob);
-            stopThinkingDuration(thinkingElements);
-            if (thinkingElements.bubble && thinkingElements.bubble.parentNode) {
+            if (thinkingElements) stopThinkingDuration(thinkingElements);
+            if (thinkingElements?.bubble?.parentNode) {
                 thinkingElements.bubble.parentNode.removeChild(thinkingElements.bubble);
             }
-            if (thinkingElements.detailContainer && thinkingElements.detailContainer.parentNode) {
+            if (thinkingElements?.detailContainer?.parentNode) {
                 thinkingElements.detailContainer.parentNode.removeChild(thinkingElements.detailContainer);
             }
+            userMessageElement?.remove();
+            userInput.value = ChatLayoutState.restoreDraft(userInput.value, message);
             showError('发送消息时发生网络错误。');
         }
     } finally {
+        ChatLayoutState.endSend(chatLayoutState);
         sendRequestInFlight = false;
         renderActiveJobControl();
         userInput.focus(); // 重新聚焦到输入框，方便用户继续输入
@@ -1973,9 +2102,8 @@ async function handleNewChatRequest() {
     }
 
     console.log("正在为新聊天创建会话...");
-    clearSelectedUserFile();
-    setWaitingJob(null);
-    chatArea.innerHTML = '<div class="loading-spinner"></div>'; // 显示加载动画
+    const newChatButton = document.getElementById('newChatButton');
+    if (newChatButton) newChatButton.disabled = true;
 
     try {
         const response = await fetch('/api/new_chat', {
@@ -1984,14 +2112,15 @@ async function handleNewChatRequest() {
         });
 
         const data = await response.json();
-        chatArea.innerHTML = ''; // 清除加载动画
-
         if (data.success) {
+            clearSelectedUserFile();
+            setWaitingJob(null);
+            chatArea.innerHTML = '';
             currentSessionId = data.new_session_id;
             console.log(`新会话已创建: ${currentSessionId}`);
             isNewSessionPendingDisplay = true; //  标记这个新会话等待用户输入后在UI显示
             
-            addMessage('ai', getText('newChatGreeting'));
+            setChatLayoutState(ChatLayoutState.NEW_CHAT, { animate: false });
             document.getElementById('userInput').focus();
 
             // 继续保留临时条目，避免为一条空会话刷新整个历史列表。
@@ -1999,9 +2128,10 @@ async function handleNewChatRequest() {
             showError(data.error || "创建新对话失败。");
         }
     } catch (error) {
-        chatArea.innerHTML = ''; // 确保出错时也移除加载动画
         showError("创建新对话时发生网络错误。");
         console.error("创建新对话错误:", error);
+    } finally {
+        if (newChatButton) newChatButton.disabled = false;
     }
 }
 
@@ -2397,22 +2527,31 @@ async function loadSession(sessionId) {
     }
 
     console.log(`用户 ${currentUsername} 正在加载会话: ${sessionId}`);
-    chatArea.innerHTML = '<div class="loading-spinner"></div>'; // 显示加载动画
+    const loadingSpinner = document.createElement('div');
+    loadingSpinner.className = 'loading-spinner';
+    chatArea.appendChild(loadingSpinner);
 
     try {
         const response = await fetch(`/api/load_session?session=${sessionId}&user=${currentUsername}`);
         const data = await response.json();
 
-        chatArea.innerHTML = ''; // 清除加载动画
+        loadingSpinner.remove();
 
         if (data.success) {
+            const messages = Array.isArray(data.messages) ? data.messages : [];
             currentSessionId = sessionId; // < 核心修改：更新全局会话ID
             clearSelectedUserFile();
             setWaitingJob(null);
-            data.messages.forEach(msg => {
+            chatArea.innerHTML = '';
+            messages.forEach(msg => {
                 addMessage(msg.sender, msg.text);
                 if (msg.thinking_after) renderThinkingPhase(msg.thinking_after);
             });
+            isNewSessionPendingDisplay = messages.length === 0;
+            setChatLayoutState(
+                ChatLayoutState.stateForHistory(messages),
+                { animate: false },
+            );
             await restoreActiveJobs(sessionId);
             // 确保加载会话后事件监听器也是最新的
             // setupChatEventListeners();  // 不再需要，因为元素是持久的
@@ -2422,7 +2561,7 @@ async function loadSession(sessionId) {
             console.error("加载会话失败:", data.error);
         }
     } catch (error) {
-        chatArea.innerHTML = ''; // 确保出错时也移除加载动画
+        loadingSpinner.remove();
         showError("加载会话时发生网络错误。");
         console.error("加载会话错误:", error);
     }

@@ -140,6 +140,7 @@
         overflow: hidden;
         display: flex; /* 使用Flexbox布局 */
         flex-direction: column; /* 让聊天区和输入区垂直排列 */
+        box-sizing: border-box;
     }
     .container.sidebar-active {
         /* 当侧边栏激活时，主内容区向右推开 */
@@ -152,13 +153,79 @@
         overflow-y: auto; /* 长报告和历史消息只在聊天区域内滚动 */
         overflow-x: hidden;
         overscroll-behavior: contain;
-        padding: 20px; /* 内边距 */
+        box-sizing: border-box;
+        padding: 20px max(24px, calc((100% - 880px) / 2)); /* 内容列两侧保留安全间距 */
         transition: margin-left 0.3s;  /* 配合侧边栏的平滑过渡 */
         display: flex; /* 使用Flexbox布局 */
         flex-direction: column; /* 让每条消息垂直排列 */
         gap: 20px; /* 设置每条消息之间的垂直间距 */
         position: relative; /* 为伪元素水印的定位提供基准 */
                     }
+
+    /* 新会话把欢迎区和输入框作为一个整体在剩余内容区居中。 */
+    .new-chat-stage {
+        display: flex;
+        flex: 0 0 auto;
+        min-height: 0;
+        width: 100%;
+        box-sizing: border-box;
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .container.is-new-chat .chat-area {
+        display: none;
+    }
+
+    .container.is-new-chat .new-chat-stage {
+        flex: 1 1 auto;
+        justify-content: center;
+        gap: 24px;
+        padding: 24px;
+        overflow-y: auto;
+    }
+
+    .container.is-conversation .new-chat-stage {
+        justify-content: flex-end;
+        padding: 0 24px 24px;
+    }
+
+    .new-chat-welcome {
+        width: min(100%, 880px);
+        max-height: 240px;
+        box-sizing: border-box;
+        overflow: hidden;
+        text-align: center;
+        opacity: 1;
+        transform: translateY(0);
+        transition:
+            max-height 200ms ease,
+            margin 200ms ease,
+            opacity 180ms ease,
+            transform 180ms ease;
+    }
+
+    .new-chat-welcome h1 {
+        margin: 0;
+        color: #1f2937;
+        font-size: clamp(1.5rem, 2.6vw, 2rem);
+        line-height: 1.3;
+    }
+
+    .new-chat-welcome p {
+        margin: 12px 0 0;
+        color: #6b7280;
+        font-size: 1rem;
+        line-height: 1.6;
+    }
+
+    .container.is-conversation .new-chat-welcome {
+        max-height: 0;
+        margin: 0;
+        opacity: 0;
+        transform: translateY(-8px);
+        pointer-events: none;
+    }
     
     /* 伪元素 */
     .chat-area::before {
@@ -268,13 +335,22 @@
         /* 页面底部的输入区域容器 */
         position: relative;
         flex: 0 0 auto; /* 输入区域固定在聊天滚动区域之外 */
-        background: white; /* 白色背景，覆盖下方内容 */
+        width: min(100%, 880px);
+        max-width: 880px;
+        min-width: 0;
+        box-sizing: border-box;
+        margin-inline: auto;
+        background: #fff;
         padding: 15px 20px 18px; /* 内边距 */
-        box-shadow: 0 -2px 10px rgba(0,0,0,0.05); /* 顶部的细微阴影，与聊天区分隔 */
+        border: 1px solid #e2e5e9;
+        border-radius: 18px;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.08);
         display: flex; /* 使用Flexbox布局 */
         flex-direction: column;
         align-items: stretch;
         gap: 12px;
+        z-index: 2;
+        will-change: transform;
     }
 
     /* 让输入框占据剩余空间 */
@@ -284,11 +360,18 @@
         width: 100%;
         min-height: 96px;
         box-sizing: border-box;
-        border: 1px solid #ccc; /* 灰色边框 */
-        border-radius: 5px; /* 边框圆角 */
+        border: 0;
+        border-radius: 12px;
         padding: 10px; /* 内边距 */
         font-size: 1em; /* 字体大小 */
         resize: none;  /* 禁止用户手动调整输入框大小 */
+        outline: none;
+        background: transparent;
+    }
+
+    .input-area:focus-within {
+        border-color: #cbd5e1;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.08), 0 0 0 3px rgba(0, 123, 255, 0.1);
     }
 
     .input-actions {
@@ -297,6 +380,7 @@
         justify-content: flex-end;
         gap: 10px;
         width: 100%;
+        flex-wrap: wrap;
     }
 
     /* 发送按钮样式 */
@@ -455,11 +539,13 @@
     .message {
         /* 所有消息（用户和AI）的通用容器 */
         display: flex; /* 使用Flexbox布局 */
-        max-width: min(80%, 880px); /* 消息最大宽度不超过父容器的80% */
+        width: 100%;
+        max-width: 880px;
         min-width: 0;
         position: relative; /* 为内部绝对定位的元素提供基准 */
         z-index: 1; /* 确保消息在水印之上 */
         margin-bottom: 10px; /* 消息之间的外边距 */
+        margin-inline: auto;
     }
 
     .message .content {
@@ -479,12 +565,15 @@
     .user-message {
         /* 用户消息的容器 */
         align-self: flex-end; /* 在.chat-area中靠右对齐 */
-        
+        justify-content: flex-end;
     }
 
     .user-message .content {
         /* 用户消息的气泡样式 */
         background-color: #dcf8c6; /* 类似微信的淡绿色 */
+        padding: 7px 15px;
+        width: fit-content;
+        max-width: 80%;
     }
 
 
@@ -1107,11 +1196,12 @@
 
 /* 顶部总耗时入口，保持与普通 AI 文本相同的无背景布局。 */
 .thinking-bubble {
-    align-self: flex-start;
-    width: min(80%, 880px);
+    align-self: center;
+    width: 100%;
     max-width: 880px;
     box-sizing: border-box;
     margin-bottom: 2px;
+    margin-inline: auto;
     color: #6b7280;
 }
 
@@ -1174,14 +1264,15 @@
 
 /* 展开后的详情是直接文本流，不再使用边框、阴影或白色面板。 */
 .thinking-detail-container {
-    width: min(80%, 880px);
+    width: 100%;
     max-width: 880px;
     box-sizing: border-box;
-    align-self: flex-start;
+    align-self: center;
     /* chat-area 的通用 gap 不应在入口和详情之间再制造一段空白。 */
     margin-top: -20px;
     margin-bottom: 12px;
     padding-left: 24px;
+    margin-inline: auto;
 }
 
 .thinking-detail {
@@ -1308,8 +1399,8 @@
 
     .thinking-bubble,
     .thinking-detail-container {
-        width: 95%;
-        max-width: 95%;
+        width: 100%;
+        max-width: 880px;
     }
 
     .thinking-detail-container {
@@ -1341,6 +1432,12 @@
 
 @keyframes draft-caret {
     50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .new-chat-welcome {
+        transition: none;
+    }
 }
 
 
