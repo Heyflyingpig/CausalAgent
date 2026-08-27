@@ -569,48 +569,59 @@ volumes:
 # ==========================================
 # 部署说明
 # ==========================================
+# 注意：当前 app、worker、monitor、checkpoint-cleanup、rag-eval-worker 和
+# db-bootstrap 的 image 字段仍兼容旧的 `causalagent:latest` 本地演练。
+# 稳定发布前必须将它们
+# 统一替换为已经测试、扫描并记录摘要的 registry tag 或 digest；生产机不从
+# 源码构建，也不使用 `--build`。详见 Document/development/deployment.md。
 # 
 # 首次部署：
 #   1. 在服务器上准备代码和配置
-#      git clone https://github.com/your-repo/CausalAgent.git
+#      git clone https://github.com/Heyflyingpig/CausalAgent.git
 #      cd CausalAgent
 #   
 #   2. 创建生产环境配置
-#      cp env.example .env
+#      cp .env.example .env
 #      nano .env  # 填入生产环境的真实值
 #   
-#   3. 构建镜像（如果需要）
-#      docker build -t causalagent:v1.0.0 .
-#      docker tag causalagent:v1.0.0 causalagent:latest
+#   3. 准备 CI/CD 已验证的不可变镜像
+#      例如：<registry>/causalagent:v1.0.0 或 <registry>/causalagent@sha256:<digest>
+#      将本文件中上述服务的 image 统一指向同一个已批准的 tag/digest
+#      docker compose -f docker-compose.prod.yml pull
 #   
 #   4. 启动服务
-#      docker-compose -f docker-compose.prod.yml up -d
+#      docker compose -f docker-compose.prod.yml config --quiet
+#      docker compose -f docker-compose.prod.yml up -d
 #   
 #   5. 初始化数据库
 #      up 会等待一次性 db-bootstrap 完成 MySQL migration 与 PostgreSQL setup
 #   
 #   6. 检查状态
-#      docker-compose -f docker-compose.prod.yml ps
-#      docker-compose -f docker-compose.prod.yml logs -f
+#      docker compose -f docker-compose.prod.yml ps
+#      docker compose -f docker-compose.prod.yml logs -f
 #
 # 更新部署：
 #   1. 拉取新代码
 #      git pull
 #   
-#   2. 重新构建镜像
-#      docker build -t causalagent:v1.1.0 .
-#      docker tag causalagent:v1.1.0 causalagent:latest
+#   2. 由 CI 构建、测试、扫描并推送新版本镜像；在本文件中更新所有应用服务的
+#      image 到新的不可变 tag/digest，然后只拉取该镜像
+#      docker compose -f docker-compose.prod.yml pull app worker monitor checkpoint-cleanup rag-eval-worker db-bootstrap
 #   
-#   3. 重启服务（滚动更新）
-#      docker-compose -f docker-compose.prod.yml up -d --no-deps --build app
-#      # --no-deps: 不重启依赖的服务（MySQL不受影响）
+#   3. 更新服务（不在生产机重新构建）
+#      docker compose -f docker-compose.prod.yml up -d db-bootstrap
+#      docker compose -f docker-compose.prod.yml up -d --no-deps app worker monitor checkpoint-cleanup rag-eval-worker
+#      # --no-deps: 不重启依赖的数据库服务；迁移仍须按发布窗口单独确认
 #   
 #   4. 验证
-#      docker-compose -f docker-compose.prod.yml logs -f app
+#      docker compose -f docker-compose.prod.yml ps
+#      docker compose -f docker-compose.prod.yml logs --tail=100 app worker monitor
 #
 # 回滚：
-#   docker tag causalagent:v1.0.0 causalagent:latest
-#   docker-compose -f docker-compose.prod.yml up -d app
+#   将所有应用服务的 image 恢复为上一版本 tag/digest，然后执行：
+#   docker compose -f docker-compose.prod.yml pull app worker monitor checkpoint-cleanup rag-eval-worker db-bootstrap
+#   docker compose -f docker-compose.prod.yml up -d db-bootstrap
+#   docker compose -f docker-compose.prod.yml up -d --no-deps app worker monitor checkpoint-cleanup rag-eval-worker
 #
 # 备份数据：
 #   docker run --rm \

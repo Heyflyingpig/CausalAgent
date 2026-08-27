@@ -193,7 +193,6 @@ def _log_connection_error(
             "reason_code": reason_code,
             "suppressed_count": decision.suppressed_count,
         },
-        exc_info=(type(err), err, err.__traceback__),
     )
 
 

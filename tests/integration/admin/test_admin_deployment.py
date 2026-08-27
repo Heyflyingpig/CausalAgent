@@ -92,6 +92,13 @@ class AdminFrontendDeploymentTests(unittest.TestCase):
         self.assertNotIn("GRANT SELECT ON performance_schema.*", script)
         self.assertNotIn("GRANT SELECT ON *.* TO '${APP_READ_USER}'", script)
 
+    def test_replica_config_remains_read_only_after_restart(self):
+        """从库配置必须在容器重启后继续禁止直接写入。"""
+        replica_config = Path("Database/mysql/conf/replica.cnf").read_text(encoding="utf-8")
+
+        self.assertIn("read_only=ON", replica_config)
+        self.assertIn("super_read_only=ON", replica_config)
+
     def test_rag_eval_dataset_and_concurrency_compose_contract(self):
         """三份运行 Compose 必须共享数据集目录并使用实际并发配置键。"""
         concurrency_defaults = {

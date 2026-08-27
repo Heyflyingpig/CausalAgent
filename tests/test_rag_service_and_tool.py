@@ -140,8 +140,8 @@ class RagServiceTests(unittest.TestCase):
         ):
             self.assertTrue(hasattr(query_rag, name), name)
 
-    def test_runtime_prioritizes_an_explicit_table_request_without_false_positives(self):
-        """显式图表请求走同模态 dense，普通“表达式”问题不得误触发。"""
+    def test_runtime_uses_unified_dense_retrieval_for_explicit_table_request(self):
+        """即使问题提到表，也只执行统一 dense 检索，不额外建立模态召回分支。"""
         from Agent.knowledge_base import query_rag
 
         general = {
@@ -152,42 +152,31 @@ class RagServiceTests(unittest.TestCase):
             },
             "rerank_score": 1.0,
         }
-        table = {
-            "page_content": "表格",
-            "metadata": {
-                "unit_id": "table", "chunk_id": "table", "doc_id": "doc",
-                "source_name": "source.pdf", "modality": "table",
-            },
-            "rerank_score": 0.5,
-        }
-
-        def fake_dense(_question, *args, **kwargs):
-            return [table] if kwargs.get("metadata_filter") == {"modality": "table"} else [general]
 
         config = query_rag.RagRetrievalConfig()
-        with patch.object(query_rag, "_dense_retrieve", side_effect=fake_dense), patch.object(
+        vector_db = object()
+        dense_mock = MagicMock(return_value=[general])
+        with patch.object(query_rag, "_dense_retrieve", dense_mock), patch.object(
             query_rag, "_select_mmr_candidates", return_value=[general]
         ), patch.object(query_rag, "_sparse_retrieve", return_value=[]), patch.object(
             query_rag, "_merge_candidates", return_value=[general]
         ):
-            explicit = query_rag._build_retrieval_trace_with_resources(
+            trace = query_rag._build_retrieval_trace_with_resources(
                 "表 6.1 中的恢复率是什么？",
                 config,
-                vector_db=object(),
-                embedding_function=object(),
-                sparse_retriever=object(),
-            )
-            ordinary = query_rag._build_retrieval_trace_with_resources(
-                "这个表达式是什么意思？",
-                config,
-                vector_db=object(),
+                vector_db=vector_db,
                 embedding_function=object(),
                 sparse_retriever=object(),
             )
 
         self.assertEqual(config.final_top_k, 5)
-        self.assertEqual(explicit["stages"]["final"][0]["metadata"]["unit_id"], "table")
-        self.assertEqual(ordinary["stages"]["final"][0]["metadata"]["unit_id"], "text")
+        self.assertEqual(trace["stages"]["final"][0]["metadata"]["unit_id"], "text")
+        dense_mock.assert_called_once_with(
+            "表 6.1 中的恢复率是什么？",
+            fetch_k=config.dense_fetch_k,
+            score_threshold=0.0,
+            vector_db=vector_db,
+        )
 
 
 class RagToolTests(unittest.TestCase):

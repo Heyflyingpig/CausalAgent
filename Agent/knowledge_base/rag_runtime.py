@@ -16,9 +16,11 @@ from typing import Any, Mapping
 from Agent.knowledge_base.multimodal.defaults import resolve_production_embedding_config as resolve_embedding_runtime_config
 from Agent.knowledge_base.multimodal.production import is_production_manifest
 from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever, SparseRetriever
+from observability.logging_runtime import log_event
 
 
 BASE_DIR = Path(__file__).resolve().parent
+LOGGER = logging.getLogger(__name__)
 DEFAULT_VECTOR_DB_DIR = BASE_DIR / "db"
 DEFAULT_MULTIMODAL_INDEX_ROOT = BASE_DIR / "multimodal_indexes"
 DEFAULT_MULTIMODAL_ACTIVE_INDEX_CONFIG = BASE_DIR / "multimodal_runtime" / "active_index.json"
@@ -260,6 +262,17 @@ def create_rag_runtime(config: RagRuntimeConfig, answer_llm: Any) -> RagRuntime:
 
     elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
     embedding_config = config.embedding_config
+    log_event(
+        LOGGER,
+        "rag.runtime.ready",
+        details={
+            "provider": str(embedding_config.get("provider", "unknown")),
+            "model": str(embedding_config.get("model", "unknown")),
+            "chunk_count": chunk_count,
+            "elapsed_ms": elapsed_ms,
+            "release_id": config.release_id,
+        },
+    )
     return RagRuntime(
         config=config,
         embedding=embedding,

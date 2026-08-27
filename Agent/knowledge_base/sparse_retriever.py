@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Protocol, Tuple
 
+from observability.logging_runtime import log_event
+
 LOGGER = logging.getLogger(__name__)
 BM25_K1 = 1.5
 BM25_B = 0.75
@@ -137,6 +139,17 @@ class Bm25sSparseRetriever:
             leave_progress=False,
         )
         elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+        log_event(
+            LOGGER,
+            "rag.sparse.ready",
+            details={
+                "version": str(bm25s.__version__),
+                "documents": len(entries),
+                "vocabulary": len(bm25_index.vocab_dict),
+                "backend": str(bm25_index.backend),
+                "elapsed_ms": elapsed_ms,
+            },
+        )
         return cls(entries=tuple(entries), _index=bm25_index)
 
     @property

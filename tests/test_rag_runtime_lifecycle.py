@@ -193,7 +193,8 @@ class RagRuntimeLifecycleTests(unittest.TestCase):
         ), self.assertLogs(level=logging.INFO) as captured:
             create_rag_runtime(config, answer_llm="llm")
 
-        self.assertNotIn(secret, "\n".join(captured.output))
+        self.assertTrue(any(record.event_code == "rag.runtime.ready" for record in captured.records))
+        self.assertNotIn(secret, repr(captured.records))
 
     def test_sparse_index_failure_keeps_runtime_failure_stage(self):
         """确认 BM25s 索引构建异常仍归类为 sparse_corpus。"""
@@ -271,11 +272,14 @@ class SparseRetrieverBehaviorTests(unittest.TestCase):
         self.assertEqual(retriever._index.dtype, "float64")
         self.assertEqual(retriever._index.backend, "numpy")
         self.assertEqual(retriever._index.csc_backend, "numpy")
-        log_output = "\n".join(captured.output)
-        self.assertIn(f"version={bm25s.__version__}", log_output)
-        self.assertIn("documents=2", log_output)
-        self.assertIn("backend=numpy", log_output)
-        self.assertNotIn("因果推断", log_output)
+        ready_records = [
+            record for record in captured.records if record.event_code == "rag.sparse.ready"
+        ]
+        self.assertEqual(len(ready_records), 1)
+        self.assertEqual(ready_records[0].details["version"], bm25s.__version__)
+        self.assertEqual(ready_records[0].details["documents"], 2)
+        self.assertEqual(ready_records[0].details["backend"], "numpy")
+        self.assertNotIn("因果推断", repr(ready_records[0].details))
         with self.assertRaises(TypeError):
             retriever.entries[0].metadata["changed"] = True
         result = retriever.search("因果", 1)

@@ -15,6 +15,9 @@ import os
 
 import pytest
 
+pytestmark = pytest.mark.smoke
+pytest.importorskip("langgraph")
+
 for _key, _value in {
     "SECRET_KEY": "test-secret",
     "API_KEY": "test-api-key",
@@ -29,8 +32,6 @@ for _key, _value in {
 
 from Agent.causal_agent import nodes  # noqa: E402
 from Agent.causal_agent.tool_subgraphs import build_web_search_subgraph  # noqa: E402
-
-pytestmark = pytest.mark.smoke
 
 
 def _subgraph_input():

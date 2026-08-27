@@ -60,6 +60,8 @@ def mcp_router(state: CausalAgentState) -> str:
     mcp_result =  state.get("causal_analysis_result")
     if isinstance(mcp_result, dict) and mcp_result.get("success") is True:
         return "rag"
+    if isinstance(mcp_result, dict) and mcp_result.get("success") is False:
+        return "normal_chat"
     return "agent"
 
 

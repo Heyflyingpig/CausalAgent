@@ -193,7 +193,7 @@ def _build_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _fallback_payload(exc: Exception) -> dict[str, Any]:
+def _fallback_payload(exc: Exception, *, now: float | None = None) -> dict[str, Any]:
     """构造读取失败时的最后有效值或环境默认降级结果。"""
     if _last_good_payload is not None:
         payload = deepcopy(_last_good_payload)
@@ -217,7 +217,11 @@ def _fallback_payload(exc: Exception) -> dict[str, Any]:
         }
     payload["state"] = "degraded"
     payload["warning"] = "在线配置读取失败，当前继续使用最后有效值或环境默认值"
-    decision = _CONFIG_FAILURES.record_failure("online_settings", type(exc).__name__)
+    decision = _CONFIG_FAILURES.record_failure(
+        "online_settings",
+        type(exc).__name__,
+        now=now,
+    )
     if decision.emit:
         log_event(
             LOGGER,
@@ -245,7 +249,7 @@ def get_monitor_settings(*, force_refresh: bool = False) -> dict[str, Any]:
         try:
             payload = _build_payload(_read_settings_row())
             _last_good_payload = deepcopy(payload)
-            recovery = _CONFIG_FAILURES.record_success("online_settings")
+            recovery = _CONFIG_FAILURES.record_success("online_settings", now=now)
             if recovery is not None:
                 log_event(
                     LOGGER,
@@ -256,7 +260,7 @@ def get_monitor_settings(*, force_refresh: bool = False) -> dict[str, Any]:
                     },
                 )
         except Exception as exc:
-            payload = _fallback_payload(exc)
+            payload = _fallback_payload(exc, now=now)
         _cached_payload = deepcopy(payload)
         _cache_expires_at = now + CACHE_TTL_SECONDS
         return deepcopy(payload)

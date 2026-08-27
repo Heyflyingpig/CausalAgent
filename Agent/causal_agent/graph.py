@@ -197,7 +197,8 @@ def build_graph(
         guarded_router(edges.mcp_router),
         {
             "rag": "rag", 
-            "agent": "agent"
+            "agent": "agent",
+            "normal_chat": "normal_chat",
         }
     )
     

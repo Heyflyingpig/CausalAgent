@@ -40,6 +40,8 @@ EXPECTED_CODES = {
     "job.node.degraded",
     "job.postprocess.degraded",
     "chat.attachment.degraded",
+    "rag.runtime.ready",
+    "rag.sparse.ready",
     "rag.startup.unavailable",
     "rag.enrichment.degraded",
     "mcp.tool.finished",
@@ -80,6 +82,8 @@ def _sample_value(field: str, rule):
         return "unknown_event"
     if field in {
         "attempt",
+        "chunk_count",
+        "documents",
         "failure_count",
         "final_attempt",
         "outbox_id",
@@ -90,6 +94,7 @@ def _sample_value(field: str, rule):
         "affected_count",
         "duration_ms",
         "downtime_ms",
+        "elapsed_ms",
         "input_bytes",
         "lag_seconds",
         "lease_epoch",
@@ -97,6 +102,7 @@ def _sample_value(field: str, rule):
         "slot_count",
         "timeout_ms",
         "tool_count",
+        "vocabulary",
     }:
         return 0
     return "safe_token"
