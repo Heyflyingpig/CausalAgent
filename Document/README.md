@@ -38,6 +38,7 @@
 - [`development/setup.md`](development/setup.md)：本地、Docker 和管理员前端开发入口。
 - [`development/testing.md`](development/testing.md)：后端、前端、迁移、Web Search/Observability、RAG 多模态与隔离评测的验证矩阵。
 - [`development/deployment.md`](development/deployment.md)：镜像构建、15 服务开发 Compose、staging gateway/guard 边界、生产现有拓扑和 release 发布边界。
+- [`../windows-client/README.md`](../windows-client/README.md)：Windows WebView2 桌面壳的独立依赖、配置、打包和 smoke 验收入口。
 - [`development/observability.md`](development/observability.md)：日志字段、事件目录、上下文关联、降噪、敏感信息边界和验收状态。
 - [`documentation.md`](documentation.md)：文档归属、维护、链接和日志规则。
 

@@ -1,0 +1,4 @@
+# Test-only extension for the desktop virtual environment.
+# Keep pytest out of the runtime dependency boundary used to build the EXE.
+-r requirements-desktop.txt
+-r ../requirements-test.txt

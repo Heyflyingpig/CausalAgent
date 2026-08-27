@@ -316,7 +316,24 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 
 ### windows部署
 
-**目前已不支持windows部署**
+MVP 已支持 Windows 桌面客户端：`Run_causal.py` 只启动 WebView2 Edge Chromium 窗口，并加载与浏览器相同的 CausalAgent 页面。桌面端不打包 Flask、MySQL、worker、模型或知识库，服务器必须先部署并提供正式 HTTPS 页面、同源 Cookie Session、API、SSE 和文件能力。
+
+创建独立桌面环境并检查 WebView2 Runtime：
+
+```powershell
+python -m venv .venv-desktop
+.\.venv-desktop\Scripts\python.exe -m pip install -r .\windows-client\requirements-desktop.txt
+.\.venv-desktop\Scripts\python.exe .\Run_causal.py --check-environment
+```
+
+开发时先启动现有 Flask 服务，再运行桌面壳。URL 优先级为命令行 `--url` > `CAUSALAGENT_DESKTOP_URL` > `http://127.0.0.1:5001/`：
+
+```powershell
+$env:CAUSALAGENT_DESKTOP_URL = "http://127.0.0.1:5001/"
+.\.venv-desktop\Scripts\python.exe .\Run_causal.py
+```
+
+Release 包在构建时嵌入正式 HTTPS origin，强制关闭 debug 和开发者工具；构建与 Windows 验收命令见 [`windows-client/README.md`](windows-client/README.md)、[`Document/development/setup.md`](Document/development/setup.md) 和 [`Document/development/testing.md`](Document/development/testing.md)。
 
 ## 贡献
 欢迎提交 Issue 和 Pull Request！
@@ -352,6 +369,7 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 .
 ├── CausalAgent.py          # Flask 后端入口
 ├── Run_causal.py           # 桌面端启动入口（pywebview）
+├── windows-client/         # Windows WebView2 独立依赖、启动器和 smoke 测试
 ├── requirements.txt        # 完整依赖
 ├── requirements-base.txt   # 基础依赖（docker/生产使用）
 ├── requirements-test.txt   # Docker 单元测试依赖

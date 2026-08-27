@@ -13,9 +13,35 @@
 | RAG/多模态与隔离评测 | `tests/test_multimodal_*.py`、`tests/test_rag_eval_*.py`、`tests/acceptance/` | 来源/索引/release 契约、隔离队列与评测矩阵的分层检查 |
 | 管理员 Vue unit | `admin-frontend/tests/*.spec.ts` | API DTO、组件、看板/设置语义和 SQL digest 展示 |
 | 管理员 Mock E2E | `admin-frontend` `test:e2e:mock` | 无真实数据库的页面导航、鉴权和交互 |
+| Windows 桌面逻辑 | `windows-client/tests/test_config.py`、`test_navigation_policy.py`、`test_runtime.py`、`test_launcher.py` | 配置优先级、URL/origin 白名单、运行时错误和 Edge 事件策略，不创建真实窗口 |
+| Windows 壳层 smoke | `windows-client/tests/run_windows_smoke.py`、`test_windows_smoke.py` | 隔离 HTTP stub、真实 WebView2 Edge Chromium 页面加载和窗口退出；只在 Windows 桌面会话执行 |
 | 隔离 E2E | `tests/run_admin_31_e2e.ps1` / `run_admin_32_e2e.ps1` | 空库升级、migration 往返、主从、PostgreSQL checkpoint、受控写入/删除和普通用户回归 |
 
 `tests/README.md` 是后端测试目录和 Docker 单元测试环境的补充入口；新增测试时先判断是否需要真实跨模块依赖，再选择 unit 或 integration。
+
+## Windows 桌面客户端
+
+桌面逻辑测试不启动窗口，也不连接 Flask、MySQL、模型或 WebView2 Runtime：
+
+```powershell
+.\.venv-desktop\Scripts\python.exe -m pip install -r .\windows-client\requirements-desktop-test.txt
+.\.venv-desktop\Scripts\python.exe -m pytest windows-client/tests/test_config.py windows-client/tests/test_navigation_policy.py windows-client/tests/test_runtime.py windows-client/tests/test_launcher.py -q
+```
+
+桌面依赖验收使用独立虚拟环境；从仓库根目录执行兼容入口检查，必须确认 Python 3.12、Windows、`pywebview==5.4` 的完整依赖和 WebView2 Runtime：
+
+```powershell
+.\.venv-desktop\Scripts\python.exe .\Run_causal.py --check-environment
+.\.venv-desktop\Scripts\python.exe -c "import webview; print('ok')"
+```
+
+真实壳层 smoke 不放入普通 pytest 默认执行范围。它会启动本地 stub（`/`、`/health`、`/external-link`）、创建真实 Edge Chromium 窗口，并使用测试专用自动关闭钩子验证窗口关闭和进程退出：
+
+```powershell
+.\.venv-desktop\Scripts\python.exe .\windows-client\tests\run_windows_smoke.py
+```
+
+也可以在已有 pytest 环境中显式运行 `test_windows_smoke.py`，但必须设置 `CAUSALAGENT_DESKTOP_RUN_SMOKE=1`；未设置时的 skip 不是 smoke 通过证据。壳层 smoke 通过只证明桌面壳与 stub 的加载/退出链路，不证明远程生产 origin、服务器 Session、真实 SSE、模型或后端 API 已验收。
 
 ## 后端 Docker 单元测试
 
