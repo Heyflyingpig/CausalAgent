@@ -133,36 +133,41 @@
     </div>
 
     <!-- 主界面 -->
-    <div class="container" id="mainContainer">
-        
+    <div class="container is-new-chat" id="mainContainer" data-layout-state="new-chat">
         <div class="chat-area" id="chatArea"></div>
-           
-        
-        <div class="input-area">
-            <div id="selectedFileDraft" class="selected-file-draft" hidden>
-                <div class="selected-file-card">
-                    <div class="selected-file-icon" aria-hidden="true">CSV</div>
-                    <div class="selected-file-details">
-                        <strong id="selectedFileName" class="selected-file-name"></strong>
-                        <span id="selectedFileMeta" class="selected-file-meta"></span>
-                    </div>
-                    <button id="clearSelectedFileButton" class="clear-selected-file-button" type="button"
-                            title="清除文件选择" aria-label="清除文件选择">&times;</button>
-                </div>
+
+        <div class="new-chat-stage">
+            <div class="new-chat-welcome" id="newChatWelcome">
+                <h1 data-i18n="newChatTitle">上传因果数据文件，开始因果分析</h1>
+                <p data-i18n="newChatDescription">我会基于你上传的数据进行分析并生成因果关系结果。</p>
             </div>
-            <textarea id="userInput" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息..." rows = "4"></textarea>
-            <div class="input-actions">
-                <input type="file" id="csvUploader" accept=".csv" style="display: none;">
-                <button id="webSearchToggle" class="web-search-toggle" type="button"
-                        data-i18n="webSearch" aria-pressed="false">联网搜索</button>
-                <button id="uploadCsvButton" title="上传" data-i18n="upload">上传</button>
-                <button id="cancelJobButton" class="cancel-job-button" type="button" data-i18n="cancelJob"
-                        title="取消任务；已发出的远端调用会自然返回" hidden>取消任务</button>
-                <button id="sendButton" class="send-button" type="button" aria-label="发送">
-                    <span class="send-button-label" data-i18n="send">发送</span>
-                    <span class="send-button-spinner" aria-hidden="true"></span>
-                    <span class="send-button-stop" aria-hidden="true"></span>
-                </button>
+
+            <div class="input-area" id="inputArea">
+                <div id="selectedFileDraft" class="selected-file-draft" hidden>
+                    <div class="selected-file-card">
+                        <div class="selected-file-icon" aria-hidden="true">CSV</div>
+                        <div class="selected-file-details">
+                            <strong id="selectedFileName" class="selected-file-name"></strong>
+                            <span id="selectedFileMeta" class="selected-file-meta"></span>
+                        </div>
+                        <button id="clearSelectedFileButton" class="clear-selected-file-button" type="button"
+                                title="清除文件选择" aria-label="清除文件选择">&times;</button>
+                    </div>
+                </div>
+                <textarea id="userInput" data-i18n-placeholder="inputPlaceholder" placeholder="输入消息..." rows = "4"></textarea>
+                <div class="input-actions">
+                    <input type="file" id="csvUploader" accept=".csv" style="display: none;">
+                    <button id="webSearchToggle" class="web-search-toggle" type="button"
+                            data-i18n="webSearch" aria-pressed="false">联网搜索</button>
+                    <button id="uploadCsvButton" title="上传" data-i18n="upload">上传</button>
+                    <button id="cancelJobButton" class="cancel-job-button" type="button" data-i18n="cancelJob"
+                            title="取消任务；已发出的远端调用会自然返回" hidden>取消任务</button>
+                    <button id="sendButton" class="send-button" type="button" aria-label="发送">
+                        <span class="send-button-label" data-i18n="send">发送</span>
+                        <span class="send-button-spinner" aria-hidden="true"></span>
+                        <span class="send-button-stop" aria-hidden="true"></span>
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -170,6 +175,7 @@
     <script src="static/js/stream_state.js"></script>
     <script src="static/js/execution_phase_state.js"></script>
     <script src="static/js/job_subscription_state.js"></script>
+    <script src="static/js/chat_layout_state.js"></script>
     <script src="static/js/script.js"></script>
 </body>
 </html>
