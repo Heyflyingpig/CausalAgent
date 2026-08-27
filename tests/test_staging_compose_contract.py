@@ -28,8 +28,8 @@ class StagingComposeContractTests(unittest.TestCase):
         self.assertIn('VISION_ALLOW_REMOTE_DATA: "true"', compose)
         self.assertIn("VISION_API_KEY: ${VISION_API_KEY:?", compose)
         self.assertIn("VISION_BASE_URL: ${VISION_BASE_URL:?", compose)
-        self.assertIn("VISION_MODEL: ${VISION_MODEL:-qwen/qwen3-vl-8b-instruct}", compose)
-        for key in ("VISION_API_KEY=", "VISION_BASE_URL=", "VISION_MODEL=qwen/qwen3-vl-8b-instruct"):
+        self.assertIn("VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}", compose)
+        for key in ("VISION_API_KEY=", "VISION_BASE_URL=", "VISION_MODEL=qwen-vl-plus"):
             self.assertIn(key, example)
 
     def test_worker_compose_contract_has_bounded_drain_and_release_mounts(self) -> None:

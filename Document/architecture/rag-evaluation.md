@@ -98,13 +98,13 @@ runs/<run_id>/
 
 每个摄取运行在自己的目录中构建索引。一个可进入发布门禁的 staged index 至少包含：
 
-- `manifest.json`：来源、解析产物、标准化单元、资源和哈希关联；
+- `manifest.json`：来源身份、解析产物、标准化单元以及可选资源引用和哈希关联；
 - `units.jsonl`：带稳定 locator 的标准化知识单元；
 - `build_state.json`：必须为 `staged_complete`；
 - `chroma/`：批量写入且成功提交后的向量存储；
-- 需要时的页级 `checkpoints.sqlite3` 和资源目录。
+- 需要时的页级 `checkpoints.sqlite3` 和 run-local 解析资源目录。
 
-完整性检查会比较 manifest、unit/vector/ingestion 计数、embedding fingerprint、index version 和归属的 ingestion run。Chroma 以独立 attempt 目录构建，构建失败不能留下可发布的伪完整索引。
+staged 完整性检查会比较 manifest、unit/vector/ingestion 计数、embedding fingerprint、index version 和归属的 ingestion run，并严格回读 run-local source、Docling 产物和单元资源。Chroma 以独立 attempt 目录构建，构建失败不能留下可发布的伪完整索引。解析资源用于构建审计和可选的图片/表格复核，不是正式 RAG 检索运行时的必需发布文件。
 
 索引身份不是一个可随意传入的字符串，而是由 `ingestion_run_id`、`index_version`、`collection_name`、manifest 哈希和 embedding fingerprint 共同约束。后续 RAG 试跑、候选题集、评测和 Gold 校验必须绑定同一个 staged index；切换索引后不能复用旧绑定而跳过重新校验。
 
@@ -129,12 +129,13 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 
 ## 3. release 生命周期
 
-正式多模态知识库由独立的 formal assets、index root 和 runtime pointer 管理。默认语义是：
+正式多模态知识库由 formal index root 和 runtime pointer 管理；PNG、Docling 页级 JSON 以及 source 副本属于可独立保留的解析资产包，不作为正式 RAG 发布包的一部分。默认语义是：
 
 - `active_index.json` 指向当前正式索引；
 - `previous_index.json` 保留上一个 active 版本，支持受控回滚；
 - candidate 目录保存待发布版本；维护状态只读展示 active、previous、candidate 和 candidate overflow；
-- 发布不会自动删除旧索引、资产、运行目录或评测产物。
+- 发布只物化 staged index，不把 run-local 解析资产复制到 formal asset 目录；
+- 发布不会自动删除旧索引、解析资产包、运行目录或评测产物。
 
 ### 3.1 门禁
 
@@ -143,7 +144,7 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 | key | 含义 |
 | --- | --- |
 | `controlled_source_identity` | source ID、document ID、路径和哈希命中正式受控来源 |
-| `staged_integrity` | manifest、资源、units、向量和 build state 完整一致 |
+| `staged_integrity` | staged 阶段严格校验 manifest、解析资源、units、向量和 build state；正式候选复核可使用不依赖外置解析资源的模式 |
 | `production_retrieval` | 当前正式检索门禁通过 |
 | `production_policy` | parser、VLM、embedding 等正式策略与 manifest 一致 |
 | `ragas` | 与该 ingestion/index 完全绑定的 Ragas 评测成功且通过 |
@@ -154,7 +155,7 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 
 ### 3.2 发布与回滚
 
-`publish` 必须提交 `confirm=true`，并再次执行发布前门禁。通过后分两步执行：先把 run-local staged index/asset 物化到 formal candidate，再由正式发布逻辑重新校验并原子更新 active pointer。candidate 物化与 pointer 更新不是一个跨目录事务；如果第二步失败，candidate 可能已经保留但不会成为 active。可选的 `expected_active_index_version` 用于阻止并发覆盖。
+`publish` 必须提交 `confirm=true`，并再次执行发布前门禁。通过后分两步执行：先把 run-local staged index 物化到 formal candidate，解析资产包保持在 run-local 或外部存储中；再由正式发布逻辑重新校验并原子更新 active pointer。正式 RAG 运行时读取 active pointer 指向的 Chroma 和 manifest，不要求 PNG 或 Docling 页级 JSON 在 formal 目录中存在。candidate 物化与 pointer 更新不是一个跨目录事务；如果第二步失败，candidate 可能已经保留但不会成为 active。可选的 `expected_active_index_version` 用于阻止并发覆盖。
 
 回滚同样需要 `confirm=true`，复用正式发布门禁并检查期望的 active 版本；成功后仍需生产 Agent worker drain/restart 才能让已经加载的 lazy Runtime 使用新 release。
 
