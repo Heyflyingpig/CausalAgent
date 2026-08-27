@@ -93,7 +93,7 @@ services:
       VISION_ALLOW_REMOTE_DATA: "true"
       VISION_API_KEY: ${VISION_API_KEY:?VISION_API_KEY is required for staging remote VLM}
       VISION_BASE_URL: ${VISION_BASE_URL:?VISION_BASE_URL is required for staging remote VLM}
-      VISION_MODEL: ${VISION_MODEL:-qwen/qwen3-vl-8b-instruct}
+      VISION_MODEL: ${VISION_MODEL:-qwen-vl-plus}
       RAG_EVAL_EVALUATION_WORKERS: "5"
       RAG_EVAL_INGESTION_CONCURRENCY_LIMIT: "1"
       RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT: "1"

@@ -228,6 +228,43 @@ class MultimodalContractTests(unittest.TestCase):
         factory.assert_called_once()
         replacement.convert.assert_called_once_with(Path("sample.pdf"), page_range=(7, 7))
 
+    def test_empty_docling_table_uses_pdf_region_fallback(self) -> None:
+        """空 TableItem 没有 Docling 页图时仍须用原始 PDF bbox 恢复图片。"""
+        from Agent.knowledge_base.multimodal.parsers import _docling_items
+
+        class FakeBBox:
+            l, r, t, b = 10, 90, 80, 20
+            coord_origin = "BOTTOMLEFT"
+
+        class FakeProvenance:
+            page_no = 1
+            bbox = FakeBBox()
+
+        class FakeTableItem:
+            prov = [FakeProvenance()]
+
+            def export_to_markdown(self, doc: object) -> str:
+                return ""
+
+        page = MagicMock(size=MagicMock(width=100, height=100))
+        document = MagicMock(pages={1: page})
+        document.iterate_items.return_value = [(FakeTableItem(), None)]
+        recovery_image = _png_bytes()
+        with patch("docling_core.types.doc.TableItem", FakeTableItem), patch("Agent.knowledge_base.multimodal.parsers._docling_page_image_bytes", return_value=None), patch("Agent.knowledge_base.multimodal.parsers._render_pdf_region", return_value=recovery_image) as render:
+            items, issues = _docling_items(document, Path("sample.pdf"), target_page=1)
+
+        self.assertEqual(issues, [])
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].content_kind, "table_recovery")
+        self.assertEqual(items[0].asset_bytes, recovery_image)
+        render.assert_called_once()
+        render_args = render.call_args.args
+        self.assertEqual(render_args[:2], (Path("sample.pdf"), 1))
+        self.assertAlmostEqual(render_args[2]["x0"], 0.1)
+        self.assertAlmostEqual(render_args[2]["y0"], 0.2)
+        self.assertAlmostEqual(render_args[2]["x1"], 0.9)
+        self.assertAlmostEqual(render_args[2]["y1"], 0.8)
+
     def test_docling_content_page_without_structure_uses_docling_page_image(self) -> None:
         """封面等整页图片未形成结构化项时仍须进入受审核的图片链。"""
         from Agent.knowledge_base.multimodal.parsers import _docling_page_items
@@ -360,6 +397,35 @@ class MultimodalContractTests(unittest.TestCase):
             for sensitive in (context, "RESPONSE_BODY", base64.b64encode(image).decode("ascii")[:32], "data:image"):
                 self.assertNotIn(sensitive, audit)
 
+    def test_vision_quota_billing_opens_circuit_without_fallback(self) -> None:
+        """quota/billing 失败不得尝试普通 JSON fallback，并阻止同一运行后续外发。"""
+        class QuotaError(Exception):
+            status_code = 400
+            body = {"error": {"code": "insufficient_quota", "type": "billing_error"}}
+
+        self.assertEqual(VisionAnalyzer._failure_category(QuotaError()), "quota_billing")
+        payment_required = type("PaymentRequired", (Exception,), {"status_code": 402})()
+        self.assertEqual(VisionAnalyzer._failure_category(payment_required), "quota_billing")
+        quota_rate_limit = type("QuotaRateLimit", (Exception,), {"status_code": 429, "body": {"error": {"code": "insufficient_quota"}}})()
+        self.assertEqual(VisionAnalyzer._failure_category(quota_rate_limit), "quota_billing")
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"VISION_API_KEY": "key", "VISION_BASE_URL": "https://api.wcode.net/v1", "VISION_MODEL": REQUIRED_MODEL, "VISION_MAX_RETRIES": "2"}):
+            first_image, second_image = _png_bytes("white"), _png_bytes("black")
+            client = MagicMock(); client.chat.completions.create.side_effect = QuotaError()
+            analyzer = VisionAnalyzer(Path(directory), allow_remote_data=True, max_images=2)
+            first_outbound = _outbound_record(analyzer, first_image)
+            second_outbound = _outbound_record(analyzer, second_image, image_index=2)
+            with patch("Agent.knowledge_base.multimodal.vision.OpenAI", return_value=client) as openai:
+                with self.assertRaisesRegex(RuntimeError, "without persisting") as first_failure:
+                    analyzer.analyze(first_image, "image/png", outbound_record=first_outbound)
+                self.assertEqual(first_failure.exception.category, "quota_billing")
+                self.assertFalse(first_failure.exception.fallback_attempted)
+                with self.assertRaisesRegex(RuntimeError, "quota/billing circuit is open"):
+                    analyzer.analyze(second_image, "image/png", outbound_record=second_outbound)
+            self.assertEqual(client.chat.completions.create.call_count, 1)
+            openai.assert_called_once()
+            failure = next(Path(directory).glob("*.failure.json"))
+            self.assertEqual(json.loads(failure.read_text(encoding="utf-8"))["failure_category"], "quota_billing")
+
     def test_vision_normalizes_rgb_and_enforces_outbound_hashes(self) -> None:
         """图片必须先真实解码、缩放、RGB 化，并与 outbound 记录逐字段匹配。"""
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"VISION_API_KEY": "key", "VISION_BASE_URL": "https://wcode.net/v1", "VISION_MODEL": REQUIRED_MODEL, "VISION_MAX_PIXELS": "16"}):
@@ -401,6 +467,26 @@ class MultimodalContractTests(unittest.TestCase):
         self.assertEqual(parsed.formula_latex, "x\ny")
         with self.assertRaisesRegex(ValueError, "invalid_schema"):
             VisionAnalyzer._parse_analysis(_vision_payload(formula_latex={"value": "x"}))
+
+    def test_vision_normalizes_uncertain_relation_objects(self) -> None:
+        """不确定关系对象应转成可检索字符串，但不放宽任意对象。"""
+        parsed = VisionAnalyzer._parse_analysis(_vision_payload(uncertain_relations=[{"source": "A", "target": "B", "condition": "可能"}]))
+        self.assertEqual(parsed.uncertain_relations, ["A -> B (可能)"])
+        with self.assertRaisesRegex(ValueError, "invalid_schema"):
+            VisionAnalyzer._parse_analysis(_vision_payload(uncertain_relations=[{"source": "A"}]))
+
+    def test_vision_normalizes_new_model_scalar_and_list_shapes(self) -> None:
+        """新模型的对象/标量变体应保留内容并通过既有 vision schema。"""
+        parsed = VisionAnalyzer._parse_analysis(_vision_payload(
+            visible_facts="存在坐标轴",
+            entities=[{"name": "A", "kind": "node"}],
+            table_markdown=None,
+            formula_latex=None,
+        ))
+        self.assertEqual(parsed.visible_facts, ["存在坐标轴"])
+        self.assertIn('"name": "A"', parsed.entities[0])
+        self.assertEqual(parsed.table_markdown, "")
+        self.assertEqual(parsed.formula_latex, "")
 
     def test_vision_schema_failure_records_only_sanitized_validation_paths(self) -> None:
         """Schema 失败应暴露字段/类型路径用于诊断，不能暴露响应正文。"""
@@ -515,7 +601,7 @@ class MultimodalContractTests(unittest.TestCase):
 
     def test_vision_rejects_model_or_provider_drift(self) -> None:
         """远程视觉边界必须固定为获准的 WCode 模型和域名。"""
-        self.assertEqual(REQUIRED_MODEL, "qwen/qwen3-vl-8b-instruct")
+        self.assertEqual(REQUIRED_MODEL, "qwen-vl-plus")
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"VISION_API_KEY": "key", "VISION_BASE_URL": "https://api.wcode.net/v1", "VISION_MODEL": "other/model"}):
             self.assertFalse(VisionAnalyzer(Path(directory), allow_remote_data=True).configured())
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"VISION_API_KEY": "key", "VISION_BASE_URL": "https://api.example.test/v1", "VISION_MODEL": REQUIRED_MODEL}):

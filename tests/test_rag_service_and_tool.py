@@ -152,7 +152,6 @@ class RagServiceTests(unittest.TestCase):
             },
             "rerank_score": 1.0,
         }
-
         config = query_rag.RagRetrievalConfig()
         vector_db = object()
         dense_mock = MagicMock(return_value=[general])

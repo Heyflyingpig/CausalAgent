@@ -206,9 +206,13 @@ Agent/knowledge_base/rag/data/eval/history/
 Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*
 !Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_rebound_requires_reapproval_v3.json
 !Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_reapproval_manifest_v3.json
+# 多模态解析资产只作为本地或外部离线产物，不属于正式 RAG 发布物。
 Agent/knowledge_base/multimodal_assets/
-Agent/knowledge_base/multimodal_indexes/
-Agent/knowledge_base/multimodal_runtime/
+Agent/knowledge_base/multimodal_indexes/*
+!Agent/knowledge_base/multimodal_indexes/mm_680e88680120c587d3ae/
+!Agent/knowledge_base/multimodal_indexes/mm_680e88680120c587d3ae/**
+Agent/knowledge_base/multimodal_runtime/*
+!Agent/knowledge_base/multimodal_runtime/active_index.json
 Agent/knowledge_base/multimodal_benchmarks/
 
 # skils
