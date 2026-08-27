@@ -1,0 +1,15 @@
+# CausalAgent Windows desktop shell.
+# Keep this boundary separate from requirements-base.txt and the Docker image.
+# Verified target: CPython 3.12 + Microsoft Edge WebView2 Runtime.
+pywebview==5.4
+pyinstaller==6.22.2
+
+# pywebview 5.4 direct runtime dependencies. Keep these explicit so a clean
+# environment cannot reproduce the historical "webview without bottle" state.
+bottle==0.13.3
+proxy_tools==0.1.0
+pythonnet==3.0.5
+clr_loader==0.2.7.post0
+cffi==1.17.1
+pycparser==2.22
+typing_extensions==4.14.0

@@ -1267,4 +1267,8 @@
 - 【会话加载事件查询索引修复】
   - 【查询修复】：会话历史读取 `analysis_job_events` 明确使用现有 `idx_analysis_job_events_job_id (job_id, id)` 索引，避免被 `event_key` 唯一索引选中并触发额外排序。
   - 【兼容性】：保持 `thinking_after`、事件 ID、SSE 和现有返回结构不变；补充单元 SQL 契约与 MySQL `EXPLAIN` 集成测试。
+- 【Windows 桌面客户端：WebView2 MVP】
+  - 【依赖与启动】：新增独立的 CPython 3.12 桌面依赖、可测试配置/运行时/启动器模块和 `Run_causal.py` 兼容入口；固定 `pywebview==5.4`，显式安装 Bottle/pythonnet 依赖，强制 Edge Chromium。
+  - 【安全边界】：Release 包嵌入正式 HTTPS origin，强制关闭 debug/开发者工具；保留 Cookie/localStorage 数据目录，不新增 Token 鉴权、桌面专用 API 或 JS-Python 通用桥；顶层导航按 origin/scheme 白名单执行。
+  - 【文档】：同步架构、开发环境、Windows 测试矩阵、桌面打包边界、中文/英文 README 和技术文档入口。
 

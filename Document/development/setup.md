@@ -61,6 +61,25 @@ python -m Database.checkpoint_cleanup_worker
 
 `Database/database_init.py` 只确保 MySQL 数据库存在并检查连接；完整业务表和 PostgreSQL checkpoint schema 仍由 `Database.bootstrap` 负责。新空库不要先运行旧库 preflight。
 
+## Windows 桌面客户端开发
+
+Windows 桌面客户端是独立的 WebView2 壳，不启动或打包 Flask、MySQL、worker、模型和知识库。先按 [`../../windows-client/README.md`](../../windows-client/README.md) 创建桌面虚拟环境并安装 `windows-client/requirements-desktop.txt`：
+
+```powershell
+python -m venv .venv-desktop
+.\.venv-desktop\Scripts\python.exe -m pip install -r .\windows-client\requirements-desktop.txt
+.\.venv-desktop\Scripts\python.exe .\Run_causal.py --check-environment
+```
+
+启动桌面壳前，先用 Docker 或本地 Python 启动现有 Flask 后端；开发模式的 URL 通过 `--url` 或 `CAUSALAGENT_DESKTOP_URL` 配置，默认是 `http://127.0.0.1:5001/`，同样允许 `http://localhost:5001/`：
+
+```powershell
+$env:CAUSALAGENT_DESKTOP_URL = "http://127.0.0.1:5001/"
+.\.venv-desktop\Scripts\python.exe .\Run_causal.py
+```
+
+配置优先级为命令行 `--url` > `CAUSALAGENT_DESKTOP_URL` > 模式默认值。Release 包使用构建时嵌入的 HTTPS origin，强制关闭 debug 和开发者工具；它不能通过桌面壳切换到任意外部页面。WebView2 的 Cookie/localStorage 数据目录是 `%LOCALAPPDATA%\CausalAgent\WebView`，用于按服务器 Session 策略跨重启保存登录状态。
+
 ## 管理员前端开发
 
 管理员 Vue 源码位于 `admin-frontend/`。需要热更新时执行：

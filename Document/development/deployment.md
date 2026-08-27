@@ -57,6 +57,39 @@
 
 生产必须通过环境变量或安全的 secret 机制提供 `SECRET_KEY`、模型配置、MySQL 职责账号、非空 `CHECKPOINT_POSTGRES_PASSWORD` 和 RAG evaluation worker 所需配置。不要在文档、镜像层、命令行日志或 API 响应中打印密钥。
 
+## 源码 Release 与 CD 流程
+
+当前仓库的 `.github/workflows/lightweight-ci.yml` 只提供轻量 CI：Python 语法检查、两个结构化输出测试和 Pull Request 分支策略；它不会构建/推送 Docker 镜像、部署 staging/production、创建 GitHub Release 或执行回滚。因此在自动化 CD 工作流补齐前，下面是本项目的人工发布顺序，`develop` 到 `main` 的合并由维护者手动完成。
+
+1. 在 `develop` 完成 Docker、后端 unit/integration、管理员前端和必要的真实 SearXNG/隔离验收；确认没有未解释的失败，并确认 RAG active release、评测报告和生产配置是否确实存在。缺少 active release 时只能发布“RAG 降级运行”的版本，不能宣称正式 RAG 已上线。
+2. 维护者在本地更新 `develop` 和 `main`，在 `main` 上执行普通 merge 并检查合并结果。共享分支不使用 rebase 或强制推送；合并冲突、迁移 head、CHANGELOG 和发布范围由维护者在提交前复核。
+3. 在准备发布的 `main` 提交上创建带注释的 SemVer tag（例如 `v1.0.0`），推送 `main` 和该 tag，再以该 tag 创建 GitHub Release。GitHub 会为 tag 自动提供源代码归档；当前仓库没有官方公开 Docker 镜像，不能把源码 Release 误称为镜像发布。
+4. 如果要进行容器 CD，先在 CI 中用该 commit/tag 构建一次镜像并完成测试、漏洞扫描和摘要记录，将镜像推送到选定 registry；生产 Compose 应使用不可变的版本 tag 或 digest，而不是 `causalagent:latest`。部署机只拉取已验证镜像，不在生产机按工作区源码临时构建。
+5. 先部署隔离 staging：使用独立的 `.env.staging`、Compose project、卷和网络，运行 staging guard，执行 `config --quiet`、数据库 bootstrap/migration、应用/worker 健康检查、关键 HTTP/管理员 smoke 和 worker 日志检查。staging 通过后才进入 production environment approval。
+6. 生产发布前完成数据库备份和迁移评估；按 `db-bootstrap` 的顺序执行迁移，启动或更新 app、Agent worker、monitor、cleanup 和 `rag-eval-worker`，检查容器的 restart count、exit code、健康状态、迁移 head、HTTP 和日志事件。RAG release 还要先 gate-check/publish active pointer，再按 `JOB_DRAIN_TIMEOUT_SECONDS` drain/restart Agent worker；active pointer 变化不会热切换已经加载的 Runtime。
+7. 发布后保留旧镜像 digest、旧 tag、previous RAG pointer 和数据库备份。应用回滚可切回旧镜像并重新启动服务；RAG 回滚必须走受控 rollback 并重启 worker。数据库迁移不能仅靠切换镜像回滚，必须按迁移文档在隔离环境验证反向路径。
+
+稳定版本的当前发布门槛仍包括：修复生产前端依赖审计中的高危项、确定生产镜像 registry/tag 约定、取得真实模型/知识库证据（如果版本声明包含 RAG）以及补齐真正的 GitHub Actions CD workflow；这些工作完成前不应把当前轻量 CI 视为完整 CD。
+
+## Windows 桌面壳发布边界
+
+`windows-client/` 是独立的 Windows 桌面依赖和发布边界。它只打包 `Run_causal.py` 与 `causalagent_desktop/` 的 WebView2 壳，不复制 Flask、MySQL、Agent worker、模型、知识库索引、后端 `.env` 或 Docker 依赖；EXE 启动后仍访问同一个已部署的 HTTPS 页面和 Flask API。
+
+桌面依赖由 `windows-client/requirements-desktop.txt` 单独锁定，当前基线是 CPython 3.12、`pywebview==5.4`、`pyinstaller==6.22.2` 和显式的 Bottle/pythonnet 依赖。后端 `requirements-base.txt` 保持服务器/Docker 边界，不为桌面壳取消注释桌面依赖。
+
+使用 Windows 构建机和桌面虚拟环境执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows-client\build.ps1 `
+  -ReleaseOrigin "https://causalagent.example.com" `
+  -PackageMode onedir `
+  -IconPath "C:\path\to\CausalAgent.ico"
+```
+
+构建脚本会把公开的 Release HTTPS origin 嵌入 PyInstaller 包；冻结后的 EXE 强制 release、关闭 debug/开发者工具，不能以本地 `127.0.0.1` 为默认地址。`-IconPath` 必须是正式 `.ico`；`build/`、`dist/` 和生成的 `.spec` 仅为本地构建产物。目标机必须预先安装 Microsoft Edge WebView2 Runtime，运行时用户数据目录固定为 `%LOCALAPPDATA%\CausalAgent\WebView`，以保留 Cookie/localStorage。
+
+桌面壳的顶层导航只允许配置 origin；外部 HTTPS 交给系统浏览器，`file://`、`javascript:`、未知协议、外部 HTTP 和其他 origin 会被取消。服务器前端更新不需要重新打包 EXE，重新加载同一 HTTPS 页面即可获取新版页面。桌面发布不新增专用 API、Token 鉴权或 JS-Python 通用桥。
+
 ## 管理员产物
 
 本地非 Docker 发布前必须在 `admin-frontend/` 执行 typecheck、unit、Mock E2E 和 build。未设置 `ADMIN_VITE_DEV_SERVER_URL` 时，Flask 从 `admin-frontend/dist/`（或 `ADMIN_FRONTEND_DIST_DIR` 指定目录）提供 `/admin/`；Docker 运行镜像从 `/opt/causalagent-admin` 提供构建结果。

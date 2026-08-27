@@ -165,32 +165,29 @@ Here is a brief guide. For more detailed, Chinese step-by-step instructions (inc
 
 ### Windows Deployment
 
-1. Ensure you have **Python 3.11+** and **MySQL 8.0+** installed.
-2. Clone the repository or download and extract the ZIP.
-3. Install Python dependencies in the project root:
+The MVP Windows client is a WebView2 shell. It loads the same deployed CausalAgent web page as a browser; it does not package Flask, MySQL, workers, models, the knowledge base, or a second frontend. The server must already provide the HTTPS page, same-origin Cookie Session, API, SSE, and file endpoints.
+
+1. Install **CPython 3.12** and the Microsoft Edge WebView2 Runtime.
+2. Create the independent desktop environment:
 
    ```bash
-   pip install -r requirements.txt
+   python -m venv .venv-desktop
+   .venv-desktop\Scripts\python.exe -m pip install -r windows-client\requirements-desktop.txt
    ```
 
-4. Create a `.env` file in the project root (same fields as in the Docker section above).
-5. Run the unified database bootstrap:
+3. Check the desktop prerequisites:
 
    ```bash
-   python -m Database.bootstrap
+   .venv-desktop\Scripts\python.exe Run_causal.py --check-environment
    ```
 
-6. Start the backend service:
+4. Start the existing Flask backend, then start the desktop shell. Development mode defaults to `http://127.0.0.1:5001/` and also permits `http://localhost:5001/`:
 
    ```bash
-   python CausalAgent.py
+   .venv-desktop\Scripts\python.exe Run_causal.py --url http://127.0.0.1:5001/
    ```
 
-7. In another terminal, start the desktop frontend:
-
-   ```bash
-   python Run_causal.py
-   ```
+The URL precedence is command-line `--url`, then `CAUSALAGENT_DESKTOP_URL`, then the development default. A frozen release package embeds its HTTPS origin, forces Edge Chromium, and disables debug/devtools. See [`windows-client/README.md`](windows-client/README.md) for packaging and smoke validation.
 
 ## Contributing
 
@@ -207,6 +204,7 @@ Contributions via Issues and Pull Requests are welcome.
 .
 ├── CausalAgent.py           # Flask entrypoint
 ├── Run_causal.py           # Desktop entrypoint (pywebview)
+├── windows-client/          # Windows WebView2 dependencies, launcher and smoke tests
 ├── requirements.txt        # Full dependencies
 ├── requirements-base.txt   # Base dependencies (docker/production)
 ├── Dockerfile
