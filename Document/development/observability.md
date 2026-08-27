@@ -175,6 +175,7 @@ Grafana 继续使用独立账号和 `127.0.0.1:3000` 本地入口，不复用 Ca
 | `chat.attachment.degraded` | `warning/dependency` | 聊天附件解析已降级 | `attachment_type`, `reason_code` |
 | `rag.startup.unavailable` | `warning/dependency` | RAG 知识库启动检查不可用 | `reason_code` |
 | `rag.enrichment.degraded` | `warning/dependency` | RAG 增强结果已降级 | `status`, `reason_code`, `question_count`, `evidence_count` |
+| `rag.multimodal.parse_failed` | `error/dependency` | 多模态 RAG 解析失败 | `phase`, `reason_code`, `source_alias`, `page_number`, `image_index`, `table_index`, `status_code`, `fallback_attempted`, `circuit_breaker_open` |
 | `mcp.tool.finished` | `info/dependency` | MCP 工具调用完成 | `duration_ms`, `input_bytes`, `result_kind` |
 | `mcp.tool.failed` | `error/dependency` | MCP 工具调用失败 | `duration_ms`, `input_bytes`, `reason_code` |
 | `mcp.transport.failed` | `warning/dependency` | MCP transport 最终调用失败 | `reason_code`, `final_attempt`, `duration_ms` |

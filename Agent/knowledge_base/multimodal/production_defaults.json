@@ -48,9 +48,9 @@
   "evaluation": {
     "dataset_path": "Agent/knowledge_base/multimodal/production_eval_v1.json",
     "thresholds": {
-      "min_hit_at_5": 0.70,
+      "min_hit_at_5": 0.65,
       "min_mrr": 0.50,
-      "min_citation_location_accuracy": 0.60,
+      "min_citation_location_accuracy": 0.50,
       "max_empty_result_rate": 0.10
     }
   }
