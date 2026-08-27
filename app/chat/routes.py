@@ -198,7 +198,7 @@ def load_session_content():
                 cursor.execute(
                     f"""
                     SELECT id, job_id, event_type, payload_json, created_at
-                    FROM analysis_job_events
+                    FROM analysis_job_events FORCE INDEX (idx_analysis_job_events_job_id)
                     WHERE job_id IN ({placeholders})
                     ORDER BY job_id, id
                     """,
