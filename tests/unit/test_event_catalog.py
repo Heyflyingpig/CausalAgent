@@ -42,6 +42,7 @@ EXPECTED_CODES = {
     "chat.attachment.degraded",
     "rag.startup.unavailable",
     "rag.enrichment.degraded",
+    "rag.multimodal.parse_failed",
     "mcp.tool.finished",
     "mcp.tool.failed",
     "mcp.transport.failed",
@@ -64,6 +65,8 @@ EXPECTED_CODES.update(
 
 
 def _sample_value(field: str, rule):
+    if bool in rule.types:
+        return False
     if rule.choices:
         return sorted(rule.choices, key=str)[0]
     if field == "method":
@@ -94,6 +97,9 @@ def _sample_value(field: str, rule):
         "lag_seconds",
         "lease_epoch",
         "max_workers",
+        "page_number",
+        "image_index",
+        "table_index",
         "slot_count",
         "timeout_ms",
         "tool_count",

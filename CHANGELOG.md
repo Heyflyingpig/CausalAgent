@@ -1261,3 +1261,7 @@
   - RAG 评测任务使用 MySQL 持久队列和独立 `rag-eval-worker`；生产 Agent worker 启动时轻量检查 active release，缺失时保持无 RAG 降级，SIGTERM/SIGINT 按 `JOB_DRAIN_TIMEOUT_SECONDS` 停止领取并等待在途任务。
   - 多模态链路保留受控来源、OCR/可选远程视觉、staged index、评测与显式 release gate；publish/rollback 保留 active/previous 指针且不自动删除索引或运行产物。
   - 新增 RAG API/架构文档、隔离评测前端、数据库迁移和生产验收入口；不导入 MySQL queue drill Compose、runner 与测试，并移除已被多模态运行时替代的旧 RAG 原型和样例导出文件。
+
+---
+2026.8.26（RAG 导入修复）
+- 【问题修复】：补齐共享 `observability.cli` CLI 输出适配器，修复 Gold v2 状态接口因 RAG 模块导入失败而返回 500。
