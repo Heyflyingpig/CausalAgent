@@ -1,0 +1,13 @@
+{
+  "index_version": "mm_680e88680120c587d3ae",
+  "index_path": "mm_680e88680120c587d3ae/chroma",
+  "collection_name": "causal_multimodal_mm_680e88680120c587d3ae",
+  "manifest_sha256": "c51f91949f9843957c64953174e87d18c2f00759d5c5f03d0a37523dd3b67526",
+  "embedding": {
+    "provider": "huggingface",
+    "model": "bge-small-zh-v1.5",
+    "mode": "local",
+    "dimension": 512,
+    "normalized": true
+  }
+}
