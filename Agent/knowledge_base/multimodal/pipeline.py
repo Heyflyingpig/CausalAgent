@@ -646,8 +646,8 @@ class MultimodalKnowledgeBaseMaintenance:
         if timeout_seconds is not None and time.monotonic() - started > timeout_seconds:
             raise TimeoutError("multimodal maintenance run timed out")
 
-    def evaluate(self, index_version: str) -> dict[str, Any]:
-        """执行完整性门禁，并对正式资料执行冻结人工 gold 检索门禁。"""
+    def evaluate(self, index_version: str, *, require_assets: bool = True) -> dict[str, Any]:
+        """执行完整性门禁；正式候选复核可不依赖外置解析资产。"""
         directory = self._version_dir(index_version)
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
         units = [KnowledgeUnit.model_validate_json(line) for line in (directory / "units.jsonl").read_text(encoding="utf-8").splitlines() if line]
@@ -662,8 +662,8 @@ class MultimodalKnowledgeBaseMaintenance:
         if any(issue.severity is IssueSeverity.ERROR for issue in gate_issues): failures.append("required_source_failed")
         if any(issue.blocking for issue in gate_issues): failures.append("blocking_issue")
         store = AssetStore(self.asset_root)
-        if any(unit.asset_uri and not store.exists(unit.asset_uri) for unit in units): failures.append("missing_asset")
-        failures.extend(self._audit_manifest_chain(manifest, units, store))
+        if require_assets and any(unit.asset_uri and not store.exists(unit.asset_uri) for unit in units): failures.append("missing_asset")
+        failures.extend(self._audit_manifest_chain(manifest, units, store, require_assets=require_assets))
         if manifest.get("schema_version", 0) >= 4:
             failures.extend(self._audit_outbound_manifest(directory, manifest))
         if any(not unit.retrieval_text.strip() for unit in units): failures.append("empty_retrieval_text")
@@ -676,7 +676,7 @@ class MultimodalKnowledgeBaseMaintenance:
             documents = manifest.get("documents", [])
             if any(document.get("expected_page_count") != document.get("attempted_page_count") for document in documents):
                 failures.append("source_page_count_mismatch")
-            if any(
+            if require_assets and any(
                 document.get("parser_name") == "docling"
                 and len(document.get("parser_artifacts", [])) != document.get("expected_page_count")
                 for document in documents
@@ -714,7 +714,7 @@ class MultimodalKnowledgeBaseMaintenance:
             resolve_production_sources()
         except (FileNotFoundError, OSError, ValueError) as exc:
             raise ValueError("current controlled production sources are not valid") from exc
-        fresh_evaluation = self.evaluate(index_version)
+        fresh_evaluation = self.evaluate(index_version, require_assets=False)
         if not fresh_evaluation.get("passed"):
             raise ValueError("blocking evaluation failures prevent publication")
         if fresh_evaluation.get("manifest_sha256") != manifest_sha256:
@@ -747,7 +747,7 @@ class MultimodalKnowledgeBaseMaintenance:
         source_asset_root: Path,
         index_version: str,
     ) -> dict[str, Any]:
-        """把已通过隔离门禁的不可变版本物化到正式候选目录，不切换 active pointer。"""
+        """只物化索引到正式候选目录，解析资产参数保留兼容但不复制。"""
         if not isinstance(index_version, str) or not index_version.startswith("mm_") or "/" in index_version or "\\" in index_version:
             raise ValueError("invalid multimodal index version")
         source_root = Path(source_index_root).resolve()
@@ -769,19 +769,6 @@ class MultimodalKnowledgeBaseMaintenance:
         temporary = target_root / f".{index_version}.promote-{uuid.uuid4().hex}"
         try:
             shutil.copytree(source_dir, temporary)
-            asset_root = Path(source_asset_root).resolve()
-            if asset_root.is_dir():
-                for source_asset in asset_root.rglob("*"):
-                    if not source_asset.is_file():
-                        continue
-                    relative = source_asset.relative_to(asset_root)
-                    target_asset = (self.asset_root.resolve() / relative).resolve()
-                    target_asset.relative_to(self.asset_root.resolve())
-                    target_asset.parent.mkdir(parents=True, exist_ok=True)
-                    if target_asset.exists() and target_asset.read_bytes() != source_asset.read_bytes():
-                        raise ValueError(f"formal asset conflicts with staged asset: {relative.as_posix()}")
-                    if not target_asset.exists():
-                        shutil.copy2(source_asset, target_asset)
             temporary.replace(target_dir)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
@@ -1616,8 +1603,15 @@ class MultimodalKnowledgeBaseMaintenance:
         if rate < float(policy["min_enrichment_rate"]): failures.append("enrichment_rate_below_minimum")
         return {"passed": not failures, "policy": policy, "observed": observed, "enrichment_rate": rate, "failures": failures}
 
-    def _audit_manifest_chain(self, manifest: dict[str, Any], units: list[KnowledgeUnit], store: AssetStore) -> list[str]:
-        """校验 source、解析原始产物、文档记录与标准化单元的不可变哈希链。"""
+    def _audit_manifest_chain(
+        self,
+        manifest: dict[str, Any],
+        units: list[KnowledgeUnit],
+        store: AssetStore,
+        *,
+        require_assets: bool = True,
+    ) -> list[str]:
+        """校验身份链；仅严格 staged 复核时读取外置 source/解析资产。"""
         documents = manifest.get("documents")
         sources = manifest.get("sources")
         if not isinstance(documents, list) or not documents or not isinstance(sources, list):
@@ -1662,21 +1656,25 @@ class MultimodalKnowledgeBaseMaintenance:
                 or not isinstance(document_id, str)
                 or document_id != expected_document_id
                 or not source_match
-                or not isinstance(source_asset_uri, str)
+                or document_id in document_ids
+            ):
+                return ["missing_audit_asset"]
+            if require_assets and (
+                not isinstance(source_asset_uri, str)
                 or not store.exists(source_asset_uri)
                 or sha256_bytes(store.read(source_asset_uri)) != content_hash
-                or document_id in document_ids
             ):
                 return ["missing_audit_asset"]
             document_ids.add(document_id)
             artifacts = document.get("parser_artifacts", [])
-            if not isinstance(artifacts, list):
+            if require_assets and not isinstance(artifacts, list):
                 return ["missing_audit_asset"]
-            for artifact in artifacts:
-                if not isinstance(artifact, dict) or not isinstance(artifact.get("asset_uri"), str) or not isinstance(artifact.get("content_hash"), str):
-                    return ["missing_audit_asset"]
-                if not store.exists(artifact["asset_uri"]) or sha256_bytes(store.read(artifact["asset_uri"])) != artifact["content_hash"]:
-                    return ["missing_audit_asset"]
+            if require_assets:
+                for artifact in artifacts:
+                    if not isinstance(artifact, dict) or not isinstance(artifact.get("asset_uri"), str) or not isinstance(artifact.get("content_hash"), str):
+                        return ["missing_audit_asset"]
+                    if not store.exists(artifact["asset_uri"]) or sha256_bytes(store.read(artifact["asset_uri"])) != artifact["content_hash"]:
+                        return ["missing_audit_asset"]
         actual_sources = {
             (document.get("source_id"), document.get("content_hash"))
             for document in documents
@@ -1689,14 +1687,15 @@ class MultimodalKnowledgeBaseMaintenance:
             return ["missing_audit_asset"]
         if any(unit.document_id not in document_ids for unit in units):
             return ["orphaned_unit_document"]
-        for unit in units:
-            if unit.asset_uri and not store.exists(unit.asset_uri):
-                continue
-            if unit.modality == "image" and unit.asset_uri:
-                if sha256_bytes(store.read(unit.asset_uri)) != unit.content_hash:
+        if require_assets:
+            for unit in units:
+                if unit.asset_uri and not store.exists(unit.asset_uri):
+                    continue
+                if unit.modality == "image" and unit.asset_uri:
+                    if sha256_bytes(store.read(unit.asset_uri)) != unit.content_hash:
+                        return ["unit_asset_hash_mismatch"]
+                elif unit.asset_uri and not unit.raw_text and sha256_bytes(store.read(unit.asset_uri)) != unit.content_hash:
                     return ["unit_asset_hash_mismatch"]
-            elif unit.asset_uri and not unit.raw_text and sha256_bytes(store.read(unit.asset_uri)) != unit.content_hash:
-                return ["unit_asset_hash_mismatch"]
         return []
 
     @staticmethod
