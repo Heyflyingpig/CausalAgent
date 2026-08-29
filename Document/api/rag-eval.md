@@ -154,7 +154,16 @@ Link: </api/rag_eval/isolated/runs/<run_id>>; rel="successor-version"
   "source_ids": ["source_x"],
   "max_pages": 12,
   "allow_remote_data": false,
-  "authorized_source_ids": []
+  "authorized_source_ids": [],
+  "embedding_config": {
+    "mode": "api",
+    "provider": "openai_compatible",
+    "model": "embedding-test",
+    "dimension": 1536,
+    "api_key_env": "EMBEDDING_API_KEY",
+    "base_url_env": "EMBEDDING_BASE_URL",
+    "endpoint_identity": "https://embedding.example/v1"
+  }
 }
 ```
 
@@ -163,6 +172,7 @@ Link: </api/rag_eval/isolated/runs/<run_id>>; rel="successor-version"
 - `source_ids` 与 `sources` 互斥；`source_ids` 是目录 ID 列表，`sources` 是含 `uri`、可选 `source_id`、`display_name`/`name` 的对象列表；最多 20 个。`sources[].uri` 是服务端本地文件或目录路径，仅适用于受信内部调用，不会下载 HTTP URL，也不自动限制在来源目录内。外部调用应先上传来源或使用 `source_ids`；生产部署应由外层鉴权并增加允许根目录校验。
 - `max_pages` 必须是正整数。`page_ranges` 是对象列表，每项含 `source_id`、`start_page`、`end_page`，页码从 1 开始且闭区间；不能与 `max_pages` 同时提交。
 - `allow_remote_data` 必须是 boolean，默认 `false`；开启时必须提交来源级 `authorized_source_ids`，且必须通过服务端 `VISION_ALLOW_REMOTE_DATA`。
+- `embedding_config` 可选；提交后在 run 创建时冻结，staged 构建、候选生成和 isolated 查询复用同一份配置。只允许 `api_key_env`/`base_url_env` 等凭据引用，禁止提交 `api_key`、Token、Cookie 或带凭据 URL；省略时使用当前 production defaults（API-key embedding）。本地配置即使在隔离 run 中可用，也不能通过正式 production policy 发布。
 
 响应的 run 至少包含 `kind=ingestion`、`status=queued`、来源 IDs/显示名、页范围、远程授权摘要、`execution_backend=persistent_worker` 和后续待填充的 `index_version`、`manifest_sha256`、`unit_count`、`vector_count`。参数/来源错误是 `400`，远程权限或策略冲突是 `409`。
 
@@ -179,14 +189,14 @@ Link: </api/rag_eval/isolated/runs/<run_id>>; rel="successor-version"
 
 | 方法 | 路径 | 请求 | 语义 |
 | --- | --- | --- | --- |
-| `GET` | `/multimodal/releases/status` | 可选 query `ingestion_run_id` + `index_version`，以及 `evaluation_run_id` | active/previous/candidate 和指定 release 摘要；指定 release 时前两个参数必须成对提交 |
-| `POST` | `/multimodal/releases/gate-check` | `ingestion_run_id`、`index_version`，可选 `evaluation_run_id`、`expected_active_index_version` | 运行全部门禁，不切 pointer |
-| `POST` | `/multimodal/releases/publish` | 必须 `confirm=true`、`ingestion_run_id`、`index_version`、`evaluation_run_id`；可选 expected active | 通过门禁后先物化 candidate，再切 active |
-| `POST` | `/multimodal/releases/rollback` | 必须 `confirm=true`、`index_version`；可选 expected active | 复用正式门禁执行回滚 |
+| `GET` | `/multimodal/releases/status` | 可选 query `ingestion_run_id` + `index_version`，以及 `evaluation_run_id` | active/fallback 和指定 release 摘要；指定 release 时前两个参数必须成对提交 |
+| `POST` | `/multimodal/releases/gate-check` | `ingestion_run_id`、`index_version`，可选 `evaluation_run_id`、`expected_active_index_version`、`expected_generation` | 运行全部门禁，不切 pointer |
+| `POST` | `/multimodal/releases/publish` | 必须 `confirm=true`、`ingestion_run_id`、`index_version`、`evaluation_run_id`；可选 `expected_active_index_version`、`expected_generation` | 通过门禁后封存 evaluation binding，由 release manager 物化 incoming、校验并原子切 active/fallback；成功响应包含 `requires_worker_restart=true` |
+| `POST` | `/multimodal/releases/rollback` | 必须 `confirm=true`、`index_version`；可选 `expected_active_index_version`、`expected_generation` | 复用正式门禁执行回滚 |
 
 `status` 的 `data` 包含 `active`、`previous`、`candidates`、`candidate_overflow`，提交成对的 `ingestion_run_id`/`index_version` 后还包含 `release`。`gate-check` 请求完成时返回 `publishable`、`state`、`checks`、`evaluation` 和 `requires_worker_restart`；即使 `state=blocked` 也不代表 HTTP 请求失败，并且它永远不切 pointer。
 
-`publish` 成功才返回 promotion、active/previous 等发布结果；正式发布门禁失败返回 `409`，响应为 `{ "success": false, "error": "...", "data": <gate report> }`。`confirm` 缺失/错误、参数缺失、候选不可解析或当前 active 版本冲突按当前实现返回 `400`。回滚同样需要显式确认，参数/版本错误也按当前实现返回 `400`，不是“读取 previous”操作。
+`publish` 成功才返回 promotion、active/previous 等发布结果；正式发布门禁失败返回 `409`，响应为 `{ "success": false, "error": "...", "data": <gate report> }`。`expected_generation` 必须是非负整数，和 active 版本一起作为并发 CAS 快照；generation 不一致时不会切换 pointer。`confirm` 缺失/错误、参数缺失、候选不可解析或当前 active 版本冲突按当前实现返回 `400`。回滚同样需要显式确认，参数/版本错误也按当前实现返回 `400`，不是“读取 previous”操作。
 
 ## 5. 候选题集、调参集和 Gold 治理
 

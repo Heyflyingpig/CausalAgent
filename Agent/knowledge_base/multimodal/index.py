@@ -8,13 +8,18 @@ import gc
 import time
 from pathlib import Path
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Mapping
 
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+from Agent.knowledge_base.embedding_runtime import (
+    EmbeddingConfiguration,
+    create_embedding_function,
+    resolve_production_embedding_configuration,
+)
 from .defaults import resolve_production_embedding_config
 
-from .contracts import KnowledgeUnit, canonical_json
+from .contracts import KnowledgeUnit
+from .release import normalize_pointer, pointer_bytes
 
 
 def replace_with_retry(temporary: Path, target: Path) -> None:
@@ -30,41 +35,69 @@ def replace_with_retry(temporary: Path, target: Path) -> None:
                 raise
 
 
-def embedding_fingerprint() -> dict[str, Any]:
-    """从现有 provider resolver 派生且不暴露密钥的嵌入指纹。"""
-    config = resolve_production_embedding_config()
-    return {
-        "provider": config["provider"],
-        "model": config["model"],
-        "mode": config["mode"],
-        "dimension": config.get("dimension"),
-        "normalized": config["normalized"],
-    }
+def embedding_fingerprint(config: Mapping[str, Any] | EmbeddingConfiguration | None = None) -> dict[str, Any]:
+    """返回显式 embedding 配置的兼容短指纹。"""
+    resolved = (
+        EmbeddingConfiguration.from_mapping(resolve_production_embedding_config())
+        if config is None
+        else EmbeddingConfiguration.from_mapping(config)
+    )
+    return resolved.fingerprint()
 
 
-def _embeddings() -> Any:
-    """复用现有项目 embedding 配置创建 Chroma 所需函数。"""
-    config = resolve_production_embedding_config()
-    if config["status"] != "ready":
-        raise RuntimeError(config["message"])
-    return HuggingFaceEmbeddings(model_name=config["path"], model_kwargs={"device": "cpu"}, encode_kwargs={"normalize_embeddings": True})
+def embedding_configuration_manifest(config: Mapping[str, Any] | EmbeddingConfiguration | None = None) -> dict[str, Any]:
+    """返回可写入 release manifest 的完整 embedding 配置。"""
+    resolved = (
+        resolve_production_embedding_configuration()
+        if config is None
+        else EmbeddingConfiguration.from_mapping(config)
+    )
+    return resolved.to_manifest()
+
+
+def _embeddings(
+    config: Mapping[str, Any] | EmbeddingConfiguration | None = None,
+    *,
+    scope: str = "production",
+) -> Any:
+    """按显式配置创建 Chroma 所需函数。"""
+    resolved = (
+        resolve_production_embedding_configuration()
+        if config is None
+        else EmbeddingConfiguration.from_mapping(config)
+    )
+    return create_embedding_function(resolved, scope=scope)
 
 
 class StagedIndex:
     """只向版本专属目录写入的 Chroma 索引。"""
 
-    def __init__(self, version_dir: Path, collection_name: str, *, directory_name: str = "chroma") -> None:
+    def __init__(
+        self,
+        version_dir: Path,
+        collection_name: str,
+        *,
+        directory_name: str = "chroma",
+        embedding_config: Mapping[str, Any] | EmbeddingConfiguration | None = None,
+        embedding_scope: str = "production",
+    ) -> None:
         """绑定唯一版本目录和 collection 名称。"""
         self.version_dir = version_dir
         self.collection_name = collection_name
         self.directory_name = directory_name
+        self.embedding_config = embedding_config
+        self.embedding_scope = embedding_scope
 
-    def write(self, units: Iterable[KnowledgeUnit], *, batch_size: int = 64) -> int:
+    def write(self, units: Iterable[KnowledgeUnit], *, batch_size: int = 20) -> int:
         """写入一个此前不存在的版本，拒绝追加到已有 Chroma 数据。"""
         chroma_dir = self.version_dir / self.directory_name
         if chroma_dir.exists() and any(chroma_dir.iterdir()):
             raise ValueError("staged index is immutable and cannot be appended")
-        db = Chroma(persist_directory=str(chroma_dir), collection_name=self.collection_name, embedding_function=_embeddings())
+        db = Chroma(
+            persist_directory=str(chroma_dir),
+            collection_name=self.collection_name,
+            embedding_function=_embeddings(self.embedding_config, scope=self.embedding_scope),
+        )
         try:
             batch: list[KnowledgeUnit] = []
             for unit in units:
@@ -130,29 +163,58 @@ class ActiveIndexRegistry:
 
     def read_previous(self) -> dict[str, Any] | None:
         """读取上一个 active pointer；首次发布时不存在。"""
+        current = self.read()
+        if isinstance(current, dict) and isinstance(current.get("fallback"), dict):
+            return dict(current["fallback"])
         if not self.previous_path.exists():
             return None
         return json.loads(self.previous_path.read_text(encoding="utf-8"))
 
+    def read_release_pointer(self) -> dict[str, Any]:
+        """读取新 pointer，并兼容旧 active/previous 双文件。"""
+        previous = None
+        if self.previous_path.is_file():
+            previous = json.loads(self.previous_path.read_text(encoding="utf-8"))
+        return normalize_pointer(self.read(), previous)
+
+    def write_release_pointer(self, pointer: Mapping[str, Any]) -> None:
+        """以新 schema 原子写入 active/fallback 单 pointer。"""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary.write_bytes(pointer_bytes(pointer))
+        replace_with_retry(temporary, self.path)
+
     def publish(self, *, index_root: Path, index_version: str, collection_name: str, manifest_sha256: str, embedding: dict[str, Any]) -> None:
-        """原子更新仅含相对路径和验证信息的 active pointer。"""
-        payload = {
+        """兼容旧调用签名，但写入新的 active/fallback 单 pointer。"""
+        del index_root, embedding
+        current = self.read_release_pointer()
+        current_active = current.get("active")
+        active = {
+            "release_id": index_version,
             "index_version": index_version,
             "index_path": f"{index_version}/chroma",
             "collection_name": collection_name,
             "manifest_sha256": manifest_sha256,
-            "embedding": embedding,
         }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        current = self.read()
-        if current is not None and current.get("index_version") != index_version:
-            self._write_atomic(current, self.previous_path)
-        self._write_atomic(payload, self.path)
+        fallback = current.get("fallback") if current_active and current_active.get("release_id") == index_version else current_active
+        self.write_release_pointer({
+            "schema_version": "multimodal_release_pointer_v1",
+            "generation": int(current.get("generation") or 0) + 1,
+            "active": active,
+            "fallback": fallback,
+        })
 
     def retention_snapshot(self, index_root: Path) -> dict[str, Any]:
         """返回 active、previous 与候选版本摘要；此方法绝不删除目录。"""
-        active = self.read()
-        previous = self.read_previous()
+        raw_active = self.read()
+        is_new_pointer = isinstance(raw_active, dict) and "active" in raw_active and "fallback" in raw_active
+        if is_new_pointer:
+            pointer = self.read_release_pointer()
+            active = pointer.get("active")
+            previous = pointer.get("fallback")
+        else:
+            active = raw_active
+            previous = self.read_previous()
         protected_versions = {
             pointer.get("index_version")
             for pointer in (active, previous)
@@ -175,6 +237,8 @@ class ActiveIndexRegistry:
             },
             "active": active,
             "previous": previous,
+            "fallback": previous,
+            "generation": int(pointer.get("generation") or 0) if is_new_pointer else 0,
             "protected_versions": sorted(protected_versions),
             "candidates": candidates,
             "candidate_overflow": len(candidates) > 1,

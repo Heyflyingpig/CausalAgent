@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,14 @@ def load_production_defaults(path: Path = DEFAULTS_PATH) -> dict[str, Any]:
         config["controlled_source_directories"] = sorted({Path(str(source["path"])).parent.as_posix() for source in config["sources"]})
     if any(not isinstance(source.get("page_count"), int) or source["page_count"] < 1 for source in config["sources"]):
         raise ValueError("production defaults require positive source page counts")
+    embedding = config.get("embedding")
+    if not isinstance(embedding, dict) or embedding.get("mode") not in {"api", "local"}:
+        raise ValueError("production defaults require an explicit embedding mode")
+    if isinstance(embedding.get("dimension"), bool) or not isinstance(embedding.get("dimension"), int) or embedding["dimension"] < 1:
+        raise ValueError("production defaults require a positive embedding dimension")
+    local_embedding = config.get("local_embedding", {})
+    if not isinstance(local_embedding, dict) or not isinstance(local_embedding.get("enabled", False), bool):
+        raise ValueError("production defaults local_embedding.enabled must be boolean")
     return config
 
 
@@ -107,9 +116,41 @@ def production_source_paths(config: dict[str, Any] | None = None) -> list[Path]:
 
 
 def resolve_production_embedding_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """从受版本控制的冻结配置解析本地 embedding，不读取旧医疗环境变量。"""
+    """从受版本控制的策略解析正式 embedding；生产默认使用 API key。"""
     config = config or load_production_defaults()
     embedding = config["embedding"]
+    mode = str(embedding.get("mode") or "")
+    if mode == "api":
+        env_config = config.get("embedding_env") or {}
+        api_key_env = str(env_config.get("api_key_env") or "EMBEDDING_API_KEY")
+        base_url_env = str(env_config.get("base_url_env") or "EMBEDDING_BASE_URL")
+        model_env = str(env_config.get("model_env") or "EMBEDDING_MODEL")
+        missing = [
+            name
+            for name, configured in (
+                (api_key_env, bool(os.environ.get(api_key_env))),
+                (base_url_env, bool(os.environ.get(base_url_env))),
+            )
+            if not configured
+        ]
+        endpoint_identity = os.environ.get(base_url_env, "")
+        return {
+            "status": "ready" if not missing else "missing",
+            "mode": "api",
+            "provider": embedding["provider"],
+            "provider_setting": "frozen",
+            "model": embedding["model"],
+            "dimension": embedding["dimension"],
+            "normalized": embedding["normalized"],
+            "endpoint_identity": endpoint_identity,
+            "api_key_env": api_key_env,
+            "base_url_env": base_url_env,
+            "model_env": model_env,
+            "missing": missing,
+            "message": "配置完整" if not missing else "缺少 " + ", ".join(missing),
+        }
+    if mode != "local" or not config.get("local_embedding", {}).get("enabled", False):
+        raise ValueError("local production embedding is disabled")
     if embedding["provider"] != "huggingface":
         raise ValueError("only the frozen local huggingface embedding is supported")
     model_path = ROOT / "Agent" / "knowledge_base" / "models" / embedding["model"]

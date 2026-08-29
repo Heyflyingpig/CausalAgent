@@ -29,14 +29,17 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from Agent.knowledge_base.multimodal.defaults import (
-    production_source_paths,
-    resolve_production_embedding_config,
+from Agent.knowledge_base.embedding_runtime import (
+    EmbeddingConfiguration,
+    resolve_production_embedding_configuration,
+    validate_embedding_env_references,
 )
-from Agent.knowledge_base.multimodal.contracts import content_source_id
+from Agent.knowledge_base.multimodal.defaults import production_source_paths
+from Agent.knowledge_base.multimodal.contracts import canonical_json, content_source_id
 from Agent.knowledge_base.multimodal.index import embedding_fingerprint, replace_with_retry
 from Agent.knowledge_base.multimodal.parsers import SUPPORTED_SUFFIXES, inspect_source
 from Agent.knowledge_base.multimodal.pipeline import MultimodalKnowledgeBaseMaintenance
+from Agent.knowledge_base.multimodal.release import compute_manifest_sha256, embedding_config_from_manifest, seal_evaluation_binding
 from Agent.knowledge_base.rag_runtime import RagRuntimeConfig, create_rag_runtime
 from Agent.knowledge_base.rag_service import RagService
 from Agent.knowledge_base.rag.operation_datasets.index_bound_tuning import (
@@ -98,6 +101,18 @@ GOVERNANCE_REVIEWER = None
 GOVERNANCE_CANDIDATE_PROVIDER = None
 # 可注入的替补候选改写器；契约与 calibrated_candidate_audit.Rewriter 一致。
 GOVERNANCE_CANDIDATE_REWRITER = None
+
+
+def _staged_embedding_config(index_dir: Path) -> dict[str, Any]:
+    """返回 staged manifest 的完整 embedding 配置供隔离绑定比较。"""
+    manifest = _read_json(Path(index_dir) / "manifest.json")
+    configured = manifest.get("embedding_config")
+    if isinstance(configured, dict):
+        return dict(configured)
+    legacy = manifest.get("embedding")
+    if isinstance(legacy, dict):
+        return dict(legacy)
+    raise ValueError("staged index embedding configuration is missing")
 
 
 def _remote_data_enabled() -> bool:
@@ -1133,6 +1148,7 @@ class IsolatedRunManager:
         page_ranges: List[Dict[str, Any]] | None = None,
         allow_remote_data: bool = False,
         authorized_source_ids: List[str] | None = None,
+        embedding_config: Dict[str, Any] | EmbeddingConfiguration | None = None,
     ) -> Dict[str, Any]:
         """异步摄取显式来源，并返回新的隔离运行身份。"""
         if max_pages is not None and (isinstance(max_pages, bool) or max_pages < 1):
@@ -1169,6 +1185,11 @@ class IsolatedRunManager:
         if allow_remote_data and not _remote_data_enabled():
             raise PermissionError("remote VLM is disabled by server policy")
         normalized_ranges, page_range_map = _normalize_page_ranges(page_ranges, source_paths, resolved_source_ids)
+        frozen_embedding = (
+            resolve_production_embedding_configuration()
+            if embedding_config is None
+            else validate_embedding_env_references(embedding_config)
+        )
 
         run_id = _new_run_id("ingest")
         run_dir = _run_dir(run_id)
@@ -1195,6 +1216,8 @@ class IsolatedRunManager:
             "index_version": "",
             "collection_name": "",
             "manifest_sha256": "",
+            "embedding_config": frozen_embedding.to_runtime_dict(),
+            "embedding_fingerprint": frozen_embedding.fingerprint(),
             "unit_count": 0,
             "vector_count": 0,
             "events": [],
@@ -1225,8 +1248,11 @@ class IsolatedRunManager:
         result: Dict[str, Any] = {
             "active": pointer.get("active"),
             "previous": pointer.get("previous"),
+            "fallback": pointer.get("fallback") or pointer.get("previous"),
+            "generation": pointer.get("generation", 0),
             "candidates": pointer.get("candidates", []),
             "candidate_overflow": pointer.get("candidate_overflow", False),
+            "quarantine": pointer.get("quarantine", []),
             "release": None,
         }
         if ingestion_run_id or index_version:
@@ -1240,6 +1266,7 @@ class IsolatedRunManager:
         index_version: str,
         evaluation_run_id: str | None = None,
         expected_active_index_version: str | None = None,
+        expected_generation: int | None = None,
     ) -> Dict[str, Any]:
         """执行可审计的正式发布门禁，但不复制产物也不切换 pointer。"""
         context = self._release_context(ingestion_run_id, index_version, evaluation_run_id)
@@ -1274,6 +1301,7 @@ class IsolatedRunManager:
             asset_root=context["run_dir"] / "assets",
             index_root=context["run_dir"] / "indexes",
             active_config=context["run_dir"] / "active_index.json",
+            embedding_scope="evaluation",
         )
         try:
             evaluation = isolated_maintenance.evaluate(index_version)
@@ -1312,6 +1340,13 @@ class IsolatedRunManager:
             and evaluation_state.get("index_version") == index_version
             and (evaluation_state.get("summary") or {}).get("status") == "pass"
         )
+        if evaluation_run_id:
+            evaluation_dir = _run_dir(evaluation_run_id)
+            evaluation_bound = evaluation_bound and bool(
+                str((evaluation_state or {}).get("input_content_sha256") or "")
+                and str(((evaluation_state or {}).get("input_identity") or {}).get("dataset_revision") or "")
+                and (evaluation_dir / "result.json").is_file()
+            )
         add_check(
             "ragas",
             "自动 Ragas 评测",
@@ -1333,7 +1368,16 @@ class IsolatedRunManager:
             if not pointer_ok
             else "发布目标仍基于当前 active pointer 快照",
         )
-        current_manifest_sha = hashlib.sha256(context["manifest_path"].read_bytes()).hexdigest()
+        generation_ok = expected_generation in {None, int(pointer.get("generation") or 0)}
+        add_check(
+            "active_pointer_generation",
+            "active pointer generation",
+            generation_ok,
+            "发布前 active pointer generation 已发生变化"
+            if not generation_ok
+            else "发布目标仍基于当前 active pointer generation 快照",
+        )
+        current_manifest_sha = compute_manifest_sha256(context["manifest_path"])
         add_check(
             "manifest_unchanged",
             "manifest 不可变",
@@ -1361,6 +1405,7 @@ class IsolatedRunManager:
         index_version: str,
         evaluation_run_id: str,
         expected_active_index_version: str | None = None,
+        expected_generation: int | None = None,
     ) -> Dict[str, Any]:
         """晋级隔离 staged 产物并复用正式 CLI publish 门禁切换 active pointer。"""
         report = self.check_release(
@@ -1368,26 +1413,41 @@ class IsolatedRunManager:
             index_version,
             evaluation_run_id,
             expected_active_index_version,
+            expected_generation,
         )
         if not report["publishable"]:
             raise ReleaseGateError("正式发布门禁未通过", report)
         context = self._release_context(ingestion_run_id, index_version, evaluation_run_id)
+        evaluation_state = context["evaluation_state"] or {}
+        evaluation_dir = _run_dir(evaluation_run_id)
+        dataset_identity = evaluation_state.get("input_identity") or {}
+        binding = {
+            "evaluation_run_id": evaluation_run_id,
+            "dataset_revision": str(dataset_identity.get("dataset_revision") or ""),
+            "dataset_sha256": str(evaluation_state.get("input_content_sha256") or ""),
+            "report_sha256": hashlib.sha256((evaluation_dir / "result.json").read_bytes()).hexdigest(),
+            "gate_sha256": hashlib.sha256(canonical_json(report.get("checks") or []).encode("utf-8")).hexdigest(),
+        }
+        seal_evaluation_binding(context["manifest_path"], binding)
+        bound_manifest_sha256 = compute_manifest_sha256(context["manifest_path"])
+        self._set_status(ingestion_run_id, "staged", manifest_sha256=bound_manifest_sha256)
+        report["release"]["manifest_sha256"] = bound_manifest_sha256
+        report["release"]["evaluation_binding"] = binding
         formal = MultimodalKnowledgeBaseMaintenance()
-        promotion = formal.promote_staged(
+        published = formal.publish_staged(
             source_index_root=context["run_dir"] / "indexes",
-            source_asset_root=context["run_dir"] / "assets",
             index_version=index_version,
-        )
-        published = formal.publish(
-            index_version,
             expected_active_index_version=expected_active_index_version,
+            expected_manifest_sha256=bound_manifest_sha256,
+            expected_generation=expected_generation,
+            expected_evaluation_binding=binding,
         )
         pointer = formal.status()
         return {
             "status": published.get("status", "published"),
             "release": report["release"],
             "gate": report,
-            "promotion": promotion,
+            "promotion": {"status": "managed_by_release_manager"},
             "publish": published,
             "active": pointer.get("active"),
             "previous": pointer.get("previous"),
@@ -1398,10 +1458,15 @@ class IsolatedRunManager:
         self,
         index_version: str,
         expected_active_index_version: str | None = None,
+        expected_generation: int | None = None,
     ) -> Dict[str, Any]:
         """调用与 CLI 相同的正式回滚门禁；不自动删除其他版本。"""
         formal = MultimodalKnowledgeBaseMaintenance()
-        result = formal.rollback(index_version, expected_active_index_version=expected_active_index_version)
+        result = formal.rollback(
+            index_version,
+            expected_active_index_version=expected_active_index_version,
+            expected_generation=expected_generation,
+        )
         pointer = formal.status()
         return {
             **result,
@@ -1429,7 +1494,7 @@ class IsolatedRunManager:
         if not manifest_path.is_file():
             raise FileNotFoundError("staged release manifest is unavailable")
         manifest = _read_json(manifest_path)
-        manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        manifest_sha = compute_manifest_sha256(manifest_path)
         evaluation_state = None
         if evaluation_run_id:
             evaluation_state = self._load(evaluation_run_id)
@@ -1439,10 +1504,13 @@ class IsolatedRunManager:
             "manifest": manifest,
             "evaluation_state": evaluation_state,
             "release": {
-                "release_id": f"{ingestion_run_id}:{index_version}:{manifest_sha[:16]}",
+                "release_id": str(manifest.get("release_id") or index_version),
+                "identity_sha256": str(manifest.get("identity_sha256") or ""),
                 "ingestion_run_id": ingestion_run_id,
                 "index_version": index_version,
                 "manifest_sha256": manifest_sha,
+                "embedding": manifest.get("embedding"),
+                "embedding_config": manifest.get("embedding_config"),
                 "source_count": len(manifest.get("sources") or []),
                 "sources": [
                     {
@@ -1754,7 +1822,9 @@ class IsolatedRunManager:
         identity = self._validate_staged_index(index_dir, ingestion)
         if isinstance(identity, IndexIdentity):
             canonical_dataset = IndexBindingGate(
-                self._load, _run_dir, embedding_fingerprint
+                self._load,
+                _run_dir,
+                lambda: ingestion.get("embedding_config") or _staged_embedding_config(index_dir),
             ).validate_dataset(canonical_dataset, identity, DATASET_KINDS)
         elif canonical_dataset.get("dataset_kind") == "generated_candidate":
             from Agent.knowledge_base.rag.operation_datasets.benchmark_v2 import validate_candidate_gold_binding
@@ -3010,18 +3080,26 @@ class IsolatedRunManager:
     ) -> None:
         """执行隔离摄取；旧 index_root、asset_root 和 active pointer 不参与。"""
         run_dir = _run_dir(run_id)
+        state = self._load(run_id)
         maintenance = MultimodalKnowledgeBaseMaintenance(
             asset_root=run_dir / "assets",
             index_root=run_dir / "indexes",
             active_config=run_dir / "active_index.json",
+            embedding_scope="evaluation",
         )
         remote_enabled = bool(allow_remote_data and authorized_source_ids)
-        self._emit(run_id, "stage_start", "开始解析并构建 staged Chroma", {"stage": "ingest"})
+        self._emit(
+            run_id,
+            "stage_start",
+            "开始解析并构建 staged Chroma",
+            {"stage": "ingest"},
+        )
         self._set_status(run_id, "running", started_at=_timestamp(), current_stage="ingest")
         try:
             result = maintenance.ingest(
                 sources,
                 allow_remote_data=remote_enabled,
+                embedding_config=state.get("embedding_config"),
                 auto_outbound_manifest=remote_enabled,
                 authorized_source_ids=list(authorized_source_ids or []),
                 progress_callback=lambda event: self._emit(
@@ -3044,7 +3122,7 @@ class IsolatedRunManager:
                 current_stage="staged",
                 index_version=index_version,
                 collection_name=collection_name,
-                manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                manifest_sha256=compute_manifest_sha256(manifest_path),
                 unit_count=int(result.get("unit_count", 0)),
                 vector_count=int(result.get("vector_count", 0)),
             )
@@ -3525,13 +3603,21 @@ class IsolatedRunManager:
         ingestion = self._load(ingestion_run_id)
         index_dir = _run_dir(ingestion_run_id) / "indexes" / index_version
         self._validate_staged_index(index_dir, ingestion)
-        embedding_config = resolve_production_embedding_config()
+        manifest = _read_json(index_dir / "manifest.json")
+        embedding_config = embedding_config_from_manifest(manifest)
+        frozen_state_embedding = ingestion.get("embedding_config")
+        if isinstance(frozen_state_embedding, dict):
+            state_config = EmbeddingConfiguration.from_mapping(frozen_state_embedding)
+            if state_config.to_manifest() != EmbeddingConfiguration.from_mapping(embedding_config).to_manifest():
+                raise ValueError("isolated embedding configuration does not match staged manifest")
+            embedding_config = state_config.to_runtime_dict()
         runtime_config = RagRuntimeConfig(
             vector_db_dir=str(index_dir / "chroma"),
             collection_name=str(ingestion["collection_name"]),
             production_config_path=PRODUCTION_RAG_CONFIG_PATH,
             embedding_config=embedding_config,
-            release_id=f"isolated:{ingestion_run_id}:{index_version}",
+            release_id=str(manifest.get("release_id") or index_version),
+            embedding_scope="evaluation",
         )
         from langchain_openai import ChatOpenAI
 
@@ -3540,7 +3626,12 @@ class IsolatedRunManager:
 
     def resolve_staged_index(self, ingestion_run_id: str, index_version: str) -> IndexIdentity:
         """返回可供只读调用方复用的已验证 staged index identity。"""
-        return IndexBindingGate(self._load, _run_dir, embedding_fingerprint).resolve_staged_index(
+        index_dir = _run_dir(ingestion_run_id) / "indexes" / index_version
+        return IndexBindingGate(
+            self._load,
+            _run_dir,
+            lambda: self._load(ingestion_run_id).get("embedding_config") or _staged_embedding_config(index_dir),
+        ).resolve_staged_index(
             ingestion_run_id, index_version
         )
 
@@ -3549,7 +3640,11 @@ class IsolatedRunManager:
         """兼容旧调用点；全部 staged index 校验委托统一绑定门禁。"""
         run_id = str(ingestion.get("run_id") or "")
         run_dir = Path(index_dir).resolve().parents[1]
-        return IndexBindingGate(lambda _: ingestion, lambda _: run_dir, embedding_fingerprint).resolve_staged_index(
+        return IndexBindingGate(
+            lambda _: ingestion,
+            lambda _: run_dir,
+            lambda: ingestion.get("embedding_config") or _staged_embedding_config(index_dir),
+        ).resolve_staged_index(
             run_id, str(Path(index_dir).name)
         )
 
