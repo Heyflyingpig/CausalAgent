@@ -1,0 +1,416 @@
+"""冻结的多模态生产默认值与人工检索评测门禁。"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
+from typing import Any, Callable
+
+from langchain_chroma import Chroma
+
+from .defaults import ROOT, canonical_document_id, canonical_source_id, load_production_defaults, production_source_paths, resolve_production_sources
+from .contracts import stable_id
+from .index import _embeddings
+from .release import compute_manifest_sha256
+
+def load_evaluation_cases(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """读取 20 至 30 条人工核对评测题并验证最小 schema。"""
+    config = config or load_production_defaults()
+    path = (ROOT / config["evaluation"]["dataset_path"]).resolve()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    cases = payload.get("cases", [])
+    if payload.get("schema_version") != "multimodal_retrieval_eval_v1" or not 20 <= len(cases) <= 30:
+        raise ValueError("production evaluation dataset must contain 20 to 30 v1 cases")
+    required = {"case_id", "question", "gold_doc_ids", "gold_page_numbers", "expected_modality", "human_reviewed"}
+    for case in cases:
+        if not required.issubset(case) or not case["gold_doc_ids"] or not case["gold_page_numbers"] or not case["human_reviewed"]:
+            raise ValueError(f"incomplete production evaluation case: {case.get('case_id', '<unknown>')}")
+    return cases
+
+
+def evaluate_retrieval_cases(
+    cases: list[dict[str, Any]],
+    responses: dict[str, list[dict[str, Any]]],
+    *,
+    k: int = 5,
+) -> dict[str, Any]:
+    """按精确文档与页码定位计算 Hit@k、MRR、首条引用准确率和空结果率。"""
+    hits = 0
+    reciprocal_ranks = 0.0
+    correct_first_citations = 0
+    empty = 0
+    rows: list[dict[str, Any]] = []
+    modality_totals: dict[str, dict[str, float]] = {}
+    for case in cases:
+        evidence = responses.get(case["case_id"], [])[:k]
+        if not evidence:
+            empty += 1
+        relevant = [_matches_gold(item, case) for item in evidence]
+        rank = next((index for index, matched in enumerate(relevant, 1) if matched), None)
+        if rank is not None:
+            hits += 1
+            reciprocal_ranks += 1 / rank
+        if relevant and relevant[0]:
+            correct_first_citations += 1
+        modality = case["expected_modality"]
+        grouped = modality_totals.setdefault(modality, {"count": 0, "hits": 0, "reciprocal_ranks": 0.0, "correct_first": 0, "empty": 0})
+        grouped["count"] += 1
+        grouped["hits"] += int(rank is not None)
+        grouped["reciprocal_ranks"] += 1 / rank if rank is not None else 0
+        grouped["correct_first"] += int(bool(relevant and relevant[0]))
+        grouped["empty"] += int(not evidence)
+        rows.append(
+            {
+                "case_id": case["case_id"],
+                "hit": rank is not None,
+                "first_relevant_rank": rank,
+                "empty": not evidence,
+                "top_document_id": evidence[0].get("document_id") if evidence else None,
+                "top_page_number": evidence[0].get("page_number") if evidence else None,
+                "top_modality": evidence[0].get("modality") if evidence else None,
+                "expected_modality": case["expected_modality"],
+            }
+        )
+    count = len(cases)
+    if not count:
+        raise ValueError("at least one evaluation case is required")
+    by_modality = {
+        modality: {
+            "case_count": int(values["count"]),
+            f"hit_at_{k}": round(values["hits"] / values["count"], 6),
+            "mrr": round(values["reciprocal_ranks"] / values["count"], 6),
+            "citation_location_accuracy": round(values["correct_first"] / values["count"], 6),
+            "empty_result_rate": round(values["empty"] / values["count"], 6),
+        }
+        for modality, values in modality_totals.items()
+    }
+    return {
+        "case_count": count,
+        f"hit_at_{k}": round(hits / count, 6),
+        "mrr": round(reciprocal_ranks / count, 6),
+        "citation_location_accuracy": round(correct_first_citations / count, 6),
+        "empty_result_rate": round(empty / count, 6),
+        "by_modality": by_modality,
+        "cases": rows,
+    }
+
+
+def audit_production_coverage(
+    units: list[dict[str, Any]],
+    cases: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """在检索前校验每个 gold 页及其期望模态均已进入索引。"""
+    locators = {
+        (unit.get("document_id"), unit.get("page_number"), unit.get("modality"))
+        for unit in units
+    }
+    page_locators = {(document_id, page_number) for document_id, page_number, _ in locators}
+    total_gold_pages = 0
+    covered_gold_pages = 0
+    missing_page_cases: list[str] = []
+    missing_modality_cases: list[str] = []
+    modality_counts: dict[str, int] = {"text": 0, "image": 0, "table": 0}
+    for case in cases:
+        expected = case["expected_modality"]
+        gold = {
+            (document_id, page_number)
+            for document_id in case["gold_doc_ids"]
+            for page_number in case["gold_page_numbers"]
+        }
+        total_gold_pages += len(gold)
+        covered = gold & page_locators
+        covered_gold_pages += len(covered)
+        if covered != gold:
+            missing_page_cases.append(case["case_id"])
+        if not all((document_id, page_number, expected) in locators for document_id, page_number in gold):
+            missing_modality_cases.append(case["case_id"])
+        else:
+            modality_counts[expected] = modality_counts.get(expected, 0) + 1
+    return {
+        "passed": not missing_page_cases and not missing_modality_cases,
+        "case_count": len(cases),
+        "total_gold_pages": total_gold_pages,
+        "covered_gold_pages": covered_gold_pages,
+        "missing_page_cases": missing_page_cases,
+        "missing_modality_cases": missing_modality_cases,
+        "covered_cases_by_modality": modality_counts,
+    }
+
+
+def apply_thresholds(metrics: dict[str, Any], thresholds: dict[str, float]) -> dict[str, Any]:
+    """用预先冻结的四项阈值判定生产检索门禁。"""
+    failures: list[str] = []
+    if metrics["hit_at_5"] < thresholds["min_hit_at_5"]:
+        failures.append("hit_at_5_below_minimum")
+    if metrics["mrr"] < thresholds["min_mrr"]:
+        failures.append("mrr_below_minimum")
+    if metrics["citation_location_accuracy"] < thresholds["min_citation_location_accuracy"]:
+        failures.append("citation_location_accuracy_below_minimum")
+    if metrics["empty_result_rate"] > thresholds["max_empty_result_rate"]:
+        failures.append("empty_result_rate_above_maximum")
+    return {"passed": not failures, "thresholds": thresholds, "failures": failures}
+
+
+def evaluate_with_search(
+    search: Callable[[str, int], list[dict[str, Any]]],
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """运行冻结题集并返回包含阈值结论的可持久化报告。"""
+    config = config or load_production_defaults()
+    cases = load_evaluation_cases(config)
+    responses = {case["case_id"]: search(case["question"], 5) for case in cases}
+    metrics = evaluate_retrieval_cases(cases, responses, k=5)
+    return metrics | {"gate": apply_thresholds(metrics, config["evaluation"]["thresholds"])}
+
+
+def is_legacy_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | None = None) -> bool:
+    """只识别旧格式历史 manifest；结果绝不能作为正式发布凭据。"""
+    config = config or load_production_defaults()
+    sources = manifest.get("sources", [])
+    if not isinstance(sources, list):
+        return False
+    if not sources or any(
+        not isinstance(source, dict) or "source_id" in source or "document_id" in source
+        for source in sources
+    ):
+        return False
+    legacy_expected = {(Path(source["path"]).name, source["sha256"]) for source in config["sources"]}
+    actual_legacy = {(Path(str(source.get("relative_path", ""))).name, source.get("content_hash")) for source in sources}
+    return actual_legacy == legacy_expected
+
+
+def _is_safe_release_path(value: Any) -> bool:
+    """只接受不会逃逸仓库边界的相对路径元数据，不访问对应文件。"""
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        return False
+    normalized = value.replace("\\", "/")
+    windows_path = PureWindowsPath(value)
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or windows_path.drive
+        or windows_path.root
+        or PurePosixPath(normalized).is_absolute()
+    ):
+        return False
+    return not any(part in {"", ".", ".."} for part in normalized.split("/"))
+
+
+def has_frozen_production_identity(
+    manifest: dict[str, Any], config: dict[str, Any] | None = None
+) -> bool:
+    """只校验 manifest 的冻结来源身份，不读取或解析本地来源文件。
+
+    该检查供已发布 release 的运行时使用。构建、评测和发布仍必须调用
+    :func:`is_production_manifest`，以便重新验证受控目录中的实际 PDF。
+    """
+    try:
+        if not isinstance(manifest, dict):
+            return False
+        config = config or load_production_defaults()
+        configured_sources = config["sources"]
+        sources = manifest.get("sources", [])
+        if not isinstance(configured_sources, list) or not isinstance(sources, list):
+            return False
+        if not configured_sources or len(sources) != len(configured_sources):
+            return False
+
+        expected: list[tuple[str, str, str]] = []
+        for configured in configured_sources:
+            if not isinstance(configured, dict):
+                return False
+            source_id = canonical_source_id(configured)
+            document_id = canonical_document_id(configured)
+            content_hash = configured.get("sha256")
+            if not isinstance(content_hash, str) or not content_hash:
+                return False
+            expected.append((source_id, document_id, content_hash))
+
+        actual: list[tuple[str, str, str]] = []
+        for source in sources:
+            if not isinstance(source, dict):
+                return False
+            source_id = source.get("source_id")
+            document_id = source.get("document_id")
+            content_hash = source.get("content_hash")
+            if not all(isinstance(value, str) and value for value in (source_id, document_id, content_hash)):
+                return False
+            if not _is_safe_release_path(source.get("relative_path")):
+                return False
+            if not _is_safe_release_path(source.get("controlled_path")):
+                return False
+            actual.append((source_id, document_id, content_hash))
+
+        # 列表长度与唯一性同时检查，避免集合比较把重复来源静默去重。
+        if len(set(expected)) != len(expected) or len(set(actual)) != len(actual):
+            return False
+        return set(actual) == set(expected)
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        return False
+
+
+def is_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | None = None) -> bool:
+    """判断 manifest 是否携带完整 canonical 正式来源身份并匹配本地 PDF。"""
+    config = config or load_production_defaults()
+    if not has_frozen_production_identity(manifest, config):
+        return False
+    try:
+        resolved = resolve_production_sources(config)
+    except (FileNotFoundError, OSError, ValueError):
+        return False
+    expected = {
+        (source["source_id"], source["document_id"], source["content_hash"], source["relative_path"])
+        for source in resolved
+    }
+    sources = manifest["sources"]
+    actual = {
+        (source.get("source_id"), source.get("document_id"), source.get("content_hash"), source.get("controlled_path"))
+        for source in sources
+        if isinstance(source, dict)
+    }
+    return len(sources) == len(resolved) and len(actual) == len(sources) and actual == expected
+
+
+def _production_document_id_aliases(manifest: dict[str, Any]) -> dict[str, str]:
+    """将目录布局无关的来源身份映射到冻结评测集使用的稳定文档 ID。"""
+    aliases: dict[str, str] = {}
+    config = load_production_defaults()
+    by_hash = {source["sha256"]: canonical_document_id(source) for source in config["sources"]}
+    by_source_id = {canonical_source_id(source): canonical_document_id(source) for source in config["sources"]}
+    for document in manifest.get("documents", []):
+        document_id = document.get("document_id")
+        relative_path = document.get("relative_path")
+        content_hash = document.get("content_hash")
+        source_id = document.get("source_id")
+        if isinstance(document_id, str) and isinstance(source_id, str) and source_id in by_source_id:
+            aliases[document_id] = by_source_id[source_id]
+        elif all(isinstance(value, str) for value in (document_id, relative_path, content_hash)):
+            aliases[document_id] = by_hash.get(content_hash, stable_id("doc", {"path": Path(relative_path).name, "content_hash": content_hash}))
+    return aliases
+
+
+def validate_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | None = None) -> list[str]:
+    """拒绝正式资料使用未冻结的 parser、远程视觉或 embedding。"""
+    config = config or load_production_defaults()
+    failures: list[str] = []
+    if config.get("embedding", {}).get("mode") == "local" and not config.get("local_embedding", {}).get("enabled", False):
+        failures.append("production_local_embedding_disabled")
+    if manifest.get("parser") != config["parser"]:
+        failures.append("production_parser_mismatch")
+    if manifest.get("build_configuration", {}).get("pdf_parser") != config["pdf_parser"]:
+        failures.append("production_pdf_parser_strategy_mismatch")
+    vision = manifest.get("build_configuration", {}).get("vision", {})
+    enabled = vision.get("enabled") is True
+    authorized = vision.get("authorized_source_ids", [])
+    expected_source_ids = {canonical_source_id(source) for source in config["sources"]}
+    if enabled and (not isinstance(authorized, list) or not authorized or not set(authorized) <= expected_source_ids):
+        failures.append("production_source_level_vision_authorization_missing")
+    if not enabled and authorized:
+        failures.append("production_vision_authorization_without_enablement")
+    if config["vision"].get("remote_enabled") and not enabled:
+        failures.append("production_vision_policy_mismatch")
+    if manifest.get("build_configuration", {}).get("vision", {}).get("local_ocr_enabled") != config["vision"]["local_ocr_enabled"]:
+        failures.append("production_local_ocr_policy_mismatch")
+    actual = manifest.get("embedding", {})
+    if any(actual.get(key) != value for key, value in config["embedding"].items()):
+        failures.append("production_embedding_mismatch")
+    explicit = manifest.get("embedding_config")
+    if isinstance(explicit, dict):
+        if any(explicit.get(key) != value for key, value in config["embedding"].items()):
+            failures.append("production_embedding_config_mismatch")
+        if explicit.get("mode") != config["embedding"].get("mode") or explicit.get("provider") != config["embedding"].get("provider"):
+            failures.append("production_embedding_mode_mismatch")
+    return failures
+
+
+def evaluate_staged_index(
+    version_dir: Path,
+    collection_name: str,
+    config: dict[str, Any] | None = None,
+    *,
+    embedding_config: dict[str, Any] | None = None,
+    embedding_scope: str = "production",
+) -> dict[str, Any]:
+    """直接评测尚未发布的不可变索引，并在版本目录保存门禁报告。"""
+    from Agent.knowledge_base import query_rag
+    from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever
+
+    config = config or load_production_defaults()
+    units = {
+        unit["unit_id"]: unit
+        for line in (version_dir / "units.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+        for unit in [json.loads(line)]
+    }
+    document_id_aliases = _production_document_id_aliases(
+        json.loads((version_dir / "manifest.json").read_text(encoding="utf-8"))
+    )
+    embedding = _embeddings(embedding_config, scope=embedding_scope)
+    database = Chroma(
+        persist_directory=str(version_dir / "chroma"),
+        collection_name=collection_name,
+        embedding_function=embedding,
+    )
+    sparse_retriever = Bm25sSparseRetriever.from_vector_db(database)
+    retrieval_config = query_rag._load_production_rag_config()[0]
+
+    def search(question: str, k: int) -> list[dict[str, Any]]:
+        """把正式 Runtime 检索 trace 收缩为评测所需的稳定定位字段。"""
+        trace = query_rag._build_retrieval_trace_with_resources(
+            question,
+            retrieval_config,
+            vector_db=database,
+            embedding_function=embedding,
+            sparse_retriever=sparse_retriever,
+        )
+        evidence: list[dict[str, Any]] = []
+        for candidate in trace["stages"]["final"][:k]:
+            metadata = candidate["metadata"]
+            unit = units.get(metadata.get("unit_id") or metadata.get("chunk_id"), {})
+            evidence.append(
+                {
+                    "unit_id": unit.get("unit_id") or metadata.get("unit_id") or metadata.get("chunk_id"),
+                    "document_id": document_id_aliases.get(unit.get("document_id") or metadata.get("document_id") or metadata.get("doc_id"), unit.get("document_id") or metadata.get("document_id") or metadata.get("doc_id")),
+                    "page_number": unit.get("page_number") or metadata.get("page_number") or metadata.get("page"),
+                    "modality": unit.get("modality") or metadata.get("modality"),
+                }
+            )
+        return evidence
+
+    cases = load_evaluation_cases(config)
+    coverage_units = [unit | {"document_id": document_id_aliases.get(unit.get("document_id"), unit.get("document_id"))} for unit in units.values()]
+    coverage = audit_production_coverage(coverage_units, cases)
+    if coverage["passed"]:
+        report = evaluate_with_search(search, config=config)
+    else:
+        report = {
+            "case_count": len(cases),
+            "hit_at_5": 0.0,
+            "mrr": 0.0,
+            "citation_location_accuracy": 0.0,
+            "empty_result_rate": 1.0,
+            "cases": [],
+            "gate": {
+                "passed": False,
+                "thresholds": config["evaluation"]["thresholds"],
+                "failures": ["production_coverage_failed"],
+            },
+        }
+    report["coverage"] = coverage
+    report["manifest_sha256"] = compute_manifest_sha256(version_dir / "manifest.json")
+    (version_dir / "production_evaluation.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return report
+
+
+def _matches_gold(evidence: dict[str, Any], case: dict[str, Any]) -> bool:
+    """优先匹配可选 unit gold，否则要求文档与页码同时命中。"""
+    if evidence.get("modality") != case["expected_modality"]:
+        return False
+    unit_ids = case.get("gold_unit_ids") or []
+    if unit_ids:
+        return evidence.get("unit_id") in unit_ids
+    return evidence.get("document_id") in case["gold_doc_ids"] and evidence.get("page_number") in case["gold_page_numbers"]

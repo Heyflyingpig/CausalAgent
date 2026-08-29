@@ -2,6 +2,7 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
+from sqlalchemy.engine import URL
 
 from alembic import context
 import json
@@ -13,7 +14,10 @@ config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
-if config.config_file_name is not None:
+if (
+    config.config_file_name is not None
+    and config.attributes.get("configure_logger", True)
+):
     fileConfig(config.config_file_name)
 
 
@@ -46,11 +50,18 @@ if not all([mysql_host, mysql_user, mysql_password, mysql_database]):
         "MYSQL_WRITE_USER/MYSQL_USER, MYSQL_WRITE_PASSWORD/MYSQL_PASSWORD, MYSQL_DATABASE"
     )
 
-# 设置SQLAlchemy数据库连接URL
-# 格式：mysql+pymysql://user:password@host/database
+# 使用 SQLAlchemy URL 对象编码用户名、密码和数据库名中的保留字符。
+database_url = URL.create(
+    drivername="mysql+pymysql",
+    username=mysql_user,
+    password=mysql_password,
+    host=mysql_host,
+    port=int(mysql_port),
+    database=mysql_database,
+)
 config.set_main_option(
     'sqlalchemy.url',
-    f"mysql+pymysql://{mysql_user}:{mysql_password}@{mysql_host}:{mysql_port}/{mysql_database}"
+    database_url.render_as_string(hide_password=False).replace("%", "%%"),
 )
 
 # add your model's MetaData object here

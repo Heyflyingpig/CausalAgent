@@ -1,56 +1,135 @@
-# CausalChat Docker Compose 配置文件（开发环境）
+# CausalAgent MySQL 主从 + PostgreSQL checkpoint 开发
 
 services:
-
-  mysql:
-    image: mysql:8.0
-    
-    container_name: causalchat_mysql
-    # 原因：
-    # - 指定容器名称，便于识别和管理
-    # - 不指定的话，会自动生成名字如 causalchat_mysql_1
-    # - 固定名称便于日志查看和调试
-    
+  mysql-primary:
+    build:
+      context: ./Database/mysql
+      dockerfile: Dockerfile.primary
+    container_name: causalagent_mysql_primary
     environment:
-      # MySQL的环境变量配置
-      # 这些变量会被MySQL容器的启动脚本读取并初始化数据库
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-    
+      MYSQL_WRITE_USER: ${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      MYSQL_WRITE_PASSWORD: ${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      MYSQL_READ_USER: ${MYSQL_READ_USER:-${MYSQL_USER}}
+      MYSQL_READ_PASSWORD: ${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      MYSQL_REPLICA_STATUS_USER: ${MYSQL_REPLICA_STATUS_USER:-}
+      MYSQL_REPLICA_STATUS_PASSWORD: ${MYSQL_REPLICA_STATUS_PASSWORD:-}
+      MYSQL_REPLICATION_USER: ${MYSQL_REPLICATION_USER:-replica}
+      MYSQL_REPLICATION_PASSWORD: ${MYSQL_REPLICATION_PASSWORD}
     ports:
-      - "3307:3306"  # 宿主机3307 → 容器3306（MySQL默认端口）
-    
-
+      - "3307:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
-    
+      - mysql_primary_data:/var/lib/mysql
     networks:
-      - causalchat_network
-    
-    
+      - causalagent_replica_network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping --protocol=tcp -h 127.0.0.1 -P 3306 -u root"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
-    
-  # --- Flask 应用服务 ---
+
+  postgres-checkpoint:
+    image: postgres:16-alpine
+    container_name: causalagent_postgres_checkpoint
+    environment:
+      POSTGRES_DB: ${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      POSTGRES_USER: ${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      POSTGRES_PASSWORD: ${CHECKPOINT_POSTGRES_PASSWORD:?CHECKPOINT_POSTGRES_PASSWORD must be set}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_checkpoint_data:/var/lib/postgresql/data
+    networks:
+      - causalagent_replica_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql-replica:
+    build:
+      context: ./Database/mysql
+      dockerfile: Dockerfile.replica
+    container_name: causalagent_mysql_replica
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_REPLICATION_USER: ${MYSQL_REPLICATION_USER:-replica}
+      MYSQL_REPLICATION_PASSWORD: ${MYSQL_REPLICATION_PASSWORD}
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql_replica_data:/var/lib/mysql
+    networks:
+      - causalagent_replica_network
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping --protocol=tcp -h 127.0.0.1 -P 3306 -u root"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
-
-    container_name: causalchat_app
-    
+    container_name: causalagent_app
+    command: ["sh", "-c", "exec gunicorn --bind 0.0.0.0:5001 --workers ${WEB_WORKERS:-1} --threads ${WEB_THREADS:-12} --timeout ${WEB_TIMEOUT:-120} CausalAgent:app"]
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "web"
+      causalagent_environment: "development"
     environment:
-      - MYSQL_HOST=mysql
-      
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_READ_HOSTS=mysql-replica
+      - MYSQL_PORT=3306
       - MYSQL_USER=${MYSQL_USER}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_REPLICA_STATUS_USER=${MYSQL_REPLICA_STATUS_USER:-}
+      - MYSQL_REPLICA_STATUS_PASSWORD=${MYSQL_REPLICA_STATUS_PASSWORD:-}
       - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-5}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
+      - MYSQL_CONNECT_TIMEOUT_SECONDS=${MYSQL_CONNECT_TIMEOUT_SECONDS:-5}
+      - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
+      - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
+      - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
+      - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=${CHECKPOINT_POSTGRES_POOL_MAX_SIZE:-5}
+      - ADMIN_BATCH_MAX_TARGETS=${ADMIN_BATCH_MAX_TARGETS:-20}
+      - ADMIN_DELETE_MAX_RELATED_ROWS=${ADMIN_DELETE_MAX_RELATED_ROWS:-10000}
+      - ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS=${ADMIN_DB_LOCK_WAIT_TIMEOUT_SECONDS:-5}
+      - DB_INSPECTION_QUERY_TIMEOUT_MS=${DB_INSPECTION_QUERY_TIMEOUT_MS:-3000}
+      - DB_DASHBOARD_CONNECTION_WARNING_PERCENT=${DB_DASHBOARD_CONNECTION_WARNING_PERCENT:-70}
+      - DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=${DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT:-85}
+      - DB_MONITOR_AUTO_REFRESH_ENABLED=${DB_MONITOR_AUTO_REFRESH_ENABLED:-true}
+      - DB_MONITOR_REALTIME_INTERVAL_SECONDS=${DB_MONITOR_REALTIME_INTERVAL_SECONDS:-10}
+      - DB_MONITOR_SQL_INTERVAL_SECONDS=${DB_MONITOR_SQL_INTERVAL_SECONDS:-60}
+      - DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS=${DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS:-900}
+      - DB_MONITOR_SLOW_QUERY_WARNING_DELTA=${DB_MONITOR_SLOW_QUERY_WARNING_DELTA:-1}
+      - DB_MONITOR_INTEGRITY_ENABLED=${DB_MONITOR_INTEGRITY_ENABLED:-false}
+      - DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=${DB_MONITOR_INTEGRITY_INTERVAL_SECONDS:-86400}
+      - ADMIN_VITE_DEV_SERVER_URL=${ADMIN_VITE_DEV_SERVER_URL:-}
       - WEB_WORKERS=${WEB_WORKERS:-1}
       - WEB_THREADS=${WEB_THREADS:-12}
       - WEB_TIMEOUT=${WEB_TIMEOUT:-120}
@@ -58,100 +137,482 @@ services:
       - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
       - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
       - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
-      
-      #  AI模型配置 
+      - JOB_CHAT_HISTORY_LIMIT=${JOB_CHAT_HISTORY_LIMIT:-20}
+      - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-searxng}
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
+      - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-20}
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
-      
-      #  Flask配置 
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3.7-text-embedding}
       - SECRET_KEY=${SECRET_KEY}
       - FLASK_ENV=development
-
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
-
-    
     ports:
       - "5001:5001"
-    
-    # 原因：暴露Flask服务端口到宿主机
-    # 这样可以在Windows浏览器中访问 http://localhost:5001
-    
-    volumes:
-      # 代码实时同步 
-      - .:/app
-
-      # 排除项（匿名卷）
-      - /app/__pycache__
-      - /app/杂项
-
-      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro 
-      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
-      # 原因：
-      # - 知识库数据和生成的图表需要持久化
-      # - 容器重建后这些数据不应该丢失
-      # - 绑定挂载（而非命名卷）：方便在Windows直接查看
-    
-    depends_on:
-      mysql:
-        condition: service_healthy
-
-    
-    networks:
-      - causalchat_network
-      
-    restart: unless-stopped
-
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-
-    container_name: causalchat_worker
-    command: python -m app.agent.worker
-
-    environment:
-      - MYSQL_HOST=mysql
-      - MYSQL_USER=${MYSQL_USER}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
-      - MYSQL_DATABASE=${MYSQL_DATABASE}
-      - JOB_WORKERS=${JOB_WORKERS:-2}
-      - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
-      - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
-      - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
-      - API_KEY=${API_KEY}
-      - BASE_URL=${BASE_URL}
-      - MODEL=${MODEL}
-      - SECRET_KEY=${SECRET_KEY}
-      - FLASK_ENV=development
-      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
-      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
-
     volumes:
       - .:/app
       - /app/__pycache__
       - /app/杂项
       - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
       - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
-
+      - ./tmp/rag_eval:/app/tmp/rag_eval
     depends_on:
-      mysql:
+      mysql-primary:
         condition: service_healthy
-
+      mysql-replica:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     networks:
-      - causalchat_network
-
+      - causalagent_replica_network
     restart: unless-stopped
-    
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: causalagent_worker
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "worker"
+      causalagent_environment: "development"
+    command: python -m app.agent.worker
+    environment:
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_READ_HOSTS=mysql-replica
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_REPLICA_STATUS_USER=${MYSQL_REPLICA_STATUS_USER:-}
+      - MYSQL_REPLICA_STATUS_PASSWORD=${MYSQL_REPLICA_STATUS_PASSWORD:-}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-5}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
+      - MYSQL_CONNECT_TIMEOUT_SECONDS=${MYSQL_CONNECT_TIMEOUT_SECONDS:-5}
+      - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
+      - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
+      - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
+      - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=${CHECKPOINT_POSTGRES_POOL_MIN_SIZE:-1}
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=${CHECKPOINT_POSTGRES_POOL_MAX_SIZE:-5}
+      - JOB_WORKERS=${JOB_WORKERS:-2}
+      - JOB_HEARTBEAT_INTERVAL_SECONDS=${JOB_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
+      - JOB_DRAIN_TIMEOUT_SECONDS=${JOB_DRAIN_TIMEOUT_SECONDS:-60}
+      - JOB_MAX_ATTEMPTS=${JOB_MAX_ATTEMPTS:-3}
+      - JOB_CHAT_HISTORY_LIMIT=${JOB_CHAT_HISTORY_LIMIT:-20}
+      - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-searxng}
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3.7-text-embedding}
+      - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=development
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
+    volumes:
+      - .:/app
+      - /app/__pycache__
+      - /app/杂项
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - causalagent_replica_network
+    restart: unless-stopped
+    stop_grace_period: 75s
+
+  db-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: causalagent_db_bootstrap
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "maintenance"
+      causalagent_environment: "development"
+    command: python -m Database.bootstrap
+    environment:
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_PORT=3306
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=2
+    volumes:
+      - .:/app
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      postgres-checkpoint:
+        condition: service_healthy
+    networks:
+      - causalagent_replica_network
+
+  checkpoint-cleanup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: causalagent_checkpoint_cleanup
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "maintenance"
+      causalagent_environment: "development"
+    command: python -m Database.checkpoint_cleanup_worker
+    environment:
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_READ_HOSTS=mysql-replica
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-3}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-1}
+      - MYSQL_CONNECT_TIMEOUT_SECONDS=${MYSQL_CONNECT_TIMEOUT_SECONDS:-5}
+      - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - CHECKPOINT_POSTGRES_POOL_MIN_SIZE=1
+      - CHECKPOINT_POSTGRES_POOL_MAX_SIZE=2
+      - CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS=${CHECKPOINT_CLEANUP_POLL_INTERVAL_SECONDS:-1}
+      - CHECKPOINT_CLEANUP_HEARTBEAT_INTERVAL_SECONDS=${CHECKPOINT_CLEANUP_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - CHECKPOINT_CLEANUP_LEASE_SECONDS=${CHECKPOINT_CLEANUP_LEASE_SECONDS:-300}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - SECRET_KEY=${SECRET_KEY}
+    volumes:
+      - .:/app
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - causalagent_replica_network
+    restart: unless-stopped
+
+  rag-eval-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: causalchat_rag_eval_worker
+    command: python -m app.rag_eval.worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_READ_HOSTS=mysql-replica
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_REPLICA_STATUS_USER=${MYSQL_REPLICA_STATUS_USER:-}
+      - MYSQL_REPLICA_STATUS_PASSWORD=${MYSQL_REPLICA_STATUS_PASSWORD:-}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-5}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
+      - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
+      - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
+      - RAG_EVAL_ROOT=/app/tmp/rag_eval
+      - RAG_EVAL_DATASET_ROOT=/app/tmp/rag_eval/datasets/registered
+      - RAG_EVAL_EVALUATION_WORKERS=${RAG_EVAL_EVALUATION_WORKERS:-5}
+      - RAG_EVAL_INGESTION_CONCURRENCY_LIMIT=${RAG_EVAL_INGESTION_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT=${RAG_EVAL_CANDIDATE_GENERATION_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${RAG_EVAL_TUNING_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT=${RAG_EVAL_DATASET_GOVERNANCE_CONCURRENCY_LIMIT:-1}
+      - RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT=${RAG_EVAL_EVALUATION_CONCURRENCY_LIMIT:-3}
+      - RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT=${RAG_EVAL_RAG_QUERY_CONCURRENCY_LIMIT:-2}
+      - RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_POLL_INTERVAL_SECONDS:-1}
+      - RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS=${RAG_EVAL_EVALUATION_HEARTBEAT_INTERVAL_SECONDS:-10}
+      - RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS=${RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS:-120}
+      - RAG_EVAL_EVALUATION_STALE_AFTER_SECONDS=${RAG_EVAL_EVALUATION_STALE_AFTER_SECONDS:-1800}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3.7-text-embedding}
+      - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=development
+      - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
+    volumes:
+      - .:/app
+      - /app/__pycache__
+      - /app/杂项
+      - ./Agent/knowledge_base/models:/app/Agent/knowledge_base/models:ro
+      - ./Agent/knowledge_base/db:/app/Agent/knowledge_base/db
+      - ./tmp/rag_eval:/app/tmp/rag_eval
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - causalagent_replica_network
+    restart: unless-stopped
+
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: causalagent_monitor
+    labels:
+      causalagent_observability: "true"
+      causalagent_service: "monitor"
+      causalagent_environment: "development"
+    command: python -m Database.monitor_worker
+    environment:
+      - MYSQL_HOST=mysql-primary
+      - MYSQL_WRITE_HOST=mysql-primary
+      - MYSQL_READ_HOSTS=mysql-replica
+      - MYSQL_PORT=3306
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_WRITE_USER=${MYSQL_WRITE_USER:-${MYSQL_USER}}
+      - MYSQL_WRITE_PASSWORD=${MYSQL_WRITE_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_READ_USER=${MYSQL_READ_USER:-${MYSQL_USER}}
+      - MYSQL_READ_PASSWORD=${MYSQL_READ_PASSWORD:-${MYSQL_PASSWORD}}
+      - MYSQL_REPLICA_STATUS_USER=${MYSQL_REPLICA_STATUS_USER:-}
+      - MYSQL_REPLICA_STATUS_PASSWORD=${MYSQL_REPLICA_STATUS_PASSWORD:-}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_POOL_SIZE_WRITE=${MYSQL_POOL_SIZE_WRITE:-5}
+      - MYSQL_POOL_SIZE_READ=${MYSQL_POOL_SIZE_READ:-5}
+      - MYSQL_CONNECT_TIMEOUT_SECONDS=${MYSQL_CONNECT_TIMEOUT_SECONDS:-5}
+      - MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS=${MYSQL_POOL_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - MYSQL_POOL_ACQUIRE_RETRY_MS=${MYSQL_POOL_ACQUIRE_RETRY_MS:-50}
+      - MYSQL_REPLICA_MAX_LAG_SECONDS=${MYSQL_REPLICA_MAX_LAG_SECONDS:-2}
+      - MYSQL_REPLICA_STATUS_CACHE_SECONDS=${MYSQL_REPLICA_STATUS_CACHE_SECONDS:-2}
+      - MYSQL_QUERY_WARN_MS=${MYSQL_QUERY_WARN_MS:-500}
+      - CHECKPOINT_POSTGRES_HOST=postgres-checkpoint
+      - CHECKPOINT_POSTGRES_PORT=5432
+      - CHECKPOINT_POSTGRES_DATABASE=${CHECKPOINT_POSTGRES_DATABASE:-causalagent_checkpoints}
+      - CHECKPOINT_POSTGRES_USER=${CHECKPOINT_POSTGRES_USER:-causalagent_checkpoint}
+      - CHECKPOINT_POSTGRES_PASSWORD=${CHECKPOINT_POSTGRES_PASSWORD}
+      - CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS=${CHECKPOINT_POSTGRES_CONNECT_TIMEOUT_SECONDS:-5}
+      - JOB_STALE_AFTER_SECONDS=${JOB_STALE_AFTER_SECONDS:-120}
+      - DB_INSPECTION_QUERY_TIMEOUT_MS=${DB_INSPECTION_QUERY_TIMEOUT_MS:-3000}
+      - DB_DASHBOARD_CONNECTION_WARNING_PERCENT=${DB_DASHBOARD_CONNECTION_WARNING_PERCENT:-70}
+      - DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT=${DB_DASHBOARD_CONNECTION_CRITICAL_PERCENT:-85}
+      - DB_MONITOR_AUTO_REFRESH_ENABLED=${DB_MONITOR_AUTO_REFRESH_ENABLED:-true}
+      - DB_MONITOR_REALTIME_INTERVAL_SECONDS=${DB_MONITOR_REALTIME_INTERVAL_SECONDS:-10}
+      - DB_MONITOR_SQL_INTERVAL_SECONDS=${DB_MONITOR_SQL_INTERVAL_SECONDS:-60}
+      - DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS=${DB_MONITOR_TABLE_CAPACITY_INTERVAL_SECONDS:-900}
+      - DB_MONITOR_SLOW_QUERY_WARNING_DELTA=${DB_MONITOR_SLOW_QUERY_WARNING_DELTA:-1}
+      - DB_MONITOR_INTEGRITY_ENABLED=${DB_MONITOR_INTEGRITY_ENABLED:-false}
+      - DB_MONITOR_INTEGRITY_INTERVAL_SECONDS=${DB_MONITOR_INTEGRITY_INTERVAL_SECONDS:-86400}
+      - API_KEY=${API_KEY}
+      - BASE_URL=${BASE_URL}
+      - MODEL=${MODEL}
+      - SECRET_KEY=${SECRET_KEY}
+      - FLASK_ENV=development
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-}
+    volumes:
+      - .:/app
+      - /app/__pycache__
+      - /app/杂项
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - causalagent_replica_network
+    restart: unless-stopped
+
+  searxng-init:
+    image: python:3.11-slim
+    container_name: causalagent_searxng_init
+    restart: "no"
+    volumes:
+      - ./searxng/core-config:/etc/searxng
+      - ./searxng/init:/init:ro
+    entrypoint: ["sh", "/init/init_settings.sh"]
+
+  searxng:
+    image: searxng/searxng:2026.8.21-bbb3c7d82
+    container_name: causalagent_searxng
+    restart: unless-stopped
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+    volumes:
+      - ./searxng/core-config:/etc/searxng
+      - searxng_core_data:/var/cache/searxng
+    depends_on:
+      valkey:
+        condition: service_healthy
+      searxng-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/searxng/.venv/bin/python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    networks:
+      - causalagent_replica_network
+
+  valkey:
+    image: valkey/valkey:9-alpine
+    container_name: causalagent_valkey
+    command: valkey-server --save 30 1 --loglevel warning
+    restart: unless-stopped
+    volumes:
+      - searxng_valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - causalagent_replica_network
+
+  loki:
+    image: grafana/loki:3.7.4
+    container_name: causalagent_loki
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    networks:
+      - observability_network
+    cpus: "1.0"
+    mem_limit: 1g
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.18.0
+    container_name: causalagent_alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - --disable-reporting
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_positions:/var/lib/alloy/data
+    networks:
+      - observability_network
+    depends_on:
+      loki:
+        condition: service_started
+    cpus: "0.5"
+    mem_limit: 256m
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.1.1
+    container_name: causalagent_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_DEFAULT_LANGUAGE: zh-Hans
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - observability_network
+    depends_on:
+      loki:
+        condition: service_started
+    cpus: "0.5"
+    mem_limit: 512m
+    restart: unless-stopped
 
 networks:
-  causalchat_network:
+  causalagent_replica_network:
+    driver: bridge
+  observability_network:
     driver: bridge
 
-
 volumes:
-  mysql_data:
+  mysql_primary_data:
     driver: local
-
-
+  mysql_replica_data:
+    driver: local
+  postgres_checkpoint_data:
+    driver: local
+  searxng_core_data:
+    driver: local
+  searxng_valkey_data:
+    driver: local
+  loki_data:
+    driver: local
+  grafana_data:
+    driver: local
+  alloy_positions:
+    driver: local

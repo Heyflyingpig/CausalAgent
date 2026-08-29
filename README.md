@@ -2,7 +2,7 @@
 
 
 <p align="center">
-<img src="./readme_img/CausalAgent.png" alt="Logo">
+<img src="./README/CausalAgent.png" alt="Logo">
 </p>
 
 <h1 align="center">
@@ -45,22 +45,33 @@ CausalAgent
 - [WHAT IS CausalAgent](#what-is-causalagent)
 - [WHY CausalAgent](#why-causalagent)
 - [技术栈](#技术栈)
-- [展示](#展示)
-- [核心功能](#核心功能)
-  - [Agent 总览](#agent-总览)
+- [用户功能](#用户功能)
+  - [用户端展示](#用户端展示)
+  - [核心功能](#核心功能)
+  - [Agent 运行流程](#agent-运行流程)
   - [预处理](#预处理)
   - [因果分析（MCP）](#因果分析mcp)
   - [知识库（RAG）](#知识库rag)
+  - [联网搜索](#联网搜索)
   - [后处理](#后处理)
   - [报告生成](#报告生成)
 - [快速开始 | Quick Start](#快速开始--quick-start)
+  - [可访问入口](#可访问入口)
+  - [最小配置](#最小配置)
   - [Docker部署](#docker部署)
-    - [数据库生产化配置](#数据库生产化配置)
+- [管理员与开发者](#管理员与开发者)
+  - [管理员端展示](#管理员端展示)
+  - [数据库生产化配置](#数据库生产化配置)
+  - [管理员后台](#管理员后台)
+  - [日志系统](#日志系统)
+    - [开发环境启动](#开发环境启动)
+  - [RAG评测工作台](#rag评测工作台)
+  - [后端单元测试](#后端单元测试)
   - [windows部署](#windows部署)
+- [技术文档](#技术文档)
 - [贡献](#贡献)
-- [Star 趋势](#star-趋势)
+- [Star History](#star-history)
 - [项目结构](#项目结构)
-- [更新日志](#更新日志)
 
 
 
@@ -76,61 +87,64 @@ CausalAgent
 
 | 特性 | 说明 |
 | :--- | :--- |
-| **Agent 驱动** | 基于 LangGraph 的多智能体协作，自动路由任务，无需人工干预算法细节。 |
+| **Agent 驱动** | 基于 LangGraph 父图编排分析节点、工具阶段与子图，自动路由任务。 |
 |  **动态图谱** | 摒弃静态图片，生成可交互的 Network 图谱，支持节点拖拽、点击追问。 |
-|  **MCP 架构** | 采用 **Model Context Protocol**，将核心逻辑与工具解耦，极易扩展新算法。 |
-|  **RAG 增强** | 内置因果推断领域的专业知识库，确保生成的分析报告学术性与严谨性并存。 |
+|  **论文实时搜索** | SearXNG 实时搜索，获取最新论文与时事。 |
+|  **MCP 架构** | 采用MCP，将核心逻辑与工具解耦，极易扩展新算法。 |
+|  **RAG 增强** | 内置因果推断领域的专业知识库，确保生成的分析报告学术性与严谨性并存，提供个性化的rag评测桌面，定制化rag服务 |
 ## 技术栈
 
 | 类别 | 技术组件 |
 | :--- | :--- |
-| **Core AI** | ![LangChain](https://img.shields.io/badge/LangChain-1C3C3C?style=flat-square&logo=langchain&logoColor=white) ![LangGraph](https://img.shields.io/badge/LangGraph-FF4B4B?style=flat-square) ![OpenAI](https://img.shields.io/badge/OpenAI-412991?style=flat-square&logo=openai&logoColor=white) |
-| **Backend** | ![Flask](https://img.shields.io/badge/Flask-000000?style=flat-square&logo=flask&logoColor=white) ![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white) ![Alembic](https://img.shields.io/badge/Alembic-F7F7F7?style=flat-square&logo=python&logoColor=black) |
-| **Frontend** | ![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=flat-square&logo=html5&logoColor=white) ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black) ![PyWebview](https://img.shields.io/badge/PyWebview-FFD43B?style=flat-square&logo=python&logoColor=blue) |
-| **Tools** | ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white) ![Git](https://img.shields.io/badge/Git-F05032?style=flat-square&logo=git&logoColor=white) |
-## 展示
-<p align="center">
-  <img src="./readme_img/image.png" alt="主程序" width="450">
+| **Agent 与模型** | LangGraph、LangChain、MCP |
+| **RAG 与搜索** | ChromaDB、BM25S、Ragas、SearXNG |
+| **后端与数据** | Flask、MySQL、PostgreSQL、Alembic |
+| **前端** | HTML5、JavaScript、Vue 3、Vite、WebView2 |
+| **可观测性** | Grafana Alloy、Loki、Grafana |
+| **运行与发布** | Docker Compose、GitHub Actions |
 
+## 用户功能
+
+### 用户端展示
+<p align="center">
+  <img src="./README/causalagent展示页.png" alt="主程序" width="850">
 </p>
 <p align="center">
-  <img src="./readme_img/image2.png" alt="因果图" width="450">
+  <img src="./README/因果图页.png" alt="因果图" width="850">
+</p>
+<p align="center">
+  <img src="./README/image2.png" alt="因果图" width="450">
 </p>
 
-## 核心功能
+### 核心功能
 
 CausalAgent 的整体因果分析流程可以抽象为：**用户上传数据 → 预处理与数据体检 → 因果结构学习 → 后处理与质量提升 → 报告与可视化输出**。下面按模块进行说明。
 
-### Agent 总览
+### Agent 运行流程
+
+系统不是由多个彼此独立的 Agent 拼接而成，而是由一个 LangGraph 父图编排分析节点、MCP、RAG 与 Web Search 子图，并由独立 worker 执行 Job：
+
 ```mermaid
 graph TD;
-    subgraph "User Interaction"
-        Human((User)) <--> UI[Web/Desktop UI]
+    subgraph "用户入口"
+        User((用户)) --> UI[Web / Windows 客户端]
     end
-
-    subgraph "Agent Core (LangGraph)"
-        UI --> Router{Router Agent}
-        Router -->|Need Info| Pre[数据预处理 Agent]
-        Router -->|Analysis| Causal[因果分析 Agent]
-        Router -->|Report| Writer[报告生成 Agent]
-        Router -->|Q&A| Chat[普通对话]
-
-        Causal <--> MCP[MCP Tool Server]
-        Writer <--> RAG((RAG Knowledge Base))
+    subgraph "任务与运行时"
+        UI --> API[Flask API / Analysis Job]
+        API --> Worker[Job Worker / Slot]
+        Worker --> Graph[LangGraph 父图]
     end
-
-    subgraph "Tools & Data"
-        MCP --> PC[PC Algorithm]
-        MCP --> FCI[FCI Algorithm]
-        Pre --> Data[(MySQL/Files)]
+    subgraph "工具阶段与子图"
+        Graph --> MCP[MCP: PC / OLC / DirectLiNGAM]
+        Graph --> RAG[RAG 知识库]
+        Graph --> Search[Web Search / SearXNG]
+        Graph --> Report[后处理与报告]
     end
-
+    Worker --> Events[(MySQL Job / SSE 事件)]
+    Graph <--> Checkpoint[(PostgreSQL checkpoint)]
+    Events --> UI
 ```
 
-- **Router Agent**：根据用户意图在「预处理 / 因果分析 / 知识库问答 / 报告生成」等节点之间自动路由，无需用户关心底层算法。
-- **Causal Agent**：负责与 MCP 因果算法工具交互（如 PC、FCI 等），完成因果结构学习与干预效应估计的核心推理。
-- **Writer Agent**：结合因果结果与 RAG 知识库，自动撰写结构化专业报告（背景、方法、结果、结论与局限性）。
-- **Chat Agent**：面向一般问答与解释型对话，为非专业用户提供自然语言解释与操作指引。
 
 ### 预处理
 *进行基本的数据建模，对数据进行可视化分析，并为后续因果分析做「体检与筛选」*
@@ -146,18 +160,27 @@ graph TD;
 - **可插拔算法框架**：通过 MCP 将因果发现与估计算法以「工具」形式解耦，便于在不改动 Agent 主逻辑的前提下扩展/更换算法库。
 - **当前支持**：
   - PC 算法（基于条件独立检验的因果结构学习）。
+  - OLC（面向存在隐藏混杂因素的连续变量场景）。
+  - DirectLiNGAM（面向连续数值数据的线性非高斯无环因果发现，输出因果顺序与带权有向图）。使用结果时需满足误差相互独立、无潜在混杂等模型假设，边权表示模型估计系数，不等同于实验验证。
 - **规划中**：
   - FCI 等含潜在混杂的结构学习算法；
   - 因果效应估计（ATE/CATE）与反事实分析等模块。
 
 ### 知识库（RAG）
-*通过嵌入论文与书籍构建因果推断领域知识库，为报告和问答提供专业支撑*
+*通过多模态知识库、混合检索与受控 release，为报告和问答提供专业支撑*
 
-- **嵌入模型**：目前采用 `bge-small-zh-v1.5` 作为中文向量化模型，兼顾性能与效果。
+- **运行方式**：仓库提供受版本控制的正式 active release，生产查询从 release manifest 加载索引与 embedding 身份；部署时仍需配置匹配的 Embedding API。
+- **检索能力**：使用 ChromaDB 向量检索与 BM25S 稀疏检索，并支持 PDF、文本、表格和图片等多模态摄取。
 - **知识来源**：使用大量因果推断相关书籍与论文的 PDF / TXT 文档构建，涵盖经典因果图论、干预推断、工具变量、面板因果等主题。
 - **典型能力**：
   - 在生成报告时，自动检索相关理论和方法描述，为结论补充严谨的文献背景；
   - 支持面向初学者的「概念解释」，例如“什么是混杂变量”“为什么需要随机试验”等。
+- **个性化检索评测**
+  - 进入rag检索评测页面，可以自定义rag检索内容，实现个性化知识库定义。
+
+### 联网搜索
+
+用户可以在发起分析前开启联网搜索。Web Search 子图通过 SearXNG 聚合 arXiv、Crossref 与 OpenAlex 等学术来源，并把受限数量的引用随报告公开；规划、检索或解析失败时会返回统一降级结果，不阻断主分析流程。
 
 ### 后处理
 *对因果图进行后处理，包括环路检测、边合理性评估等，提高因果结构的可解释性与可靠性*
@@ -173,105 +196,87 @@ graph TD;
 - **交互式因果图谱**：基于 vis-network 等前端组件生成可交互的因果图，支持节点拖拽、缩放、查看变量说明、点击追问等操作。
 
 ## 快速开始 | Quick Start
+
+### 可访问入口
+
+默认开发 Compose 启动后，可以访问：
+
+| 功能 | 地址 | 说明 |
+| --- | --- | --- |
+| 用户聊天 | [http://127.0.0.1:5001/](http://127.0.0.1:5001/) | 上传数据、发起分析和查看报告 |
+| RAG 运行台 | [http://127.0.0.1:5001/rag_eval](http://127.0.0.1:5001/rag_eval) | 知识源摄取、staged index、评测与 release 管理 |
+| 管理后台 | [http://127.0.0.1:5001/admin/database](http://127.0.0.1:5001/admin/database) | 管理员登录后的默认入口 |
+| Grafana | [http://127.0.0.1:3000](http://127.0.0.1:3000) | 日志查询和仪表盘 |
+
+注：RAG 运行台是隔离的知识库构建、评测和发布工作台。
+
+### 最小配置
+
+复制 [`.env.example`](.env.example) 后，至少按启用能力检查以下配置；不要把真实密码或 API key 提交到 Git：
+
+- 基础服务：`SECRET_KEY`、MySQL 账号、`CHECKPOINT_POSTGRES_PASSWORD`。
+- Chat 模型：`API_KEY`、`BASE_URL`、`MODEL`。
+- RAG 查询：`EMBEDDING_API_KEY`、`EMBEDDING_BASE_URL`、`EMBEDDING_MODEL`，且必须与 active release manifest 匹配。
+- 日志界面：`GRAFANA_ADMIN_PASSWORD`。
+- 联网搜索：Compose 默认使用 `WEB_SEARCH_PROVIDER=searxng` 和内部 `SEARXNG_URL`，通常无需额外修改。
+
+完整配置和运行边界见 [`Document/development/setup.md`](Document/development/setup.md) 与 [`Document/development/deployment.md`](Document/development/deployment.md)。
+
 ### Docker部署
-当前项目已经提供了完整的 `Dockerfile`，支持通过 Docker 运行后端服务，但暂未在公网镜像仓库发布官方镜像。
+当前项目已经提供了完整的多阶段 `Dockerfile`，会先用 Node 24 构建管理员 Vue，再生成仅包含 Python 运行时与静态产物的应用镜像；暂未在公网镜像仓库发布官方镜像。
 如果你已安装 Docker，可以在本地根据下面的步骤自行构建并运行镜像。
 
 
 1. 安装docker并且gitclone项目
 ```bash
 git clone https://github.com/Heyflyingpig/CausalAgent
+cd CausalAgent
 ```
 
-2. 创建.env文件,并在文件中键入以下值
+2. 创建并填写.env文件
 ```bash
-# Flask 应用密钥（用于会话加密等）
-SECRET_KEY=
-
-# API 基础URL（OpenAI官方或第三方兼容接口）
-BASE_URL=
-MODEL=
-
-# OpenAI API 密钥或兼容 API 的密钥
-API_KEY=
-# Docker环境：使用服务名 'mysql'
-# 本地开发：使用 'localhost' 或 '127.0.0.1'
-MYSQL_HOST=mysql
-
-# 旧版兼容账号。未配置拆分账号时，写/读连接会回退使用它。
-MYSQL_USER=pyramid
-
-MYSQL_ROOT_PASSWORD=
-MYSQL_PASSWORD=
-
-# 数据库名称
-MYSQL_DATABASE=
-
-# 应用写账号：用于主库写入、迁移和数据库就绪检查。
-MYSQL_WRITE_USER=pyramid_writer
-MYSQL_WRITE_PASSWORD=
-
-# 应用读账号：用于主库/从库业务查询，建议只授予业务库 SELECT。
-MYSQL_READ_USER=pyramid_reader
-MYSQL_READ_PASSWORD=
-
-# 复制状态检查账号：只用于 SHOW REPLICA STATUS，缺失时 eventual 读会回退主库。
-MYSQL_REPLICA_STATUS_USER=replica_status
-MYSQL_REPLICA_STATUS_PASSWORD=
-
-# 复制通道账号：只用于从库拉取主库 binlog。
-MYSQL_REPLICATION_USER=replica
-MYSQL_REPLICATION_PASSWORD=
-
-MYSQL_WRITE_HOST=mysql-primary
-MYSQL_READ_HOSTS=mysql-replica
-
-MYSQL_PORT=3306
-MYSQL_POOL_SIZE_WRITE=5
-MYSQL_POOL_SIZE_READ=5
-MYSQL_REPLICA_MAX_LAG_SECONDS=2
-MYSQL_QUERY_WARN_MS=500
-
-# Web/后台任务并发配置
-WEB_WORKERS=1
-WEB_THREADS=12
-WEB_TIMEOUT=120
-JOB_WORKERS=2
-JOB_HEARTBEAT_INTERVAL_SECONDS=10
-JOB_STALE_AFTER_SECONDS=120
-JOB_MAX_ATTEMPTS=3
-
-MAX_UPLOAD_SIZE_MB=20
-
-
-# LangSmith API 密钥(不强制)
-LANGCHAIN_API_KEY=
-
-# LangSmith 项目名称（不强制）
-LANGCHAIN_PROJECT=
-
+cp .env.example .env
 ```
+
 3. 在项目根目录运行docker-compose
 ```bash
-docker-compose -f docker-compose.replica.yml up -d
+docker compose -f docker-compose.yml up -d
 ```
 
-4. 运行数据库迁移
+`docker compose ... up -d` 会在 app、worker、monitor 和 cleanup worker 启动前，
+自动运行一次性 `db-bootstrap`。它依次执行 MySQL 建库、Alembic migration 和
+LangGraph 官方 PostgreSQL setup。若需要手动重跑该初始化入口，可执行：
+
 ```bash
-docker-compose -f docker-compose.replica.yml run --rm app python Database/database_init.py
-docker-compose -f docker-compose.replica.yml run --rm app alembic upgrade head
+docker compose -f docker-compose.yml run --rm db-bootstrap
 ```
 
-如果是已有旧数据、准备做生产化升级，再额外先执行：
+请先在 `.env` 设置非空的 `CHECKPOINT_POSTGRES_PASSWORD`。
+`checkpoint-cleanup` 仍是独立的常驻 worker，用于消费跨库清理 outbox。
+`app` 负责管理员 checkpoint 摘要读取，`monitor` 负责 PostgreSQL quick/deep
+检查，因此两者也必须取得相同的 `CHECKPOINT_POSTGRES_*` 配置。生产 Compose
+同样包含 PostgreSQL、bootstrap、worker、monitor 和 cleanup 服务。
+
+全新空库不需要运行升级前审计。只有旧库尚未建立目标外键、且即将执行添加这些外键的迁移时，才先运行：
 
 ```bash
-docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_before_db_upgrade.py
+docker compose -f docker-compose.yml run --rm app python Database/audit_before_db_upgrade.py
 ```
 
 > [!IMPORTANT]
-> **知识库仍然在构建，所以知识库查询功能暂不可用**
+> 仓库已包含正式 active RAG release，但部署环境仍须提供与 manifest 匹配的 Embedding API 配置。readiness 检查失败时，worker 会继续启动并把 RAG 安全降级为不可用。
 
-#### 数据库生产化配置
+## 管理员与开发者
+
+前面的章节面向普通用户和首次运行；本节集中说明管理员入口、数据库、日志、测试和桌面发布。
+
+### 管理员端展示
+
+<p align="center">
+  <img src="./README/管理员.png" alt="管理员后台" width="850">
+</p>
+
+### 数据库生产化配置
 
 主从开发：
 
@@ -280,469 +285,211 @@ docker-compose -f docker-compose.replica.yml run --rm app python Database/audit_
 主从模式下数据库账号按职责拆分：
 
 - 写账号：`MYSQL_WRITE_USER` / `MYSQL_WRITE_PASSWORD`，用于应用写主库、Alembic 迁移和启动就绪检查；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
-- 读账号：`MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`，用于 `get_read_connection()` 的主库强一致读和从库弱一致读；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
+- 读账号：`MYSQL_READ_USER` / `MYSQL_READ_PASSWORD`，用于 `get_read_connection()` 的主库强一致读和从库弱一致读；除业务库 `SELECT` 外，仅额外授予 `performance_schema.events_statements_summary_by_digest` 的表级 `SELECT`，供高负载 SQL digest 摘要使用；缺失时兼容回退到 `MYSQL_USER` / `MYSQL_PASSWORD`。
 - 复制状态检查账号：`MYSQL_REPLICA_STATUS_USER` / `MYSQL_REPLICA_STATUS_PASSWORD`，只用于读取 `SHOW REPLICA STATUS`；缺失或不可用时，`eventual` 读安全回退主库读连接。
 - 复制通道账号：`MYSQL_REPLICATION_USER` / `MYSQL_REPLICATION_PASSWORD`，只用于 MySQL 主从复制链路，不参与应用业务查询。
 
-管理接口：
 
-- `GET /api/admin/db/health`
-- `GET /api/admin/db/slow-queries`
-- `GET /api/admin/jobs/workers`
+### 管理员后台
+
+管理员后台提供业务概览、用户、会话、任务、文件、数据库看板、采集配置和数据库审计。数据库看板通过 URL 查询参数在“数据库运行状态 / Cleanup Worker / Outbox 队列”三段视图间切换；用户删除后可从持续可见的 checkpoint 清理进度区跳转到对应 Operation ID 的 Outbox 排查。普通用户仍进入聊天页面，已启用的管理员登录后进入 `/admin/database`。
+
+管理员仍默认进入 `/admin/database`，也可从后台进入普通聊天界面；聊天页只访问当前账号自己的会话、文件和任务，并向管理员提供返回后台的入口。管理员主动访问 `/` 时不会被再次强制送回后台。
+
+未登录管理页面只保留白名单内的安全回跳；普通用户直访管理页面会得到 `403`。`POST /api/login` 仅在内部 `next` 通过服务端白名单校验后返回 `redirect_to`。
+
+首次使用前，先完成数据库迁移和管理员前端构建，然后把一个已经注册且已启用的用户提升为管理员：
+
+```bash
+# Docker 运行
+docker compose -f docker-compose.yml run --rm app python -m app.auth.admin_cli promote <username>
+```
+
+管理员系统的部署、开发、API、安全边界和测试说明统一放在 [`Document/admin/`](Document/admin/README.md)。其中：
+
+- [API 契约](Document/admin/api.md)
+- [开发与部署](Document/admin/development.md)
+- [测试说明](Document/admin/testing.md)
+
+### 日志系统
+
+运行时日志链路为：
+
+```text
+app / worker / monitor / MCP / RAG worker
+    → 结构化 JSON 日志
+    → Grafana Alloy
+    → Loki
+    → Grafana Dashboard
+```
+
+运行时代码使用受控事件目录，并通过 request、job、session 和 worker slot 等字段关联请求。原始 prompt、文件正文、API key、Token 和 Cookie 等敏感内容不得进入日志；完整事件、降噪与脱敏规则见 [`Document/development/observability.md`](Document/development/observability.md)。
+
+#### 开发环境启动
+
+先在 `.env` 中设置非空的 `GRAFANA_ADMIN_PASSWORD`，然后从仓库根目录执行配置校验、Alloy语法校验和完整开发启动：
+
+```bash
+docker compose -f docker-compose.yml config --quiet
+docker compose -f docker-compose.yml pull loki alloy grafana
+docker compose -f docker-compose.yml run --rm --no-deps alloy validate /etc/alloy/config.alloy
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps
+```
+
+打开 [http://127.0.0.1:3000](http://127.0.0.1:3000) 进入 Grafana，使用 `GRAFANA_ADMIN_USER`（默认值为 `admin`）和 `.env` 中设置的密码登录。Loki 数据源和 CausalAgent 日志仪表盘会由 Compose 自动 provision。需要直接查看容器输出时执行：
+
+```bash
+docker compose -f docker-compose.yml logs -f app worker monitor alloy loki grafana
+```
+
+停止服务建议使用 `docker compose -f docker-compose.yml stop`，这样会保留 Loki、Grafana 和Alloy positions 命名卷。不要使用 `down -v` 代替停止操作，否则会删除日志查看拓扑的持久化数据。
+修改 `observability/alloy/config.alloy` 后，必须重新执行 `alloy validate`，确认通过后再重启Alloy。
+
+[`Document/development/observability.md`](Document/development/observability.md)，Compose
+部署边界见 [`Document/development/deployment.md`](Document/development/deployment.md)。
+
+### RAG评测工作台
+
+<p align="center">
+  <img src="./README/rag评测工作台.png" alt="管理员后台" width="850">
+</p>
+RAG 评测工作台面向管理员和 RAG 维护人员，用于在不影响当前生产知识库的前提下，完成知识源摄取、隔离索引构建、检索试跑、题集治理、Ragas 评测和正式 release 发布。详细文档请看： [`Document/architecture/rag-evaluation.md`](Document/architecture/rag-evaluation.md)
+
+页面主要分为工作索引、候选题集、评测中心、正式发布和报告管理等区域。工作台入口为 [http://127.0.0.1:5001/rag_eval](http://127.0.0.1:5001/rag_eval)。
+
+```mermaid
+flowchart LR
+    A[选择或上传知识源] --> B[隔离摄取]
+    B --> C[构建 staged index]
+    C --> D[staged RAG 试跑]
+    C --> E[候选题集与人工审核]
+    D --> F[选择评测题集]
+    E --> F
+    F --> G[数据校验、检索评测与 Ragas]
+    G --> H[生成评测报告]
+    H --> I{正式 release 门禁}
+    I -->|未通过| J[调整来源、索引或检索策略]
+    J --> C
+    I -->|通过并显式确认| K[发布 active pointer]
+    K --> L[Agent worker drain / restart]
+    L --> M[生产聊天 RAG 使用新 release]
+```
+
+### 后端单元测试
+
+仓库提供独立的 `docker-compose.test.yml`，用于按需创建一次性单元测试容器。测试镜像预装项目 Python 依赖和 `pytest`，不连接 MySQL，禁用网络；当前源码以只读方式挂载到容器，因此修改代码后可以直接重新运行测试，无需重建镜像。
+
+首次使用或测试依赖变化后构建测试镜像：
+
+```bash
+docker compose -f docker-compose.test.yml build unit-test
+```
+
+运行全部后端单元测试，测试结束后自动删除本次容器：
+
+```bash
+docker compose -f docker-compose.test.yml run --rm unit-test
+```
+
+运行指定测试文件：
+
+```bash
+docker compose -f docker-compose.test.yml run --rm unit-test python -m pytest -p no:cacheprovider tests/unit/agent/test_agent_state_routing.py
+```
+
+需要在相同环境内排查导入或依赖问题时，可以临时进入 Shell；退出后容器仍会自动删除：
+
+```bash
+docker compose -f docker-compose.test.yml run --rm unit-test sh
+```
+
+当前测试只保证 `tests/unit`；集成测试和隔离主从 E2E 的执行边界见 [`tests/README.md`](tests/README.md)。
 
 
 
 ### windows部署
 
-**不推荐使用windows部署，会有意想不到的问题**
+CausalAgent已支持 Windows 桌面客户端：`Run_causal.py` 只启动 WebView2 Edge Chromium 窗口，并加载与浏览器相同的 CausalAgent 页面。
 
-项目采用前后端分离的设计，需要同时运行后端服务和前端应用。
+也可以进入release中，下载对应tag版本的桌面端
 
-首先推荐创建一个环境，具体创建方式请自行查阅
+创建独立桌面环境并检查 WebView2 Runtime：
 
-1. 打开命令行工具。
-
-2. 导航到您想要存放项目的目录。 （例如，如果您想放在 D 盘的 Projects 文件夹下，可以输入 cd /d D:\Projects）
-
-3. 克隆仓库: 输入以下命令并按回车：
-
-  git clone https://github.com/Heyflyingpig/CausalAgent
-  这将在当前目录下创建一个名为 CausalAgent 的文件夹，并下载所有项目文件。
-
-*备选方案：您也可以在 GitHub 页面上点击 "Code" -> "Download ZIP" 下载项目的压缩包，然后手动解压。*
-
-
-4.  **Python 环境**: 确保你已安装 Python 3.11+。
-
-5.  **MySQL 数据库**: 你需要一个正在运行的 MySQL 8.0+ 实例。请预先创建一个数据库（例如，名为 `causal_chat_db`）并准备好其访问凭据（主机、用户名、密码）。
-
-6.  **安装 Python 依赖**:
-    克隆项目后，在项目根目录运行以下命令：
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-7. 项目配置
-
-在首次运行前，你必须在项目根目录下创建一个 `.env` 文件，用于存放所有敏感配置信息。
-
--   创建 `.env` 文件。
--   将以下模板内容复制到文件中，并填入你自己的真实信息。
-
-    ```bash
-    # Flask 应用密钥（用于会话加密等）
-    SECRET_KEY=
-
-    # API 基础URL（OpenAI官方或第三方兼容接口）
-    BASE_URL=
-    MODEL=
-
-    # OpenAI API 密钥或兼容 API 的密钥
-    API_KEY=
-    # Docker环境：使用服务名 'mysql'
-    # 本地开发：使用 'localhost' 或 '127.0.0.1'
-    MYSQL_HOST=mysql
-
-    # 旧版兼容账号。未配置拆分账号时，写/读连接会回退使用它。
-    MYSQL_USER=
-
-    MYSQL_ROOT_PASSWORD=
-    MYSQL_PASSWORD=
-
-    # 数据库名称
-    MYSQL_DATABASE=
-
-    # 应用写账号
-    MYSQL_WRITE_USER=
-    MYSQL_WRITE_PASSWORD=
-
-    # 应用读账号
-    MYSQL_READ_USER=
-    MYSQL_READ_PASSWORD=
-
-    # 复制状态检查账号。缺失时 eventual 读回退主库。
-    MYSQL_REPLICA_STATUS_USER=
-    MYSQL_REPLICA_STATUS_PASSWORD=
-
-    # 复制通道账号
-    MYSQL_REPLICATION_USER=replica
-    MYSQL_REPLICATION_PASSWORD=
-
-    # LangSmith API 密钥(不强制)
-    LANGCHAIN_API_KEY=
-
-    # LangSmith 项目名称（不强制）
-    LANGCHAIN_PROJECT=
-
-    ```
-
-8. 启动数据库
-需要预先安装mysql数据库
-在项目根目录下打开一个终端，运行以下命令：
-```bash
-python Database/database_init.py
-alembic upgrade head
-```
-`Database/database_init.py` 负责确保数据库存在和连接可用；业务表结构由 Alembic 迁移脚本维护。全新空库直接执行 `alembic upgrade head` 即可；已有历史数据的环境应先执行审计脚本，确认无孤立消息、孤立附件和非法附件类型后再升级。
-
-9. 启动后端服务
-
-在项目根目录下打开一个终端，运行 Web 层：
-
-```bash
-python Causalchat.py
+```powershell
+python -m venv .venv-desktop
+.\.venv-desktop\Scripts\python.exe -m pip install -r .\windows-client\requirements-desktop.txt
+.\.venv-desktop\Scripts\python.exe .\Run_causal.py --check-environment
 ```
 
-再打开一个终端，运行后台 worker：
+开发时先启动现有 Flask 服务，再运行桌面壳。URL 优先级为命令行 `--url` > `CAUSALAGENT_DESKTOP_URL` > `http://127.0.0.1:5001/`：
 
-```bash
-python -m app.agent.worker
+```powershell
+$env:CAUSALAGENT_DESKTOP_URL = "http://127.0.0.1:5001/"
+.\.venv-desktop\Scripts\python.exe .\Run_causal.py
 ```
 
-首次运行时，Web 层会检查数据库表结构。Agent/MCP 初始化只在 worker 中执行；如果没有 worker，前端可以创建任务但不会得到最终分析结果。请保持 Web 和 worker 两个终端窗口持续运行。
+Release 包在构建时嵌入正式 HTTPS origin，强制关闭 debug 和开发者工具；构建与 Windows 验收命令见 [`windows-client/README.md`](windows-client/README.md)、[`Document/development/setup.md`](Document/development/setup.md) 和 [`Document/development/testing.md`](Document/development/testing.md)。
 
-10. 启动前端应用
+## 技术文档
 
-再打开一个 **新的终端窗口**，同样在项目根目录下，运行以下命令：
+根 README 只提供项目概览和常用入口，具体技术事实统一由 [`Document/README.md`](Document/README.md) 导航：
 
-```bash
-python Run_causal.py
-```
-
-稍等片刻，一个标题为 "CausalAgent" 的桌面应用窗口将会出现，并加载应用的登录界面。现在，你可以注册并开始使用了。
-
-11. rag和知识库部分
-> [!IMPORTANT]
-> **知识库仍然在构建，所以知识库查询功能暂不可用**
+- 系统、Agent 与 RAG 架构：[`Document/architecture/`](Document/architecture/overview.md)
+- 普通用户与 RAG API：[`Document/api/`](Document/api/conventions.md)
+- 数据库、迁移与 checkpoint：[`Document/database/`](Document/database/overview.md)
+- 开发、测试、部署与可观测性：[`Document/development/`](Document/development/setup.md)
+- 管理员模块：[`Document/admin/`](Document/admin/README.md)
 
 ## 贡献
 欢迎提交 Issue 和 Pull Request！
 
 1. Fork 本项目
 
-2. 新建 Feat_xxx 分支
+2. 从 `develop` 新建工作分支，例如 `feat(rag)/cache`
 
-3. 提交代码
+3. 提交信息与 Pull Request 标题使用 `keyword(function):description` 格式
 
-4. 新建 Pull Request
+   支持的 keyword 包括 `feat`、`fix`、`docs`、`refactor`、`test`、`chore`、`ci`、`build`、`perf` 和 `revert`，例如 `fix(chat):修复会话删除异常`。
 
-## Star 趋势
+4. 向 `develop` 新建 Pull Request；只有 `develop` 可以向 `main` 发起合并请求
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Heyflyingpig/CausalAgent&type=Date)](https://star-history.com/#Heyflyingpig/CausalAgent&Date)
+5. 等待 `Python syntax`、`Light tests` 和 `Pull request policy` 检查通过后再合并
 
+新建 Issue 时请使用仓库提供的 [`Issue Form`](.github/ISSUE_TEMPLATE/issue.yml)，按模板填写背景、问题描述、预期结果、复现步骤、验收标准和环境信息。除附件外的字段为 GitHub 原生必填项，但不限制填写内容；普通贡献者不能选择空白 Issue。
+
+## Star History
+<a href="https://www.star-history.com/?repos=Heyflyingpig%2FCausalAgent&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Heyflyingpig/CausalAgent&type=date&theme=dark&legend=top-left&sealed_token=vS9LuCPAcO5HBRJ7MqLOBVKGWvmIC8oGUNMsERduenNH5V5akK0TIWWWQljUSlpxn51m9ROc4eqMCHAEbm0hbW_s66HzGJPzNzE_FxjQXN2e1X7bTiWdq9DKNsjtUwfG6z_5jr-PQcnDsaPoirqPbtSM1xAJvkdffet1KAGVfBKq777hNOA2qhwHt2Hp" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Heyflyingpig/CausalAgent&type=date&legend=top-left&sealed_token=vS9LuCPAcO5HBRJ7MqLOBVKGWvmIC8oGUNMsERduenNH5V5akK0TIWWWQljUSlpxn51m9ROc4eqMCHAEbm0hbW_s66HzGJPzNzE_FxjQXN2e1X7bTiWdq9DKNsjtUwfG6z_5jr-PQcnDsaPoirqPbtSM1xAJvkdffet1KAGVfBKq777hNOA2qhwHt2Hp" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Heyflyingpig/CausalAgent&type=date&legend=top-left&sealed_token=vS9LuCPAcO5HBRJ7MqLOBVKGWvmIC8oGUNMsERduenNH5V5akK0TIWWWQljUSlpxn51m9ROc4eqMCHAEbm0hbW_s66HzGJPzNzE_FxjQXN2e1X7bTiWdq9DKNsjtUwfG6z_5jr-PQcnDsaPoirqPbtSM1xAJvkdffet1KAGVfBKq777hNOA2qhwHt2Hp" />
+ </picture>
+</a>
 
 ## 项目结构
 
 ```
 .
-├── Causalchat.py           # Flask 后端入口
-├── Run_causal.py           # 桌面端启动入口（pywebview）
-├── requirements.txt        # 完整依赖
-├── requirements-base.txt   # 基础依赖（docker/生产使用）
-├── Dockerfile
-├── docker-compose.yml
-├── docker-compose.prod.yml
-├── docker-compose.replica.yml # MySQL 主从开发拓扑
-├── README.md               # 项目说明
-├── database_init.log       # 数据库初始化日志
-├── app/                    # Flask 应用主目录（Blueprint 结构）
-│   ├── __init__.py         # 创建 Flask app，注册蓝图
-│   ├── db.py               # 数据库会话与连接封装
-│   ├── main/               # 通用页面相关路由
-│   ├── auth/               # 登录、注册等认证相关路由
-│   ├── chat/               # 聊天 & 会话相关路由与服务
-│   ├── files/              # 文件上传/管理相关路由
-│   └── static/             # 前端静态资源
-│       ├── chat.html       # 主聊天界面
-│       ├── css/
-│       ├── js/
-│       └── generated_graphs/ # 因果图等生成图像
-├── Agent/                  # 因果分析与智能体核心逻辑
-│   ├── causal/             # 底层因果发现算法
-│   ├── causal_agent/       # langgraph/agent 状态、节点定义
-│   ├── Processing/         # 数据预处理、折叠验证、可视化
-│   ├── Postprocessing/     # 后处理
-│   ├── Report/             # 报告生成逻辑
-│   ├── knowledge_base/     # RAG 知识库
-│   │   ├── build_knowledge.py
-|   |   ├── query_rag.py
-│   │   ├── db/             # 向量知识库存储
-│   │   └── models/         # 嵌入模型
-│   └── tool_node/          # MCP 工具节点封装（task、rag 调用等）
-├── Database/               # 数据库初始化与迁移逻辑
-│   ├── database_init.py    # 数据库初始化引导脚本
-│   ├── audit_before_db_upgrade.py # 数据库生产化升级前审计
-│   ├── monitoring.py       # 数据库轻量监控查询
-│   ├── agent_connect.py    # Langgraph checkpoint 相关数据库支持
-│   ├── mysql/              # MySQL 主从配置与初始化脚本
-│   └── migrations/         # Alembic 迁移脚本
-├── config/                 # 全局配置
-│   └── settings.py
-├── setting/                # 用户可见文档
-│   ├── manual.md           # 用户手册
-│   └── Userprivacy.md      # 用户隐私协议
-├── openspec/               # 项目规范与变更说明（内部开发用）
+├── CausalAgent.py              # Flask Web 入口
+├── Run_causal.py               # Windows WebView2 启动入口
+├── app/                        # Web、认证、Job、管理员与 RAG 运行台
+│   ├── agent/                  # Job API、SSE 与独立 worker
+│   └── rag_eval/               # 隔离摄取、评测与 release 管理
+├── Agent/                      # LangGraph、因果工具与知识库
+│   ├── causal_agent/           # 父图、节点、路由与子图
+│   ├── CausalAgentMCP/         # MCP 因果算法服务
+│   └── knowledge_base/         # RAG runtime、多模态索引与评测
+├── Database/                   # MySQL、PostgreSQL、迁移与监控
+├── observability/              # 结构化日志、事件目录与 Alloy 配置
+├── searxng/                    # 联网搜索配置与初始化
+├── admin-frontend/             # Vue 管理员前端
+├── windows-client/             # Windows 客户端、构建与 smoke 测试
+├── config/                     # 应用与 RAG 路径配置
+├── deploy/                     # staging/production 部署资源
+├── scripts/                    # 发布、验收与诊断脚本
+├── Document/                   # 当前技术事实库
+├── tests/                      # unit、integration、e2e 与 smoke
+├── docker-compose*.yml         # 开发、测试、预发和生产拓扑
+└── .github/workflows/          # CI 与 Windows release 工作流
 ```
-
-## 更新日志
-
----
-2025.5.9
-- 【内容新增】：完成LLM chat框架的全构建
-- 【内容新增】：统一数据库，增强安全性和规范性
-- 【内容新增】：增加CSV文件上传功能
-- 【内容新增】：增加文件上传的后端校验功能
-
----
-2025.5.10
-- 【内容新增】：完成MySQL数据库的构建
-- 【内容新增】：将后端服务部署至服务器
-- 【性能提升】：引入gunicorn，优化前后端交互模式
-
----
-2025.5.11
-- 【性能提升】：成功部署gunicorn，支持多用户并行登录
-- 【内容新增】：实现Flask会话加密与多用户登录密钥检测
-- 【bug修复】：修复了MySQL数据库的错误实现
-
----
-2025.6.11
-- 【内容新增】：实现MCP（Method Call Protocol）的初步演示
-- 【性能提升】：构建异步任务逻辑，提升回答函数性能
-
----
-2025.6.12
-- 【内容新增】：实现基础的PC因果发现算法库
-- 【内容新增】：连通MCP与因果库，允许LLM按需调用
-- 【内容新增】：集成vis-network库，实现交互式因果图渲染
-- 【内容新增】：增加LLM上下文理解功能（支持20轮对话）
-- 【性能提升】：创建后台asyncio事件循环以支持异步任务
-- 【内容新增】：实现历史会话中因果图的保存与加载
-- 【性能提升】：优化多用户并行登录逻辑
-- 【内容新增】：增加前端加载动画效果
----
-2025.6.14
-- 【性能提升】：分离数据库初始化脚本，提高系统健壮性
-
----
-2025.6.15
-- 【bug修复】：修复了AI回复时加载动画不消失的问题
-- 【bug修复】：修复了特定场景下AI错误回复"上传成功"的问题
-- 【bug修复】：修复了MCP在处理多文件上传时无响应的问题
-- 【内容新增】：增加文件检查逻辑，支持同名文件更新
-- 【内容新增】：优化了前端界面样式
-
----
-2025.6.15
-- 【内容新增】：重构数据库，增加归档和分区功能
-- 【数据库更新内容】(Document/Database_NOTES.md)
-- 【内容新增】：更新前端样式以适配新版数据库
-- 【内容新增】：调整后端逻辑以适配新版数据库
-
----
-2025.6.16
-- 【内容新增】：增加会话标题可编辑功能
-- 【内容新增】：增加会话标题实时预览功能
-- 【内容新增】：在设置中新增操作手册与用户隐私协议
-
----
-2025.6.17 晨
-- 【内容新增】：完成后端对会话标题编辑功能的支持
-- 【内容新增】：增加会话列表的删除功能，现在可以向左滑动删除会话啦
-- 【内容新增】：增加模糊搜索，现在用户不需要指定文件名，也可以调用因果分析功能
-- 【BUG修复】：修复了AI回复时加载动画不消失的问题
-- 【BUG修复】：修复了创建新会话的时候显示错误的问题
-
----
-2025.6.17 晚
-- 【内容新增】：增加文件列表功能，现在可以查看上传的文件列表啦
-- 【内容新增】：文件库设计，文件库对齐
-- 【内容新增】：增加文件删除功能
-- 【BUG修复】：增加文件哈希大小检测，不只是检测文件名
-- 【内容新增】：css文件增加注释，方便后续维护
-- 【内容新增】：增加文件引用功能，现在点击文件可以在聊天框引用啦
-- 【BUG修复】：修复了文件列表滚动后内容显示不正确的问题
-- 【BUG修复】：修复了按下文件名之后，清空输入框的问题
----
-2025.6.21
-- 【内容新增】：设置页面的md格式支持
-- 【内容新增】：消息支持复制
-
----
-2025.6.23
-- 【BUG修复】：修改会话更新逻辑
-
----
-2025.7.1
-- 【BUG修复】：修复ai回复时禁用输入框逻辑
-
----
-2025.7.6
-- 【内容新增】：重置与ai交互逻辑，新增agent智能体和langchain架构，对mcp进行重新架构升级，对参数接口进行统一，现在回复是基于agent啦
-
----
-2025.7.7
-- 【内容新增】：系统完美集成了rag和mcp功能，生成报告的时候会查询知识库，生成一份更加详细的报告了
-- 【内容新增】：集成langsmith，可以在后端查看具体的调用结果
-- 【bug修复】：修复用户新建对话时，无论是否发送消息都创建新的会话的问题，增加延迟会话逻辑，会话等待逻辑
-
----
-2025.7.14
-- 【内容新增】：加载密匙逻辑全面更改
-- 【内容新增】：全面重构agent逻辑，新增langgraph逻辑
-
----
-2025.8.7
-- 【内容新增】：全面重构agent，增加langgraph图，节点，边关系构建
-- 【内容新增】：增加后处理逻辑，增加报告生成逻辑，增加预处理逻辑
-
----
-2025.8.13
-- 【内容新增】： 补充agent中文件加载节点，预处理节点部分功能实现
-
----
-2025.8.16
-- 【内容新增】： 拓展fold节点，增加数据分析内容，增加数据内容验证文件
-
----
-2025.9.17
-  - 【内容新增】： 补充fold节点，增加数据分析内容，增加数据内容验证文件。
-  - 目前对于用户上传文件可以进行初步判断，对于不合理的数据进行人工干预，对于需要更改数据提出建议，后期再进行更改。用户需要补充目标变量和处理变量才可以进行因果分析。
-
----
-2025.9.18
-  - 【内容新增】： 补充预处理节点，增加数据分析内容，增加数据内容可视化，增加数据内容总结。
-  - 【内容新增】： 补充rag节点，增加知识库查询功能，补充mcp调用causal-learn因果分析算法。
-
----
-2025.9.20
-  - 【内容新增】： 补充human节点，增加人机交互过程
-
----
-2025.10.14
-  - 【内容新增】： 补充后处理节点，增加后处理功能
-  - 【内容新增】： 后处理节点：1. 查看是否有环路，如果存在环路，则使用LLM辅助决策进行修正。2. 查看是否有不合理边，如果存在不合理边，则使用LLM辅助决策进行修正。
-
----
-2025.10.19
-  - 【结构重置】：重构代码中人设部分
-  - 【结构重置】：重构数据库连接
-
----
-2025.10.22
-  - 【bug修复】： 解决agent路由的bug问题，目前可以正常跑通
-
----
-2025.10.23
-  - 【bug修复】：修复agent中的用户暂停逻辑
-  - 【bug修复】：修复agent当中的文件上传逻辑
-
----
-2025.10.26
-  - 【内容新增】：增加langgraph中的checkpoint支持,重构langgraph的节点逻辑
-  - 【内容新增】：实现mysql数据库的langgraph checkpoint功能，实现同步/异步方法
-  - 【内容新增】：增加inquiry_answer节点，实现对用户追问的回答
-  - 【bug修复】： 修复目前节点的reducer机制，修复state中的reducer机制，实现消息记录的补充说明
-  - 【bug修复】： 主程序对checkpoint的响应逻辑补充，补充config配置，修复对多次回答的逻辑缺失
-  - 【内容新增】：补充Alembic数据库迁移功能
-
----
-2025.10.28
-  - 【内容重构】：重构工具执行节点，封装@task工具，支持数据库的task支持
-  - 【bug修复】：重构human in loop节点，支持interrupt机制，支持用户输入的传递
-
----
-2025.10.31
-  - 【内容新增】：docker部署
-
----
-2025.11.2
-  - 【BUG修复】：修复用户注册密码加密问题，使用bcrypt进行加密
-
----
-2025.11.6
-  - 【内容新增】：增加思考过程气泡和详情面板，支持思考过程的展示和展开/收起
-  - 【内容新增】：支持SSE流式传输节点，支持显示思考进度
-  - 【内容新增】：支持ai的流式传输重构
-
----
-2025.11.11
-  - 【内容新增】：增加预处理图表支持，完善报告生成
-  - 【内容新增】：数据库中支持可代替图表生成
-
----
-2025.11.16
-  - 【内容新增】：优化报告样式
-
----
-2025.11.21
-  - 【重构】：重构Agent目录关系，增强结构可读性，修改模块内部导入路径，修改目录层级关系,修改引用关系
-  - 【重构】：重构flask框架，增加blueprint，增加app目录，修改CausalAgent主文件，适配目前APP文件目录，修改模块内部导入路径
-  - 【bug修复】：修复docker由于目录重置导致的问题，修改目录关系
-
-
----
-2025.11.26
-  - 【内容新增】：完善MCP机制，支持动态选择不同算法
-  - 【内容新增】：新增olc算法支持
-
----
-2025.12.18
-- 【重构】：更名为CausalAgent
-
----
-2026.3.20
-- 【内容重构和新增】：
-  - 重构了查询主链路， dense 检索 -> MMR -> sparse 检索 -> 候选融合重排 -> 证据块构造 -> 结构化回答 -> 证据链输出。
-  - 重构了知识库构建脚本，在 build_knowledge.py 中补齐了文档级和 chunk 级 metadata，包括 doc_id、chunk_id、doc_type、corpus、page 等，为后续检索过滤、证据链保存和评测提供基础。
-  - 重构了问题生成模块，在 rag_questions.py 中把 RAG 问题从字符串列表升级为结构化对象，新增 intent、priority、why_needed，让知识库查询更贴近报告增强目标。
-  - 重构了任务与状态传递，在 rag_query_task.py 和 state.py 中把 knowledge_base_result 从字符串改为结构化结果，保证 LangGraph 流程中可以传递完整证据链。
-  - 适配了下游消费逻辑，在 nodes.py、fix_cycles.py、evaluate_edge_llm.py 中增加了摘要转换逻辑，使报告生成、环路修正和边评估都能消费结构化 RAG 结果，而不是依赖旧的字符串结果。
-  - 增加了混合检索能力：dense 检索负责语义召回，sparse 检索负责关键词召回。
-  - 增加了 MMR 去重能力，减少相似 chunk 重复进入最终证据集合。
-  - 增加了轻量级融合重排逻辑，综合 dense 分数、sparse 分数、语料类型和双路命中情况得到最终 rerank_score。
-  - 新增了评测脚本 rag_eval.py，当前支持检索层指标 Recall@k、Precision@k、MRR、Hit Rate，以及轻量级生成层关键点覆盖评测。
-  - 新增了 metadata 导出脚本 export_metadata.py，
-
----
-2026.5.17
-**重要更新**
-- 【内容新增与重构】：
-  - 建立了更完整的数据库迁移链：新增核心业务表基线迁移，并补上 checkpoint 迁移依赖关系。
-  - 将 `Database/database_init.py` 从“直接创建业务表”改为“数据库引导脚本”，业务表结构正式交给 Alembic 维护。
-  - 在 `app/db.py` 中完成数据库访问分层：写连接、业务读连接、复制状态检查连接三条路径分离，并加入连接池、弱一致读回退和慢查询告警。
-  - 新增主从开发拓扑 `docker-compose.replica.yml` 及 MySQL primary/replica 初始化脚本，支持 GTID、半同步复制、慢查询日志和应用侧读写分离验证。
-  - 新增数据库审计脚本、轻量监控接口和一组覆盖配置解析、连接边界、迁移链、主从初始化、失效会话保护的测试。
-  - 修复旧实现中多个容易在生产化阶段暴露的问题，包括：应用误用业务账号执行 `SHOW REPLICA STATUS`、数据库初始化职责和 Alembic 迁移职责重叠、旧 session 在用户数据失效后仍可能继续访问接口、上传文件缺少体积上限等。
-- 【修复问题】
-  - 修复数据库初始化与迁移职责重叠的问题
-   旧版 `Database/database_init.py` 同时负责建库、建表、建索引和部分结构逻辑，容易与 Alembic 演进冲突。现在它只负责确保数据库存在和连接可用，结构统一由迁移脚本维护。
-  - 修复主从读写边界不清的问题
-   旧代码主要通过单一路径访问 MySQL，主从环境下很难明确“哪些查询必须强一致、哪些查询允许弱一致”。本轮将强一致读、弱一致读和写入路径拆开，并在弱一致读失败时自动回退主库。
-  - 修复复制状态检查权限模型不干净的问题
-   旧设计容易让应用继续用业务账号执行 `SHOW REPLICA STATUS`。现在新增专用状态账号；未配置该账号时，系统会安全回退主库，而不是继续误用高权限账号。
-  - 修复旧 session 残留导致的伪登录状态问题
-   当浏览器 session 还在、但数据库中的用户已失效时，原逻辑可能继续把请求当作已登录。现在引入 `app/auth/session_guard.py`，会在鉴权时校验真实用户，不存在则清空 session。
-  - 修复上传文件缺少大小上限的问题
-   文件上传现在新增 `MAX_UPLOAD_SIZE_MB` / `MAX_UPLOAD_SIZE_BYTES` 限制，避免过大文件直接写入 `uploaded_files.file_content`。
-  - 修复迁移链起点不完整的问题
-   新增 `1a2b3c4d5e6f_create_core_schema.py` 作为核心 schema 基线，并让 checkpoint 迁移依赖它，避免空库初始化只能依赖历史手工建表。
-
----
-2026.5.18
-**重要更新**
-- 【内容新增与重构】：
-  - 任务创建、任务领取、事件写入和 SSE 推送已经拆分到不同层，Web 不再直接承担长任务执行。
-  - 新增 `analysis_jobs` 与 `analysis_job_events` 数据库作为任务队列和事件流的持久化数据库。
-  - 后台 worker 以 slot 为单位持有独立 MCP session 和 Agent graph，避免 Web 进程阻塞。
-  - 同一 `user_id + session_id` 的并发任务通过唯一约束兜底，防止重复执行。
-  - 旧接口 `POST /api/send_stream` 已转为迁移提示，前端改走 `POST /api/agent/jobs` 与 SSE 订阅。
-
----
-2026.5.26
-- 【内容新增】
-  本次改造是在不改变现有架构的前提下，引入 LangGraph 1.2 的节点级容错能力。已完成依赖升级门禁、LangChain v1 兼容迁移、节点 async 化、MCP/RAG task 异步化，以及基于 `retry_policy / timeout / error_handler` 的集中容错策略。
-  
-- 【bug修复】
-  - 升级到 langgraph-checkpoint==4.1.1 后，JsonPlusSerializer 不再有 dumps/loads，新版接口是 dumps_typed/loads_typed。
-  - 修复前端报告占位符问题

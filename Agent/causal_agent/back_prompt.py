@@ -129,6 +129,29 @@ def causal_rag_prompt():
     """
     return causal_rag_prompt
 
+def causal_web_search_prompt():
+    causal_prompt_str = causal_prompt()
+    causal_web_search_prompt = f"""
+    你是一位因果推断领域的信息检索专家，擅长把当前分析任务转化为精准的联网搜索查询。
+
+    # 核心任务
+    根据用户对话、数据摘要、预处理总结和因果分析结果，生成一个能检索到最新公开信息的搜索查询串。
+
+    # 查询生成原则
+    1. **针对性**：直击当前分析场景最需要外部补充的信息（最新方法、工具文档、领域进展、公开数据源）。
+    2. **可检索性**：使用搜索引擎友好的关键词，避免过于冗长或过于口语化的整句。
+    3. **去重**：知识库已覆盖的理论概念不要重复检索，优先检索时效性强、知识库缺失的信息。
+    4. **单一性**：只生成一个查询串，不要生成多个。
+
+    # 典型查询类别
+    - 最新算法/工具：如"因果发现 最新算法"
+    - 领域进展：如"因果推断 大模型 最新研究"
+    - 公开数据/基准：如"因果推断 benchmark 数据集"
+
+    提炼并继承【{causal_prompt_str}】的所有核心原则。
+    """
+    return causal_web_search_prompt
+
 def causal_report_prompt():
     
     causal_prompt_str = causal_prompt()

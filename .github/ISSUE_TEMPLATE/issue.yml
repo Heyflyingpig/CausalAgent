@@ -1,0 +1,73 @@
+name: Issue
+description: 按统一结构提交问题、需求或任务
+title: "[类型] "
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景
+      description: 为什么需要处理这个问题。
+      placeholder: 请填写背景信息，也可以填写空格或 ...。
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem-description
+    attributes:
+      label: 问题描述
+      description: 当前发生了什么，影响是什么。
+      placeholder: 请描述当前问题和影响，也可以填写空格或 ...。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-result
+    attributes:
+      label: 预期结果
+      description: 希望系统最终表现如何。
+      placeholder: 请描述预期结果，也可以填写空格或 ...。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: 复现步骤
+      description: 请按顺序填写复现步骤。
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: 验收标准
+      description: 请列出完成后需要满足的条件。
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 请填写相关环境信息。
+      placeholder: |
+        - 分支：
+    validations:
+      required: true
+
+  - type: textarea
+    id: attachments
+    attributes:
+      label: 附件
+      description: 可附加日志、截图、接口响应或相关链接。
+      placeholder: 如无附件可以留空。
+    validations:
+      required: false

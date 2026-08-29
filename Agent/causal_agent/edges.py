@@ -1,76 +1,81 @@
-from .state import CausalChatState
-from langchain_core.messages import AIMessage
 import logging
+from .state import CausalAgentState
+from observability.logging_runtime import log_context, log_event
 
-def decision_router(state: CausalChatState) -> str:
+
+ROUTE_DECISIONS = {"fold", "postprocess", "normal_chat", "inquiry_answer"}
+FOLD_DECISIONS = {"preprocess", "agent", "normal_chat"}
+LOGGER = logging.getLogger(__name__)
+
+
+def _log_route_degradation(node: str, fallback: str) -> None:
+    with log_context(node=node):
+        log_event(
+            LOGGER,
+            "job.node.degraded",
+            details={
+                "failure_kind": "invalid_route",
+                "final_attempt": 1,
+                "fallback": fallback,
+            },
+        )
+
+def decision_router(state: CausalAgentState) -> str:
     """
-    这是图中的主要“决策”边。
-    它检查来自代理的最新消息以决定下一步行动。
+    只读取 agent 写入的显式 route_decision，不从展示消息推断控制流。
     """
-    logging.info("路由: 主决策")
-    agent_decision = state["messages"][-1].content
-    
-    if "信息完备" in agent_decision:
-        logging.info("路由决策 -> 前往[后处理]")
-        return "postprocess"
-    elif "信息不全" in agent_decision:
-        logging.info("路由决策 -> 前往[文件加载]")
-        return "fold"
-    elif "报告" in agent_decision:
-        logging.info("路由决策 -> 前往[追问模块]")
-        return "inquiry_answer"
-    else: 
-        logging.info("路由决策 -> 前往[普通问答]")
+    decision = state.get("route_decision")
+    if decision not in ROUTE_DECISIONS:
+        _log_route_degradation("decision_router", "normal_chat")
         return "normal_chat"
+    return decision
 
-def fold_router(state: CausalChatState) -> str:
+def fold_router(state: CausalAgentState) -> str:
     """
-    这是图中的文件加载"决策"边。
-    它检查来自代理的最新消息以决定下一步行动。
-    
-    - 如果信息完备，前往 preprocess
-    - 如果收到用户输入，返回 agent 重新判断
+    只读取 fold 写入的显式 fold_decision，不从展示消息推断控制流。
     """
-    logging.info("--- 路由: 文件加载决策 ---")
-    fold_process_decision = state["messages"][-1].content
-    
-    if "信息完备" in fold_process_decision:
-        logging.info("路由决策 -> 前往[执行预处理]")
-        return "preprocess"
-    elif "返回 agent" in fold_process_decision or "用户输入" in fold_process_decision:
-        logging.info("路由决策 -> 收到用户输入，返回[agent]重新判断")
+    decision = state.get("fold_decision")
+    if decision not in FOLD_DECISIONS:
+        _log_route_degradation("fold_router", "agent")
         return "agent"
-    else:
-        # 默认情况：返回 agent
-        logging.info("路由决策 -> 默认返回[agent]")
-        return "agent"
+    return decision
 
-def preprocess_router(state: CausalChatState) -> str:
+def preprocess_router(state: CausalAgentState) -> str:
     """
     参数验证节点后的路由器。
     如果验证成功，则执行工具
     """
-    logging.info("--- 路由: 预处理后决策 ---")
-    logging.info("路由决策 -> 参数充足, 前往[执行工具]")
-    return "execute_tools"
+    return "mcp"
 
 
-def execute_tool_router(state:CausalChatState) -> str:
+def execute_tool_router(state:CausalAgentState) -> str:
     """
-    工具执行节点后的路由器。
-    返回agent节点，等待agent节点做出决策
+    旧 execute_tools 节点后的兼容路由器。
+    当前父图已改为 preprocess -> mcp -> rag -> agent，本函数仅保留给历史调用。
     """
-    logging.info("--- 路由: 执行工具后决策 ---")
-    logging.info(f"前往decision_router")
     return "agent"
 
-def postprocess_router(state:CausalChatState) -> str:
+def mcp_router(state: CausalAgentState) -> str:
+    """检测mcp是否调用成功"""
+    mcp_result =  state.get("causal_analysis_result")
+    if isinstance(mcp_result, dict) and mcp_result.get("success") is True:
+        return "rag"
+    if isinstance(mcp_result, dict) and mcp_result.get("success") is False:
+        return "normal_chat"
+    return "agent"
+
+
+def postprocess_router(state:CausalAgentState) -> str:
     '''
     通向report_node
     '''
-    logging.info("--- 路由: 后处理后决策 ---")
-    logging.info(f"前往report_node")
     return "report"
+
+
+def web_search_router(state: CausalAgentState, context) -> str:
+    """读 context.web_search_enabled 决定 rag 后是否走联网搜索子图。"""
+    enabled = getattr(context, "web_search_enabled", False)
+    return "web_search" if enabled else "agent"
 
 
 

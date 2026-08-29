@@ -1,0 +1,62 @@
+<mxGraphModel dx="1370" dy="650" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="800" math="0" shadow="0" adaptiveColors="auto">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="admin" value="管理员浏览器" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="20" y="275" width="140" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="web" value="Web 层" style="swimlane;fontStyle=1;horizontal=1;startSize=32;rounded=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+      <mxGeometry x="200" y="40" width="500" height="560" as="geometry"/>
+    </mxCell>
+    <mxCell id="vue" value="Vue 3 管理端&lt;br&gt;Flask 托管构建产物" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="web">
+      <mxGeometry x="30" y="60" width="190" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="gate" value="Flask 鉴权门&lt;br&gt;实时授权 + CSRF + Request ID" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="web">
+      <mxGeometry x="280" y="60" width="190" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="read" value="业务只读服务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="web">
+      <mxGeometry x="30" y="200" width="140" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="write" value="受控写入服务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="web">
+      <mxGeometry x="180" y="200" width="140" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="snap" value="看板 API&lt;br&gt;读取快照 / 登记刷新" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="web">
+      <mxGeometry x="330" y="200" width="140" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="runtime" value="后台进程" style="swimlane;fontStyle=1;horizontal=1;startSize=32;rounded=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+      <mxGeometry x="740" y="90" width="240" height="420" as="geometry"/>
+    </mxCell>
+    <mxCell id="monitor" value="Monitor&lt;br&gt;分层采集与 deep audit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="runtime">
+      <mxGeometry x="30" y="70" width="180" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="worker" value="Agent Worker&lt;br&gt;任务与事件" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="runtime">
+      <mxGeometry x="30" y="230" width="180" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="data" value="MySQL 数据层" style="swimlane;fontStyle=1;horizontal=1;startSize=32;rounded=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+      <mxGeometry x="1020" y="40" width="330" height="560" as="geometry"/>
+    </mxCell>
+    <mxCell id="primary" value="Primary&lt;br&gt;业务、审计、操作与快照" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="data">
+      <mxGeometry x="55" y="65" width="220" height="85" as="geometry"/>
+    </mxCell>
+    <mxCell id="replica" value="Replica&lt;br&gt;最终一致读" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="data">
+      <mxGeometry x="55" y="225" width="220" height="85" as="geometry"/>
+    </mxCell>
+    <mxCell id="perf" value="Performance Schema&lt;br&gt;SQL Digest" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="data">
+      <mxGeometry x="55" y="390" width="220" height="85" as="geometry"/>
+    </mxCell>
+    <mxCell id="e1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="admin" target="vue"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="vue" target="gate"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="gate" target="read"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="gate" target="write"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="gate" target="snap"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e6" value="实时角色与状态" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="gate" target="primary"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e7" value="强一致读取" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="read" target="primary"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e8" value="主库事务与审计" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="write" target="primary"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e9" value="快照与刷新请求" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="snap" target="primary"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e10" value="采集并写快照" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="monitor" target="primary"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e11" value="容量读取" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="monitor" target="replica"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e12" value="性能摘要" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="monitor" target="perf"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e13" value="任务与事件" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="worker" target="primary"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e14" value="异步复制" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;" edge="1" parent="1" source="primary" target="replica"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root>
+</mxGraphModel>

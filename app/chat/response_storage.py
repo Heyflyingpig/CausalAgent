@@ -36,6 +36,7 @@ def prepare_ai_response_for_storage(ai_response: Any) -> tuple[str, list[dict[st
                 persisted_response["summary"] = raw_summary
             persisted_response.pop("raw_summary", None)
             persisted_response.pop("visualization_mapping", None)
+            persisted_response.pop("references", None)
             attachment_to_save.append({
                 "type": "causal_graph",
                 "content": json.dumps(persisted_response, ensure_ascii=False),
@@ -45,6 +46,12 @@ def prepare_ai_response_for_storage(ai_response: Any) -> tuple[str, list[dict[st
             attachment_to_save.append({
                 "type": "visualization",
                 "content": json.dumps(ai_response["visualization_mapping"], ensure_ascii=False),
+            })
+
+        if ai_response.get("references"):
+            attachment_to_save.append({
+                "type": "web_search_references",
+                "content": json.dumps(ai_response["references"], ensure_ascii=False),
             })
 
         return ai_content, attachment_to_save

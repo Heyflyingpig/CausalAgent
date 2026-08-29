@@ -1,12 +1,24 @@
 from langgraph.graph import StateGraph, END
-from .state import CausalChatState
+from .state import CausalAgentState
 from . import nodes, edges
+from .graph_utils import (
+    bind_node,
+    bind_subgraph_node,
+    guarded_context_router,
+    guarded_error_handler,
+    guarded_router,
+)
+from .tool_subgraphs import build_mcp_subgraph, build_rag_subgraph, build_web_search_subgraph
+from .context import AgentRunContext
 from .fault_tolerance import (
     recover_postprocess_to_report,
     recover_report,
     recover_terminal_message,
     recover_tools_to_agent,
-    recover_to_agent,
+    recover_fold_to_agent,
+    recover_preprocess_to_agent,
+    degrade_rag_adapter_result,
+    degrade_web_search_adapter_result,
     route_to_normal_chat,
     short_retry,
     timeout,
@@ -14,108 +26,155 @@ from .fault_tolerance import (
 )
 import logging
 
-# === 导入 Checkpoint 相关 ===
-from Database.mysql_checkpointer import MySQLSaver
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 
-def _bind_node(func, **bound_kwargs):
+
+def build_graph(
+    llm: "ChatOpenAI",
+    mcp_tools: list,
+    rag_tools: list,
+    checkpointer,
+    rag_available: bool = True,
+):
     """
-    将共享资源绑定到 async LangGraph 节点。
+    构建父图。
 
-    使用显式 async wrapper，避免 functools.partial 包装 async function 后被运行时误判为同步节点。
+    父图只表达业务阶段顺序，MCP/RAG 的 tool-calling 细节封装在各自子图内。
     """
-    async def _node(state: CausalChatState):
-        return await func(state, **bound_kwargs)
+    workflow = StateGraph(CausalAgentState, context_schema=AgentRunContext)
 
-    _node.__name__ = getattr(func, "__name__", "bound_node")
-    return _node
+    streaming_llm = llm.model_copy(update={"streaming": True})
+    agent_node_with_llm = bind_node(nodes.agent_node, event_node_name="agent", llm=llm)#将普通节点函数绑定llm，这些普通节点函数内部要调用大模型，但 LangGraph 执行节点时主要只传一个参数：state
+    fold_node_with_llm = bind_node(nodes.fold_node, event_node_name="fold", llm=llm)
+    preprocess_node_with_llm = bind_node(nodes.preprocess_node, event_node_name="preprocess", llm=llm)
+    mcp_subgraph = build_mcp_subgraph(llm=llm, mcp_tools=mcp_tools)#创建mcp子图
+    rag_subgraph = build_rag_subgraph(
+        llm=llm,
+        rag_tools=rag_tools,
+        rag_available=rag_available,
+    )
+    # 映射rag子state，隔离父子状态
+    rag_adapter_node = bind_subgraph_node(
+        nodes.rag_subgraph_adapter_node,
+        event_node_name="rag",
+        rag_subgraph=rag_subgraph,
+    )
+    web_search_subgraph = build_web_search_subgraph(llm=llm)
+    postprocess_node_with_llm = bind_node(nodes.postprocess_node, event_node_name="postprocess", llm=llm)
+    inquiry_answer_node_with_llm = bind_node(
+        nodes.inquiry_answer_node,
+        event_node_name="inquiry_answer",
+        llm=streaming_llm,
+    )
+    report_node_with_llm = bind_node(nodes.report_node, event_node_name="report", llm=llm)
+    normal_chat_node_with_llm = bind_node(
+        nodes.normal_chat_node,
+        event_node_name="normal_chat",
+        llm=streaming_llm,
+    )
 
-
-def create_graph(llm: "ChatOpenAI", mcp_session: "ClientSession"):
-    """
-    组件node和edge成为边
-    """
-    workflow = StateGraph(CausalChatState)
-
-    # 使用 functools.partial 将 llm 实例绑定到节点函数上
-    # 这使得节点在被 LangGraph 调用时，除了 state 之外，还能接收到 llm 对象
-    agent_node_with_llm = _bind_node(nodes.agent_node, llm=llm)
-    fold_node_with_llm = _bind_node(nodes.fold_node, llm=llm)
-    preprocess_node_with_llm = _bind_node(nodes.preprocess_node, llm=llm)
-    execute_tools_node_with_session = _bind_node(nodes.execute_tools_node, mcp_session=mcp_session, llm=llm)
-    postprocess_node_with_llm = _bind_node(nodes.postprocess_node, llm=llm)
-    inquiry_answer_node_with_llm = _bind_node(nodes.inquiry_answer_node, llm=llm)
-    report_node_with_llm = _bind_node(nodes.report_node, llm=llm)
-    normal_chat_node_with_llm = _bind_node(nodes.normal_chat_node, llm=llm)
-
-    # Add all the nodes to the graph
+#节点注册部分
     workflow.add_node(
         "agent",
-        agent_node_with_llm,
-        retry_policy=short_retry(),
-        timeout=timeout(run_timeout=45, idle_timeout=20),
-        error_handler=route_to_normal_chat,
+        agent_node_with_llm,#这个节点真正执行的函数
+        retry_policy=short_retry(),#出错怎么重试
+        timeout=timeout(run_timeout=45, idle_timeout=20),#执行多久算超时
+        error_handler=guarded_error_handler(
+            route_to_normal_chat,
+            event_node_name="agent",
+            timeout_ms=45_000,
+        ),#最后失败怎么兜底
     )
     workflow.add_node(
         "fold",
         fold_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=120, idle_timeout=45),
-        error_handler=recover_to_agent,
+        error_handler=guarded_error_handler(
+            recover_fold_to_agent,
+            event_node_name="fold",
+            timeout_ms=120_000,
+        ),
     )
     workflow.add_node(
         "preprocess",
         preprocess_node_with_llm,
         retry_policy=short_retry(),
-        timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=recover_to_agent,
+        timeout=timeout(run_timeout=180, idle_timeout=80),
+        error_handler=guarded_error_handler(
+            recover_preprocess_to_agent,
+            event_node_name="preprocess",
+            timeout_ms=180_000,
+        ),
+    )
+
+    workflow.add_node("mcp", mcp_subgraph)#mcp子图注册成节点
+    workflow.add_node(
+        "rag",
+        rag_adapter_node,
+        error_handler=guarded_error_handler(
+            degrade_rag_adapter_result,
+            event_node_name="rag",
+        ),
     )
     workflow.add_node(
-        "execute_tools",
-        execute_tools_node_with_session,
-        retry_policy=tool_retry(),
-        timeout=timeout(run_timeout=360, idle_timeout=120),
-        error_handler=recover_tools_to_agent,
+        "web_search",
+        web_search_subgraph,
+        error_handler=guarded_error_handler(
+            degrade_web_search_adapter_result,
+            event_node_name="web_search",
+        ),
     )
     workflow.add_node(
         "postprocess",
         postprocess_node_with_llm,
         timeout=timeout(run_timeout=240, idle_timeout=90),
-        error_handler=recover_postprocess_to_report,
+        error_handler=guarded_error_handler(
+            recover_postprocess_to_report,
+            event_node_name="postprocess",
+            timeout_ms=240_000,
+        ),
     )
     workflow.add_node(
         "report",
         report_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=180, idle_timeout=60),
-        error_handler=recover_report,
+        error_handler=guarded_error_handler(
+            recover_report,
+            event_node_name="report",
+            timeout_ms=180_000,
+        ),
     )
     workflow.add_node(
         "normal_chat",
         normal_chat_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=60, idle_timeout=30),
-        error_handler=recover_terminal_message,
+        error_handler=guarded_error_handler(
+            recover_terminal_message,
+            event_node_name="normal_chat",
+            timeout_ms=60_000,
+        ),
     )
     workflow.add_node(
         "inquiry_answer",
         inquiry_answer_node_with_llm,
         retry_policy=short_retry(),
         timeout=timeout(run_timeout=90, idle_timeout=30),
-        error_handler=recover_terminal_message,
+        error_handler=guarded_error_handler(
+            recover_terminal_message,
+            event_node_name="inquiry_answer",
+            timeout_ms=90_000,
+        ),
     )
 
-    
-    # Set the entry point of the graph
-    workflow.set_entry_point("agent")
-
-    # Add conditional edges that determine the flow based on router functions
-    workflow.add_conditional_edges(
-        "agent",
-        edges.decision_router,
+    workflow.set_entry_point("agent")#节点入口
+    workflow.add_conditional_edges(#节点的边
+        "agent",#从agent节点出发
+        guarded_router(edges.decision_router),#由decision_router函数决定路由？
         {
-            "fold": "fold",
+            "fold": "fold",#"路由函数返回值": "要跳转到的节点名"
             "normal_chat": "normal_chat",
             "postprocess": "postprocess",
             "inquiry_answer": "inquiry_answer"
@@ -123,77 +182,71 @@ def create_graph(llm: "ChatOpenAI", mcp_session: "ClientSession"):
     )
     workflow.add_conditional_edges(
         "fold",
-        edges.fold_router,
+        guarded_router(edges.fold_router),#由fold_router函数决定路由
         {
             "preprocess": "preprocess",
-            "agent": "agent"  
+            "agent": "agent",
+            "normal_chat": "normal_chat",
+        }
+    )
+
+    workflow.add_edge("preprocess", "mcp")#从preprocess节点到mcp子图节点的边
+
+    workflow.add_conditional_edges(
+        "mcp", 
+        guarded_router(edges.mcp_router),
+        {
+            "rag": "rag", 
+            "agent": "agent",
+            "normal_chat": "normal_chat",
         }
     )
     
     workflow.add_conditional_edges(
-        "preprocess",
-        edges.preprocess_router,
+        "rag",
+        guarded_context_router(edges.web_search_router),
         {
-            "execute_tools": "execute_tools",
-        }
+            "web_search": "web_search",
+            "agent": "agent",
+        },
     )
-    workflow.add_conditional_edges(
-        "execute_tools",
-        edges.execute_tool_router,
-        {
-            "agent": "agent"
-        }
-    )
-
+    workflow.add_edge("web_search", "agent")
     workflow.add_conditional_edges(
         "postprocess",
-        edges.postprocess_router,
+        guarded_router(edges.postprocess_router),
         {
             "report": "report"
         }
     )
 
- 
-    # Define the end points of the graph. A graph can have multiple finishing points.
     workflow.add_edge("report", END)
     workflow.add_edge("normal_chat", END)
     workflow.add_edge("inquiry_answer", END)
-    
 
-    checkpointer = None
-    try:
-        # 从配置文件加载数据库连接信息
-        from config.settings import settings
-        
-        connection_config = {
-            'host': settings.MYSQL_WRITE_HOST,
-            'port': settings.MYSQL_PORT,
-            'user': settings.MYSQL_WRITE_USER,
-            'password': settings.MYSQL_WRITE_PASSWORD,
-            'database': settings.MYSQL_DATABASE
-        }
-        
-        # 创建 MySQLSaver 实例
-        # serde 使用 JsonPlusSerializer(pickle_fallback=True) 处理 DataFrame 等复杂对象
-        # 虽然现在没有
-        checkpointer = MySQLSaver(
-            connection_config=connection_config,
-            serde=JsonPlusSerializer(pickle_fallback=True)
-        )
-        
-        
-        logging.info("MySQL Checkpointer 已启用")
-        
-    except Exception as e:
-        logging.warning(f" Checkpointer 初始化失败，将不启用持久化: {e}")
-        checkpointer = None
+    if checkpointer is None or checkpointer is False:
+        raise RuntimeError("必须提供 PostgreSQL Checkpointer，禁止无持久化降级")
+
+    return workflow.compile(checkpointer=checkpointer)
 
 
-    app = workflow.compile(
-        checkpointer=checkpointer  
+
+def create_graph_from_tools(
+    llm: "ChatOpenAI",
+    mcp_tools: list,
+    checkpointer,
+    rag_available: bool = True,
+):
+    """使用已加载的 MCP tools 构建父图，返回可直接执行的 compiled graph。"""
+    from Agent.tool_node.rag_tool_registry import build_rag_tools
+    # graph 层不再关心 MCP session。
+    rag_tools = build_rag_tools()
+    return build_graph(
+        llm=llm,
+        mcp_tools=mcp_tools,
+        rag_tools=rag_tools,
+        checkpointer=checkpointer,
+        rag_available=rag_available,
     )
-    
-    return app
 
 
 agent_graph = None

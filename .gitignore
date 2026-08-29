@@ -10,11 +10,11 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
@@ -129,7 +129,10 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
+.venv-desktop/
 env/
 venv/
 ENV/
@@ -176,19 +179,18 @@ cython_debug/
 # Sensitive configuration files
 secrets.json
 config.json
+searxng/core-config/settings.yml
 
 #  demo
 杂项/
 项目规划/
-Document/
 
-# test
-test.py
 
 # AI
 .cursor/
 .augment/
 .vscode/
+.codegraph/
 
 # causalcopliot
 causalcopliot/
@@ -197,6 +199,50 @@ causalcopliot/
 Agent/knowledge_base/db/
 Agent/knowledge_base/source/
 Agent/knowledge_base/unfinish_source/
+Agent/knowledge_base/models/
+Agent/knowledge_base/rag/docs/
+Agent/knowledge_base/rag/output/reports/
+Agent/knowledge_base/rag/data/eval/history/
+Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*
+!Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_rebound_requires_reapproval_v3.json
+!Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_reapproval_manifest_v3.json
+# 多模态解析资产只作为本地或外部离线产物，不属于正式 RAG 发布物。
+Agent/knowledge_base/multimodal_assets/
+# 正式 release 由 active/fallback pointer 选择；只自动放行新规范的 mm_+64 位身份目录。
+Agent/knowledge_base/multimodal_indexes/*
+!Agent/knowledge_base/multimodal_indexes/mm_*/
+!Agent/knowledge_base/multimodal_indexes/mm_*/**
+# 20 位旧兼容候选不再作为新的提交对象；历史上已跟踪的文件仍保留。
+Agent/knowledge_base/multimodal_indexes/mm_????????????????????/
+Agent/knowledge_base/multimodal_indexes/mm_????????????????????/**
+Agent/knowledge_base/multimodal_runtime/*
+!Agent/knowledge_base/multimodal_runtime/active_index.json
+Agent/knowledge_base/multimodal_benchmarks/
 
 # skils
 skills/
+
+# study
+study/
+
+# Admin Vue
+admin-frontend/node_modules/
+admin-frontend/test-results/
+admin-frontend/playwright-report/
+app/rag_eval/frontend/node_modules/
+app/static/rag_eval_app/
+!app/static/rag_eval_app/
+!app/static/rag_eval_app/assets/
+!app/static/rag_eval_app/assets/*
+
+# RAG 隔离评测运行产物与预发本地密钥
+/tmp/rag_eval/
+*.governance.lock
+.env.staging
+
+# docs
+docs/
+
+# 管理员生产构建只提交入口文件，哈希 assets 由构建阶段重新生成。
+admin-frontend/dist/*
+!admin-frontend/dist/index.html

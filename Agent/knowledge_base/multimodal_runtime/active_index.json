@@ -1,0 +1,11 @@
+{
+  "active": {
+    "collection_name": "causal_multimodal_mm_0017818ee01e169db8c4d77186f9a53c4ef7ed4e4b89d08692b6a2770710351b",
+    "index_path": "mm_0017818ee01e169db8c4d77186f9a53c4ef7ed4e4b89d08692b6a2770710351b/chroma",
+    "index_version": "mm_0017818ee01e169db8c4d77186f9a53c4ef7ed4e4b89d08692b6a2770710351b",
+    "manifest_sha256": "ae00bcc77a205757f11491ac115248dcbee508c2907cc6408ad4f6f1c1dde573",
+    "release_id": "mm_0017818ee01e169db8c4d77186f9a53c4ef7ed4e4b89d08692b6a2770710351b"
+  },
+  "generation": 1,
+  "schema_version": "multimodal_release_pointer_v1"
+}

@@ -42,13 +42,14 @@ test_*.py
 *.txt
 !requirements.txt
 !requirements-base.txt
+!requirements-test.txt
 
 # 原因：
 # - 测试文件运行时不需要
 # - *.md: README等文档不需要
 # - *.txt: 一般的文本文件不需要
-# - !requirements.txt: 例外！这个必须保留（!表示反向排除）
-#   因为Dockerfile中需要用它来安装依赖
+# - requirements*.txt 例外必须保留（!表示反向排除）
+#   因为 Dockerfile 的运行与测试阶段需要用它们安装依赖
 
 # --- 日志和临时文件 ---
 *.log
@@ -68,6 +69,10 @@ dist/
 build/
 *.egg-info/
 .eggs/
+admin-frontend/node_modules/
+admin-frontend/dist/
+admin-frontend/test-results/
+admin-frontend/playwright-report/
 
 
 # --- 数据文件和大文件 ---

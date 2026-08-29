@@ -1,0 +1,37 @@
+# 仅与 docker-compose.yml 叠加使用，不复用开发库端口、容器或数据卷。
+
+services:
+  mysql-primary:
+    container_name: causalagent31e2e_mysql_primary
+    ports: !override
+      - "127.0.0.1:13317:3306"
+
+  mysql-replica:
+    container_name: causalagent31e2e_mysql_replica
+    ports: !override
+      - "127.0.0.2:13317:3306"
+
+  postgres-checkpoint:
+    container_name: causalagent31e2e_postgres_checkpoint
+    ports: !override
+      - "127.0.0.1:15433:5432"
+
+  db-bootstrap:
+    container_name: causalagent31e2e_db_bootstrap
+
+  app:
+    container_name: causalagent31e2e_app
+    environment:
+      ADMIN_FRONTEND_DIST_DIR: /app/admin-frontend/dist
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    ports: !override
+      - "127.0.0.1:15011:5001"
+
+  worker:
+    container_name: causalagent31e2e_worker
+
+  monitor:
+    container_name: causalagent31e2e_monitor
+
+  checkpoint-cleanup:
+    container_name: causalagent31e2e_checkpoint_cleanup

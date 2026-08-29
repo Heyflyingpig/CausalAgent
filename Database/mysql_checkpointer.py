@@ -1,6 +1,7 @@
-"""
-MySQL Checkpointer Implementation for LangGraph
-基于 LangGraph 官方 BaseCheckpointSaver 接口的 MySQL 实现
+"""历史兼容的 MySQL Checkpointer，不再用于现行运行或管理员读取链路。
+
+现行 LangGraph checkpoint 事实源是 PostgreSQL。本文件仅供旧代码迁移参考，
+不得被 Web、worker、管理员服务或现行测试导入。
 
 """
 
@@ -15,15 +16,39 @@ from langgraph.checkpoint.base import (
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 import mysql.connector
 from contextlib import contextmanager
+import hashlib
 import json
 import logging
 import asyncio
 from app.db import get_read_connection, get_write_connection
+from Database.mysql_checkpointer_helpers import is_missing_checkpoint_foreign_key_error
 
 # 配置日志
 logger = logging.getLogger(__name__)
 
 _SERDE_PREFIX = b"LGST1"
+
+
+def _pending_write_identity_hash(
+    thread_id: str,
+    checkpoint_ns: str,
+    checkpoint_id: str,
+    task_id: str,
+    idx: int,
+) -> bytes:
+    """生成与 migration 回填完全一致的 pending write 业务键摘要。"""
+    payload = b"".join(
+        str(len(encoded)).encode("ascii") + b":" + encoded
+        for encoded in (
+            thread_id.encode("utf-8"),
+            checkpoint_ns.encode("utf-8"),
+            checkpoint_id.encode("utf-8"),
+            task_id.encode("utf-8"),
+        )
+    )
+    payload += b":" + str(idx).encode("ascii")
+    return hashlib.sha256(payload).digest()
+
 
 class MySQLSaver(BaseCheckpointSaver):
     """
@@ -35,7 +60,7 @@ class MySQLSaver(BaseCheckpointSaver):
                 'host': 'localhost',
                 'user': 'root',
                 'password': 'password',
-                'database': 'causalchat'
+                'database': 'causalagent'
             }
         )
         checkpointer.setup()  # 初始化表（如果使用Alembic则不需要）
@@ -58,7 +83,7 @@ class MySQLSaver(BaseCheckpointSaver):
                     'port': 3306,
                     'user': 'root',
                     'password': 'your_password',
-                    'database': 'causalchat'
+                    'database': 'causalagent'
                 }
             
             serde (JsonPlusSerializer, optional): 序列化器
@@ -71,6 +96,7 @@ class MySQLSaver(BaseCheckpointSaver):
         
         # 保存数据库配置。保留参数用于兼容旧调用，实际连接统一由 app.db 管理。
         self.connection_config = connection_config
+        self._deferred_writes: list[tuple[Dict[str, Any], Sequence[Tuple[str, Any]], str, str]] = []
         
         logger.info("MySQLSaver 初始化完成")
 
@@ -164,7 +190,7 @@ class MySQLSaver(BaseCheckpointSaver):
                     "v": 1,                    # 版本号
                     "id": "uuid-222",          # 新checkpoint的ID（LangGraph生成）
                     "ts": "2024-01-15...",     # 时间戳
-                    "channel_values": {        #  CausalChatState
+                    "channel_values": {        #  CausalAgentState
                         "messages": [...],
                         "analysis_parameters": {...},
                         ...
@@ -240,9 +266,16 @@ class MySQLSaver(BaseCheckpointSaver):
                 checkpoint_blob,  # bytes 类型，存到 LONGBLOB
                 metadata_json     # JSON 字符串
             ))
+
+            flushed_count = self._flush_deferred_writes(
+                cursor,
+                thread_id=thread_id,
+                checkpoint_ns=checkpoint_ns,
+                checkpoint_id=new_checkpoint_id,
+            )
             
             conn.commit()
-            logger.info(f"Checkpoint {new_checkpoint_id} 保存成功")
+            logger.info(f"Checkpoint {new_checkpoint_id} 保存成功，补写 pending writes={flushed_count}")
         
         # 返回新的 config
         # LangGraph 会用这个 config 作为下一个 checkpoint 的 parent_config
@@ -327,7 +360,7 @@ class MySQLSaver(BaseCheckpointSaver):
                         created_at
                     FROM checkpoints
                     WHERE thread_id = %s AND checkpoint_ns = %s
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, checkpoint_id DESC
                     LIMIT 1
                 """, (thread_id, checkpoint_ns))
             
@@ -459,7 +492,7 @@ class MySQLSaver(BaseCheckpointSaver):
                 query += " WHERE thread_id = %s AND checkpoint_ns = %s"
                 params.extend([thread_id, checkpoint_ns])
 
-            query += " ORDER BY created_at DESC"
+            query += " ORDER BY created_at DESC, checkpoint_id DESC"
             
             # 如果指定了 limit，添加到查询
             if limit:
@@ -548,39 +581,147 @@ class MySQLSaver(BaseCheckpointSaver):
         
         with get_write_connection() as conn:
             cursor = conn.cursor()
-            
-            # 遍历所有写操作
-            saved_count = 0
-            for idx, (channel, value) in enumerate(writes):
-                # 特殊写入（error/scheduled/interrupt/resume）使用 LangGraph 官方
-                # 固定负数 idx，普通 channel 保留原顺序 idx。
-                write_idx = WRITES_IDX_MAP.get(channel, idx)
-                value_blob = self._serialize_blob(value)
-
-                # 插入到 checkpoint_writes 表
-                cursor.execute("""
-                    INSERT INTO checkpoint_writes (
-                        thread_id,
-                        checkpoint_ns,
-                        checkpoint_id,
-                        task_id,
-                        idx,
-                        channel,
-                        value
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (
+            try:
+                saved_count = self._insert_pending_writes(
+                    cursor,
+                    config=config,
+                    writes=writes,
+                    task_id=task_id,
+                )
+                conn.commit()
+                logger.info(f"{saved_count} 个 pending writes 保存成功")
+            except Exception as exc:
+                if not is_missing_checkpoint_foreign_key_error(exc):
+                    raise
+                if hasattr(conn, "rollback"):
+                    conn.rollback()
+                self._defer_writes(config, writes, task_id, task_path)
+                logger.warning(
+                    "checkpoint_writes 外键父 checkpoint 暂不可用，已延迟写入: "
+                    "thread_id=%s, checkpoint_ns=%s, checkpoint_id=%s, task_id=%s, writes=%s",
                     thread_id,
                     checkpoint_ns,
                     checkpoint_id,
                     task_id,
-                    write_idx,      # 写操作的索引（保持顺序）
-                    channel,        # State 中的字段名
-                    value_blob      # 序列化后的值
-                ))
+                    len(writes),
+                )
+
+    def _insert_pending_writes(
+        self,
+        cursor,
+        config: Dict[str, Any],
+        writes: Sequence[Tuple[str, Any]],
+        task_id: str,
+    ) -> int:
+        """按 LangGraph 特殊 write upsert、普通 write 忽略重复的语义写入。"""
+        thread_id = config["configurable"]["thread_id"]
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        checkpoint_id = config["configurable"]["checkpoint_id"]
+        saved_count = 0
+
+        upsert_known_writes = all(
+            channel in WRITES_IDX_MAP
+            for channel, _value in writes
+        )
+        insert_sql = """
+            INSERT INTO checkpoint_writes (
+                thread_id,
+                checkpoint_ns,
+                checkpoint_id,
+                task_id,
+                idx,
+                channel,
+                value,
+                write_identity_hash
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        if upsert_known_writes:
+            insert_sql += """
+                ON DUPLICATE KEY UPDATE
+                    channel = VALUES(channel),
+                    value = VALUES(value)
+            """
+        else:
+            insert_sql = insert_sql.replace(
+                "INSERT INTO checkpoint_writes",
+                "INSERT IGNORE INTO checkpoint_writes",
+                1,
+            )
+
+        for idx, (channel, value) in enumerate(writes):
+            write_idx = WRITES_IDX_MAP.get(channel, idx)
+            value_blob = self._serialize_blob(value)
+            cursor.execute(insert_sql, (
+                thread_id,
+                checkpoint_ns,
+                checkpoint_id,
+                task_id,
+                write_idx,
+                channel,
+                value_blob,
+                _pending_write_identity_hash(
+                    thread_id,
+                    checkpoint_ns,
+                    checkpoint_id,
+                    task_id,
+                    write_idx,
+                ),
+            ))
+            if cursor.rowcount:
                 saved_count += 1
-            
-            conn.commit()
-            logger.info(f"{saved_count} 个 pending writes 保存成功")
+
+        return saved_count
+
+    def _defer_writes(
+        self,
+        config: Dict[str, Any],
+        writes: Sequence[Tuple[str, Any]],
+        task_id: str,
+        task_path: str,
+    ) -> None:
+        """Keep pending writes in memory when MySQL FK ordering rejects them temporarily."""
+        self._deferred_writes.append((config, tuple(writes), task_id, task_path))
+
+    def _flush_deferred_writes(
+        self,
+        cursor,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str,
+    ) -> int:
+        """Flush deferred writes that match a checkpoint just saved by put()."""
+        flushed_count = 0
+        remaining = []
+
+        for config, writes, task_id, task_path in self._deferred_writes:
+            configurable = config.get("configurable", {})
+            matches_checkpoint = (
+                configurable.get("thread_id") == thread_id
+                and configurable.get("checkpoint_ns", "") == checkpoint_ns
+                and configurable.get("checkpoint_id") == checkpoint_id
+            )
+            if not matches_checkpoint:
+                remaining.append((config, writes, task_id, task_path))
+                continue
+
+            try:
+                flushed_count += self._insert_pending_writes(
+                    cursor,
+                    config=config,
+                    writes=writes,
+                    task_id=task_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "延迟 pending writes 补写失败，继续保留: checkpoint_id=%s, task_id=%s, error=%s",
+                    checkpoint_id,
+                    task_id,
+                    exc,
+                )
+                remaining.append((config, writes, task_id, task_path))
+
+        self._deferred_writes = remaining
+        return flushed_count
 
     # ===== 异步方法实现（用于 ainvoke/astream） =====
     
@@ -745,7 +886,7 @@ if __name__ == "__main__":
         'port': 3306,
         'user': 'root',
         'password': 'your_password',
-        'database': 'causalchat'
+        'database': 'causalagent'
     }
     
     # 创建 checkpointer

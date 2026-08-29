@@ -1,0 +1,94 @@
+name: Lightweight CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - ready_for_review
+
+  push:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lightweight-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-syntax:
+    name: Python syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile Python sources
+        run: >-
+          python -m compileall -q
+          app Agent Database config tests
+          CausalAgent.py Run_causal.py
+
+  light-tests:
+    name: Light tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-base.txt
+
+      - name: Install test runner
+        run: python -m pip install --disable-pip-version-check "pytest>=8,<9"
+
+      - name: Run dependency-free tests
+        run: >-
+          python -m pytest --quiet
+          tests/unit/agent/test_llm_structured_output_usage.py
+          tests/unit/agent/test_llm_structured_output_config.py
+
+  pull-request-policy:
+    name: Pull request policy
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      BASE_BRANCH: ${{ github.base_ref }}
+      HEAD_BRANCH: ${{ github.head_ref }}
+    steps:
+      - name: Validate pull request title and branch flow
+        shell: bash
+        run: |
+          pattern='^(feat|fix|docs|refactor|test|chore|ci|build|perf|revert)\([a-z0-9][a-z0-9_-]*\):.+$'
+          if [[ ! "$PR_TITLE" =~ $pattern ]]; then
+            echo "PR title must follow keyword(scope):description."
+            echo "Example: ci(actions):add lightweight checks"
+            exit 1
+          fi
+
+          if [[ "$BASE_BRANCH" == "main" && "$HEAD_BRANCH" != "develop" ]]; then
+            echo "Pull requests to main must come from develop."
+            exit 1
+          fi

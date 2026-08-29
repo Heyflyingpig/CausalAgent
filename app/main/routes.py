@@ -6,7 +6,7 @@ app.main.routes - 主路由
 
 '''
 from flask import Blueprint, send_from_directory, jsonify, request
-import os, logging
+import os
 
 main_bp = Blueprint('main', __name__)
 
@@ -27,7 +27,6 @@ def setting():
     with open(file_path,'r',encoding = 'utf-8') as f:
         content = f.read()
         if not os.path.exists(file_path):
-            logging.error(f"设置文件未找到: {file_path}")
             # 返回更具体的错误信息给前端
             return jsonify({"success": False, "error": f"请求的内容文件 '{filename}' 未找到"}), 404 # 返回 404 Not Found
 
@@ -38,3 +37,10 @@ def setting():
 def index():
     # 总是返回 chat.html，由前端 JS 决定显示登录还是主界面
     return send_from_directory("static", 'chat.html')
+
+
+@main_bp.route('/rag_eval')
+@main_bp.route('/rag-eval')
+def rag_eval_page():
+    """返回 Vue RAG 运行台页面。"""
+    return send_from_directory("static/rag_eval_app", "index.html")
