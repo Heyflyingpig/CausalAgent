@@ -60,6 +60,7 @@
 ## 源码 Release 与 CD 流程
 
 `.github/workflows/lightweight-ci.yml` 仍只提供轻量 CI：Python 语法检查、两个结构化输出测试和 Pull Request 分支策略；它不会构建/推送 Docker 镜像、部署 staging/production 或执行回滚。当前新增的 `.github/workflows/release-windows.yml` 只负责面向开发者的 Windows Developer Preview 制品，不代表服务端已经完成 CD。
+公开说明维护在 [`.github/release-notes`](../../.github/release-notes)，workflow 在对应版本文件存在时优先读取该说明；其他 tag 才使用内置的通用 Draft 文案。
 
 
 

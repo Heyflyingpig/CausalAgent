@@ -1299,3 +1299,8 @@
   - 【能力与架构】：按当前 LangGraph 父图、MCP/RAG/Web Search 子图、Job worker、SSE/checkpoint 边界更新简化架构图，并补充 OLC、SearXNG、active release 与安全降级说明。
   - 【配置与组件】：补充最小环境配置、典型技术组件和结构化日志链路，链接到现有 Document 权威页面。
   - 【文档结构】：根 README 前半部分面向用户，后半部分承接管理员与开发者；收缩易漂移的项目目录树，并同步英文 README 的事实、图片路径、贡献规则和文档导航。
+- 【v0.1.0 Developer Preview：首次版本发布摘要】
+  - 【核心链路】：汇总 `develop` 相对 `main` 的首版交付，包含 LangGraph 因果分析、持久化 Job/SSE、幂等与恢复、MCP 工具、PostgreSQL checkpoint 和文件生命周期。
+  - 【RAG 与搜索】：交付多模态来源摄取、staged index、混合检索、隔离评测、active release publish/rollback 和 SearXNG 学术搜索及安全降级。
+  - 【管理与运维】：交付管理员前后端、MySQL 主从与监控、结构化日志、Alloy/Loki/Grafana、开发/测试/staging/production Compose 及分层技术文档。
+  - 【发布制品】：发布 GitHub 自动源码归档与 Windows WebView2 Developer Preview onefile；桌面壳只连接本机服务，本版本不发布官方 Docker 镜像、不部署公网服务、不提供代码签名或自动更新。

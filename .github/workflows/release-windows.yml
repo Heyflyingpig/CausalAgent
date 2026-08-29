@@ -131,8 +131,12 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           $title = "CausalAgent $tag - Developer Preview"
-          $notesPath = Join-Path $env:GITHUB_WORKSPACE "release-assets\release-notes.md"
-          @"
+          $versionedNotesPath = Join-Path $env:GITHUB_WORKSPACE ".github\release-notes\$tag.md"
+          if (Test-Path -LiteralPath $versionedNotesPath -PathType Leaf) {
+            $notesPath = $versionedNotesPath
+          } else {
+            $notesPath = Join-Path $env:GITHUB_WORKSPACE "release-assets\release-notes.md"
+            @"
           ## CausalAgent $tag Developer Preview
 
           本版本面向开发者，提供 Windows WebView2 单文件桌面壳。EXE 不包含 Flask 后端、数据库、模型、知识库或 Docker 服务；使用前请按项目文档启动本地服务，并确保 `http://127.0.0.1:5001/` 可访问。
@@ -145,6 +149,7 @@ jobs:
 
           这是 Draft Pre-release，发布前请维护者检查 EXE、SHA256SUMS.txt 和本说明。
           "@ | Set-Content -LiteralPath $notesPath -Encoding utf8NoBOM
+          }
 
           $releaseLookup = gh release view $tag --json isDraft 2>&1
           $lookupExit = $LASTEXITCODE
