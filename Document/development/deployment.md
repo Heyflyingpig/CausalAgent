@@ -62,6 +62,12 @@
 `.github/workflows/lightweight-ci.yml` 仍只提供轻量 CI：Python 语法检查、两个结构化输出测试和 Pull Request 分支策略；它不会构建/推送 Docker 镜像、部署 staging/production 或执行回滚。当前新增的 `.github/workflows/release-windows.yml` 只负责面向开发者的 Windows Developer Preview 制品，不代表服务端已经完成 CD。
 公开说明维护在 [`.github/release-notes`](../../.github/release-notes)，workflow 在对应版本文件存在时优先读取该说明；其他 tag 才使用内置的通用 Draft 文案。
 
+正常发布时，先把 workflow 和目标版本代码合并到 `main`，再创建指向 `main` 历史的严格 SemVer tag。tag push 会在 GitHub 托管的 `windows-latest` runner 上检出该 tag，创建独立 `.venv-desktop`、运行桌面逻辑测试、构建 onefile、检查冻结通道与桌面环境，并生成 EXE 和 `SHA256SUMS.txt`。只有全部门禁通过后才创建 Draft Pre-release；维护者验收 Draft 后手动发布。构建发生在 GitHub runner，不是在触发者的电脑上。
+
+如果 tag 对应的 Pre-release 已经发布，但附件因 workflow 故障缺失，修复后的 workflow 合并到默认分支后可使用 `workflow_dispatch` 补齐：填写已经存在的 `target_tag`，并显式勾选 `upload_to_published_prerelease`。手动运行使用默认分支上的修复版 workflow，但源码始终重新检出目标 tag，并验证 tag commit 与 `origin/main` 的祖先关系。补齐模式只接受已发布、未锁定的 Pre-release；目标不存在、是 Draft/正式 Release、已 immutable 或已有同名附件时均失败，不覆盖现有附件，也不移动或重建 tag。
+
+手动补齐成功后，维护者还应在 Release 页面核对 workflow run、EXE 文件名、`SHA256SUMS.txt`、下载校验结果和 Release Notes。`workflow_dispatch` 只补附件，不自动改写已经发布的说明。Pre-release 不会被 GitHub 选为仓库的 `Latest` 正式 Release；是否转成正式版必须依据产品成熟度单独决策，不能为了侧栏展示而取消预发布标记。
+
 
 
 ## Windows 桌面壳发布边界
