@@ -142,6 +142,3 @@ powershell -ExecutionPolicy Bypass -File .\windows-client\build.ps1 `
 
 构建脚本会把公开的 HTTPS origin 和 `release` 通道标记嵌入包内；冻结后的 EXE 强制使用该 origin，即使运行环境设置了开发地址也不会回退到 `127.0.0.1`。`-IconPath` 是可选的 `.ico`，但正式发布应提供并在 EXE 和窗口配置中使用正式图标。构建输出属于本地产物，不提交 `build/`、`dist/` 或生成的 `.spec`。
 
-### `v0.1.0` GitHub Release
-
-`.github/workflows/release-windows.yml` 监听 `v*` tag，在 GitHub 托管的 `windows-latest` Windows runner 上安装桌面依赖、运行桌面逻辑测试并构建 Developer Preview onefile；冻结通道标记和 EXE 桌面环境检查都通过后，才生成 `SHA256SUMS.txt`。workflow 自动创建 Draft Pre-release 并上传 EXE；GitHub 会按该 tag 自动提供 Source code 压缩包，workflow 不上传 Docker 镜像。维护者检查 Draft 的 tag、附件、校验值和说明后，再手动点击 Publish release。
