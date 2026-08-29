@@ -6,10 +6,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -26,6 +25,9 @@ class IndexIdentity:
     manifest_sha256: str
     embedding_fingerprint: dict[str, Any]
     index_dir: Path
+    embedding_config: dict[str, Any] = field(default_factory=dict)
+    release_id: str = ""
+    identity_sha256: str = ""
 
 
 class IndexBindingError(ValueError):
@@ -37,7 +39,7 @@ class IndexBindingError(ValueError):
 class IndexBindingGate:
     """只接受已完成且身份完整的 staged index。"""
 
-    def __init__(self, load_run: Callable[[str], dict[str, Any]], run_dir_factory: Callable[[str], Path], embedding_fingerprint_provider: Callable[[], dict[str, Any]]) -> None:
+    def __init__(self, load_run: Callable[[str], dict[str, Any]], run_dir_factory: Callable[[str], Path], embedding_fingerprint_provider: Callable[[], dict[str, Any]] | None = None) -> None:
         self._load_run = load_run
         self._run_dir_factory = run_dir_factory
         self._embedding_fingerprint_provider = embedding_fingerprint_provider
@@ -79,6 +81,18 @@ class IndexBindingGate:
             units = [line for line in (index_dir / "units.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             self._mismatch("staged index metadata is invalid")
+        if manifest.get("identity_sha256") or manifest.get("schema_version") == 6:
+            try:
+                from Agent.knowledge_base.multimodal.release import (
+                    compute_manifest_sha256,
+                    validate_manifest_artifacts,
+                    validate_manifest_contract,
+                )
+
+                validate_manifest_contract(manifest)
+                validate_manifest_artifacts(manifest, index_dir)
+            except (OSError, ValueError):
+                self._mismatch("staged index artifact integrity is invalid")
         if build_state.get("status") != "staged_complete":
             self._mismatch("staged index is not complete")
         try:
@@ -98,16 +112,45 @@ class IndexBindingGate:
             self._mismatch("staged index manifest unit_count is invalid")
         if manifest_unit_count != len(units):
             self._mismatch("staged index manifest unit_count does not match units")
-        manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        from Agent.knowledge_base.multimodal.release import compute_manifest_sha256
+
+        manifest_sha256 = compute_manifest_sha256(manifest_path)
         if manifest_sha256 != str(ingestion.get("manifest_sha256") or ""):
             self._mismatch("staged index manifest hash does not match ingestion")
-        current_embedding = self._embedding_fingerprint_provider()
-        if manifest.get("embedding") != current_embedding:
-            self._mismatch("staged index embedding fingerprint does not match runtime")
+        manifest_config = manifest.get("embedding_config")
+        if not isinstance(manifest_config, dict) and isinstance(manifest.get("embedding"), dict) and "distance_metric" in manifest["embedding"]:
+            manifest_config = manifest["embedding"]
+        if isinstance(manifest_config, dict):
+            from Agent.knowledge_base.embedding_runtime import EmbeddingConfiguration
+
+            manifest_config_object = EmbeddingConfiguration.from_manifest(manifest_config)
+            manifest_embedding = manifest_config_object.fingerprint()
+        else:
+            manifest_embedding = manifest.get("embedding")
+        if not isinstance(manifest_embedding, dict):
+            self._mismatch("staged index embedding configuration is missing")
+        current_value = (
+            self._embedding_fingerprint_provider()
+            if self._embedding_fingerprint_provider is not None
+            else dict(manifest_embedding)
+        )
+        if isinstance(manifest_config, dict) and isinstance(current_value, dict) and "distance_metric" in current_value:
+            from Agent.knowledge_base.embedding_runtime import EmbeddingConfiguration
+
+            if EmbeddingConfiguration.from_mapping(current_value).to_manifest() != manifest_config_object.to_manifest():
+                self._mismatch("staged index embedding configuration does not match runtime")
+            current_embedding = manifest_embedding
+        else:
+            current_embedding = current_value
+            if manifest_embedding != current_embedding:
+                self._mismatch("staged index embedding fingerprint does not match runtime")
         return IndexIdentity(
             ingestion_run_id=str(ingestion_run_id), index_version=requested_version,
             collection_name=collection_name, manifest_sha256=manifest_sha256,
             embedding_fingerprint=dict(current_embedding), index_dir=index_dir,
+            embedding_config=dict(manifest_config or manifest_embedding),
+            release_id=str(manifest.get("release_id") or requested_version),
+            identity_sha256=str(manifest.get("identity_sha256") or ""),
         )
 
     def validate_dataset(self, dataset: dict[str, Any], identity: IndexIdentity, allowed_kinds: set[str] | frozenset[str]) -> dict[str, Any]:

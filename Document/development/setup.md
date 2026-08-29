@@ -6,7 +6,7 @@
 
 ## 配置前提
 
-配置统一由 `config/settings.py` 从系统环境变量读取；仓库根目录存在 `.env` 时会先加载它。至少需要应用密钥、模型配置、MySQL 写/读账号、业务数据库名和非空 `CHECKPOINT_POSTGRES_PASSWORD`。不要把 `.env`、密码、API key 或数据库连接串提交到 Git、日志或文档。
+配置统一由 `config/settings.py` 从系统环境变量读取；仓库根目录存在 `.env` 时会先加载它。至少需要应用密钥、模型配置、MySQL 写/读账号、业务数据库名和非空 `CHECKPOINT_POSTGRES_PASSWORD`。正式多模态 embedding 还需要 `EMBEDDING_API_KEY` 与 `EMBEDDING_BASE_URL`；本地 production embedding 开关当前关闭。不要把 `.env`、密码、API key 或数据库连接串提交到 Git、日志或文档。
 
 主从开发使用职责分离账号：写主库、业务读、复制状态观测和复制通道账号各自配置。没有专用复制状态账号时，eventual read 会安全回退主库。
 

@@ -21,9 +21,10 @@ from typing import Any, Callable, Iterable
 
 from langchain_openai import ChatOpenAI
 
-from Agent.knowledge_base.multimodal.defaults import resolve_production_embedding_config
+from Agent.knowledge_base.embedding_runtime import EmbeddingConfiguration
 from Agent.knowledge_base.multimodal.contracts import KnowledgeUnit
 from Agent.knowledge_base.multimodal.index import StagedIndex, embedding_fingerprint
+from Agent.knowledge_base.multimodal.release import compute_manifest_sha256
 from Agent.knowledge_base.rag.operation_datasets.dataset_utils import (
     convert_ragas_generated_row_to_eval_sample,
 )
@@ -56,7 +57,7 @@ def _manifest_snapshot(
     state: dict[str, Any],
     unit_count: int,
 ) -> dict[str, Any]:
-    manifest_hash = hashlib.sha256((index_dir / "manifest.json").read_bytes()).hexdigest()
+    manifest_hash = compute_manifest_sha256(index_dir / "manifest.json")
     return {
         "index_version": str(manifest.get("index_version") or index_dir.name),
         "manifest_sha256": manifest_hash,
@@ -65,6 +66,7 @@ def _manifest_snapshot(
         "unit_count": unit_count,
         "vector_count": int(state["vector_count"]),
         "manifest_schema_version": manifest.get("schema_version", ""),
+        "embedding_config": dict(manifest.get("embedding_config") or {}),
     }
 
 
@@ -90,7 +92,16 @@ def _validate_staged_index(
         raise ValueError("staged index manifest unit count mismatch")
 
     manifest_embedding = manifest.get("embedding")
-    if not isinstance(manifest_embedding, dict) or manifest_embedding != embedding_fingerprint():
+    embedding_config = manifest.get("embedding_config")
+    if not isinstance(embedding_config, dict) and isinstance(manifest_embedding, dict) and "distance_metric" in manifest_embedding:
+        embedding_config = manifest_embedding
+    if isinstance(embedding_config, dict):
+        expected_embedding = EmbeddingConfiguration.from_manifest(embedding_config).fingerprint()
+        if isinstance(manifest_embedding, dict) and "distance_metric" in manifest_embedding:
+            manifest_embedding = expected_embedding
+    else:
+        expected_embedding = embedding_fingerprint()
+    if not isinstance(manifest_embedding, dict) or manifest_embedding != expected_embedding:
         raise ValueError("staged index embedding fingerprint mismatch")
 
     chroma_dir = index_dir / "chroma"
@@ -188,18 +199,11 @@ def _default_generator_llm() -> ChatOpenAI:
     )
 
 
-def _embeddings() -> Any:
-    """使用与 staged index 相同的冻结本地 embedding。"""
-    config = resolve_production_embedding_config()
-    if config.get("status") != "ready":
-        raise RuntimeError(str(config.get("message") or "embedding model is unavailable"))
-    from langchain_huggingface import HuggingFaceEmbeddings
+def _embeddings(config: dict[str, Any] | EmbeddingConfiguration | None = None) -> Any:
+    """使用 staged manifest 指定的 embedding；无配置时兼容正式默认值。"""
+    from Agent.knowledge_base.multimodal.index import _embeddings as build_embeddings
 
-    return HuggingFaceEmbeddings(
-        model_name=str(config["path"]),
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    return build_embeddings(config, scope="evaluation")
 
 
 def _generate_ragas_rows(
@@ -208,6 +212,7 @@ def _generate_ragas_rows(
     *,
     llm: ChatOpenAI | None,
     max_workers: int,
+    embedding_config: dict[str, Any] | EmbeddingConfiguration | None = None,
 ) -> list[dict[str, Any]]:
     """用 Ragas 0.4.3 的预分块入口生成单跳、多证据和多跳候选。"""
 
@@ -237,7 +242,7 @@ def _generate_ragas_rows(
     ]
     if not chunks:
         return []
-    generator = TestsetGenerator.from_langchain(llm or _default_generator_llm(), _embeddings())
+    generator = TestsetGenerator.from_langchain(llm or _default_generator_llm(), _embeddings(embedding_config))
     run_config = RunConfig(
         timeout=120,
         max_retries=2,
@@ -443,6 +448,7 @@ def expand_candidate_dataset(
                 max(1, len(selected) * questions_per_unit),
                 llm=llm,
                 max_workers=worker_count,
+                embedding_config=source_snapshot.get("embedding_config"),
             )
             raw_candidates.extend((dict(candidate), None) for candidate in generated)
             if progress_callback:

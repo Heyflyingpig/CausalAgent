@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,30 +12,42 @@ from unittest.mock import patch
 from Agent.knowledge_base.multimodal.production import (
     audit_production_coverage,
     evaluate_retrieval_cases,
+    has_frozen_production_identity,
     is_legacy_production_manifest,
     is_production_manifest,
     load_production_defaults,
     production_source_paths,
 )
 from Agent.knowledge_base.multimodal import defaults as defaults_module
+from Agent.knowledge_base.multimodal import production as production_module
 
 
 class MultimodalProductionDefaultsTests(unittest.TestCase):
     """锁定 P0 的来源、embedding、评测 schema 与首轮门槛。"""
 
-    def test_frozen_defaults_match_local_files_and_embedding_contract(self) -> None:
-        """默认配置必须固定本地 embedding 并校验全部必需来源的哈希。"""
+    def test_frozen_defaults_match_api_embedding_policy_and_source_contract(self) -> None:
+        """默认配置必须固定 API-key embedding，并关闭本地生产 embedding 开关。"""
         config = load_production_defaults()
 
         self.assertEqual(
             config["embedding"],
             {
-                "provider": "huggingface",
-                "model": "bge-small-zh-v1.5",
-                "dimension": 512,
+                "mode": "api",
+                "provider": "openai_compatible",
+                "model": "qwen3.7-text-embedding",
+                "dimension": 1024,
                 "normalized": True,
             },
         )
+        self.assertEqual(
+            config["embedding_env"],
+            {
+                "api_key_env": "EMBEDDING_API_KEY",
+                "base_url_env": "EMBEDDING_BASE_URL",
+                "model_env": "EMBEDDING_MODEL",
+            },
+        )
+        self.assertFalse(config["local_embedding"]["enabled"])
         self.assertFalse(config["vision"]["remote_enabled"])
         self.assertEqual(config["parser"], "docling")
         self.assertEqual(
@@ -72,6 +85,33 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
             self.assertIn(case["expected_modality"], {"text", "table", "image"})
             self.assertTrue(case["reference_answer"] or case["key_facts"])
             self.assertTrue(case["human_reviewed"])
+
+    def test_production_embedding_resolves_from_api_key_environment_and_local_switch_is_off(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "EMBEDDING_API_KEY": "test-key",
+                "EMBEDDING_BASE_URL": "https://embedding.example/v1",
+            },
+            clear=False,
+        ):
+            resolved = defaults_module.resolve_production_embedding_config()
+
+        self.assertEqual(resolved["mode"], "api")
+        self.assertEqual(resolved["provider"], "openai_compatible")
+        self.assertEqual(resolved["endpoint_identity"], "https://embedding.example/v1")
+        self.assertEqual(resolved["status"], "ready")
+
+        local_config = load_production_defaults()
+        local_config["embedding"] = {
+            "mode": "local",
+            "provider": "huggingface",
+            "model": "bge-small-zh-v1.5",
+            "dimension": 512,
+            "normalized": True,
+        }
+        with self.assertRaisesRegex(ValueError, "local production embedding is disabled"):
+            defaults_module.resolve_production_embedding_config(local_config)
 
     def test_reviewed_modality_cases_match_physical_pdf_evidence(self) -> None:
         """人工复核过的页码与模态必须对应 PDF 物理页上的实际证据。"""
@@ -266,6 +306,74 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
                 config,
             )
         )
+
+    def test_frozen_identity_does_not_require_local_source_files(self) -> None:
+        """已发布 release 的静态身份校验不能因构建者 PDF 缺失而失败。"""
+        config = load_production_defaults()
+        manifest = {
+            "sources": [
+                {
+                    "source_id": source["source_id"],
+                    "document_id": source["document_id"],
+                    "relative_path": Path(source["path"]).name,
+                    "controlled_path": source["path"],
+                    "content_hash": source["sha256"],
+                }
+                for source in config["sources"]
+            ]
+        }
+
+        with patch.object(
+            production_module,
+            "resolve_production_sources",
+            side_effect=AssertionError("static identity must not resolve PDFs"),
+        ):
+            self.assertTrue(has_frozen_production_identity(manifest, config))
+
+        with patch.object(
+            production_module,
+            "resolve_production_sources",
+            side_effect=ValueError("controlled source is unavailable"),
+        ):
+            self.assertFalse(is_production_manifest(manifest, config))
+
+    def test_frozen_identity_rejects_drift_duplicates_and_unsafe_paths(self) -> None:
+        """静态身份校验拒绝来源漂移、重复来源和危险路径元数据。"""
+        config = load_production_defaults()
+        manifest = {
+            "sources": [
+                {
+                    "source_id": source["source_id"],
+                    "document_id": source["document_id"],
+                    "relative_path": Path(source["path"]).name,
+                    "controlled_path": source["path"],
+                    "content_hash": source["sha256"],
+                }
+                for source in config["sources"]
+            ]
+        }
+
+        for field, value in (
+            ("source_id", "source-drift"),
+            ("document_id", "doc_" + "f" * 64),
+            ("content_hash", "f" * 64),
+        ):
+            drifted = json.loads(json.dumps(manifest))
+            drifted["sources"][0][field] = value
+            self.assertFalse(has_frozen_production_identity(drifted, config), field)
+
+        duplicated = json.loads(json.dumps(manifest))
+        duplicated["sources"][1] = json.loads(json.dumps(duplicated["sources"][0]))
+        self.assertFalse(has_frozen_production_identity(duplicated, config))
+
+        for field, value in (
+            ("relative_path", "../outside.pdf"),
+            ("controlled_path", "/etc/passwd"),
+            ("controlled_path", "C:\\outside.pdf"),
+        ):
+            unsafe = json.loads(json.dumps(manifest))
+            unsafe["sources"][0][field] = value
+            self.assertFalse(has_frozen_production_identity(unsafe, config), value)
 
     def test_renamed_configured_pdf_keeps_canonical_document_id(self) -> None:
         """配置旧文件名但受控目录只有同 hash 新文件名时仍保持 gold document_id。"""

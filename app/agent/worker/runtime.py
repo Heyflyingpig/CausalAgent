@@ -19,7 +19,7 @@ from observability.logging_runtime import log_event
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MCP_SERVER_PATH = PROJECT_ROOT / "Agent" / "CausalAgentMCP" / "mcp_server.py"
-RELEASE_ID_PATTERN = re.compile(r"^mm_[0-9a-f]{20}$")
+RELEASE_ID_PATTERN = re.compile(r"^mm_[0-9a-f]{20}(?:[0-9a-f]{44})?$")
 
 
 @dataclass(frozen=True)
@@ -108,17 +108,37 @@ def inspect_rag_readiness() -> RagReadiness:
         vector_db_dir = Path(config.vector_db_dir)
         if not vector_db_dir.is_dir():
             raise FileNotFoundError("active release vector directory is unavailable")
-    except FileNotFoundError:
-        readiness = RagReadiness(
-            status="rag_unavailable",
-            error_code="active_release_missing",
-        )
+    except (FileNotFoundError, ValueError, TypeError, KeyError) as exc:
+        try:
+            from Agent.knowledge_base.rag_runtime import recover_invalid_active_release
+
+            recovered = recover_invalid_active_release()
+        except Exception:
+            recovered = None
+        if isinstance(recovered, dict) and recovered.get("status") == "rolled_back":
+            fallback = recovered.get("active") or {}
+            readiness = RagReadiness(
+                status="rag_unavailable",
+                release_id=str(fallback.get("release_id") or fallback.get("index_version") or "") or None,
+                error_code="active_release_invalid",
+            )
+            return readiness
+        if isinstance(exc, FileNotFoundError):
+            readiness = RagReadiness(
+                status="rag_unavailable",
+                error_code="active_release_missing",
+            )
+        else:
+            readiness = RagReadiness(
+                status="rag_unavailable",
+                error_code="active_release_invalid",
+            )
     except ImportError:
         readiness = RagReadiness(
             status="rag_unavailable",
             error_code="rag_dependency_missing",
         )
-    except (OSError, ValueError, TypeError, KeyError):
+    except OSError:
         readiness = RagReadiness(
             status="rag_unavailable",
             error_code="active_release_invalid",

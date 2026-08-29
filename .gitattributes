@@ -3,3 +3,8 @@
 Database/mysql/conf/*.cnf text eol=lf
 admin-frontend/index.html text eol=lf
 admin-frontend/dist/** text eol=lf
+Agent/knowledge_base/multimodal_indexes/**/manifest.json text eol=lf
+Agent/knowledge_base/multimodal_indexes/**/build_state.json -text
+Agent/knowledge_base/multimodal_indexes/**/issues.jsonl -text
+Agent/knowledge_base/multimodal_indexes/**/units.jsonl -text
+Agent/knowledge_base/multimodal_indexes/**/chroma/** -text

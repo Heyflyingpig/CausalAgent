@@ -31,6 +31,14 @@ from Agent.tool_node.rag_tool_registry import build_rag_tools
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+TEST_LOCAL_EMBEDDING = {
+    "mode": "local",
+    "provider": "huggingface",
+    "model": "test-local-embedding",
+    "dimension": 512,
+    "normalized": True,
+    "path": "test-local-embedding",
+}
 
 
 def _vision_payload(**overrides: object) -> str:
@@ -576,7 +584,7 @@ class MultimodalContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root / "image.png"; source.write_bytes(_png_bytes())
             service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
-            result = service.ingest([str(source)])
+            result = service.ingest([str(source)], embedding_config=TEST_LOCAL_EMBEDDING)
             manifest = json.loads((root / "indexes" / result["index_version"] / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(result["unit_count"], 0)
             self.assertEqual(manifest["quality_observations"]["low_value_images_skipped"], 1)
@@ -689,11 +697,11 @@ class MultimodalContractTests(unittest.TestCase):
             ]
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", side_effect=parsed_pages) as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", side_effect=RuntimeError("vector failed")):
                 with self.assertRaisesRegex(RuntimeError, "vector failed"):
-                    service.ingest([str(source)])
+                    service.ingest([str(source)], embedding_config=TEST_LOCAL_EMBEDDING)
             self.assertEqual(parse_page.call_count, 2)
 
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page") as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=2):
-                result = service.ingest([str(source)])
+                result = service.ingest([str(source)], embedding_config=TEST_LOCAL_EMBEDDING)
             parse_page.assert_not_called()
             self.assertEqual(result["unit_count"], 2)
             self.assertEqual(result["vector_count"], 2)
@@ -715,11 +723,11 @@ class MultimodalContractTests(unittest.TestCase):
             stable_two = ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="page two has enough searchable causal inference content", page_number=2),), raw_artifacts=(("docling_page_0002.json", b"{}"),))
             stable_three = ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="page three has enough searchable causal inference content", page_number=3),), raw_artifacts=(("docling_page_0003.json", b"{}"),))
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", side_effect=[failed, stable_two, stable_three]), patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", side_effect=[2, 3]):
-                original = service.ingest([str(source)])
+                original = service.ingest([str(source)], embedding_config=TEST_LOCAL_EMBEDDING)
                 original_manifest = json.loads((root / "indexes" / original["index_version"] / "manifest.json").read_text(encoding="utf-8"))
                 repaired = ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="page one now parses after resources recovered", page_number=1),), raw_artifacts=(("docling_page_0001.json", b"{}"),))
                 with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=repaired) as parse_page:
-                    retry = service.ingest([str(source)], retry_failed=True, retry_generation=1, retry_from_index_version=original["index_version"])
+                    retry = service.ingest([str(source)], retry_failed=True, retry_generation=1, retry_from_index_version=original["index_version"], embedding_config=TEST_LOCAL_EMBEDDING)
             parse_page.assert_called_once_with(source, "docling", 1)
             self.assertNotEqual(retry["index_version"], original["index_version"])
             self.assertEqual(retry["unit_count"], 3)
@@ -1106,7 +1114,7 @@ class MultimodalContractTests(unittest.TestCase):
             service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
             parsed = ParsedDocument("docling", "2.115.0", (ParsedItem("text", "paragraph", raw_text="causal inference content", page_number=1),), raw_artifacts=(("docling_page_0001.json", b"{}"),))
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed), patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
-                ocr_only = service.ingest([str(source)])
+                ocr_only = service.ingest([str(source)], embedding_config=TEST_LOCAL_EMBEDDING)
             checkpoint_database = root / "indexes" / ocr_only["index_version"] / "checkpoints.sqlite3"
             self.assertTrue(checkpoint_database.is_file())
             connection = sqlite3.connect(checkpoint_database)
@@ -1118,7 +1126,7 @@ class MultimodalContractTests(unittest.TestCase):
             self.assertEqual(json.loads(rows[0][0])["schema_version"], "local-parse-v2")
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page") as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
                 source_id = service._scan([str(source)])[0][0]["source_id"]
-                vlm_version = service.ingest([str(source)], allow_remote_data=True, authorized_source_ids=[source_id], max_images=1, reuse_local_from_index_version=ocr_only["index_version"])
+                vlm_version = service.ingest([str(source)], allow_remote_data=True, authorized_source_ids=[source_id], max_images=1, reuse_local_from_index_version=ocr_only["index_version"], embedding_config=TEST_LOCAL_EMBEDDING)
             parse_page.assert_not_called()
             self.assertNotEqual(vlm_version["index_version"], ocr_only["index_version"])
 
@@ -1139,7 +1147,7 @@ class MultimodalContractTests(unittest.TestCase):
             service = MultimodalKnowledgeBaseMaintenance(asset_root=root / "assets", index_root=root / "indexes", active_config=root / "active.json")
             parsed = ParsedDocument("docling", "2.115.0", (ParsedItem("image", "image", raw_text="OCR text", asset_bytes=b"image-bytes", asset_name="page.png", page_number=1),), raw_artifacts=(("docling_page_0001.json", b"{}"),))
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed), patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
-                ocr_only = service.ingest([str(source)])
+                ocr_only = service.ingest([str(source)], embedding_config=TEST_LOCAL_EMBEDDING)
             checkpoint_database = root / "indexes" / ocr_only["index_version"] / "checkpoints.sqlite3"
             connection = sqlite3.connect(checkpoint_database)
             try:
@@ -1152,7 +1160,7 @@ class MultimodalContractTests(unittest.TestCase):
             source_asset.unlink()
             with patch("Agent.knowledge_base.multimodal.pipeline.parse_document_page", return_value=parsed) as parse_page, patch("Agent.knowledge_base.multimodal.pipeline.StagedIndex.write", return_value=1):
                 source_id = service._scan([str(source)])[0][0]["source_id"]
-                service.ingest([str(source)], allow_remote_data=True, authorized_source_ids=[source_id], max_images=1, reuse_local_from_index_version=ocr_only["index_version"])
+                service.ingest([str(source)], allow_remote_data=True, authorized_source_ids=[source_id], max_images=1, reuse_local_from_index_version=ocr_only["index_version"], embedding_config=TEST_LOCAL_EMBEDDING)
             parse_page.assert_called_once()
 
     def test_local_checkpoint_requires_schema_and_matching_parser_contract(self) -> None:

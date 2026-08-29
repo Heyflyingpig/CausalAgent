@@ -1,0 +1,10 @@
+{"code":"pdf_page_empty","message":"Docling 第 2 页未返回可索引内容","severity":"warning","blocking":false,"source_path":"/app/Agent/knowledge_base/source/Pearl_2009_Causality-mono(1).pdf"}
+{"code":"pdf_page_empty","message":"Docling 第 8 页未返回可索引内容","severity":"warning","blocking":false,"source_path":"/app/Agent/knowledge_base/source/Pearl_2009_Causality-mono(1).pdf"}
+{"code":"pdf_page_empty","message":"Docling 第 16 页未返回可索引内容","severity":"warning","blocking":false,"source_path":"/app/Agent/knowledge_base/source/Pearl_2009_Causality-mono(1).pdf"}
+{"code":"pdf_page_empty","message":"Docling 第 22 页未返回可索引内容","severity":"warning","blocking":false,"source_path":"/app/Agent/knowledge_base/source/Pearl_2009_Causality-mono(1).pdf"}
+{"code":"pdf_page_empty","message":"Docling 第 280 页未返回可索引内容","severity":"warning","blocking":false,"source_path":"/app/Agent/knowledge_base/source/Pearl_2009_Causality-mono(1).pdf"}
+{"code":"pdf_page_empty","message":"Docling 第 304 页未返回可索引内容","severity":"warning","blocking":false,"source_path":"/app/Agent/knowledge_base/source/Pearl_2009_Causality-mono(1).pdf"}
+{"code":"pdf_page_empty","message":"Docling 第 422 页未返回可索引内容","severity":"warning","blocking":false,"source_path":"/app/Agent/knowledge_base/source/Pearl_2009_Causality-mono(1).pdf"}
+{"code":"pdf_page_empty","message":"Docling 第 475 页未返回可索引内容","severity":"warning","blocking":false,"source_path":"/app/Agent/knowledge_base/source/Pearl_2009_Causality-mono(1).pdf"}
+{"code":"pdf_page_empty","message":"Docling 第 41 页未返回可索引内容","severity":"warning","blocking":false,"source_path":"/app/Agent/knowledge_base/source/Pearl_Mackenzie_2018_The_Book_of_Why-mono(1).pdf"}
+{"code":"table_recovery_failed","message":"表格恢复失败：TableRecoveryError","severity":"error","blocking":true,"source_path":"/app/Agent/knowledge_base/source/Pearl_Mackenzie_2018_The_Book_of_Why-mono(1).pdf"}

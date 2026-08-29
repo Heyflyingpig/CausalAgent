@@ -62,6 +62,16 @@ def _json_safe(value):
     return value
 
 
+def _parse_expected_generation(payload):
+    """解析可选 active pointer generation，保留 0 作为初始版本。"""
+    value = payload.get("expected_generation")
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("expected_generation must be a non-negative integer")
+    return value
+
+
 # ---- 状态与配置 ----
 
 @rag_eval_bp.route("/isolated/capacity", methods=["GET"])
@@ -542,6 +552,7 @@ def api_start_isolated_ingestion():
         page_ranges = payload.get("page_ranges")
         allow_remote_data = payload.get("allow_remote_data", False)
         authorized_source_ids = payload.get("authorized_source_ids", [])
+        embedding_config = payload.get("embedding_config", payload.get("embedding"))
         if source_ids is not None and not isinstance(source_ids, list):
             raise ValueError("source_ids must be a list")
         if sources is not None and not isinstance(sources, list):
@@ -554,13 +565,20 @@ def api_start_isolated_ingestion():
             raise ValueError("allow_remote_data must be a boolean")
         if not isinstance(authorized_source_ids, list) or not all(isinstance(item, str) for item in authorized_source_ids):
             raise ValueError("authorized_source_ids must be a list of strings")
+        if embedding_config is not None and not isinstance(embedding_config, dict):
+            raise ValueError("embedding_config must be an object")
+        ingestion_options = {
+            "source_ids": source_ids,
+            "sources": sources,
+            "max_pages": max_pages,
+            "page_ranges": page_ranges,
+            "allow_remote_data": allow_remote_data,
+            "authorized_source_ids": authorized_source_ids,
+        }
+        if embedding_config is not None:
+            ingestion_options["embedding_config"] = embedding_config
         result = isolated_run_manager.start_ingestion(
-            source_ids=source_ids,
-            sources=sources,
-            max_pages=max_pages,
-            page_ranges=page_ranges,
-            allow_remote_data=allow_remote_data,
-            authorized_source_ids=authorized_source_ids,
+            **ingestion_options,
         )
         return _json_response({"success": True, "data": result}, 202)
     except PermissionError as exc:
@@ -606,11 +624,14 @@ def api_multimodal_release_gate_check():
     """重新执行指定 staged 候选的正式发布门禁，不切换 active pointer。"""
     try:
         payload = request.get_json(silent=True) or {}
+        expected_generation = _parse_expected_generation(payload)
+        kwargs = {"expected_generation": expected_generation} if expected_generation is not None else {}
         result = isolated_run_manager.check_release(
             str(payload.get("ingestion_run_id") or ""),
             str(payload.get("index_version") or ""),
             str(payload.get("evaluation_run_id") or "") or None,
             str(payload.get("expected_active_index_version") or "") or None,
+            **kwargs,
         )
         return _json_response({"success": True, "data": result})
     except (KeyError, ValueError, FileNotFoundError) as exc:
@@ -627,11 +648,14 @@ def api_multimodal_release_publish():
         payload = request.get_json(silent=True) or {}
         if payload.get("confirm") is not True:
             raise ValueError("confirm=true is required to publish the active pointer")
+        expected_generation = _parse_expected_generation(payload)
+        kwargs = {"expected_generation": expected_generation} if expected_generation is not None else {}
         result = isolated_run_manager.publish_release(
             str(payload.get("ingestion_run_id") or ""),
             str(payload.get("index_version") or ""),
             str(payload.get("evaluation_run_id") or ""),
             str(payload.get("expected_active_index_version") or "") or None,
+            **kwargs,
         )
         return _json_response({"success": True, "data": result})
     except ReleaseGateError as exc:
@@ -650,9 +674,12 @@ def api_multimodal_release_rollback():
         payload = request.get_json(silent=True) or {}
         if payload.get("confirm") is not True:
             raise ValueError("confirm=true is required to rollback the active pointer")
+        expected_generation = _parse_expected_generation(payload)
+        kwargs = {"expected_generation": expected_generation} if expected_generation is not None else {}
         result = isolated_run_manager.rollback_release(
             str(payload.get("index_version") or ""),
             str(payload.get("expected_active_index_version") or "") or None,
+            **kwargs,
         )
         return _json_response({"success": True, "data": result})
     except (KeyError, ValueError, FileNotFoundError) as exc:

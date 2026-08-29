@@ -15,6 +15,7 @@ from typing import Any
 from Agent.knowledge_base.rag.operation_datasets.candidate_generation import _write_dataset
 from Agent.knowledge_base.rag.rag_config import RETRIEVAL_PROFILES
 from Agent.knowledge_base.rag.rag_eval.contracts import evaluation_identity, load_eval_dataset_bundle
+from Agent.knowledge_base.multimodal.release import compute_manifest_sha256
 from config.rag_eval_paths import RAG_EVAL_BASELINE_ROOT
 from observability.cli import write_cli_output
 
@@ -109,7 +110,7 @@ def _load_index_units(index_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[
         })
     snapshot = {
         "index_version": manifest.get("index_version"),
-        "manifest_sha256": _sha256(manifest_path),
+        "manifest_sha256": compute_manifest_sha256(manifest_path),
         "units_sha256": _sha256(units_path),
         "build_state_sha256": _sha256(state_path),
         "unit_count": len(records),
@@ -497,7 +498,7 @@ def _resolve_active_index(pointer_path: Path) -> dict[str, Any]:
     manifest_path = index_dir / "manifest.json"
     if not manifest_path.is_file():
         raise ValueError("active pointer index manifest is unavailable")
-    manifest_sha = _sha256(manifest_path)
+    manifest_sha = compute_manifest_sha256(manifest_path)
     if manifest_sha != str(pointer.get("manifest_sha256") or ""):
         raise ValueError("active pointer manifest hash mismatch")
     manifest = _read_json(manifest_path)

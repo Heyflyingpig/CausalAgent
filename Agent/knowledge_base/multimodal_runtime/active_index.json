@@ -1,13 +1,11 @@
 {
-  "index_version": "mm_680e88680120c587d3ae",
-  "index_path": "mm_680e88680120c587d3ae/chroma",
-  "collection_name": "causal_multimodal_mm_680e88680120c587d3ae",
-  "manifest_sha256": "c51f91949f9843957c64953174e87d18c2f00759d5c5f03d0a37523dd3b67526",
-  "embedding": {
-    "provider": "huggingface",
-    "model": "bge-small-zh-v1.5",
-    "mode": "local",
-    "dimension": 512,
-    "normalized": true
-  }
+  "active": {
+    "collection_name": "causal_multimodal_mm_0017818ee01e169db8c4d77186f9a53c4ef7ed4e4b89d08692b6a2770710351b",
+    "index_path": "mm_0017818ee01e169db8c4d77186f9a53c4ef7ed4e4b89d08692b6a2770710351b/chroma",
+    "index_version": "mm_0017818ee01e169db8c4d77186f9a53c4ef7ed4e4b89d08692b6a2770710351b",
+    "manifest_sha256": "ae00bcc77a205757f11491ac115248dcbee508c2907cc6408ad4f6f1c1dde573",
+    "release_id": "mm_0017818ee01e169db8c4d77186f9a53c4ef7ed4e4b89d08692b6a2770710351b"
+  },
+  "generation": 1,
+  "schema_version": "multimodal_release_pointer_v1"
 }
