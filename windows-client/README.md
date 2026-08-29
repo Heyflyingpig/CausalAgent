@@ -59,6 +59,8 @@ URL 优先级为：命令行 `--url`，然后是 `CAUSALAGENT_DESKTOP_URL`，最
 
 开发模式默认加载 `http://127.0.0.1:5001/`，并允许 `http://localhost:5001/`；为运行隔离 stub，也允许显式配置的本地回环端口。开发模式可使用 `--debug` 或 `CAUSALAGENT_DESKTOP_DEBUG=true`。
 
+Developer Preview 是面向开发者的冻结发行通道。它默认加载 `http://127.0.0.1:5001/`，只接受 HTTP loopback origin（`localhost`、IPv4/IPv6 loopback），并始终关闭 debug；命令行或环境变量即使尝试指定公网、局域网或其他 HTTPS origin 也会被拒绝。Developer Preview 不包含后端，使用前仍需在本机启动 CausalAgent 服务。
+
 Release 模式必须使用预先配置的 HTTPS origin：
 
 ```powershell
@@ -102,23 +104,44 @@ Remove-Item Env:CAUSALAGENT_DESKTOP_RUN_SMOKE
 
 如果运行环境没有可用的桌面会话、WebView2 Runtime 或固定桌面依赖，smoke 不应被伪装成通过；应保留失败原因并在验收报告中区分“逻辑测试通过”和“真实 Windows 壳层未执行”。
 
-## 打包边界
+## 发行通道与打包边界
 
-第一版只打包桌面壳和其 Python 运行时，不复制 Flask、MySQL、worker、模型、知识库索引或后端 Docker 依赖。发行物必须：
+所有通道只打包桌面壳和其 Python 运行时，不复制 Flask、MySQL、worker、模型、知识库索引或后端 Docker 依赖。发行物共同要求：
 
-1. 固定正式 HTTPS origin，并使运行时白名单只包含该 origin。
-2. 强制 `edgechromium`，目标机预先安装 WebView2 Runtime。
-3. 关闭 debug 和开发者工具。
+1. 强制 `edgechromium`，目标机预先安装 WebView2 Runtime。
+2. Developer Preview 只允许 loopback；Release 只允许构建时嵌入的正式 HTTPS origin。
+3. 冻结包关闭 debug 和开发者工具。
 4. 保留 `%LOCALAPPDATA%\CausalAgent\WebView` 的用户数据目录策略。
 5. 服务器前端更新后直接重新加载即可看到新页面，不因页面更新重新打包桌面壳。
+
+### Developer Preview 单文件包
+
+从仓库根目录创建桌面虚拟环境后，执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows-client\build.ps1 `
+  -DistributionChannel DeveloperPreview `
+  -PackageMode onefile
+```
+
+输出为 `dist\CausalAgent.exe`。构建脚本会将 `developer-preview` 通道标记嵌入 PyInstaller 包；冻结后的程序默认连接 `http://127.0.0.1:5001/`，不会接受环境变量或命令行传入的非 loopback 地址，也不会开启 debug。若本地服务使用其他 loopback 端口，可以显式传入 `--url http://127.0.0.1:<port>/`。
+
+`CAUSALAGENT_DESKTOP_TEST_AUTOCLOSE_SECONDS` 只对 source development 运行生效，用于真实 smoke 的自动退出；冻结的 Developer Preview 和 Release 包会忽略该测试变量，避免继承开发环境变量后意外自动关闭。
+
+### Release 包
 
 在 Windows 环境中构建 onedir 或 onefile 包：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\windows-client\build.ps1 `
+  -DistributionChannel Release `
   -ReleaseOrigin "https://causalagent.example.com" `
   -PackageMode onedir `
   -IconPath "C:\path\to\CausalAgent.ico"
 ```
 
-构建脚本会把公开的 HTTPS origin 嵌入包内；冻结后的 EXE 默认强制 release，即使运行环境没有配置变量也不会回退到 `127.0.0.1`。`-IconPath` 是可选的 `.ico`，但正式发布应提供并在 EXE 和窗口配置中使用正式图标。构建输出属于本地产物，不提交 `build/`、`dist/` 或生成的 `.spec`。
+构建脚本会把公开的 HTTPS origin 和 `release` 通道标记嵌入包内；冻结后的 EXE 强制使用该 origin，即使运行环境设置了开发地址也不会回退到 `127.0.0.1`。`-IconPath` 是可选的 `.ico`，但正式发布应提供并在 EXE 和窗口配置中使用正式图标。构建输出属于本地产物，不提交 `build/`、`dist/` 或生成的 `.spec`。
+
+### `v0.1.0` GitHub Release
+
+`.github/workflows/release-windows.yml` 监听 `v*` tag，在 GitHub 托管的 `windows-latest` Windows runner 上安装桌面依赖、运行桌面逻辑测试并构建 Developer Preview onefile；冻结通道标记和 EXE 桌面环境检查都通过后，才生成 `SHA256SUMS.txt`。workflow 自动创建 Draft Pre-release 并上传 EXE；GitHub 会按该 tag 自动提供 Source code 压缩包，workflow 不上传 Docker 镜像。维护者检查 Draft 的 tag、附件、校验值和说明后，再手动点击 Publish release。

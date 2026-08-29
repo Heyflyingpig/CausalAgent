@@ -1283,3 +1283,8 @@
 ---
 2026.8.26（RAG 导入修复）
 - 【问题修复】：补齐共享 `observability.cli` CLI 输出适配器，修复 Gold v2 状态接口因 RAG 模块导入失败而返回 500。
+
+---
+2026.8.27（Windows Developer Preview CD）
+- 【发行通道】：新增显式 `DeveloperPreview` PyInstaller 通道；onefile 冻结包默认访问 `http://127.0.0.1:5001/`，只接受 loopback origin 并强制关闭 debug，缺少通道标记的旧冻结包继续按安全的 Release 模式运行。
+- 【GitHub Release】：新增 `v*` tag 驱动的 Windows workflow，在 `windows-latest` 上运行桌面逻辑测试、构建 onefile、生成 SHA-256，并仅创建/更新 Draft Pre-release；GitHub 自动提供 tag 源码归档，本版本不推送 Docker 镜像。
