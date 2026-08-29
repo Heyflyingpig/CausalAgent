@@ -153,6 +153,9 @@ services:
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3.7-text-embedding}
       - SECRET_KEY=${SECRET_KEY}
       - DB_INSPECTION_QUERY_TIMEOUT_MS=${DB_INSPECTION_QUERY_TIMEOUT_MS:-3000}
       - DB_DASHBOARD_CONNECTION_WARNING_PERCENT=${DB_DASHBOARD_CONNECTION_WARNING_PERCENT:-70}
@@ -290,6 +293,9 @@ services:
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3.7-text-embedding}
       - SECRET_KEY=${SECRET_KEY}
       - FLASK_ENV=production
       - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling
@@ -462,6 +468,9 @@ services:
       - API_KEY=${API_KEY}
       - BASE_URL=${BASE_URL}
       - MODEL=${MODEL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3.7-text-embedding}
       - SECRET_KEY=${SECRET_KEY}
       - FLASK_ENV=production
       - MULTIMODAL_DOCLING_ARTIFACTS_DIR=/app/Agent/knowledge_base/models/docling

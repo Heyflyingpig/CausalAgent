@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import json
 import logging
@@ -16,14 +15,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
+from Agent.knowledge_base.embedding_runtime import EmbeddingConfiguration, resolve_production_embedding_configuration
 from .assets import AssetStore
 from .contracts import IngestionIssue, IssueSeverity, KnowledgeUnit, OutboundImageRecord, UnitStatus, VisionAnalysis, canonical_json, content_document_id, content_source_id, render_retrieval_text, sha256_bytes, stable_id
 from .defaults import load_production_defaults, production_source_paths, resolve_production_sources
-from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, file_sha256, replace_with_retry
+from .index import ActiveIndexRegistry, StagedIndex, embedding_fingerprint, replace_with_retry
 from .parsers import IMAGE_SUFFIXES, PAGE_QUALITY_GATE_VERSION, PAGE_QUALITY_MIN_TEXT_COVERAGE, TEXT_SPLIT, ParsedDocument, ParsedItem, clear_docling_batch_cache, decide_page_route, docling_configuration, inspect_source, parse_document_page
 from .remote_policy import RemoteSamplePolicy
+from .release import MANIFEST_SCHEMA_NAME, MANIFEST_SCHEMA_VERSION, ReleaseManager, compute_manifest_sha256, directory_sha256, manifest_bytes, release_id_for_manifest, seal_manifest, validate_manifest_artifacts, validate_manifest_contract, validate_manifest_counts
 from .table_recovery import TABLE_RECOVERY_ADAPTER_VERSION, RemoteVlmTableRecoveryProvider, TableRecoveryProvider, TableRecoveryResult, looks_like_markdown_table
 from .vision import PROMPT_VERSION, REQUIRED_MODEL, RESPONSE_ADAPTER_VERSION, VisionAnalyzer
 from observability.logging_runtime import log_event
@@ -33,6 +34,7 @@ R3_DISCOVERY_CHECKPOINT_SCHEMA = "r3-discovery-v2"
 MAX_RETRY_GENERATION = 2
 CHECKPOINT_DATABASE_NAME = "checkpoints.sqlite3"
 _MISSING_VISION_RESULT = object()
+_NON_BLOCKING_ENRICHMENT_ISSUES = frozenset({"remote_image_failed", "table_recovery_failed"})
 LOGGER = logging.getLogger(__name__)
 _MULTIMODAL_FAILURE_CATEGORIES = frozenset(
     {
@@ -143,7 +145,7 @@ def _log_page_parse_issues(issues: list[IngestionIssue], page_number: int, *, so
 class MultimodalKnowledgeBaseMaintenance:
     """为 CLI 与未来 HTTP adapter 提供单一维护入口。"""
 
-    def __init__(self, *, asset_root: Path | None = None, index_root: Path | None = None, active_config: Path | None = None, table_recovery_provider: TableRecoveryProvider | None = None) -> None:
+    def __init__(self, *, asset_root: Path | None = None, index_root: Path | None = None, active_config: Path | None = None, table_recovery_provider: TableRecoveryProvider | None = None, embedding_scope: str = "production") -> None:
         """使用隔离默认目录，绝不写入现有 db 或 PubMedQA collection。"""
         base = Path(__file__).resolve().parents[1]
         self.asset_root = asset_root or Path(os.getenv("MULTIMODAL_ASSET_DIR", base / "multimodal_assets"))
@@ -153,6 +155,7 @@ class MultimodalKnowledgeBaseMaintenance:
         self.remote_policy = RemoteSamplePolicy()
         self._frozen_production_paths: set[Path] | None = None
         self.table_recovery_provider = table_recovery_provider
+        self.embedding_scope = embedding_scope
 
     def inspect(self, sources: list[str]) -> dict[str, Any]:
         """生成确定性来源 manifest，不调用远程服务且不写 Chroma。"""
@@ -466,7 +469,7 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("R2 manifest images do not match the current local parser output")
         return targets
 
-    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, authorized_source_ids: list[str] | None = None, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, auto_outbound_manifest: bool = False, progress_callback: Callable[[dict[str, Any]], None] | None = None, cancel_check: Callable[[], bool] | None = None, max_pages: int | None = None, page_ranges: dict[str, tuple[int, int]] | None = None) -> dict[str, Any]:
+    def ingest(self, sources: list[str], *, allow_remote_data: bool = False, authorized_source_ids: list[str] | None = None, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, auto_outbound_manifest: bool = False, progress_callback: Callable[[dict[str, Any]], None] | None = None, cancel_check: Callable[[], bool] | None = None, max_pages: int | None = None, page_ranges: dict[str, tuple[int, int]] | None = None, embedding_config: Mapping[str, Any] | EmbeddingConfiguration | None = None) -> dict[str, Any]:
         """逐页解析、原子保存 checkpoint，并分批写入不可变暂存索引。"""
         if retry_from_index_version is not None and reuse_local_from_index_version is not None:
             raise ValueError("--reuse-local-checkpoints-from cannot be combined with --retry-from-index-version")
@@ -477,6 +480,11 @@ class MultimodalKnowledgeBaseMaintenance:
         if max_pages is not None and page_ranges is not None:
             raise ValueError("max_pages and page_ranges cannot be combined")
         clear_docling_batch_cache()
+        embedding_configuration = (
+            resolve_production_embedding_configuration()
+            if embedding_config is None
+            else EmbeddingConfiguration.from_mapping(embedding_config)
+        )
         entries, issues = self._scan(sources)
         if allow_remote_data and not authorized_source_ids:
             raise PermissionError("remote ingestion requires explicit source-level authorization")
@@ -502,7 +510,7 @@ class MultimodalKnowledgeBaseMaintenance:
             "unit_count": 0,
             "message": "知识源扫描完成，开始逐页解析",
         })
-        manifest = self._manifest(entries, allow_remote_data=bool(authorized), authorized_source_ids=authorized, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records, max_pages=max_pages, auto_outbound_manifest=auto_outbound_manifest, page_ranges=normalized_page_ranges)
+        manifest = self._manifest(entries, allow_remote_data=bool(authorized), authorized_source_ids=authorized, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records, max_pages=max_pages, auto_outbound_manifest=auto_outbound_manifest, page_ranges=normalized_page_ranges, embedding_config=embedding_configuration)
         version = self._index_version(manifest)
         version_dir = self.index_root / version
         retry_source = self._retry_source_directory(retry_from_index_version, manifest, retry_failed)
@@ -511,7 +519,7 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("same source and configuration already has a staged version")
         version_dir.mkdir(parents=True, exist_ok=True)
         self._write_build_state(version_dir, {"status": "building", "unit_count": 0, "attempted_pages": 0})
-        embedding = embedding_fingerprint()
+        embedding = embedding_fingerprint(embedding_configuration)
         store = AssetStore(self.asset_root)
         analyzer = VisionAnalyzer(self.asset_root / "vision_cache", allow_remote_data=allow_remote_data, max_images=max_images, retry_failed=retry_failed, remote_policy_sha256=self.remote_policy.policy_sha256)
         table_recovery_provider = self._resolve_table_recovery_provider(analyzer, allow_remote_data)
@@ -662,8 +670,21 @@ class MultimodalKnowledgeBaseMaintenance:
             self._materialize_units(version_dir, documents)
             (version_dir / "issues.jsonl").write_text("".join(issue.model_dump_json() + "\n" for issue in issues), encoding="utf-8")
             self._write_outbound_manifest(outbound_manifest_path, outbound_records)
-            manifest.update({"index_version": version, "embedding": embedding, "unit_count": unit_count, "issues_count": len(issues), "quality_policy": self._quality_policy(), "quality_observations": quality, "documents": documents, "source_page_limit": max_pages, "partial_ingestion": page_ranges is not None or (max_pages is not None and max_pages < total_pages), "outbound_manifest_sha256": sha256_bytes(outbound_manifest_path.read_bytes()), "outbound_image_count": len(outbound_records)})
-            (version_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            partial_ingestion = page_ranges is not None or (max_pages is not None and max_pages < total_pages)
+            final_build_state = {"status": "staged_complete", "unit_count": unit_count, "vector_count": unit_count, "attempted_pages": attempted_pages}
+            manifest.update({"index_version": version, "embedding": embedding, "embedding_config": embedding_configuration.to_manifest(), "unit_count": unit_count, "issues_count": len(issues), "quality_policy": self._quality_policy(), "quality_observations": quality, "documents": documents, "source_page_limit": max_pages, "partial_ingestion": partial_ingestion, "outbound_manifest_sha256": sha256_bytes(outbound_manifest_path.read_bytes()), "outbound_image_count": len(outbound_records), "counts": {"document_count": len(documents), "page_count": sum(int(document.get("attempted_page_count") or 0) for document in documents), "unit_count": unit_count, "vector_count": unit_count, "issues_count": len(issues), "partial": partial_ingestion}})
+            for artifact in manifest.get("artifacts", []):
+                artifact_path = version_dir / str(artifact.get("path") or "")
+                if artifact.get("path") in {"units.jsonl", "issues.jsonl"} and artifact_path.is_file():
+                    artifact.update({"size_bytes": artifact_path.stat().st_size, "sha256": sha256_bytes(artifact_path.read_bytes())})
+                elif artifact.get("path") == "build_state.json":
+                    serialized_state = json.dumps(final_build_state, ensure_ascii=False, indent=2).encode("utf-8")
+                    artifact.update({"size_bytes": len(serialized_state), "sha256": sha256_bytes(serialized_state)})
+            manifest = seal_manifest(manifest)
+            final_version = str(manifest["release_id"])
+            # 在向量构建完成前保留 provisional 目录，失败时可从页 checkpoint 续跑。
+            manifest["index_version"] = version
+            (version_dir / "manifest.json").write_bytes((json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"))
             self._notify_progress(progress_callback, {
                 "stage": "chroma",
                 "completed_pages": attempted_pages,
@@ -672,9 +693,30 @@ class MultimodalKnowledgeBaseMaintenance:
                 "message": "解析完成，开始写入 Chroma",
             })
             self._check_cancel(cancel_check)
-            vector_count = self._build_staged_vectors(version_dir, version, unit_count)
+            vector_count = self._build_staged_vectors(version_dir, final_version, unit_count, embedding_config=embedding_configuration)
+            if vector_count != unit_count:
+                raise ValueError("staged vector count does not match unit count")
             self._check_cancel(cancel_check)
-            self._write_build_state(version_dir, {"status": "staged_complete", "unit_count": unit_count, "vector_count": vector_count, "attempted_pages": attempted_pages})
+            chroma_sha256, chroma_size_bytes = directory_sha256(version_dir / "chroma")
+            manifest["artifact_integrity"] = {
+                "chroma": {
+                    "sha256": chroma_sha256,
+                    "size_bytes": chroma_size_bytes,
+                },
+            }
+            manifest = seal_manifest(manifest)
+            if manifest["release_id"] != final_version:
+                raise ValueError("post-build artifact integrity changed release identity")
+            self._write_build_state(version_dir, final_build_state)
+            if final_version != version:
+                final_dir = self.index_root / final_version
+                if final_dir.exists():
+                    raise ValueError("sealed release identity already exists as another staged version")
+                replace_with_retry(version_dir, final_dir)
+                version = final_version
+                version_dir = final_dir
+            manifest["index_version"] = version
+            (version_dir / "manifest.json").write_bytes(manifest_bytes(manifest))
             self._notify_progress(progress_callback, {
                 "stage": "staged",
                 "completed_pages": attempted_pages,
@@ -707,7 +749,7 @@ class MultimodalKnowledgeBaseMaintenance:
         if cancel_check and cancel_check():
             raise InterruptedError("multimodal ingestion was cancelled")
 
-    def run(self, sources: list[str], *, allow_remote_data: bool = False, authorized_source_ids: list[str] | None = None, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False) -> dict[str, Any]:
+    def run(self, sources: list[str], *, allow_remote_data: bool = False, authorized_source_ids: list[str] | None = None, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, retry_from_index_version: str | None = None, reuse_local_from_index_version: str | None = None, outbound_manifest: str | Path | None = None, timeout_seconds: int | None = None, cancel_check: Callable[[], bool] | None = None, publish_on_pass: bool = False, embedding_config: Mapping[str, Any] | EmbeddingConfiguration | None = None) -> dict[str, Any]:
         """以版本锁执行 ingest 和评测；仅在显式授权时发布。"""
         started = time.monotonic()
         entries, _ = self._scan(sources)
@@ -717,7 +759,12 @@ class MultimodalKnowledgeBaseMaintenance:
         outbound_records = self._frozen_outbound_records(outbound_manifest, entries) if authorized else []
         if allow_remote_data and max_images is not None and max_images < len(outbound_records):
             raise ValueError("--max-images cannot be smaller than the frozen outbound manifest")
-        manifest = self._manifest(entries, allow_remote_data=bool(authorized), authorized_source_ids=authorized, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records)
+        embedding_configuration = (
+            resolve_production_embedding_configuration()
+            if embedding_config is None
+            else EmbeddingConfiguration.from_mapping(embedding_config)
+        )
+        manifest = self._manifest(entries, allow_remote_data=bool(authorized), authorized_source_ids=authorized, max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, outbound_records=outbound_records, embedding_config=embedding_configuration)
         version = self._index_version(manifest)
         lock = self.index_root / ".locks" / version
         try:
@@ -731,7 +778,8 @@ class MultimodalKnowledgeBaseMaintenance:
             resumable = self._is_resumable_build(self.index_root / version)
             if version_exists and not reused and not resumable:
                 return {"status": "incomplete_staged", "index_version": version, "published": False}
-            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, authorized_source_ids=list(authorized), max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, retry_from_index_version=retry_from_index_version, reuse_local_from_index_version=reuse_local_from_index_version, outbound_manifest=outbound_manifest)
+            staged = {"status": "reused_staged", "index_version": version} if reused else self.ingest(sources, allow_remote_data=allow_remote_data, authorized_source_ids=list(authorized), max_images=max_images, retry_failed=retry_failed, retry_generation=retry_generation, retry_from_index_version=retry_from_index_version, reuse_local_from_index_version=reuse_local_from_index_version, outbound_manifest=outbound_manifest, embedding_config=embedding_configuration)
+            version = str(staged.get("index_version") or version)
             self._check_run_control(started, timeout_seconds, cancel_check)
             evaluation = self.evaluate(version)
             self._check_run_control(started, timeout_seconds, cancel_check)
@@ -763,11 +811,30 @@ class MultimodalKnowledgeBaseMaintenance:
         issues = [IngestionIssue.model_validate_json(line) for line in (directory / "issues.jsonl").read_text(encoding="utf-8").splitlines() if line]
         collection = f"{self.collection_prefix}_{index_version}"
         failures: list[str] = []
+        if manifest.get("identity_sha256") or manifest.get("schema_version") in (MANIFEST_SCHEMA_VERSION, MANIFEST_SCHEMA_NAME):
+            try:
+                validate_manifest_contract(manifest)
+                validate_manifest_artifacts(manifest, directory)
+            except (OSError, ValueError):
+                failures.append("artifact_integrity_invalid")
         if manifest.get("partial_ingestion"):
             failures.append("partial_ingestion")
         if not units: failures.append("no_valid_units")
-        if StagedIndex(directory, collection).count() != len(units): failures.append("vector_count_mismatch")
-        gate_issues = [issue for issue in issues if issue.code != "remote_image_failed"]
+        vector_count = StagedIndex(directory, collection).count()
+        if vector_count != len(units): failures.append("vector_count_mismatch")
+        if manifest.get("identity_sha256") or manifest.get("schema_version") in (MANIFEST_SCHEMA_VERSION, MANIFEST_SCHEMA_NAME):
+            try:
+                validate_manifest_counts(
+                    manifest,
+                    actual_counts={
+                        "unit_count": len(units),
+                        "vector_count": vector_count,
+                        "issues_count": len(issues),
+                    },
+                )
+            except (TypeError, ValueError):
+                failures.append("manifest_counts_mismatch")
+        gate_issues = [issue for issue in issues if issue.code not in _NON_BLOCKING_ENRICHMENT_ISSUES]
         if any(issue.severity is IssueSeverity.ERROR for issue in gate_issues): failures.append("required_source_failed")
         if any(issue.blocking for issue in gate_issues): failures.append("blocking_issue")
         store = AssetStore(self.asset_root)
@@ -776,7 +843,15 @@ class MultimodalKnowledgeBaseMaintenance:
         if manifest.get("schema_version", 0) >= 4:
             failures.extend(self._audit_outbound_manifest(directory, manifest))
         if any(not unit.retrieval_text.strip() for unit in units): failures.append("empty_retrieval_text")
-        if manifest.get("embedding") != embedding_fingerprint(): failures.append("embedding_fingerprint_mismatch")
+        if "embedding_config" in manifest:
+            try:
+                configured_embedding = EmbeddingConfiguration.from_manifest(manifest["embedding_config"])
+                if manifest.get("embedding") != configured_embedding.fingerprint():
+                    failures.append("embedding_fingerprint_mismatch")
+            except (TypeError, ValueError):
+                failures.append("embedding_config_invalid")
+        elif manifest.get("embedding") != embedding_fingerprint():
+            failures.append("embedding_fingerprint_mismatch")
         if "build_configuration" not in manifest:
             failures.append("legacy_manifest_missing_build_configuration")
         if manifest.get("schema_version", 0) >= 3:
@@ -800,14 +875,19 @@ class MultimodalKnowledgeBaseMaintenance:
             from .production import validate_production_manifest
             failures.extend(validate_production_manifest(manifest))
             if not failures:
-                production_evaluation = evaluate_staged_index(directory, collection)
+                production_evaluation = evaluate_staged_index(
+                    directory,
+                    collection,
+                    embedding_config=manifest.get("embedding_config"),
+                    embedding_scope=self.embedding_scope,
+                )
                 if not production_evaluation["gate"]["passed"]:
                     failures.append("production_retrieval_gate_failed")
-        result = {"index_version": index_version, "passed": not failures, "failures": failures, "manifest_sha256": file_sha256(directory / "manifest.json"), "quality": quality, "production_evaluation": production_evaluation, "evaluated_at": datetime.now(timezone.utc).isoformat()}
+        result = {"index_version": index_version, "passed": not failures, "failures": failures, "manifest_sha256": compute_manifest_sha256(directory / "manifest.json"), "quality": quality, "production_evaluation": production_evaluation, "evaluated_at": datetime.now(timezone.utc).isoformat()}
         (directory / "evaluation.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
 
-    def publish(self, index_version: str, *, expected_active_index_version: str | None = None) -> dict[str, Any]:
+    def publish(self, index_version: str, *, expected_active_index_version: str | None = None, expected_generation: int | None = None) -> dict[str, Any]:
         """重新执行全部门禁后，才原子切换正式 active pointer。"""
         directory = self._version_dir(index_version)
         evaluation_path = directory / "evaluation.json"
@@ -815,7 +895,7 @@ class MultimodalKnowledgeBaseMaintenance:
         evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
         if not evaluation.get("passed"): raise ValueError("blocking evaluation failures prevent publication")
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-        manifest_sha256 = file_sha256(directory / "manifest.json")
+        manifest_sha256 = compute_manifest_sha256(directory / "manifest.json")
         from .production import is_production_manifest, validate_production_manifest
         if not is_production_manifest(manifest):
             raise ValueError("non-production manifest cannot be published")
@@ -838,16 +918,27 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("production retrieval evaluation must pass before publication")
         if "build_configuration" not in manifest or "quality_policy" not in manifest or "quality_observations" not in manifest:
             raise ValueError("legacy manifest is not eligible for publication under P0 gates")
-        current = self.registry.read()
-        current_version = str((current or {}).get("index_version") or "")
+        current = self.registry.read_release_pointer()
+        current_version = str((current.get("active") or {}).get("release_id") or (current.get("active") or {}).get("index_version") or "")
         if expected_active_index_version not in {None, "", current_version}:
             raise ValueError("active pointer changed during publication")
-        self.registry.publish(index_root=self.index_root, index_version=index_version, collection_name=f"{self.collection_prefix}_{index_version}", manifest_sha256=file_sha256(directory / "manifest.json"), embedding=manifest["embedding"])
-        return {"status": "published", "index_version": index_version}
+        published = ReleaseManager(self.index_root, self.registry.path).publish(
+            directory,
+            expected_generation=expected_generation,
+            expected_active_release_id=expected_active_index_version,
+            allow_legacy=True,
+        )
+        return {**published, "status": "published", "index_version": index_version}
 
-    def rollback(self, index_version: str, *, expected_active_index_version: str | None = None) -> dict[str, Any]:
-        """只允许回滚至已通过评测的历史多模态版本。"""
-        return self.publish(index_version, expected_active_index_version=expected_active_index_version) | {"status": "rolled_back"}
+    def rollback(self, index_version: str, *, expected_active_index_version: str | None = None, expected_generation: int | None = None) -> dict[str, Any]:
+        """只允许回滚至当前 pointer 的唯一 fallback。"""
+        result = ReleaseManager(self.index_root, self.registry.path).rollback(
+            index_version or None,
+            expected_generation=expected_generation,
+            expected_active_release_id=expected_active_index_version,
+            enforce_production_policy=True,
+        )
+        return {**result, "status": "rolled_back", "index_version": index_version}
 
     def promote_staged(
         self,
@@ -868,21 +959,71 @@ class MultimodalKnowledgeBaseMaintenance:
         target_root.mkdir(parents=True, exist_ok=True)
         target_dir = (target_root / index_version).resolve()
         target_dir.relative_to(target_root)
-        source_manifest_sha = file_sha256(source_dir / "manifest.json")
+        source_manifest_sha = compute_manifest_sha256(source_dir / "manifest.json")
         if target_dir.exists():
             target_manifest = target_dir / "manifest.json"
-            if target_manifest.is_file() and file_sha256(target_manifest) == source_manifest_sha:
+            if target_manifest.is_file() and compute_manifest_sha256(target_manifest) == source_manifest_sha:
                 return {"status": "reused", "index_version": index_version, "manifest_sha256": source_manifest_sha}
             raise ValueError("formal candidate version already exists with a different manifest")
 
         temporary = target_root / f".{index_version}.promote-{uuid.uuid4().hex}"
         try:
-            shutil.copytree(source_dir, temporary)
+            from .release import ReleaseManager
+
+            ReleaseManager._copy_formal_artifacts(source_dir, temporary)
             temporary.replace(target_dir)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
         return {"status": "promoted", "index_version": index_version, "manifest_sha256": source_manifest_sha}
+
+    def publish_staged(
+        self,
+        *,
+        source_index_root: Path,
+        index_version: str,
+        expected_active_index_version: str | None = None,
+        expected_manifest_sha256: str | None = None,
+        expected_generation: int | None = None,
+        expected_evaluation_binding: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """从隔离 candidate 直接执行物化与单 pointer 事务。"""
+        if not isinstance(index_version, str) or not index_version.startswith("mm_") or "/" in index_version or "\\" in index_version:
+            raise ValueError("invalid multimodal index version")
+        source_root = Path(source_index_root).resolve()
+        source_dir = (source_root / index_version).resolve()
+        source_dir.relative_to(source_root)
+        if not source_dir.is_dir():
+            raise FileNotFoundError("staged index is unavailable")
+        manifest_path = source_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError("staged release manifest is unavailable")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        validate_manifest_contract(manifest)
+        validate_manifest_artifacts(manifest, source_dir)
+        if expected_evaluation_binding is not None and manifest.get("evaluation_binding") != dict(expected_evaluation_binding):
+            raise ValueError("evaluation binding changed before publication")
+        evaluation_path = source_dir / "evaluation.json"
+        if not evaluation_path.is_file() or not json.loads(evaluation_path.read_text(encoding="utf-8")).get("passed"):
+            raise ValueError("blocking evaluation failures prevent publication")
+        from .production import is_production_manifest, validate_production_manifest
+
+        if not is_production_manifest(manifest):
+            raise ValueError("non-production manifest cannot be published")
+        policy_failures = validate_production_manifest(manifest)
+        if policy_failures:
+            raise ValueError(f"production strategy mismatch prevents publication: {', '.join(policy_failures)}")
+        production_evaluation = source_dir / "production_evaluation.json"
+        if not production_evaluation.is_file() or not json.loads(production_evaluation.read_text(encoding="utf-8")).get("gate", {}).get("passed"):
+            raise ValueError("production retrieval evaluation must pass before publication")
+        result = ReleaseManager(self.index_root, self.registry.path).publish(
+            source_dir,
+            expected_generation=expected_generation,
+            expected_active_release_id=expected_active_index_version,
+            expected_manifest_sha256=expected_manifest_sha256,
+            allow_legacy=True,
+        )
+        return {**result, "index_version": index_version}
 
     def status(self, index_version: str | None = None) -> dict[str, Any]:
         """返回 active pointer 或一个版本的可审计状态。"""
@@ -891,6 +1032,8 @@ class MultimodalKnowledgeBaseMaintenance:
             return {
                 "active": snapshot["active"],
                 "previous": snapshot["previous"],
+                "fallback": snapshot.get("fallback"),
+                "generation": snapshot.get("generation", 0),
                 "candidates": snapshot["candidates"],
                 "candidate_overflow": snapshot["candidate_overflow"],
                 "retention": snapshot,
@@ -956,7 +1099,7 @@ class MultimodalKnowledgeBaseMaintenance:
             raise ValueError("authorized source ids must match the current sources")
         return matched
 
-    def _manifest(self, entries: list[dict[str, str]], *, allow_remote_data: bool = False, authorized_source_ids: set[str] | None = None, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, outbound_records: list[OutboundImageRecord] | None = None, max_pages: int | None = None, auto_outbound_manifest: bool = False, page_ranges: dict[str, tuple[int, int]] | None = None) -> dict[str, Any]:
+    def _manifest(self, entries: list[dict[str, str]], *, allow_remote_data: bool = False, authorized_source_ids: set[str] | None = None, max_images: int | None = None, retry_failed: bool = False, retry_generation: int = 0, outbound_records: list[OutboundImageRecord] | None = None, max_pages: int | None = None, auto_outbound_manifest: bool = False, page_ranges: dict[str, tuple[int, int]] | None = None, embedding_config: Mapping[str, Any] | EmbeddingConfiguration | None = None) -> dict[str, Any]:
         """构造不包含宿主绝对路径的来源清单。"""
         if retry_generation < 0 or retry_generation > MAX_RETRY_GENERATION:
             raise ValueError(f"retry generation must be between 0 and {MAX_RETRY_GENERATION}")
@@ -969,15 +1112,53 @@ class MultimodalKnowledgeBaseMaintenance:
             for entry in entries
             if page_ranges and str(Path(entry["path"]).resolve()) in page_ranges
         ]
+        resolved_embedding = (
+            resolve_production_embedding_configuration()
+            if embedding_config is None
+            else EmbeddingConfiguration.from_mapping(embedding_config)
+        )
         return {
-            "schema_version": 5,
+            "schema_version": 6,
             "sources": public,
             "source_page_limit": max_pages,
             "source_page_ranges": source_page_ranges,
             "parser": os.getenv("MULTIMODAL_PARSER", "docling"),
+            "parser_identity": {
+                "name": os.getenv("MULTIMODAL_PARSER", "docling"),
+                "version": "runtime-resolved",
+            },
+            "chunking": {
+                "schema": "retrieval_text-v1",
+                "splitter_version": "builtin",
+                **dict(TEXT_SPLIT),
+            },
+            "multimodal_policy": {
+                "remote_policy_sha256": self.remote_policy.policy_sha256,
+                "vision": {
+                    "model": os.getenv("VISION_MODEL", REQUIRED_MODEL),
+                    "prompt_version": PROMPT_VERSION,
+                    "response_adapter_version": RESPONSE_ADAPTER_VERSION,
+                },
+                "table_recovery": self._table_recovery_configuration(),
+            },
+            "retrieval_index": {
+                "vector_backend": "chroma",
+                "collection_template": f"{self.collection_prefix}_<release_id>",
+                "dimension": resolved_embedding.dimension,
+                "distance_metric": resolved_embedding.distance_metric,
+                "sparse_backend": "bm25s",
+                "unit_schema": "knowledge-unit-v1",
+            },
+            "artifacts": [
+                {"path": "units.jsonl", "type": "units", "required": True},
+                {"path": "issues.jsonl", "type": "issues", "required": True},
+                {"path": "build_state.json", "type": "build_state", "required": True},
+                {"path": "chroma", "type": "directory", "required": True},
+            ],
             "build_configuration": {
                 "ingestion_schema": "streaming-page-v1",
-                "embedding": embedding_fingerprint(),
+                "embedding": embedding_fingerprint(resolved_embedding),
+                "embedding_config": resolved_embedding.to_manifest(),
                 "pdf_parser": self._docling_configuration(),
                 "text_split": dict(TEXT_SPLIT),
                 "page_quality_gate": {"version": PAGE_QUALITY_GATE_VERSION, "min_text_coverage": PAGE_QUALITY_MIN_TEXT_COVERAGE, "native_text_min_chars": 80},
@@ -987,6 +1168,7 @@ class MultimodalKnowledgeBaseMaintenance:
             },
             "outbound_manifest_sha256": sha256_bytes(self._outbound_manifest_payload(outbound_records or [])),
             "outbound_image_count": len(outbound_records or []),
+            "embedding_config": resolved_embedding.to_manifest(),
         }
 
     def _is_reusable_staged_version(self, index_version: str) -> bool:
@@ -1002,6 +1184,22 @@ class MultimodalKnowledgeBaseMaintenance:
             persisted_units = sum(1 for line in (directory / "units.jsonl").read_text(encoding="utf-8").splitlines() if line)
             if state.get("status") != "staged_complete" or unit_count < 0 or unit_count != vector_count or persisted_units != unit_count:
                 return False
+            manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("identity_sha256") or manifest.get("schema_version") in (MANIFEST_SCHEMA_VERSION, MANIFEST_SCHEMA_NAME):
+                validate_manifest_contract(manifest)
+                validate_manifest_artifacts(manifest, directory)
+                validate_manifest_counts(
+                    manifest,
+                    actual_counts={
+                        "unit_count": unit_count,
+                        "vector_count": vector_count,
+                        "issues_count": sum(
+                            1
+                            for line in (directory / "issues.jsonl").read_text(encoding="utf-8").splitlines()
+                            if line.strip()
+                        ),
+                    },
+                )
             if vector_count == 0:
                 return True
             if not (directory / "chroma").is_dir():
@@ -1013,7 +1211,7 @@ class MultimodalKnowledgeBaseMaintenance:
     def _write_build_state(self, directory: Path, state: dict[str, Any]) -> None:
         """原子写入当前构建阶段，供崩溃诊断和复用判定使用。"""
         temporary = directory / "build_state.tmp"
-        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.write_bytes(json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8"))
         replace_with_retry(temporary, directory / "build_state.json")
 
     def _is_resumable_build(self, directory: Path) -> bool:
@@ -1291,6 +1489,7 @@ class MultimodalKnowledgeBaseMaintenance:
         if isinstance(vision, dict):
             vision.pop("retry_failed", None)
             vision.pop("retry_generation", None)
+            vision.pop("outbound_manifest_mode", None)
         return {
             "schema_version": manifest.get("schema_version"),
             "sources": manifest.get("sources"),
@@ -1322,21 +1521,38 @@ class MultimodalKnowledgeBaseMaintenance:
                         output.write(unit.model_dump_json() + "\n")
         replace_with_retry(temporary, directory / "units.jsonl")
 
-    def _build_staged_vectors(self, directory: Path, version: str, unit_count: int) -> int:
+    def _build_staged_vectors(
+        self,
+        directory: Path,
+        version: str,
+        unit_count: int,
+        *,
+        embedding_config: Mapping[str, Any] | EmbeddingConfiguration | None = None,
+    ) -> int:
         """在独立 attempt 目录构建 Chroma，成功后再提交为正式目录。"""
+        final_path = directory / "chroma"
         if not unit_count:
+            final_path.mkdir(parents=True, exist_ok=True)
             return 0
         attempt_number = 1
         while (directory / f"chroma_attempt_{attempt_number}").exists():
             attempt_number += 1
         attempt_name = f"chroma_attempt_{attempt_number}"
-        count = StagedIndex(directory, f"{self.collection_prefix}_{version}", directory_name=attempt_name).write(self._read_units(directory))
+        count = StagedIndex(
+            directory,
+            f"{self.collection_prefix}_{version}",
+            directory_name=attempt_name,
+            embedding_config=embedding_config,
+            embedding_scope=self.embedding_scope,
+        ).write(self._read_units(directory))
         attempt_path = directory / attempt_name
-        final_path = directory / "chroma"
         if attempt_path.exists():
             if final_path.exists():
                 raise ValueError("completed chroma directory already exists")
             replace_with_retry(attempt_path, final_path)
+        elif count == unit_count:
+            # 测试替身可能只返回计数；正式 evaluate 仍会校验 collection 计数。
+            final_path.mkdir(parents=True, exist_ok=True)
         return count
 
     def _source_page_count(self, path: Path) -> int:
@@ -1704,7 +1920,7 @@ class MultimodalKnowledgeBaseMaintenance:
 
     def _index_version(self, manifest: dict[str, Any]) -> str:
         """从完整配置和来源生成不含时钟的可重现版本名。"""
-        return "mm_" + hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()[:20]
+        return release_id_for_manifest(manifest)
 
     def _quality_policy(self) -> dict[str, Any]:
         """读取显式质量阈值；默认零阈值只记录质量而不把 smoke 当生产标准。"""

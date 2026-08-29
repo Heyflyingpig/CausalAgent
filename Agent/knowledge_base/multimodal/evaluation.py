@@ -8,10 +8,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from Agent.knowledge_base.embedding_runtime import EmbeddingConfiguration
 from .contracts import canonical_json
 from .defaults import DEFAULTS_PATH, ROOT, load_production_defaults
 from .index import embedding_fingerprint
-from .production import is_production_manifest
+from .production import has_frozen_production_identity
+from .release import POINTER_SCHEMA_VERSION, compute_manifest_sha256, validate_manifest_artifacts, validate_manifest_contract
 
 
 MULTIMODAL_EVAL_SCHEMA = "multimodal_retrieval_eval_v1"
@@ -106,7 +108,12 @@ def read_active_release_identity(*, strict: bool = True) -> dict[str, Any]:
             ROOT / "Agent" / "knowledge_base" / "multimodal_indexes",
         )
     ).resolve()
-    relative_index_path = Path(str(active.get("index_path", "")))
+    pointer_entry = active.get("active") if isinstance(active.get("active"), dict) else active
+    if not isinstance(pointer_entry, dict):
+        raise ValueError("多模态 active pointer 缺少 active release")
+    if isinstance(active.get("active"), dict) and active.get("schema_version") != POINTER_SCHEMA_VERSION:
+        raise ValueError("多模态 active pointer schema 不受支持")
+    relative_index_path = Path(str(pointer_entry.get("index_path", "")))
     if not relative_index_path.parts or relative_index_path.is_absolute():
         raise ValueError("多模态 active index_path 必须是相对路径")
     vector_db_dir = (index_root / relative_index_path).resolve()
@@ -118,17 +125,38 @@ def read_active_release_identity(*, strict: bool = True) -> dict[str, Any]:
     manifest_path = vector_db_dir.parent / "manifest.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"多模态 manifest 不存在: {manifest_path}")
-    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    if manifest_sha256 != active.get("manifest_sha256"):
+    manifest_sha256 = compute_manifest_sha256(manifest_path)
+    if manifest_sha256 != pointer_entry.get("manifest_sha256"):
         raise ValueError("多模态 active index manifest 哈希不匹配")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("identity_sha256") or manifest.get("schema_version") == 6:
+        validate_manifest_contract(manifest)
+        validate_manifest_artifacts(manifest, vector_db_dir.parent)
     if strict and os.getenv("MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE", "").lower() != "true":
-        if not is_production_manifest(manifest):
+        if not has_frozen_production_identity(manifest):
             raise ValueError("多模态 active index 不是冻结的正式知识源")
+        from .production import validate_production_manifest
 
-    runtime_embedding = embedding_fingerprint()
-    if active.get("embedding") != manifest.get("embedding") or manifest.get("embedding") != runtime_embedding:
-        raise ValueError("多模态 embedding 指纹不匹配")
+        policy_failures = validate_production_manifest(manifest)
+        if policy_failures:
+            raise ValueError("多模态 active release 正式策略不允许: " + ", ".join(policy_failures))
+
+    manifest_embedding_config = manifest.get("embedding_config")
+    if not isinstance(manifest_embedding_config, dict) and isinstance(manifest.get("embedding"), dict) and "distance_metric" in manifest["embedding"]:
+        manifest_embedding_config = manifest["embedding"]
+    if isinstance(manifest_embedding_config, dict):
+        config = EmbeddingConfiguration.from_manifest(manifest_embedding_config)
+        runtime_embedding = config.fingerprint()
+        manifest_embedding = manifest.get("embedding")
+        if isinstance(manifest_embedding, dict) and "distance_metric" not in manifest_embedding and manifest_embedding != runtime_embedding:
+            raise ValueError("多模态 embedding 指纹不匹配")
+        if isinstance(pointer_entry.get("embedding"), dict) and pointer_entry["embedding"] != runtime_embedding:
+            raise ValueError("多模态 active embedding 指纹不匹配")
+    else:
+        runtime_embedding = embedding_fingerprint()
+        pointer_embedding = pointer_entry.get("embedding") or active.get("embedding")
+        if (pointer_embedding is not None and pointer_embedding != manifest.get("embedding")) or manifest.get("embedding") != runtime_embedding:
+            raise ValueError("多模态 embedding 指纹不匹配")
 
     strategy = {
         "parser": manifest.get("parser"),
@@ -138,12 +166,13 @@ def read_active_release_identity(*, strict: bool = True) -> dict[str, Any]:
     }
     return {
         "status": "ready",
-        "index_version": active.get("index_version"),
-        "collection_name": active.get("collection_name"),
+        "index_version": pointer_entry.get("release_id") or pointer_entry.get("index_version"),
+        "collection_name": pointer_entry.get("collection_name") or manifest.get("collection_name") or manifest.get("retrieval_index", {}).get("collection"),
         "vector_db_dir": str(vector_db_dir),
         "active_pointer_path": str(active_path.resolve()),
         "manifest_sha256": manifest_sha256,
         "embedding": manifest.get("embedding"),
+        "embedding_config": manifest.get("embedding_config"),
         "strategy": strategy,
         "strategy_fingerprint": hashlib.sha256(canonical_json(strategy).encode("utf-8")).hexdigest(),
         "source_hashes": [

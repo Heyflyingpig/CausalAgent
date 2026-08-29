@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 from langchain_chroma import Chroma
 
 from .defaults import ROOT, canonical_document_id, canonical_source_id, load_production_defaults, production_source_paths, resolve_production_sources
 from .contracts import stable_id
-from .index import _embeddings, file_sha256
+from .index import _embeddings
+from .release import compute_manifest_sha256
 
 def load_evaluation_cases(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """读取 20 至 30 条人工核对评测题并验证最小 schema。"""
@@ -179,20 +181,80 @@ def is_legacy_production_manifest(manifest: dict[str, Any], config: dict[str, An
     return actual_legacy == legacy_expected
 
 
-def is_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | None = None) -> bool:
-    """判断 manifest 是否携带完整 canonical 正式来源身份。"""
-    config = config or load_production_defaults()
-    sources = manifest.get("sources", [])
-    if not isinstance(sources, list) or not sources:
+def _is_safe_release_path(value: Any) -> bool:
+    """只接受不会逃逸仓库边界的相对路径元数据，不访问对应文件。"""
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
         return False
-    if any(
-        not isinstance(source, dict)
-        or not isinstance(source.get("source_id"), str)
-        or not isinstance(source.get("document_id"), str)
-        or not isinstance(source.get("content_hash"), str)
-        or not isinstance(source.get("controlled_path"), str)
-        for source in sources
+    normalized = value.replace("\\", "/")
+    windows_path = PureWindowsPath(value)
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or windows_path.drive
+        or windows_path.root
+        or PurePosixPath(normalized).is_absolute()
     ):
+        return False
+    return not any(part in {"", ".", ".."} for part in normalized.split("/"))
+
+
+def has_frozen_production_identity(
+    manifest: dict[str, Any], config: dict[str, Any] | None = None
+) -> bool:
+    """只校验 manifest 的冻结来源身份，不读取或解析本地来源文件。
+
+    该检查供已发布 release 的运行时使用。构建、评测和发布仍必须调用
+    :func:`is_production_manifest`，以便重新验证受控目录中的实际 PDF。
+    """
+    try:
+        if not isinstance(manifest, dict):
+            return False
+        config = config or load_production_defaults()
+        configured_sources = config["sources"]
+        sources = manifest.get("sources", [])
+        if not isinstance(configured_sources, list) or not isinstance(sources, list):
+            return False
+        if not configured_sources or len(sources) != len(configured_sources):
+            return False
+
+        expected: list[tuple[str, str, str]] = []
+        for configured in configured_sources:
+            if not isinstance(configured, dict):
+                return False
+            source_id = canonical_source_id(configured)
+            document_id = canonical_document_id(configured)
+            content_hash = configured.get("sha256")
+            if not isinstance(content_hash, str) or not content_hash:
+                return False
+            expected.append((source_id, document_id, content_hash))
+
+        actual: list[tuple[str, str, str]] = []
+        for source in sources:
+            if not isinstance(source, dict):
+                return False
+            source_id = source.get("source_id")
+            document_id = source.get("document_id")
+            content_hash = source.get("content_hash")
+            if not all(isinstance(value, str) and value for value in (source_id, document_id, content_hash)):
+                return False
+            if not _is_safe_release_path(source.get("relative_path")):
+                return False
+            if not _is_safe_release_path(source.get("controlled_path")):
+                return False
+            actual.append((source_id, document_id, content_hash))
+
+        # 列表长度与唯一性同时检查，避免集合比较把重复来源静默去重。
+        if len(set(expected)) != len(expected) or len(set(actual)) != len(actual):
+            return False
+        return set(actual) == set(expected)
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        return False
+
+
+def is_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | None = None) -> bool:
+    """判断 manifest 是否携带完整 canonical 正式来源身份并匹配本地 PDF。"""
+    config = config or load_production_defaults()
+    if not has_frozen_production_identity(manifest, config):
         return False
     try:
         resolved = resolve_production_sources(config)
@@ -202,12 +264,13 @@ def is_production_manifest(manifest: dict[str, Any], config: dict[str, Any] | No
         (source["source_id"], source["document_id"], source["content_hash"], source["relative_path"])
         for source in resolved
     }
+    sources = manifest["sources"]
     actual = {
         (source.get("source_id"), source.get("document_id"), source.get("content_hash"), source.get("controlled_path"))
         for source in sources
         if isinstance(source, dict)
     }
-    return actual == expected
+    return len(sources) == len(resolved) and len(actual) == len(sources) and actual == expected
 
 
 def _production_document_id_aliases(manifest: dict[str, Any]) -> dict[str, str]:
@@ -232,6 +295,8 @@ def validate_production_manifest(manifest: dict[str, Any], config: dict[str, Any
     """拒绝正式资料使用未冻结的 parser、远程视觉或 embedding。"""
     config = config or load_production_defaults()
     failures: list[str] = []
+    if config.get("embedding", {}).get("mode") == "local" and not config.get("local_embedding", {}).get("enabled", False):
+        failures.append("production_local_embedding_disabled")
     if manifest.get("parser") != config["parser"]:
         failures.append("production_parser_mismatch")
     if manifest.get("build_configuration", {}).get("pdf_parser") != config["pdf_parser"]:
@@ -251,10 +316,23 @@ def validate_production_manifest(manifest: dict[str, Any], config: dict[str, Any
     actual = manifest.get("embedding", {})
     if any(actual.get(key) != value for key, value in config["embedding"].items()):
         failures.append("production_embedding_mismatch")
+    explicit = manifest.get("embedding_config")
+    if isinstance(explicit, dict):
+        if any(explicit.get(key) != value for key, value in config["embedding"].items()):
+            failures.append("production_embedding_config_mismatch")
+        if explicit.get("mode") != config["embedding"].get("mode") or explicit.get("provider") != config["embedding"].get("provider"):
+            failures.append("production_embedding_mode_mismatch")
     return failures
 
 
-def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
+def evaluate_staged_index(
+    version_dir: Path,
+    collection_name: str,
+    config: dict[str, Any] | None = None,
+    *,
+    embedding_config: dict[str, Any] | None = None,
+    embedding_scope: str = "production",
+) -> dict[str, Any]:
     """直接评测尚未发布的不可变索引，并在版本目录保存门禁报告。"""
     from Agent.knowledge_base import query_rag
     from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever
@@ -269,7 +347,7 @@ def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[
     document_id_aliases = _production_document_id_aliases(
         json.loads((version_dir / "manifest.json").read_text(encoding="utf-8"))
     )
-    embedding = _embeddings()
+    embedding = _embeddings(embedding_config, scope=embedding_scope)
     database = Chroma(
         persist_directory=str(version_dir / "chroma"),
         collection_name=collection_name,
@@ -321,7 +399,7 @@ def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[
             },
         }
     report["coverage"] = coverage
-    report["manifest_sha256"] = file_sha256(version_dir / "manifest.json")
+    report["manifest_sha256"] = compute_manifest_sha256(version_dir / "manifest.json")
     (version_dir / "production_evaluation.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

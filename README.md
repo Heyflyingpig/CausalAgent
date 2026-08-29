@@ -467,5 +467,4 @@ Release 包在构建时嵌入正式 HTTPS origin，强制关闭 debug 和开发�
 │   ├── unit/
 │   ├── integration/
 │   └── e2e/
-├── openspec/               # 项目规范与变更说明（内部开发用）
 ```

@@ -76,6 +76,7 @@ interface ReleaseStatus {
   checks?: ReleaseCheck[];
   active?: Record<string, unknown> | null;
   previous?: Record<string, unknown> | null;
+  generation?: number;
   candidates?: string[];
   candidate_overflow?: boolean;
   requires_worker_restart?: boolean;
@@ -1475,6 +1476,7 @@ async function checkReleaseGate() {
         index_version: ingestion.value.index_version,
         evaluation_run_id: evaluationRun.value.run_id,
         expected_active_index_version: String(releaseStatus.value?.active?.index_version || ""),
+        expected_generation: releaseStatus.value?.generation,
       }),
     });
   } catch (error) { releaseError.value = error instanceof Error ? error.message : "正式发布门禁检查失败"; }
@@ -1498,6 +1500,7 @@ async function publishRelease() {
         index_version: ingestion.value.index_version,
         evaluation_run_id: evaluationRun.value.run_id,
         expected_active_index_version: String(releaseStatus.value?.active?.index_version || ""),
+        expected_generation: releaseStatus.value?.generation,
         confirm: true,
       }),
     });
@@ -1518,7 +1521,7 @@ async function rollbackRelease() {
   try {
     await api<ReleaseStatus>("/api/rag_eval/multimodal/releases/rollback", {
       method: "POST",
-      body: JSON.stringify({ index_version: previousVersion, expected_active_index_version: activeVersion, confirm: true }),
+      body: JSON.stringify({ index_version: previousVersion, expected_active_index_version: activeVersion, expected_generation: releaseStatus.value?.generation, confirm: true }),
     });
     releaseNotice.value = `已请求回滚到 ${previousVersion}；运行中的 worker 需要 drain/restart 后才会生效。`;
     await loadReleaseStatus();

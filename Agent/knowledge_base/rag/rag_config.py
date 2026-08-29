@@ -407,9 +407,9 @@ PUBMEDQA_PREPARE_CONFIG = {
 """
 MEDICAL_EMBEDDING_CONFIG = {
     "provider": "openai_compatible",  # 医疗库使用 OpenAI-compatible embedding。
-    "api_key_env": "MEDICAL_EMBEDDING_API_KEY",  # embedding API key 环境变量名，不写真实密钥。
-    "base_url_env": "MEDICAL_EMBEDDING_BASE_URL",  # embedding base URL 环境变量名。
-    "model_env": "MEDICAL_EMBEDDING_MODEL",  # embedding model 环境变量名。
+    "api_key_env": "EMBEDDING_API_KEY",  # embedding API key 环境变量名，不写真实密钥。
+    "base_url_env": "EMBEDDING_BASE_URL",  # embedding base URL 环境变量名。
+    "model_env": "EMBEDDING_MODEL",  # embedding model 环境变量名。
     "default_model": "text-embedding-3-small",  # 未配置 model 环境变量时的兜底模型。
     "batch_size": 32,  # 构建知识库时的 embedding batch size。
     "chunk_size": 700,  # 医疗语料切块大小。

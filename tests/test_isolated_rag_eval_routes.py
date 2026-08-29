@@ -63,16 +63,16 @@ class _FakeIsolatedRunManager:
         self.calls.append(("release_status", ingestion_run_id, index_version, evaluation_run_id))
         return {"release": {"ingestion_run_id": ingestion_run_id, "index_version": index_version}, "active": None, "previous": None}
 
-    def check_release(self, ingestion_run_id, index_version, evaluation_run_id=None, expected_active_index_version=None):
-        self.calls.append(("check_release", ingestion_run_id, index_version, evaluation_run_id, expected_active_index_version))
+    def check_release(self, ingestion_run_id, index_version, evaluation_run_id=None, expected_active_index_version=None, expected_generation=None):
+        self.calls.append(("check_release", ingestion_run_id, index_version, evaluation_run_id, expected_active_index_version, expected_generation))
         return {"state": "ready_to_publish", "publishable": True, "release": {"index_version": index_version}, "checks": []}
 
-    def publish_release(self, ingestion_run_id, index_version, evaluation_run_id, expected_active_index_version=None):
-        self.calls.append(("publish_release", ingestion_run_id, index_version, evaluation_run_id, expected_active_index_version))
+    def publish_release(self, ingestion_run_id, index_version, evaluation_run_id, expected_active_index_version=None, expected_generation=None):
+        self.calls.append(("publish_release", ingestion_run_id, index_version, evaluation_run_id, expected_active_index_version, expected_generation))
         return {"status": "published", "active": {"index_version": index_version}, "previous": None}
 
-    def rollback_release(self, index_version, expected_active_index_version=None):
-        self.calls.append(("rollback_release", index_version, expected_active_index_version))
+    def rollback_release(self, index_version, expected_active_index_version=None, expected_generation=None):
+        self.calls.append(("rollback_release", index_version, expected_active_index_version, expected_generation))
         return {"status": "rolled_back", "active": {"index_version": index_version}, "previous": None}
 
     def subscribe(self, run_id):
@@ -378,6 +378,15 @@ class IsolatedRagEvalRouteTests(unittest.TestCase):
         })
         self.assertEqual(gate.status_code, 200)
         self.assertTrue(gate.get_json()["data"]["publishable"])
+
+        gate_with_generation = self.client.post("/api/rag_eval/multimodal/releases/gate-check", json={
+            "ingestion_run_id": "ingest-test",
+            "index_version": "mm-test",
+            "evaluation_run_id": "eval-test",
+            "expected_generation": 4,
+        })
+        self.assertEqual(gate_with_generation.status_code, 200)
+        self.assertEqual(self.manager.calls[-1][-1], 4)
 
         not_confirmed = self.client.post("/api/rag_eval/multimodal/releases/publish", json={
             "ingestion_run_id": "ingest-test",
