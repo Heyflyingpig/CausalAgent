@@ -57,7 +57,8 @@ CausalAgent
   - [Docker部署](#docker部署)
     - [数据库生产化配置](#数据库生产化配置)
     - [管理员后台](#管理员后台)
-    - [日志系统](#日志系统)
+  - [日志系统](#日志系统)
+    - [开发环境启动](#开发环境启动)
   - [后端单元测试](#后端单元测试)
   - [windows部署](#windows部署)
 - [贡献](#贡献)
@@ -316,7 +317,9 @@ docker compose -f docker-compose.test.yml run --rm unit-test sh
 
 ### windows部署
 
-MVP 已支持 Windows 桌面客户端：`Run_causal.py` 只启动 WebView2 Edge Chromium 窗口，并加载与浏览器相同的 CausalAgent 页面。桌面端不打包 Flask、MySQL、worker、模型或知识库，服务器必须先部署并提供正式 HTTPS 页面、同源 Cookie Session、API、SSE 和文件能力。
+CausalAgent已支持 Windows 桌面客户端：`Run_causal.py` 只启动 WebView2 Edge Chromium 窗口，并加载与浏览器相同的 CausalAgent 页面。
+
+也可以进入release中，下载对应tag版本的桌面端
 
 创建独立桌面环境并检查 WebView2 Runtime：
 
