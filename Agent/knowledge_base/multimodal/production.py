@@ -11,7 +11,8 @@ from langchain_chroma import Chroma
 
 from .defaults import ROOT, canonical_document_id, canonical_source_id, load_production_defaults, production_source_paths, resolve_production_sources
 from .contracts import stable_id
-from .index import _embeddings, file_sha256
+from .index import _embeddings
+from .release import compute_manifest_sha256
 
 def load_evaluation_cases(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """读取 20 至 30 条人工核对评测题并验证最小 schema。"""
@@ -294,6 +295,8 @@ def validate_production_manifest(manifest: dict[str, Any], config: dict[str, Any
     """拒绝正式资料使用未冻结的 parser、远程视觉或 embedding。"""
     config = config or load_production_defaults()
     failures: list[str] = []
+    if config.get("embedding", {}).get("mode") == "local" and not config.get("local_embedding", {}).get("enabled", False):
+        failures.append("production_local_embedding_disabled")
     if manifest.get("parser") != config["parser"]:
         failures.append("production_parser_mismatch")
     if manifest.get("build_configuration", {}).get("pdf_parser") != config["pdf_parser"]:
@@ -313,10 +316,23 @@ def validate_production_manifest(manifest: dict[str, Any], config: dict[str, Any
     actual = manifest.get("embedding", {})
     if any(actual.get(key) != value for key, value in config["embedding"].items()):
         failures.append("production_embedding_mismatch")
+    explicit = manifest.get("embedding_config")
+    if isinstance(explicit, dict):
+        if any(explicit.get(key) != value for key, value in config["embedding"].items()):
+            failures.append("production_embedding_config_mismatch")
+        if explicit.get("mode") != config["embedding"].get("mode") or explicit.get("provider") != config["embedding"].get("provider"):
+            failures.append("production_embedding_mode_mismatch")
     return failures
 
 
-def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
+def evaluate_staged_index(
+    version_dir: Path,
+    collection_name: str,
+    config: dict[str, Any] | None = None,
+    *,
+    embedding_config: dict[str, Any] | None = None,
+    embedding_scope: str = "production",
+) -> dict[str, Any]:
     """直接评测尚未发布的不可变索引，并在版本目录保存门禁报告。"""
     from Agent.knowledge_base import query_rag
     from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever
@@ -331,7 +347,7 @@ def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[
     document_id_aliases = _production_document_id_aliases(
         json.loads((version_dir / "manifest.json").read_text(encoding="utf-8"))
     )
-    embedding = _embeddings()
+    embedding = _embeddings(embedding_config, scope=embedding_scope)
     database = Chroma(
         persist_directory=str(version_dir / "chroma"),
         collection_name=collection_name,
@@ -383,7 +399,7 @@ def evaluate_staged_index(version_dir: Path, collection_name: str, config: dict[
             },
         }
     report["coverage"] = coverage
-    report["manifest_sha256"] = file_sha256(version_dir / "manifest.json")
+    report["manifest_sha256"] = compute_manifest_sha256(version_dir / "manifest.json")
     (version_dir / "production_evaluation.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

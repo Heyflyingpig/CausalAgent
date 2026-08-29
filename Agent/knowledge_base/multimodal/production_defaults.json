@@ -1,10 +1,19 @@
 {
   "schema_version": "multimodal_production_defaults_v1",
   "embedding": {
-    "provider": "huggingface",
-    "model": "bge-small-zh-v1.5",
-    "dimension": 512,
+    "mode": "api",
+    "provider": "openai_compatible",
+    "model": "qwen3.7-text-embedding",
+    "dimension": 1024,
     "normalized": true
+  },
+  "embedding_env": {
+    "api_key_env": "EMBEDDING_API_KEY",
+    "base_url_env": "EMBEDDING_BASE_URL",
+    "model_env": "EMBEDDING_MODEL"
+  },
+  "local_embedding": {
+    "enabled": false
   },
   "parser": "docling",
   "pdf_parser": {

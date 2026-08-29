@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,19 +25,29 @@ from Agent.knowledge_base.multimodal import production as production_module
 class MultimodalProductionDefaultsTests(unittest.TestCase):
     """锁定 P0 的来源、embedding、评测 schema 与首轮门槛。"""
 
-    def test_frozen_defaults_match_local_files_and_embedding_contract(self) -> None:
-        """默认配置必须固定本地 embedding 并校验全部必需来源的哈希。"""
+    def test_frozen_defaults_match_api_embedding_policy_and_source_contract(self) -> None:
+        """默认配置必须固定 API-key embedding，并关闭本地生产 embedding 开关。"""
         config = load_production_defaults()
 
         self.assertEqual(
             config["embedding"],
             {
-                "provider": "huggingface",
-                "model": "bge-small-zh-v1.5",
-                "dimension": 512,
+                "mode": "api",
+                "provider": "openai_compatible",
+                "model": "qwen3.7-text-embedding",
+                "dimension": 1024,
                 "normalized": True,
             },
         )
+        self.assertEqual(
+            config["embedding_env"],
+            {
+                "api_key_env": "EMBEDDING_API_KEY",
+                "base_url_env": "EMBEDDING_BASE_URL",
+                "model_env": "EMBEDDING_MODEL",
+            },
+        )
+        self.assertFalse(config["local_embedding"]["enabled"])
         self.assertFalse(config["vision"]["remote_enabled"])
         self.assertEqual(config["parser"], "docling")
         self.assertEqual(
@@ -74,6 +85,33 @@ class MultimodalProductionDefaultsTests(unittest.TestCase):
             self.assertIn(case["expected_modality"], {"text", "table", "image"})
             self.assertTrue(case["reference_answer"] or case["key_facts"])
             self.assertTrue(case["human_reviewed"])
+
+    def test_production_embedding_resolves_from_api_key_environment_and_local_switch_is_off(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "EMBEDDING_API_KEY": "test-key",
+                "EMBEDDING_BASE_URL": "https://embedding.example/v1",
+            },
+            clear=False,
+        ):
+            resolved = defaults_module.resolve_production_embedding_config()
+
+        self.assertEqual(resolved["mode"], "api")
+        self.assertEqual(resolved["provider"], "openai_compatible")
+        self.assertEqual(resolved["endpoint_identity"], "https://embedding.example/v1")
+        self.assertEqual(resolved["status"], "ready")
+
+        local_config = load_production_defaults()
+        local_config["embedding"] = {
+            "mode": "local",
+            "provider": "huggingface",
+            "model": "bge-small-zh-v1.5",
+            "dimension": 512,
+            "normalized": True,
+        }
+        with self.assertRaisesRegex(ValueError, "local production embedding is disabled"):
+            defaults_module.resolve_production_embedding_config(local_config)
 
     def test_reviewed_modality_cases_match_physical_pdf_evidence(self) -> None:
         """人工复核过的页码与模态必须对应 PDF 物理页上的实际证据。"""

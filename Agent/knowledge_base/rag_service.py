@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any, Callable, Dict, List, Protocol, Union
 
+from Agent.knowledge_base.embedding_runtime import EmbeddingApiError
 from Agent.knowledge_base.rag_runtime import RagRuntime
+from observability.logging_runtime import log_event
 
 
 UNAVAILABLE_RAG_RESULT = {
@@ -123,11 +126,24 @@ class RagService:
             production_config = (
                 config_loader()[0] if config_loader is not None else self._load_retrieval_config()
             )
-            if retrieve_candidates is None:
-                trace = self.build_retrieval_trace(question_text, config=production_config)
-                candidates = trace["stages"]["final"]
-            else:
-                candidates = retrieve_candidates(question_text, config=production_config)
+            try:
+                if retrieve_candidates is None:
+                    trace = self.build_retrieval_trace(question_text, config=production_config)
+                    candidates = trace["stages"]["final"]
+                else:
+                    candidates = retrieve_candidates(question_text, config=production_config)
+            except EmbeddingApiError as exc:
+                log_event(
+                    logging.getLogger(__name__),
+                    "rag.enrichment.degraded",
+                    details={
+                        "status": "unavailable",
+                        "reason_code": exc.category,
+                        "question_count": 1,
+                        "evidence_count": 0,
+                    },
+                )
+                return dict(UNAVAILABLE_RAG_RESULT)
             evidence_payloads = query_rag._build_evidence_payloads(
                 candidates,
                 max_chars=production_config.max_evidence_chars,

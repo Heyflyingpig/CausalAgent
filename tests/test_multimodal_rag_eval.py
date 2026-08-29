@@ -305,21 +305,15 @@ class GenericRagEvalTests(unittest.TestCase):
         self.assertIn("RAG_EVAL_DATASET_PATH is not configured.", result["errors"])
 
     def test_active_release_identity_binds_manifest_and_strategy(self):
-        embedding = {
-            "provider": "huggingface",
-            "model": "bge-small-zh-v1.5",
-            "mode": "local",
-            "dimension": 512,
-            "normalized": True,
-        }
         defaults = evaluation.load_production_defaults()
+        embedding = dict(defaults["embedding"])
         manifest = {
             "index_version": "mm_test",
             "embedding": embedding,
             "parser": "docling",
             "build_configuration": {
-                "pdf_parser": {"page_range_mode": "single_page"},
-                "vision": {"enabled": False, "local_ocr_enabled": True},
+                "pdf_parser": defaults["pdf_parser"],
+                "vision": {"enabled": False, "local_ocr_enabled": defaults["vision"]["local_ocr_enabled"]},
             },
             "sources": [
                 {

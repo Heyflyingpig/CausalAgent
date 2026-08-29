@@ -208,9 +208,13 @@ Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*
 !Agent/knowledge_base/rag/data/eval/pearl_candidate_mm_*_reapproval_manifest_v3.json
 # 多模态解析资产只作为本地或外部离线产物，不属于正式 RAG 发布物。
 Agent/knowledge_base/multimodal_assets/
+# 正式 release 由 active/fallback pointer 选择；只自动放行新规范的 mm_+64 位身份目录。
 Agent/knowledge_base/multimodal_indexes/*
-!Agent/knowledge_base/multimodal_indexes/mm_680e88680120c587d3ae/
-!Agent/knowledge_base/multimodal_indexes/mm_680e88680120c587d3ae/**
+!Agent/knowledge_base/multimodal_indexes/mm_*/
+!Agent/knowledge_base/multimodal_indexes/mm_*/**
+# 20 位旧兼容候选不再作为新的提交对象；历史上已跟踪的文件仍保留。
+Agent/knowledge_base/multimodal_indexes/mm_????????????????????/
+Agent/knowledge_base/multimodal_indexes/mm_????????????????????/**
 Agent/knowledge_base/multimodal_runtime/*
 !Agent/knowledge_base/multimodal_runtime/active_index.json
 Agent/knowledge_base/multimodal_benchmarks/

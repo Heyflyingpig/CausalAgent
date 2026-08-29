@@ -523,14 +523,18 @@ def _get_model_runtime_info() -> Dict[str, Any]:
 def _get_embedding_runtime_info() -> Dict[str, Any]:
     """返回当前查询侧 embedding 配置状态，避免用户误把配置缺失当成调参问题。"""
     try:
-        embedding_config = resolve_embedding_runtime_config()
-    except ValueError as exc:
+        from Agent.knowledge_base.rag_runtime import _resolve_multimodal_release
+
+        release = _resolve_multimodal_release()
+        embedding_config = release.get("embedding_config") or resolve_embedding_runtime_config()
+    except (FileNotFoundError, ValueError):
         return {
-            "status": "missing",
+            "status": "unavailable",
             "mode": os.environ.get("RAG_EMBEDDING_PROVIDER", "auto"),
             "provider": "invalid",
             "model": "--",
-            "message": str(exc),
+            "message": "正式 embedding release 不可用",
+            "error_code": "active_release_invalid",
         }
     info = dict(embedding_config)
     if info.get("base_url"):

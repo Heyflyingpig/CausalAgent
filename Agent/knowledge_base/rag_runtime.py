@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -15,7 +14,12 @@ from typing import Any, Mapping
 
 from Agent.knowledge_base.multimodal.defaults import resolve_production_embedding_config as resolve_embedding_runtime_config
 from Agent.knowledge_base.multimodal.production import has_frozen_production_identity
+from Agent.knowledge_base.multimodal.release import MANIFEST_SCHEMA_NAME, MANIFEST_SCHEMA_VERSION, POINTER_SCHEMA_VERSION, compute_manifest_sha256, validate_manifest_artifacts, validate_manifest_contract, validate_manifest_counts
 from Agent.knowledge_base.sparse_retriever import Bm25sSparseRetriever, SparseRetriever
+from Agent.knowledge_base.embedding_runtime import (
+    EmbeddingConfiguration,
+    create_embedding_function,
+)
 from observability.logging_runtime import log_event
 
 
@@ -38,6 +42,13 @@ SAFE_EMBEDDING_CONFIG_KEYS = {
     "api_key_env",
     "base_url_env",
     "model_env",
+    "model_revision",
+    "endpoint_identity",
+    "normalization",
+    "distance_metric",
+    "query_transform",
+    "document_transform",
+    "request_contract_version",
     "missing",
     "message",
 }
@@ -53,28 +64,24 @@ class RagRuntimeConfig:
     production_config_path: str
     embedding_config: Mapping[str, Any]
     release_id: str = "current"
+    embedding_scope: str = "production"
 
     def __post_init__(self) -> None:
         """冻结调用方传入的 embedding 配置副本，避免嵌套对象被修改。"""
-        safe_config = {
-            key: value
-            for key, value in self.embedding_config.items()
-            if key in SAFE_EMBEDDING_CONFIG_KEYS
-        }
+        safe_config = EmbeddingConfiguration.from_mapping(self.embedding_config).to_runtime_dict()
+        safe_config = {key: value for key, value in safe_config.items() if key in SAFE_EMBEDDING_CONFIG_KEYS}
         if "missing" in safe_config:
             safe_config["missing"] = tuple(safe_config["missing"])
         object.__setattr__(self, "embedding_config", MappingProxyType(safe_config))
 
     @classmethod
     def from_environment(cls) -> "RagRuntimeConfig":
-        """从已发布的多模态 active index 创建配置，不读取或保存密钥值。"""
-        resolved = resolve_embedding_runtime_config()
-        safe_embedding_config = {
-            key: resolved[key] for key in SAFE_EMBEDDING_CONFIG_KEYS if key in resolved
-        }
-        if "missing" in safe_embedding_config:
-            safe_embedding_config["missing"] = tuple(safe_embedding_config["missing"])
-        release = _resolve_multimodal_release(resolved)
+        """从 active manifest 创建配置；只有旧 manifest 才兼容读取环境 resolver。"""
+        release = _resolve_multimodal_release()
+        if release.get("embedding_config") is None:
+            resolved = resolve_embedding_runtime_config()
+            release = _resolve_multimodal_release(resolved)
+        safe_embedding_config = release["embedding_config"]
         return cls(
             vector_db_dir=str(release["vector_db_dir"]),
             collection_name=str(release["collection_name"]),
@@ -87,7 +94,7 @@ class RagRuntimeConfig:
         )
 
 
-def _resolve_multimodal_release(embedding_config: Mapping[str, Any]) -> dict[str, Any]:
+def _resolve_multimodal_release(embedding_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """校验 active pointer、manifest 和 embedding 指纹并解析索引位置。"""
     active_path = Path(
         os.environ.get("MULTIMODAL_ACTIVE_INDEX_CONFIG", str(DEFAULT_MULTIMODAL_ACTIVE_INDEX_CONFIG))
@@ -99,7 +106,12 @@ def _resolve_multimodal_release(embedding_config: Mapping[str, Any]) -> dict[str
     index_root = Path(
         os.environ.get("MULTIMODAL_INDEX_ROOT", str(DEFAULT_MULTIMODAL_INDEX_ROOT))
     ).resolve()
-    index_path = Path(str(active.get("index_path", "")))
+    pointer_entry = active.get("active") if isinstance(active.get("active"), dict) else active
+    if not isinstance(pointer_entry, dict):
+        raise ValueError("多模态 active pointer 缺少 active release")
+    if isinstance(active.get("active"), dict) and active.get("schema_version") != POINTER_SCHEMA_VERSION:
+        raise ValueError("多模态 active pointer schema 不受支持")
+    index_path = Path(str(pointer_entry.get("index_path", "")))
     if not index_path.parts or index_path.is_absolute():
         raise ValueError("多模态 active index_path 必须是相对路径")
     vector_db_dir = (index_root / index_path).resolve()
@@ -111,35 +123,115 @@ def _resolve_multimodal_release(embedding_config: Mapping[str, Any]) -> dict[str
     manifest_path = vector_db_dir.parent / "manifest.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"多模态 manifest 不存在: {manifest_path}")
-    manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    if manifest_hash != active.get("manifest_sha256"):
+    manifest_hash = compute_manifest_sha256(manifest_path)
+    if manifest_hash != pointer_entry.get("manifest_sha256"):
         raise ValueError("多模态 active index manifest 哈希不匹配")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("identity_sha256") or manifest.get("schema_version") in (MANIFEST_SCHEMA_VERSION, MANIFEST_SCHEMA_NAME):
+        validate_manifest_contract(manifest)
+        release_dir = vector_db_dir.parent
+        validate_manifest_artifacts(manifest, release_dir)
+        if any(not (release_dir / name).is_file() for name in ("units.jsonl", "build_state.json")):
+            raise FileNotFoundError("多模态 active release 必要索引产物缺失")
+        if not vector_db_dir.is_dir():
+            raise FileNotFoundError("多模态 active release 向量目录缺失")
+        build_state = json.loads((release_dir / "build_state.json").read_text(encoding="utf-8"))
+        unit_count = sum(1 for line in (release_dir / "units.jsonl").read_text(encoding="utf-8").splitlines() if line.strip())
+        state_unit_count = int(build_state.get("unit_count", -1))
+        state_vector_count = int(build_state.get("vector_count", -2))
+        if build_state.get("status") != "staged_complete" or state_unit_count != state_vector_count or unit_count != state_unit_count:
+            raise ValueError("多模态 active release 索引计数或构建状态无效")
+        actual_counts: dict[str, Any] = {
+            "unit_count": state_unit_count,
+            "vector_count": state_vector_count,
+        }
+        issues_path = release_dir / "issues.jsonl"
+        if issues_path.is_file():
+            actual_counts["issues_count"] = sum(
+                1 for line in issues_path.read_text(encoding="utf-8").splitlines() if line.strip()
+            )
+        validate_manifest_counts(manifest, actual_counts=actual_counts)
     if (
         os.environ.get("MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE", "").lower() != "true"
         and not has_frozen_production_identity(manifest)
     ):
         raise ValueError("多模态 active index 不是冻结的正式知识源")
-    runtime_fingerprint = {
-        "provider": embedding_config.get("provider"),
-        "model": embedding_config.get("model"),
-        "mode": embedding_config.get("mode"),
-        "normalized": embedding_config.get("normalized", embedding_config.get("mode") == "local"),
-    }
-    if "dimension" in embedding_config:
-        runtime_fingerprint["dimension"] = embedding_config["dimension"]
-    if active.get("embedding") != manifest.get("embedding") or manifest.get("embedding") != runtime_fingerprint:
-        raise ValueError("多模态 embedding 指纹不匹配")
-    if manifest.get("index_version") != active.get("index_version"):
+    if os.environ.get("MULTIMODAL_ALLOW_NON_PRODUCTION_ACTIVE", "").lower() != "true":
+        from Agent.knowledge_base.multimodal.production import validate_production_manifest
+
+        policy_failures = validate_production_manifest(manifest)
+        if policy_failures:
+            raise ValueError("多模态 active release 正式策略不允许: " + ", ".join(policy_failures))
+    manifest_config_payload = manifest.get("embedding_config")
+    if not isinstance(manifest_config_payload, dict) and isinstance(manifest.get("embedding"), dict) and "distance_metric" in manifest["embedding"]:
+        manifest_config_payload = manifest["embedding"]
+    manifest_config = None
+    if isinstance(manifest_config_payload, dict):
+        manifest_config = EmbeddingConfiguration.from_manifest(manifest_config_payload)
+        runtime_fingerprint = manifest_config.fingerprint()
+        manifest_fingerprint = manifest.get("embedding")
+        if isinstance(manifest_fingerprint, dict) and "distance_metric" not in manifest_fingerprint:
+            expected_fingerprint = {
+                key: runtime_fingerprint[key]
+                for key in manifest_fingerprint
+                if key in runtime_fingerprint
+            }
+            if manifest_fingerprint != expected_fingerprint:
+                raise ValueError("多模态 embedding 指纹不匹配")
+        if isinstance(pointer_entry.get("embedding"), dict) and pointer_entry["embedding"] != manifest_fingerprint:
+            raise ValueError("多模态 active embedding 指纹不匹配")
+    elif embedding_config is not None:
+        runtime_fingerprint = {
+            "provider": embedding_config.get("provider"),
+            "model": embedding_config.get("model"),
+            "mode": embedding_config.get("mode"),
+            "normalized": embedding_config.get("normalized", embedding_config.get("mode") == "local"),
+        }
+        if "dimension" in embedding_config:
+            runtime_fingerprint["dimension"] = embedding_config["dimension"]
+        pointer_embedding = pointer_entry.get("embedding") or active.get("embedding")
+        if (pointer_embedding is not None and pointer_embedding != manifest.get("embedding")) or manifest.get("embedding") != runtime_fingerprint:
+            raise ValueError("多模态 embedding 指纹不匹配")
+    else:
+        runtime_fingerprint = None
+    release_id = str(pointer_entry.get("release_id") or pointer_entry.get("index_version") or "")
+    manifest_release_id = manifest.get("release_id")
+    if manifest_release_id and release_id and manifest_release_id != release_id:
+        raise ValueError("多模态 release id 不匹配")
+    if manifest.get("index_version") and pointer_entry.get("index_version") and manifest.get("index_version") != pointer_entry.get("index_version"):
         raise ValueError("多模态 index version 不匹配")
-    collection_name = str(active.get("collection_name", "")).strip()
+    collection_name = str(
+        pointer_entry.get("collection_name")
+        or manifest.get("collection_name")
+        or manifest.get("retrieval_index", {}).get("collection", "")
+        or (f"causal_multimodal_{release_id}" if release_id else "")
+    ).strip()
     if not collection_name:
         raise ValueError("多模态 active collection_name 为空")
+    resolved_embedding = (
+        manifest_config.to_runtime_dict()
+        if manifest_config is not None
+        else dict(embedding_config) if embedding_config is not None else None
+    )
     return {
         "vector_db_dir": vector_db_dir,
         "collection_name": collection_name,
-        "index_version": active["index_version"],
+        "index_version": release_id or manifest.get("index_version"),
+        "embedding_config": resolved_embedding,
     }
+
+
+def recover_invalid_active_release() -> dict[str, Any]:
+    """在 release 身份/产物损坏时把唯一 fallback 提升为 active。"""
+    from Agent.knowledge_base.multimodal.release import ReleaseManager
+
+    active_path = Path(
+        os.environ.get("MULTIMODAL_ACTIVE_INDEX_CONFIG", str(DEFAULT_MULTIMODAL_ACTIVE_INDEX_CONFIG))
+    )
+    index_root = Path(
+        os.environ.get("MULTIMODAL_INDEX_ROOT", str(DEFAULT_MULTIMODAL_INDEX_ROOT))
+    )
+    return ReleaseManager(index_root, active_path).validate_active(enforce_production_policy=True)
 
 
 @dataclass(frozen=True)
@@ -181,25 +273,7 @@ def _validate_embedding_config(config: RagRuntimeConfig) -> None:
 
 def _create_embedding_function(config: RagRuntimeConfig) -> Any:
     """按配置创建唯一的 embedding 实例。"""
-    from langchain_huggingface import HuggingFaceEmbeddings
-    from langchain_openai import OpenAIEmbeddings
-
-    embedding_config = config.embedding_config
-    if embedding_config["mode"] == "api":
-        api_key_env = str(embedding_config["api_key_env"])
-        base_url_env = str(embedding_config["base_url_env"])
-        return OpenAIEmbeddings(
-            api_key=os.environ[api_key_env],
-            base_url=os.environ[base_url_env],
-            model=str(embedding_config["model"]),
-            tiktoken_enabled=False,
-            check_embedding_ctx_length=False,
-        )
-    return HuggingFaceEmbeddings(
-        model_name=str(embedding_config["path"]),
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    return create_embedding_function(config.embedding_config, scope=config.embedding_scope)
 
 
 def _create_embedding_function_thread_safe(config: RagRuntimeConfig) -> Any:

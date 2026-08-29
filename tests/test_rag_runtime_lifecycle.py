@@ -55,16 +55,18 @@ class RagRuntimeLifecycleTests(unittest.TestCase):
         index_root = root / "indexes"
         index_dir = index_root / version
         (index_dir / "chroma").mkdir(parents=True)
-        embedding = {
-            "provider": "huggingface",
-            "model": "bge-small-zh-v1.5",
-            "mode": "local",
-            "dimension": 512,
-            "normalized": True,
-        }
+        embedding = dict(config["embedding"])
         manifest = {
             "index_version": version,
             "embedding": embedding,
+            "parser": config["parser"],
+            "build_configuration": {
+                "pdf_parser": config["pdf_parser"],
+                "vision": {
+                    "enabled": False,
+                    "local_ocr_enabled": config["vision"]["local_ocr_enabled"],
+                },
+            },
             "sources": [
                 {
                     "source_id": source["source_id"],
