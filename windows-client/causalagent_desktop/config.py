@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import sys
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 
 DEFAULT_DEVELOPMENT_URL = "http://127.0.0.1:5001/"
+DEFAULT_DEVELOPER_PREVIEW_URL = DEFAULT_DEVELOPMENT_URL
 DEFAULT_RELEASE_ORIGIN = "https://causalagent.example.com"
 DEVELOPMENT_ORIGINS = frozenset(
     {
@@ -33,6 +35,7 @@ class ConfigError(ValueError):
 
 class DesktopMode(str, Enum):
     DEVELOPMENT = "development"
+    DEVELOPER_PREVIEW = "developer-preview"
     RELEASE = "release"
 
 
@@ -197,8 +200,15 @@ def _parse_autoclose(value: str | None) -> float | None:
 
 def _is_local_development_origin(origin: str) -> bool:
     parsed = urlsplit(origin)
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+    if parsed.scheme != "http" or parsed.hostname is None:
         return False
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname != "localhost":
+        try:
+            if not ipaddress.ip_address(hostname).is_loopback:
+                return False
+        except ValueError:
+            return False
     return parsed.port is not None and 1 <= parsed.port <= 65535
 
 
@@ -230,7 +240,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         choices=[mode.value for mode in DesktopMode],
-        help="运行模式；release 会强制 HTTPS 和关闭 debug",
+        help="运行模式；developer-preview 只允许 loopback，release 强制 HTTPS 并关闭 debug",
     )
     parser.add_argument("--debug", action="store_true", help="开发模式开启 pywebview debug")
     parser.add_argument(
@@ -266,6 +276,34 @@ def _bundled_release_origin() -> str:
     return DEFAULT_RELEASE_ORIGIN
 
 
+def _bundled_mode() -> DesktopMode:
+    """读取 PyInstaller 构建时嵌入的发行通道。
+
+    旧版冻结包没有该文件，按 Release 处理，避免兼容旧包时意外放宽
+    HTTPS/origin 安全边界。只有构建脚本明确写入 developer-preview 才会
+    开启本地回环预览配置。
+    """
+
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if not bundle_root:
+        return DesktopMode.RELEASE
+
+    marker = Path(bundle_root) / "causalagent_desktop" / "desktop_mode.txt"
+    try:
+        value = marker.read_text(encoding="utf-8").strip().lower()
+    except (OSError, UnicodeError):
+        return DesktopMode.RELEASE
+
+    try:
+        mode = DesktopMode(value)
+    except ValueError as exc:
+        raise ConfigError("桌面发行通道无效") from exc
+    if mode is DesktopMode.DEVELOPMENT:
+        # 构建产物不能被标记为可自由调试的 source development 模式。
+        raise ConfigError("冻结桌面包不允许使用 development 发行通道")
+    return mode
+
+
 def build_config(
     argv: Sequence[str] | None = None,
     *,
@@ -277,12 +315,12 @@ def build_config(
     # 作为纯函数调用时默认不读取宿主进程（例如 pytest）的参数；真正的
     # CLI 入口由 launcher.main 显式传入 sys.argv[1:]。
     args = build_argument_parser().parse_args(list(argv) if argv is not None else [])
-    # Source runs are developer-oriented. A frozen PyInstaller executable is a
-    # release artifact and must not silently fall back to the local Flask URL.
-    frozen_release = bool(getattr(sys, "frozen", False))
+    # Source runs are developer-oriented. A frozen package follows the explicit
+    # build-time marker; missing markers retain the old safe Release behavior.
+    frozen = bool(getattr(sys, "frozen", False))
     mode_value = (
-        DesktopMode.RELEASE.value
-        if frozen_release
+        _bundled_mode().value
+        if frozen
         else args.mode or env.get("CAUSALAGENT_DESKTOP_MODE", DesktopMode.DEVELOPMENT.value)
     )
     try:
@@ -292,7 +330,7 @@ def build_config(
 
     release_origin_raw = (
         _bundled_release_origin()
-        if frozen_release
+        if frozen
         else env.get("CAUSALAGENT_DESKTOP_RELEASE_ORIGIN", _bundled_release_origin())
     )
     release_origin = normalize_origin(release_origin_raw)
@@ -301,13 +339,19 @@ def build_config(
 
     configured_url = args.url or env.get("CAUSALAGENT_DESKTOP_URL")
     if not configured_url:
-        configured_url = f"{release_origin}/" if mode is DesktopMode.RELEASE else DEFAULT_DEVELOPMENT_URL
+        configured_url = (
+            f"{release_origin}/"
+            if mode is DesktopMode.RELEASE
+            else DEFAULT_DEVELOPER_PREVIEW_URL
+            if mode is DesktopMode.DEVELOPER_PREVIEW
+            else DEFAULT_DEVELOPMENT_URL
+        )
     url = normalize_url(configured_url)
     configured_origin = origin_of(url)
 
-    if mode is DesktopMode.DEVELOPMENT:
+    if mode in {DesktopMode.DEVELOPMENT, DesktopMode.DEVELOPER_PREVIEW}:
         if configured_origin not in DEVELOPMENT_ORIGINS and not _is_local_development_origin(configured_origin):
-            raise ConfigError("开发模式只允许本地 Flask origin")
+            raise ConfigError("开发和 Developer Preview 模式只允许本地回环 Flask origin")
         # Keep the documented 5001 defaults and add an explicitly configured
         # loopback port for an isolated local stub or alternate Flask process.
         allowed_origins = frozenset(set(DEVELOPMENT_ORIGINS) | {configured_origin})
@@ -323,11 +367,14 @@ def build_config(
     icon_value = env.get("CAUSALAGENT_DESKTOP_ICON")
     icon_path = Path(icon_value).expanduser() if icon_value else None
 
-    # This hook is intentionally only read in development and exists for the
-    # opt-in Windows smoke process; release packages cannot auto-close.
-    autoclose = _parse_autoclose(env.get("CAUSALAGENT_DESKTOP_TEST_AUTOCLOSE_SECONDS"))
-    if mode is DesktopMode.RELEASE:
-        autoclose = None
+    # This hook is intentionally available only to source development runs for
+    # the opt-in Windows smoke process. Frozen packages, including Developer
+    # Preview, must never be made short-lived by an inherited test variable.
+    autoclose = (
+        _parse_autoclose(env.get("CAUSALAGENT_DESKTOP_TEST_AUTOCLOSE_SECONDS"))
+        if not frozen and mode is DesktopMode.DEVELOPMENT
+        else None
+    )
 
     return DesktopConfig(
         mode=mode,

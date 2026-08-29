@@ -1,6 +1,8 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$ReleaseOrigin = "https://causalagent.example.com",
+    [ValidateSet("Release", "DeveloperPreview")]
+    [string]$DistributionChannel = "Release",
     [ValidateSet("onedir", "onefile")]
     [string]$PackageMode = "onedir",
     [string]$IconPath = ""
@@ -27,11 +29,18 @@ if ($originUri.Scheme -ne "https" -or $originUri.AbsolutePath -ne "/" -or $origi
 
 $releaseOriginTempDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("causalagent-desktop-" + [guid]::NewGuid().ToString("N"))
 $releaseOriginFile = Join-Path $releaseOriginTempDirectory "release_origin.txt"
+$desktopModeFile = Join-Path $releaseOriginTempDirectory "desktop_mode.txt"
+$desktopMode = if ($DistributionChannel -eq "DeveloperPreview") { "developer-preview" } else { "release" }
 try {
     New-Item -ItemType Directory -Path $releaseOriginTempDirectory -Force | Out-Null
     [System.IO.File]::WriteAllText(
         $releaseOriginFile,
         "$ReleaseOrigin`n",
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    [System.IO.File]::WriteAllText(
+        $desktopModeFile,
+        "$desktopMode`n",
         [System.Text.UTF8Encoding]::new($false)
     )
 
@@ -44,8 +53,10 @@ try {
         "--paths", $desktopRoot,
         "--hidden-import", "webview.platforms.edgechromium",
         "--hidden-import", "webview.platforms.winforms",
+        "--copy-metadata", "pywebview",
         "--collect-all", "pywebview",
-        "--add-data", "$releaseOriginFile;causalagent_desktop"
+        "--add-data", "$releaseOriginFile;causalagent_desktop",
+        "--add-data", "$desktopModeFile;causalagent_desktop"
     )
     if ($PackageMode -eq "onefile") {
         $pyinstallerArguments += "--onefile"

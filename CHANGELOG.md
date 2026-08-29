@@ -1280,3 +1280,14 @@
 - 【范围收敛】：checkpoint resume 不纳入本次提交。
 - 【验证】：Docker focused、RAG 回归和主机定向测试通过；未执行真实 API 发布及 worker drain/restart。
 
+---
+2026.8.27
+- [普通聊天双状态居中布局]
+  - 【布局状态】：普通聊天页新增显式 new-chat / conversation 两种布局状态；新建会话、空历史会话、已有历史会话、首次发送和失败恢复分别按状态处理。
+  - 【空状态】：欢迎词改为独立空状态元素，中文和英文文案同步更新；输入区与欢迎区在侧边栏之外的剩余区域居中组合。
+  - 【消息布局】：消息、思考入口、思考详情、流式草稿、因果报告和因果图统一约束在最大 880px 的居中内容列，保留用户右对齐和 AI 原有左距。
+  - 【交互过渡】：首次 Job 请求成功后使用 300ms FLIP 将输入卡片移动到底部，保留输入控件/文件草稿状态并支持 prefers-reduced-motion；请求失败时保留欢迎态和输入草稿。
+  - 【验证】：新增前端布局状态 Node 单测；前端语法与 16 项 Node 状态测试通过，Docker unit-test 中聊天定向测试 21 项通过；浏览器完成未登录 DOM 隔离下的几何、窄窗口、侧栏、焦点和动画检查。
+- [indows Developer Preview CD]
+  - 【发行通道】：新增显式 `DeveloperPreview` PyInstaller 通道；onefile 冻结包默认访问 `http://127.0.0.1:5001/`，只接受 loopback origin 并强制关闭 debug，缺少通道标记的旧冻结包继续按安全的 Release 模式运行。
+  - 【GitHub Release】：新增 `v*` tag 驱动的 Windows workflow，在 `windows-latest` 上运行桌面逻辑测试、构建 onefile、生成 SHA-256，并仅创建/更新 Draft Pre-release；GitHub 自动提供 tag 源码归档，本版本不推送 Docker 镜像。
