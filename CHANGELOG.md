@@ -1291,3 +1291,11 @@
 - [indows Developer Preview CD]
   - 【发行通道】：新增显式 `DeveloperPreview` PyInstaller 通道；onefile 冻结包默认访问 `http://127.0.0.1:5001/`，只接受 loopback origin 并强制关闭 debug，缺少通道标记的旧冻结包继续按安全的 Release 模式运行。
   - 【GitHub Release】：新增 `v*` tag 驱动的 Windows workflow，在 `windows-latest` 上运行桌面逻辑测试、构建 onefile、生成 SHA-256，并仅创建/更新 Draft Pre-release；GitHub 自动提供 tag 源码归档，本版本不推送 Docker 镜像。
+
+---
+2026.8.29
+- 【README：用户、管理员与开发者入口同步】
+  - 【用户入口】：补充用户聊天、RAG 运行台、管理后台和 Grafana 地址，区分普通聊天 RAG 与隔离摄取、评测、release 工作台。
+  - 【能力与架构】：按当前 LangGraph 父图、MCP/RAG/Web Search 子图、Job worker、SSE/checkpoint 边界更新简化架构图，并补充 OLC、SearXNG、active release 与安全降级说明。
+  - 【配置与组件】：补充最小环境配置、典型技术组件和结构化日志链路，链接到现有 Document 权威页面。
+  - 【文档结构】：根 README 前半部分面向用户，后半部分承接管理员与开发者；收缩易漂移的项目目录树，并同步英文 README 的事实、图片路径、贡献规则和文档导航。
