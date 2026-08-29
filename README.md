@@ -45,8 +45,10 @@ CausalAgent
 - [WHAT IS CausalAgent](#what-is-causalagent)
 - [WHY CausalAgent](#why-causalagent)
 - [技术栈](#技术栈)
-- [展示](#展示)
+- [用户端展示](#用户端展示)
+- [管理员端展示](#管理员端展示)
 - [核心功能](#核心功能)
+- [RAG端展示](#rag端展示)
   - [Agent 总览](#agent-总览)
   - [预处理](#预处理)
   - [因果分析（MCP）](#因果分析mcp)
@@ -57,7 +59,8 @@ CausalAgent
   - [Docker部署](#docker部署)
     - [数据库生产化配置](#数据库生产化配置)
     - [管理员后台](#管理员后台)
-    - [日志系统](#日志系统)
+  - [日志系统](#日志系统)
+    - [开发环境启动](#开发环境启动)
   - [后端单元测试](#后端单元测试)
   - [windows部署](#windows部署)
 - [贡献](#贡献)
@@ -91,18 +94,28 @@ CausalAgent
 | **Backend** | ![Flask](https://img.shields.io/badge/Flask-000000?style=flat-square&logo=flask&logoColor=white) ![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white) ![Alembic](https://img.shields.io/badge/Alembic-F7F7F7?style=flat-square&logo=python&logoColor=black) |
 | **Frontend** | ![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=flat-square&logo=html5&logoColor=white) ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black) ![PyWebview](https://img.shields.io/badge/PyWebview-FFD43B?style=flat-square&logo=python&logoColor=blue) |
 | **Tools** | ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white) ![Git](https://img.shields.io/badge/Git-F05032?style=flat-square&logo=git&logoColor=white) |
-## 展示
+## 用户端展示
 <p align="center">
-  <img src="./README/image.png" alt="主程序" width="450">
+  <img src="./README/causalagent展示页.png" alt="主程序" width="850">
 
+</p>
+<p align="center">
+  <img src="./README/因果图页.png" alt="因果图" width="850">
 </p>
 <p align="center">
   <img src="./README/image2.png" alt="因果图" width="450">
 </p>
 
+## 管理员端展示
+<p align="center">
+  <img src="./README/管理员.png" alt="因果图" width="850">
+</p>
 ## 核心功能
 
 CausalAgent 的整体因果分析流程可以抽象为：**用户上传数据 → 预处理与数据体检 → 因果结构学习 → 后处理与质量提升 → 报告与可视化输出**。下面按模块进行说明。
+
+## RAG端展示
+
 
 ### Agent 总览
 ```mermaid
