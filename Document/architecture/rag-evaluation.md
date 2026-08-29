@@ -104,7 +104,11 @@ runs/<run_id>/
 - `chroma/`：批量写入且成功提交后的向量存储；
 - 需要时的页级 `checkpoints.sqlite3` 和 run-local 解析资源目录。
 
-staged 完整性检查会比较 manifest、unit/vector/ingestion 计数、embedding fingerprint、index version 和归属的 ingestion run，并严格回读 run-local source、Docling 产物和单元资源。Chroma 以独立 attempt 目录构建，构建失败不能留下可发布的伪完整索引。解析资源用于构建审计和可选的图片/表格复核，不是正式 RAG 检索运行时的必需发布文件；这类来源和解析产物校验属于构建、评测和发布门禁。
+staged 完整性检查会比较 manifest、unit/vector/ingestion 计数、embedding fingerprint、index version 和归属的 ingestion run，并严格回读 run-local source、Docling 产物和单元资源。新 manifest 还封存完整 `embedding_config`、`identity_sha256` 和 `release_id`；identity 投影使用规范 UTF-8 JSON 和 LF 换行，manifest 完整哈希对 CRLF/LF 等平台换行做同一规范化，评测绑定不改变 release identity。Chroma 以独立 attempt 目录构建，完成后把目录内容摘要和总字节数写入 `artifact_integrity.chroma`，staged、formal release manager 和 runtime readiness 都会重新计算并校验；构建失败不能留下可发布的伪完整索引。解析资源用于构建审计和可选的图片/表格复核，不是正式 RAG 检索运行时的必需发布文件；这类来源和解析产物校验属于构建、评测和发布门禁。
+
+正式多模态 embedding 策略当前固定为 `openai_compatible` API，凭据只从 `EMBEDDING_API_KEY` 读取，endpoint 从 `EMBEDDING_BASE_URL` 读取；`production_defaults.json` 中的 `local_embedding.enabled=false` 关闭本地生产 embedding。隔离评测仍可显式使用自己的配置快照，但不会覆盖正式策略或 active pointer。
+
+切换 defaults 不会改写已有 schema-5 active release 或其 Chroma；当前旧 active 仍是历史产物，必须在 API 配置就绪后重新构建、评测并显式 publish 新 release，才能完成正式迁移。
 
 索引身份不是一个可随意传入的字符串，而是由 `ingestion_run_id`、`index_version`、`collection_name`、manifest 哈希和 embedding fingerprint 共同约束。后续 RAG 试跑、候选题集、评测和 Gold 校验必须绑定同一个 staged index；切换索引后不能复用旧绑定而跳过重新校验。
 
@@ -129,13 +133,13 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 
 ## 3. release 生命周期
 
-正式多模态知识库由 formal index root 和 runtime pointer 管理；PNG、Docling 页级 JSON 以及 source 副本属于可独立保留的解析资产包，不作为正式 RAG 发布包的一部分。构建、评测和发布阶段必须在受控目录内按内容哈希唯一解析正式 PDF；已发布 release 的生产 worker 只校验 manifest 中的冻结来源身份，不回读原始 PDF。默认语义是：
+正式多模态知识库由 formal index root 和 runtime pointer 管理；PNG、Docling 页级 JSON 以及 source 副本属于可独立保留的解析资产包，不作为正式 RAG 发布包的一部分。构建、评测和发布阶段必须在受控目录内按内容哈希唯一解析正式 PDF；已发布 release 的生产 worker 只校验 manifest 中的冻结来源身份，不回读原始 PDF。新 pointer schema 将 active/fallback、generation、相对索引路径和 manifest 哈希收敛在单个 `active_index.json`；旧 `previous_index.json` 只作为兼容读取来源。默认语义是：
 
 - `active_index.json` 指向当前正式索引；
-- `previous_index.json` 保留上一个 active 版本，支持受控回滚；
-- candidate 目录保存待发布版本；维护状态只读展示 active、previous、candidate 和 candidate overflow；
+- pointer 的 `fallback` 最多保留唯一上一个可用 active 版本，也可以为空；当前部署只保留 `active`，隔离 candidate 不进入 formal 稳定目录；
 - 发布只物化 staged index，不把 run-local 解析资产复制到 formal asset 目录；
-- 发布不会自动删除旧索引、解析资产包、运行目录或评测产物。
+- 发布成功后只保留 active/fallback 两个 formal release，最老 fallback 在 pointer 成功切换后清理；清理失败写入 `cleanup_pending.json`；
+- 物化、完整性或 CAS 失败只清理 incoming，既有 active/fallback/pointer 不变；完整性失败的 active 才会进入 quarantine 并受控提升 fallback。
 
 ### 3.1 门禁
 
@@ -149,17 +153,18 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 | `production_policy` | parser、VLM、embedding 等正式策略与 manifest 一致 |
 | `ragas` | 与该 ingestion/index 完全绑定的 Ragas 评测成功且通过 |
 | `active_pointer_consistency` | 发布前 active pointer 未被其他操作改变 |
+| `active_pointer_generation` | 发布前 active pointer generation 未被其他操作改变 |
 | `manifest_unchanged` | 门禁读取的 manifest 哈希未发生变化 |
 
-门禁报告包含 `state`、`publishable`、`checked_at`、`release`、`checks`、`evaluation`、`active`、`previous` 和 `requires_worker_restart=true`。`state=ready_to_publish` 只表示可以进入显式发布步骤，不代表已经发布。
+远程图片或表格增强失败属于可降级解析告警，不单独阻断发布；来源缺失、页级质量路由失败、未授权外发、空检索文本、产物/计数/manifest 不一致仍然阻断，正式题集覆盖率和检索阈值继续兜底。门禁报告包含 `state`、`publishable`、`checked_at`、`release`、`checks`、`evaluation`、`active`、`previous` 和 `requires_worker_restart=true`。`state=ready_to_publish` 只表示可以进入显式发布步骤，不代表已经发布。
 
 ### 3.2 发布与回滚
 
-`publish` 必须提交 `confirm=true`，并再次执行发布前门禁。通过后分两步执行：先把 run-local staged index 物化到 formal candidate，解析资产包保持在 run-local 或外部存储中；再由正式发布逻辑重新校验并原子更新 active pointer。正式 RAG 运行时读取 active pointer 指向的 Chroma 和 manifest，只校验冻结来源身份，不要求原始 PDF、PNG 或 Docling 页级 JSON 在 formal 目录中存在。candidate 物化与 pointer 更新不是一个跨目录事务；如果第二步失败，candidate 可能已经保留但不会成为 active。可选的 `expected_active_index_version` 用于阻止并发覆盖。
+`publish` 必须提交 `confirm=true`，并再次执行发布前门禁。通过后会把评测 run、数据集 revision/hash、评测结果 hash 和 gate hash 封存到 `evaluation_binding`，再由集中 release manager 将 run-local staged index 物化到 formal incoming，校验 manifest/必要产物后在发布锁下以一次 pointer 替换完成晋级；解析资产包保持在 run-local 或外部存储中。正式 RAG 运行时读取 active pointer 指向的 Chroma 和 manifest，只校验冻结来源身份，不要求原始 PDF、PNG 或 Docling 页级 JSON 在 formal 目录中存在。可选的 `expected_active_index_version` 或 `expected_generation` 用于阻止并发覆盖。
 
-回滚同样需要 `confirm=true`，复用正式发布门禁并检查期望的 active 版本；成功后仍需生产 Agent worker drain/restart 才能让已经加载的 lazy Runtime 使用新 release。
+回滚同样需要 `confirm=true`，检查期望的 active 版本并只允许当前唯一 fallback；成功后仍需生产 Agent worker drain/restart 才能让已经加载的 lazy Runtime 使用新 release。正式 readiness 发现 manifest、release identity 或必要索引产物损坏时，release manager 会把失败 active 移入 quarantine，再提升 fallback；embedding API 的 401/402/429、超时、连接和服务端错误只进入独立熔断/不可用路径，不切换 pointer。
 
-隔离评测的 run、候选题集、Ragas 报告或 profile 发布接口都不会隐式执行上述 release publish。生产 release 的控制入口是 `/api/rag_eval/multimodal/releases/*`，而不是评测完成回调。
+隔离评测的 run、候选题集、Ragas 报告或 profile 发布接口都不会隐式执行上述 release publish。生产 release 的控制入口是 `/api/rag_eval/multimodal/releases/*`，而不是评测完成回调。`Agent/knowledge_base/multimodal/cli.py` 仅用于开发/离线维护；其中的 `publish`、`rollback` 和 `run --publish` 都是非正式入口，其结果不能作为正式 release 证据。
 
 ## 4. worker 与进程边界
 
@@ -180,11 +185,11 @@ Ragas 先生成回答，再使用有效回答执行 judge；回答生成失败�
 
 默认常驻 slot 数为 5（`RAG_EVAL_EVALUATION_WORKERS`，配置范围 1–16）。claim 使用 MySQL 命名锁、事务和 `FOR UPDATE SKIP LOCKED`，同一 job kind 的 running 数不能超过上限。worker 以 heartbeat 维护租约；进程遗留的 running job 超过 `RAG_EVAL_EVALUATION_JOB_STALE_AFTER_SECONDS` 后收敛为 `failed`，不会自动重跑可能产生外部模型调用的任务。
 
-评测 worker 与生产 Agent worker 是两个不同进程：当前评测 worker 负责隔离任务队列和产物，不负责生产聊天 graph，也不负责 release pointer 切换。
+评测 worker 与生产 Agent worker 是两个不同进程：当前评测 worker 负责隔离任务队列和产物，不负责生产聊天 graph，也不负责 release pointer 切换。隔离 run 创建时冻结 embedding 配置，构建、候选生成和查询复用该快照；evaluation worker 的 API 并发、速率和熔断限制使用 `RAG_EVAL_EMBEDDING_*` 前缀，与正式 worker 的 `RAG_EMBEDDING_*` 状态隔离。
 
 ### 4.2 生产 Agent worker
 
-生产聊天任务的入口是 `python -m app.agent.worker`，一般架构见 [`agent-runtime.md`](agent-runtime.md)。它启动时只做 active pointer、manifest 冻结来源身份、embedding、版本、collection 和向量目录的轻量 readiness 检查，不读取原始 PDF；检查失败时以 `rag_unavailable` 运行，避免把 Web/worker 启动等同于 RAG 已可用。真正的 `RagRuntime` 在首次查询时 lazy 初始化，进程内共享，active pointer 变化后需要 drain 和 restart，不热切换已有 Runtime。
+生产聊天任务的入口是 `python -m app.agent.worker`，一般架构见 [`agent-runtime.md`](agent-runtime.md)。它启动时只做 active pointer、manifest 冻结来源身份、manifest 中的 embedding 配置、版本、collection 和向量目录的轻量 readiness 检查，不读取原始 PDF；release 完整性失败时尝试受控回退，embedding API 配置缺失或请求故障则保持当前 pointer 不变并以 `rag_unavailable` 运行，避免把 Web/worker 启动等同于 RAG 已可用。真正的 `RagRuntime` 在首次查询时 lazy 初始化，进程内共享，active pointer 变化后需要 drain 和 restart，不热切换已有 Runtime。
 
 生产 Agent worker 具备独立的 SIGTERM/SIGINT drain 语义；这不等同于 `rag-eval-worker` 已实现相同的优雅停机机制。两者的运行、扩缩容和部署说明分别由 [`development/deployment.md`](../development/deployment.md) 与本文维护。
 
