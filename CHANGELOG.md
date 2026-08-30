@@ -1306,5 +1306,5 @@
   - 【发布制品】：发布 GitHub 自动源码归档与 Windows WebView2 Developer Preview onefile；桌面壳只连接本机服务，本版本不发布官方 Docker 镜像、不部署公网服务、不提供代码签名或自动更新。
 - 【v0.1.0 Windows Release 附件补齐】
   - 【构建环境】：修复 GitHub Windows runner 未创建 `.venv-desktop`、而打包脚本只接受该虚拟环境所导致的 onefile 构建失败；依赖安装、逻辑测试、PyInstaller 构建和冻结标记检查统一使用桌面虚拟环境。
-  - 【恢复入口】：为 workflow 增加显式手动补齐模式，从原 tag 重新检出和构建，只允许向已发布、未锁定的 Pre-release 上传缺失附件；拒绝移动 tag、修改正式 Release 或覆盖同名附件。
+  - 【恢复入口】：为 workflow 增加显式手动补齐模式，从原 tag 重新检出和构建，只允许向已发布且未锁定的 Release 上传缺失附件；不改变正式版或 Pre-release 属性，并拒绝移动 tag、修改说明或覆盖同名附件。
   - 【文档与测试】：增加 workflow 静态安全契约测试，并同步桌面发布、CD 恢复流程和 v0.1.0 Release Notes 的验收边界。

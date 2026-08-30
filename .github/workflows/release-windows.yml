@@ -11,8 +11,8 @@ on:
         required: true
         default: "v0.1.0"
         type: string
-      upload_to_published_prerelease:
-        description: "确认仅向已发布的可变 Pre-release 补齐缺失附件"
+      upload_to_published_release:
+        description: "确认仅向已发布且未锁定的 Release 补齐缺失附件"
         required: true
         default: false
         type: boolean
@@ -31,7 +31,7 @@ jobs:
     timeout-minutes: 20
     env:
       TARGET_TAG: ${{ inputs.target_tag || github.ref_name }}
-      RECOVERY_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_to_published_prerelease }}
+      RECOVERY_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_to_published_release }}
     defaults:
       run:
         shell: pwsh
@@ -152,7 +152,7 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
-      - name: Create draft or recover published Pre-release assets
+      - name: Create draft or recover published Release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -194,15 +194,15 @@ jobs:
             }
 
             if ($env:RECOVERY_UPLOAD -eq "true") {
-              if ($release.draft -eq $true -or $release.prerelease -ne $true) {
-                throw "手动补齐只允许已发布的 Pre-release。"
+              if ($release.draft -eq $true) {
+                throw "手动补齐只允许已经发布的 Release。"
               }
               if ($release.immutable -eq $true) {
                 throw "该 Release 已锁定为 immutable，无法补齐附件。"
               }
               gh release upload $tag $env:ASSET_PATH $env:CHECKSUM_PATH
               if ($LASTEXITCODE -ne 0) {
-                throw "向已发布 Pre-release 补齐附件失败。"
+                throw "向已发布 Release 补齐附件失败。"
               }
             } elseif ($release.draft -eq $true) {
               gh release edit $tag --draft --prerelease --title $title --notes-file $notesPath
@@ -214,11 +214,11 @@ jobs:
                 throw "上传 Draft Release 附件失败。"
               }
             } else {
-              throw "该 tag 已存在非 Draft Release；只有显式确认的手动补齐模式可以修改已发布 Pre-release。"
+              throw "该 tag 已存在非 Draft Release；只有显式确认的手动补齐模式可以上传缺失附件。"
             }
           } elseif ($lookupExit -eq 1 -and (($releaseLookup | Out-String) -match '(?i)(not found|404)')) {
             if ($env:RECOVERY_UPLOAD -eq "true") {
-              throw "手动补齐要求目标 Pre-release 已存在，未找到 Release。"
+              throw "手动补齐要求目标 Release 已存在，未找到 Release。"
             }
             gh release create $tag --draft --prerelease --title $title --notes-file $notesPath $env:ASSET_PATH $env:CHECKSUM_PATH
           } else {
